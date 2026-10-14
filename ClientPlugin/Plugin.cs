@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using ClientPlugin.Settings;
 using ClientPlugin.Settings.Layouts;
 using ClientPlugin.Bootstrap;
@@ -9,8 +9,8 @@ using VRage.Plugins;
 
 // Define assembly version when compiled by Pulsar
 #if !LOCAL_BUILD
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
 #endif
     
 namespace ClientPlugin;
@@ -41,7 +41,14 @@ public class Plugin : IPlugin
 
     public void Update()
     {
+        PluginStatusPage.TryInstall("Vulkan", Config.Current.ShowStatus, PopulateStatusPage);
         VulkanDiagnostics.Refresh();
+    }
+
+    static void PopulateStatusPage(object page)
+    {
+        PluginStatusPage.AddButton(page, "Show Profiler", Config.Current.ShowProfiler, "Open frame timing diagnostics.");
+        PluginStatusPage.AddButton(page, "Write report to log", Config.Current.WriteReport, "Write the status snapshot to the game log.");
     }
 
     // ReSharper disable once UnusedMember.Global
