@@ -1,0 +1,150 @@
+// Generated from the authenticated SE 1.210.014 inventory.
+namespace ClientPlugin.Rendering.Shaders;
+public static class TransparencyShaderVariants {
+public static readonly (uint Id,string Vertex,string Pixel)[] Glass = {
+(0u,"f43edd936e9fbc242034a054dddf62c239a9b7ba99d39a95173c31c65e241ef2","8e9f711382621a669e921f954ebaee76fc0b6a8c7ba228b76a74c6002f77f855"),
+(1u,"07dddc57cae32bfc20980aff08117ee7880233d0d75c244d3a8de50e2b8d5ec9","fd2343e0bf84360fd10dd2367c1f5384923b5a03a87596e7976a56186227df47"),
+(2u,"ae9a0f6553b210760f000558bd425789793e2017f599591eceee4d85f2492c2e","1b2e42336b293ab8f0a4c739044ee70bc43bb49d5e55d62429d002e69179b6de"),
+(5u,"6d1ff24cc8475ac1d6ca33edf527a9b45eb22219a77c0ab61dc3effbc4f6884f","f5f3fa9266f1d37e6631dd15dc4c15b3c1c36afc114c072a3e1060894e4af807"),
+(6u,"c089b0fc4cc1dc79e405fea653dbecaa6d11802fd81114926a75c079ea508d7d","1a3cee5ffb84bfc444507ae5477702eea123697fd9081b215dfddcf503181635"),
+(7u,"2e020f32ecd5142853ccade0439b5e18de2f2bef9ac5c07ec5e136cb4b9984a8","210aae092009679cc9405fbd79c4dd6b2485d5c1ec4a767aae84ef6b80f86d18"),
+};
+public static readonly (uint Id,string Material,System.Collections.Generic.Dictionary<string,string> Defines)[] Extra = {
+(67u,"Glass",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","5"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; __packed_bone0 = input.packed_bone0; __packed_bone1 = input.packed_bone1; __packed_bone2 = input.packed_bone2; __packed_bone3 = input.packed_bone3; __packed_bone4 = input.packed_bone4; __packed_bone5 = input.packed_bone5; __packed_bone6 = input.packed_bone6; __packed_bone7 = input.packed_bone7; __cube_transformation = input.cube_transformation; __colormask = input.colormask; "},
+{"USE_CUBE_INSTANCING",""},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; float4 packed_bone0 : TEXCOORD1; float4 packed_bone1 : TEXCOORD2; float4 packed_bone2 : TEXCOORD3; float4 packed_bone3 : TEXCOORD4; float4 packed_bone4 : TEXCOORD5; float4 packed_bone5 : TEXCOORD6; float4 packed_bone6 : TEXCOORD7; float4 packed_bone7 : TEXCOORD8; float4 cube_transformation : TEXCOORD9; float4 colormask : TEXCOORD10; "},
+}),
+(68u,"Glass",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","5"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __blend_weights = input.blend_weights; __blend_indices = input.blend_indices; __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; __packed_bone0 = input.packed_bone0; __packed_bone1 = input.packed_bone1; __packed_bone2 = input.packed_bone2; __packed_bone3 = input.packed_bone3; __packed_bone4 = input.packed_bone4; __packed_bone5 = input.packed_bone5; __packed_bone6 = input.packed_bone6; __packed_bone7 = input.packed_bone7; __cube_transformation = input.cube_transformation; __colormask = input.colormask; "},
+{"USE_DEFORMED_CUBE_INSTANCING",""},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; float4 blend_weights : BLENDWEIGHT0; uint4 blend_indices : BLENDINDICES0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; float4 packed_bone0 : TEXCOORD1; float4 packed_bone1 : TEXCOORD2; float4 packed_bone2 : TEXCOORD3; float4 packed_bone3 : TEXCOORD4; float4 packed_bone4 : TEXCOORD5; float4 packed_bone5 : TEXCOORD6; float4 packed_bone6 : TEXCOORD7; float4 packed_bone7 : TEXCOORD8; float4 cube_transformation : TEXCOORD9; float4 colormask : TEXCOORD10; "},
+}),
+(70u,"Glass",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","6"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; "},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; "},
+}),
+(71u,"Glass",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","6"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __blend_weights = input.blend_weights; __blend_indices = input.blend_indices; __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; "},
+{"USE_SKINNING",""},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; float4 blend_weights : BLENDWEIGHT0; uint4 blend_indices : BLENDINDICES0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; "},
+}),
+(72u,"Glass",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","6"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; __instance_matrix = construct_matrix_43( input.matrix_row0, input.matrix_row1, input.matrix_row2); __colormask = input.colormask; "},
+{"USE_GENERIC_INSTANCING",""},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; float4 matrix_row0 : TEXCOORD1; float4 matrix_row1 : TEXCOORD2; float4 matrix_row2 : TEXCOORD3; float4 colormask : TEXCOORD4; "},
+}),
+(73u,"Glass",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","6"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; __packed_bone0 = input.packed_bone0; __packed_bone1 = input.packed_bone1; __packed_bone2 = input.packed_bone2; __packed_bone3 = input.packed_bone3; __packed_bone4 = input.packed_bone4; __packed_bone5 = input.packed_bone5; __packed_bone6 = input.packed_bone6; __packed_bone7 = input.packed_bone7; __cube_transformation = input.cube_transformation; __colormask = input.colormask; "},
+{"USE_CUBE_INSTANCING",""},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; float4 packed_bone0 : TEXCOORD1; float4 packed_bone1 : TEXCOORD2; float4 packed_bone2 : TEXCOORD3; float4 packed_bone3 : TEXCOORD4; float4 packed_bone4 : TEXCOORD5; float4 packed_bone5 : TEXCOORD6; float4 packed_bone6 : TEXCOORD7; float4 packed_bone7 : TEXCOORD8; float4 cube_transformation : TEXCOORD9; float4 colormask : TEXCOORD10; "},
+}),
+(74u,"Glass",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","6"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __blend_weights = input.blend_weights; __blend_indices = input.blend_indices; __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; __packed_bone0 = input.packed_bone0; __packed_bone1 = input.packed_bone1; __packed_bone2 = input.packed_bone2; __packed_bone3 = input.packed_bone3; __packed_bone4 = input.packed_bone4; __packed_bone5 = input.packed_bone5; __packed_bone6 = input.packed_bone6; __packed_bone7 = input.packed_bone7; __cube_transformation = input.cube_transformation; __colormask = input.colormask; "},
+{"USE_DEFORMED_CUBE_INSTANCING",""},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; float4 blend_weights : BLENDWEIGHT0; uint4 blend_indices : BLENDINDICES0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; float4 packed_bone0 : TEXCOORD1; float4 packed_bone1 : TEXCOORD2; float4 packed_bone2 : TEXCOORD3; float4 packed_bone3 : TEXCOORD4; float4 packed_bone4 : TEXCOORD5; float4 packed_bone5 : TEXCOORD6; float4 packed_bone6 : TEXCOORD7; float4 packed_bone7 : TEXCOORD8; float4 cube_transformation : TEXCOORD9; float4 colormask : TEXCOORD10; "},
+}),
+(83u,"Holo",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","5"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; __packed_bone0 = input.packed_bone0; __packed_bone1 = input.packed_bone1; __packed_bone2 = input.packed_bone2; __packed_bone3 = input.packed_bone3; __packed_bone4 = input.packed_bone4; __packed_bone5 = input.packed_bone5; __packed_bone6 = input.packed_bone6; __packed_bone7 = input.packed_bone7; __cube_transformation = input.cube_transformation; __colormask = input.colormask; "},
+{"USE_CUBE_INSTANCING",""},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; float4 packed_bone0 : TEXCOORD1; float4 packed_bone1 : TEXCOORD2; float4 packed_bone2 : TEXCOORD3; float4 packed_bone3 : TEXCOORD4; float4 packed_bone4 : TEXCOORD5; float4 packed_bone5 : TEXCOORD6; float4 packed_bone6 : TEXCOORD7; float4 packed_bone7 : TEXCOORD8; float4 cube_transformation : TEXCOORD9; float4 colormask : TEXCOORD10; "},
+}),
+(84u,"Holo",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","5"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __blend_weights = input.blend_weights; __blend_indices = input.blend_indices; __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; __packed_bone0 = input.packed_bone0; __packed_bone1 = input.packed_bone1; __packed_bone2 = input.packed_bone2; __packed_bone3 = input.packed_bone3; __packed_bone4 = input.packed_bone4; __packed_bone5 = input.packed_bone5; __packed_bone6 = input.packed_bone6; __packed_bone7 = input.packed_bone7; __cube_transformation = input.cube_transformation; __colormask = input.colormask; "},
+{"USE_DEFORMED_CUBE_INSTANCING",""},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; float4 blend_weights : BLENDWEIGHT0; uint4 blend_indices : BLENDINDICES0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; float4 packed_bone0 : TEXCOORD1; float4 packed_bone1 : TEXCOORD2; float4 packed_bone2 : TEXCOORD3; float4 packed_bone3 : TEXCOORD4; float4 packed_bone4 : TEXCOORD5; float4 packed_bone5 : TEXCOORD6; float4 packed_bone6 : TEXCOORD7; float4 packed_bone7 : TEXCOORD8; float4 cube_transformation : TEXCOORD9; float4 colormask : TEXCOORD10; "},
+}),
+(90u,"Holo",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","6"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; "},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; "},
+}),
+(91u,"Holo",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","6"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __blend_weights = input.blend_weights; __blend_indices = input.blend_indices; __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; "},
+{"USE_SKINNING",""},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; float4 blend_weights : BLENDWEIGHT0; uint4 blend_indices : BLENDINDICES0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; "},
+}),
+(92u,"Holo",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","6"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; __instance_matrix = construct_matrix_43( input.matrix_row0, input.matrix_row1, input.matrix_row2); __colormask = input.colormask; "},
+{"USE_GENERIC_INSTANCING",""},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; float4 matrix_row0 : TEXCOORD1; float4 matrix_row1 : TEXCOORD2; float4 matrix_row2 : TEXCOORD3; float4 colormask : TEXCOORD4; "},
+}),
+(93u,"Holo",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","6"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; __packed_bone0 = input.packed_bone0; __packed_bone1 = input.packed_bone1; __packed_bone2 = input.packed_bone2; __packed_bone3 = input.packed_bone3; __packed_bone4 = input.packed_bone4; __packed_bone5 = input.packed_bone5; __packed_bone6 = input.packed_bone6; __packed_bone7 = input.packed_bone7; __cube_transformation = input.cube_transformation; __colormask = input.colormask; "},
+{"USE_CUBE_INSTANCING",""},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; float4 packed_bone0 : TEXCOORD1; float4 packed_bone1 : TEXCOORD2; float4 packed_bone2 : TEXCOORD3; float4 packed_bone3 : TEXCOORD4; float4 packed_bone4 : TEXCOORD5; float4 packed_bone5 : TEXCOORD6; float4 packed_bone6 : TEXCOORD7; float4 packed_bone7 : TEXCOORD8; float4 cube_transformation : TEXCOORD9; float4 colormask : TEXCOORD10; "},
+}),
+(94u,"Holo",new System.Collections.Generic.Dictionary<string,string> {
+{"RENDERING_PASS","6"},
+{"TRANSFER_VERTEX_COMPONENTS","__position_object = unpack_position_and_scale(input.position); __blend_weights = input.blend_weights; __blend_indices = input.blend_indices; __normal = unpack_normal(input.normal); __tangent = unpack_tangent_sign(input.tangent4); __texcoord0 = input.texcoord0; __packed_bone0 = input.packed_bone0; __packed_bone1 = input.packed_bone1; __packed_bone2 = input.packed_bone2; __packed_bone3 = input.packed_bone3; __packed_bone4 = input.packed_bone4; __packed_bone5 = input.packed_bone5; __packed_bone6 = input.packed_bone6; __packed_bone7 = input.packed_bone7; __cube_transformation = input.cube_transformation; __colormask = input.colormask; "},
+{"USE_DEFORMED_CUBE_INSTANCING",""},
+{"VERTEX_COMPONENTS_DECLARATIONS","float4 position : POSITION0; float4 blend_weights : BLENDWEIGHT0; uint4 blend_indices : BLENDINDICES0; uint2 normal : NORMAL0; float4 tangent4 : TANGENT0; float2 texcoord0 : TEXCOORD0; float4 packed_bone0 : TEXCOORD1; float4 packed_bone1 : TEXCOORD2; float4 packed_bone2 : TEXCOORD3; float4 packed_bone3 : TEXCOORD4; float4 packed_bone4 : TEXCOORD5; float4 packed_bone5 : TEXCOORD6; float4 packed_bone6 : TEXCOORD7; float4 packed_bone7 : TEXCOORD8; float4 cube_transformation : TEXCOORD9; float4 colormask : TEXCOORD10; "},
+}),
+};
+public static readonly (uint Id,string Vertex,string Pixel)[] Billboards = {
+(20u,"65972e3a34e17abed66c708b18dfb5d1b1caf5576816a94d27c0048ff44a0fe1","c0acd1568cc9fbf1477a08bfafc0574514ed64a31097fa7d636d6ca43cc42d1a"),
+(21u,"32bb643499769652dc73502cb553463f1a240ff7e70028c9c922f4d6672cfc7a","a4c06661b319a68bb343cfc134e620c1319f053416d394c712a6d023c4e1f78b"),
+(22u,"08f9c9f78825628de37fad38cc89af2c7dda1013dc3f78d3bfca64a709d37b0c","06cf745697c477c96b856cc4356999095ea80bd62459c9b708132a15f10c772d"),
+(23u,"26596df902cf309ff3c6156d11f4554639fc17c4c1aaacbf8bb701529cdc2d55","f974109514d054e7880c8f7fb27b4406236daa43cb07f4e9ac6a4a7757dcf9ee"),
+(24u,"d79912acfb3a21b900d7a17f50ef7ab7c51ac28b7167ef46b78e69ed3b5d19d7","5db4a5fbd3815907e355008569cddda380c609473a09e90ea873f3cbe40262d2"),
+(25u,"c65dd63589810852b60a69f5facd453dcf06ea5d6f63711f0b83418207973af7","1cf478d0497e130e7bdb87fda720bd2e39e078e5396d787522d078d8b4b6d8a7"),
+(26u,"80f43b8d4fb83f38d7374c1ae4bd50f9e1cf3149e8a99f219fa6c83234c677d7","8d6661b5f67d779edf0b2b947858e41da25925477275d1c6adb54a16c4c37f62"),
+(27u,"d2bbaed3f209b4df70c1c17b3d85fe1468eb54f0601ab78b8b963db9138f3da1","d74896e46df3367e3acaf9ed9ceabfc9e27f220dd52e5e950ba739ff5cff6bf1"),
+(28u,"e95b8fa911e4bf33e3f445af3d5773517a815012d75b87351319a60f81729f7b","9d2dde56921431a05dd47785cbe06a828dd3f7fd86a01f02f8f91d99dab36f95"),
+(29u,"62511a79f3d698b0e4db8d9931da4d7b0511291be308043cea85928a68ef4d90","51ea8f26fe1e22b49015eac2329d7168b9142588d114eb8bcabb56b68fe069ad"),
+(30u,"3d85193a9f76d45c28f05f39341bb7e7bb35828677788eb16fb43c54d46aca84","3e6eb597770102067255554220478e2a2d8b5882c4f53e3d8498d61a9d46f2d2"),
+(31u,"199fd3fc1871b1fbfcb53a1638f884e620b145cfa0e97faeba2fef0400ef8b6c","b929c5202387c219c3a67ee4280024078c03379c27e5e022626443853fb63837"),
+(32u,"be5fb5486391fe7ffbccfbe3ac014c58f97dcc9e86c8fe81c54f4179ab1937a4","bcb351e4d99db57b7fc56576be189d17665003b88501c3642d1aaab4f8e7676f"),
+(33u,"0d6ef833fd50c8e4f0d2c5327ffc0c360134b1492c90b8a99462fb3276882464","d1c6e8e620838a77a449637e83aaee13fe7524207a6a542a8b2a827f046e3159"),
+(34u,"6b876b666dee597d758ec298d55896fbedfc6bd75072fb5f4fdd6673f6efb92a","6c05d267427b4194af79a35b356c72182d331cd819814b288cb4ce15d7cc4dc1"),
+(35u,"3d6272f103a2d8ef999b2a728d6f266899b5b09a2a469f2287d1ae61b1a8438d","cf83c74b684ac4dd5e91a09322923f98432b862700b355f2e7fd73f90c3cb75b"),
+(36u,"d154de3cb91b0382cd00f661b8fdbf76b4357b9b75ea9207f84da9cd2e71e244","92e1d675e62d4f23107cb521359f5ea3e7ca4cdcf0a1dd22dc3eb11e163e0b06"),
+(37u,"c1849afea21b68b6286519e95fb0415987e05b80b0fb89c254faeedce6dd15e6","b1ca365b9702c34d9a5f2ba6cd14580e93c385a78cc0bdd58eea25d739ee1c96"),
+(38u,"85b5bfbc35ec6d97bf4425b24e0b60e670d47853028e9fbf3170f5de0a3e6151","e55ca4f6ed5db96efa65bf16bec27a9e8565acc68d53d33cc74fb89ebe45cb0f"),
+(39u,"689517ba349da3d2ca3240f67f49111d274fd3f7d09e4a83137de9b28798c841","627e1dd76546a6714be16c5c3a53f34efc8ae6437149a047d13167f8fd7da5ff"),
+(40u,"92245de642e04e6cd7d74ffc88ecceb909c617acac12b2e1011d1d7e8bfe3433","5d410c30cbd0d2e5dfcd1bd9f34ff4ccf05c77e7300c22580de8bb2726cb4e8f"),
+(41u,"fe88e6f27b028d322d0b23d65cea981d6bbad764bcfa59264a2ca5925cf151d0","3583fed65e00a2c43f7993cd3a3b5e97e1fd9f74d6dcc7606b60734fe7fc4893"),
+(42u,"15241f91f0c7ea91253c0bf96870580add52f8bf5988b9199ca77e9c51c75dfb","9d649cd6691ba23ec5ae24bb31a317df04164f106af35be6000b25b8160b4009"),
+(43u,"aa207bf60e0c831de4dae7b9ab3843db28137f985e1844d17a1dcbd3b12fb5dd","618b6939e586ea27679f965ed160c3f81e48130ce5f6a29260ae984a419583a7"),
+(44u,"14206da2126f109f43be4a93cb6c5735312fc5440bf5302e61667958a0b5b17e","d0a0af24e5e809084e0da0d83f3fca84d7bc3f010fefeb44ddb4de585ef15634"),
+(45u,"e8611984c679cae228e4e7c78e8fc16e5eb5490a113cf581afaeaa8aa60e505c","a120f82b3301d381cbcad3ca632874159efba40e7acc596b2c3f0a6f68cabb1d"),
+(46u,"61abfb5f5cfd277de7228754071acb798d5bece4053019ea2f3aaeda6960b945","3950852e754063936b329017bed3751d4297b9e76ee3db8b06d7ef13867a0a5e"),
+(47u,"43064ff22420811c27fefdb62307d4f02ea8c7ca8f95a8ef7b1cc1b40f501b6e","ec5064559240e9d7675cde6a90548e82ec80e2b682be65121c1b82b5678943d2"),
+(48u,"35a7484125c795d3712b61056f743ece3dc3e0943f0a25b1ff2dc445edb0b29a","b362f74dfd60e89224bc73afb0ba9048db69049dda94085f4669b4e7984b1e59"),
+(49u,"d4394e22543a1127f085e5bef3a39f654dcdb2245b893ad58ea6ec5cc1a9a872","4632cfec5ac123fa7ade2a84e4fa27d9e115a193c14d650ce217416407c865e3"),
+(50u,"c866f651d5617d98abe1bf8b680b13f90178e7e0cf7eb71fcf3575cb37972c69","4127d24853ff754aea47f607137295cc6e88616b416500d76bf5023ad3fc04dc"),
+(51u,"4123c1270ef93579fda2cd3687ea60205d4daa1ddbdde8cf21ddf1270373d9db","745e6963e26e470ba91b092a6213026be9345b3bdeb1cff84d962eb01d8310bd"),
+};
+public static readonly string[] Particles = {
+"dd7d1e2fd44363bf2fe48e3d84449ea1683dc646ea3327a1eb7c41fa6e57d22c",
+"fba7752ec9f3f8d36b57bd9fcba780e44843d2dbb310b80d6b4f98dfc8a52366",
+"7da684551b85911c4bacf0cba93526fc9762a6ce75b6d8d1f4803fe4e65c7a5a",
+"e07178c40794d484f08c33f6c6a7bb1a30109467194f061a60bc0cad4ac08107",
+"52f7b71a511591694d91946df71d44ec09c225f15a7640f9a7f3af2bd464e285",
+"d115fb9abd9c569126b74b9696b3f2e20785f25254755a561f19ef4a5b9e8553",
+"788eaec51d127ebde49a0124368fe5c296a714294c5e19e16a21d1d465ae6285",
+"56f3f672a4557501489aa66cd07822b90e6f843435440c153fe9a2c9c87e82ab",
+"ba693fc8d1096a8bbe48559004e71fc89b255e8823b97b2e6f27240e60848fea",
+"cb05845a033b2b4b1cd7300f45c0f3d926632c031c92dd3d067aaf30baa899bb",
+};
+public static readonly (uint Id,string Vertex,string Pixel)[] Decals = {
+(1u,"694e3d5f3835dd4ee4aa1a4437cff781fef4527741c727e94648f4ee6dd79d1a","f7fda686aec26cc1901a8d2b59faeccb50abf7aebdec67f8096f3a59a1238fcc"),
+(2u,"694e3d5f3835dd4ee4aa1a4437cff781fef4527741c727e94648f4ee6dd79d1a","0614c02c347e6bd9e28c59df2d1c55fc385ba98c32478327b5605a3b3012e433"),
+(3u,"694e3d5f3835dd4ee4aa1a4437cff781fef4527741c727e94648f4ee6dd79d1a","5e6e0e8eac126aae2e6ecf89ed57b4eca002ede9f0961a67e9282de500dbb252"),
+(7u,"694e3d5f3835dd4ee4aa1a4437cff781fef4527741c727e94648f4ee6dd79d1a","3a1c8379edc7d6a5b58922145ab08bcb3c00d5adac963979407368d20a7b0f6c"),
+(8u,"694e3d5f3835dd4ee4aa1a4437cff781fef4527741c727e94648f4ee6dd79d1a","753bafc669d6239682ac67f849a593b6f0cae2cd759c726f84caba965950f9fb"),
+};
+public static readonly string Resolve = "3a2d0daa4ce050b0782241f26b3decdc0b78fe81ec5489e65f17593d1724a93e";
+}

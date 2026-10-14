@@ -1,0 +1,540 @@
+{
+  "SchemaVersion": 1,
+  "GameVersion": "1.210.014",
+  "Api": "1.4",
+  "Evidence": "TestResults/GBufferGpuSmoke/result.json",
+  "Scope": "Independent stock correctness fixtures and production Creative world integration; full visual parity is separate",
+  "ChecksPassed": 30,
+  "ValidationErrors": 0,
+  "Passes": [
+    {
+      "Name": "Standard ordinary packed GBuffer",
+      "State": "Verified",
+      "Scope": "Offscreen fixture only",
+      "VertexVariant": "8c151611813032d1ec20fc717377635a09606c807b57af6997e4f2fba75e73fa",
+      "PixelVariant": "25013e20c65947a86ca086e3b8dc3dcd722db2cfdae3082adfaab1ff4ce13bde",
+      "ObservedOffscreenFrames": 10,
+      "ObservedDraws": 11,
+      "ObservedGameFrames": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "AlphaMasked ordinary packed GBuffer",
+      "State": "Verified",
+      "Scope": "Offscreen fixture only",
+      "VertexVariant": "f042fa3163b5af3006e125b197d2a4d614652c4b6bec320eb4fe88a3dede9cd8",
+      "PixelVariant": "2790d59b901a07a3059d4bd50d6574ae4d30614552f4baa306558960fbc1b231",
+      "ObservedOffscreenFrames": 3,
+      "ObservedDraws": 3,
+      "ObservedGameFrames": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "GPU skinning palettes",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; Creative observations tracked separately",
+      "Evidence": "TestResults/WorldPassGpuTests/result.json",
+      "ValidationErrors": 0
+    },
+    {
+      "Name": "Generic/static hardware instancing",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; Creative observations tracked separately",
+      "Evidence": "TestResults/WorldPassGpuTests/result.json",
+      "ValidationErrors": 0
+    },
+    {
+      "Name": "Packed cube rotation/deformation",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; Creative observations tracked separately",
+      "Evidence": "TestResults/WorldPassGpuTests/result.json",
+      "ValidationErrors": 0
+    },
+    {
+      "Name": "Stock directional/point/spot deferred lighting",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; Creative observations tracked separately",
+      "Evidence": "TestResults/WorldPassGpuTests/result.json",
+      "ValidationErrors": 0
+    },
+    {
+      "Name": "Native HDR/depth composition",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; Creative observations tracked separately",
+      "Evidence": "TestResults/WorldPassGpuTests/result.json",
+      "ValidationErrors": 0
+    },
+    {
+      "Name": "Asynchronous bounded upload batches",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; Creative observations tracked separately",
+      "Evidence": "TestResults/WorldPassGpuTests/result.json",
+      "ValidationErrors": 0
+    },
+    {
+      "Name": "Stock single/triple triplanar and depth partners",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; live asteroid tracked separately",
+      "Evidence": "TestResults/VoxelGpuTests/result.json",
+      "ValidationErrors": 0
+    },
+    {
+      "Name": "Voxel array normalization, replacements and ownership",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; live asteroid tracked separately",
+      "Evidence": "TestResults/VoxelGpuTests/result.json",
+      "ValidationErrors": 0
+    },
+    {
+      "Name": "Stock distant planet spherization and shared material pages",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; full game visual parity is separate",
+      "Evidence": "TestResults/VoxelGpuTests/result.json",
+      "ValidationErrors": 0
+    },
+    {
+      "Name": "Stock atmosphere precompute and main-view scattering",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; full game visual parity is separate",
+      "Evidence": "TestResults/EnvironmentGpuTests/result.json",
+      "ValidationErrors": 0
+    },
+    {
+      "Name": "Stock cloud alpha blending and terrain depth",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; full game visual parity is separate",
+      "Evidence": "TestResults/EnvironmentGpuTests/result.json",
+      "ValidationErrors": 0
+    },
+    {
+      "Name": "Stock grass/pebble geometry, alpha cutout and wind",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; full game visual parity is separate",
+      "Evidence": "TestResults/EnvironmentGpuTests/result.json",
+      "ValidationErrors": 0
+    },
+    {
+      "Name": "Stock weather fog constants",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; full game visual parity is separate",
+      "Evidence": "TestResults/EnvironmentGpuTests/result.json",
+      "ValidationErrors": 0
+    },
+    {
+      "Name": "Stock glass and hologram streams",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; broad visual parity remains pending",
+      "Evidence": "TestResults/TransparencyGpuTests/result.json",
+      "ValidationErrors": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "Stock weighted OIT and 32 billboard combinations",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; broad visual parity remains pending",
+      "Evidence": "TestResults/TransparencyGpuTests/result.json",
+      "ValidationErrors": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "Stock GBuffer/glass decals",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; broad visual parity remains pending",
+      "Evidence": "TestResults/TransparencyGpuTests/result.json",
+      "ValidationErrors": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "Stock GPU emit/simulate/indirect particles",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; broad visual parity remains pending",
+      "Evidence": "TestResults/TransparencyGpuTests/result.json",
+      "ValidationErrors": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "Asynchronous flare depth queries",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; broad visual parity remains pending",
+      "Evidence": "TestResults/TransparencyGpuTests/result.json",
+      "ValidationErrors": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "Stock exposure, bloom, tone mapping, FXAA and chromatic/vignette processing",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; full game visual parity is separate",
+      "Evidence": "TestResults/PostprocessGpuTests/result.json",
+      "ValidationErrors": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "Stock SSAO and all HBAO coarse/bilateral permutations",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; full game visual parity is separate",
+      "Evidence": "TestResults/PostprocessGpuTests/result.json",
+      "ValidationErrors": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "Stock highlight geometry, overlap removal and exponential blur radii",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; full game visual parity is separate",
+      "Evidence": "TestResults/PostprocessGpuTests/result.json",
+      "ValidationErrors": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "Quality-sized CSM and Gaussian filtering; spot cookies/depth and per-light exclusions",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; full game visual parity is separate",
+      "Evidence": "TestResults/PostprocessGpuTests/result.json",
+      "ValidationErrors": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "Completed-timestamp DRS and independent world/output dimensions",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; full game visual parity is separate",
+      "Evidence": "TestResults/PostprocessGpuTests/result.json",
+      "ValidationErrors": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "Asynchronous box visibility and conservative invalidation",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; full game visual parity is separate",
+      "Evidence": "TestResults/PostprocessGpuTests/result.json",
+      "ValidationErrors": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "LDR/PostPP billboard pixels and custom projections",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; full game visual parity is separate",
+      "Evidence": "TestResults/PostprocessGpuTests/result.json",
+      "ValidationErrors": 0,
+      "StartupState": "Ready"
+    },
+    {
+      "Name": "Stock near/far forward probes, GGX mips, blending, BRDF, atmosphere and timeout",
+      "State": "Verified",
+      "Scope": "Controlled native GPU fixture; full game visual parity is separate",
+      "Evidence": "TestResults/ProbeGpuTests/result.json",
+      "ValidationErrors": 0,
+      "StartupState": "Ready"
+    }
+  ],
+  "Pending": [
+    "Usage-based cascade cadence, small-object cascade pruning, full stock spatial/GPU light culling beyond nearest-64 local lights",
+    "Fine-grained probe prefilter/blend cadence and broad-world performance",
+    "Timed voxel LOD fades, remaining actor quality/MSAA paths and advanced graphics settings",
+    "Complex glass, exact flare scheduling, particle lighting/collision/quality and broad content-mod visual acceptance",
+    "Cross-backend visual parity, live Interim/Linux game acceptance, and native stereo host/per-eye submission",
+    "Native media/audio, advanced capture, debug/profiling and reload/reset parity"
+  ],
+  "WorldEvidence": "TestResults/WorldPassGpuTests/result.json",
+  "WorldChecksPassed": 63,
+  "WorldCounters": {
+    "Size": 72,
+    "AbiVersion": 1,
+    "UploadBatches": 9,
+    "UploadSlotWaits": 0,
+    "WorldFrames": 43,
+    "WorldDraws": 41,
+    "WorldInstances": 43,
+    "SkinnedDraws": 6,
+    "CubeDraws": 11,
+    "LightingPasses": 87
+  },
+  "MaterialDepthPipelines": 44,
+  "StockLightingStages": 4,
+  "SupplementalStages": 128,
+  "SceneEvidence": "TestResults/StockWorldScene/result.json",
+  "CreativeWorld": {
+    "Evidence": "TestResults/CreativeFixture/8379118d53634d5b8e817d4919d6ec2f",
+    "State": "Active",
+    "VisualAcceptance": "PendingComparison",
+    "Frames": 6462,
+    "MaterialDraws": 339553,
+    "Instances": 2922484,
+    "LightingPasses": 19301,
+    "SkinnedDraws": 86014,
+    "ValidationErrors": 0,
+    "UploadBatches": 5164,
+    "UploadSlotWaits": 1
+  },
+  "VoxelEvidence": "TestResults/VoxelGpuTests/result.json",
+  "VoxelChecksPassed": 42,
+  "VoxelStages": 8,
+  "CreativeAsteroid": {
+    "Evidence": "TestResults/CreativeFixture/e3ec7277bc9b4b8a9dbdc318017bd2ae",
+    "State": "Active",
+    "VisualAcceptance": "ControlledGeometryAndMiningReviewed",
+    "VoxelFrames": 9847,
+    "VoxelDraws": 254835,
+    "MeshUpdates": 77,
+    "ValidationErrors": 0,
+    "Unload": {
+      "Meshes": 0,
+      "Arrays": 0,
+      "MaterialGroups": 0,
+      "ResidentBytes": 0
+    },
+    "Dx11Comparison": "TestResults/CreativeFixture/b879bee78ac9458895d776ca2a20f477",
+    "RemainingVisualGaps": [
+      "Fixed-exposure brightness",
+      "Skybox orientation/postprocessing",
+      "Full quality/material/lighting parity"
+    ]
+  },
+  "EnvironmentEvidence": "TestResults/EnvironmentGpuTests/result.json",
+  "EnvironmentChecksPassed": 35,
+  "EnvironmentStages": 10,
+  "EnvironmentCounters": {
+    "Size": 64,
+    "AbiVersion": 1,
+    "Frames": 8,
+    "AtmosphereDraws": 5,
+    "CloudDraws": 3,
+    "LutDispatches": 3,
+    "Luts": 0,
+    "FoliageDraws": 4,
+    "FoliagePoints": 128
+  },
+  "CreativePlanet": {
+    "Evidence": "TestResults/PlanetAcceptance.json",
+    "State": "Active",
+    "VisualAcceptance": "ControlledGeometryAndEnvironmentReviewedWithBrightnessGap",
+    "VulkanRun": "TestResults/CreativeFixture/30c8ac126b3f46d2acbc440301d0c58b",
+    "Dx11Comparison": "TestResults/CreativeFixture/c96f0263ddca4924989c41988565de56",
+    "ValidationErrors": 0,
+    "Voxel": {
+      "MeshUpdates": 409,
+      "Frames": 2532,
+      "Draws": 1613372
+    },
+    "Environment": {
+      "AtmosphereDraws": 2534,
+      "CloudDraws": 4463,
+      "LutDispatches": 4
+    },
+    "Foliage": {
+      "GeneratedPoints": 176535,
+      "Draws": 70495,
+      "SubmittedPoints": 75452833
+    },
+    "Unload": {
+      "Actors": 0,
+      "Meshes": 0,
+      "VoxelArrays": 0,
+      "VoxelMaterials": 0,
+      "VoxelResidentBytes": 0,
+      "Atmospheres": 0,
+      "Clouds": 0,
+      "Luts": 0
+    },
+    "RemainingVisualGaps": [
+      "Lighting/exposure and atmospheric probe parity",
+      "Timed voxel fades and user quality mapping",
+      "Broad material/mod/multiple-planet coverage",
+      "Saved planet/full-world reload",
+      "Live Linux GPU/game acceptance"
+    ]
+  },
+  "TransparencyGpu": {
+    "Evidence": "TestResults/TransparencyGpuTests/result.json",
+    "ChecksPassed": 149,
+    "BillboardPairs": 32,
+    "GlassAndHoloPairs": 10,
+    "DepthNormalPairs": 10,
+    "ParticleStages": 10,
+    "DecalPairs": 5,
+    "ValidationErrors": 0
+  },
+  "TransparencyCreative": {
+    "State": "Active",
+    "VisualAcceptance": "ControlledActivityAndCleanup; probe/lighting/quality gaps remain",
+    "Evidence": "TestResults/TransparencyFinalAcceptance.json",
+    "VulkanRun": "TestResults\\CreativeFixture\\506ffa3bf82f42e385c76b51445e4d0a",
+    "Dx11Comparison": "TestResults\\CreativeFixture\\5e63d58eab9b4662ad878ce457429f7e",
+    "ValidationErrors": 0,
+    "GlassDraws": 55761,
+    "OitResolves": 14121,
+    "DecalDraws": 13911,
+    "GlassLayerDraws": 38684,
+    "ParticleFrames": 8596,
+    "ParticleDispatches": 20936,
+    "ParticleDraws": 8596,
+    "PeakObservedAlive": 1251,
+    "FinalAlive": 0,
+    "FinalDead": 409600,
+    "FlareQueries": 5352,
+    "FlareBillboards": 10692,
+    "NativeCaptureEvidence": "TestResults/TransparencyNativeCommands.json",
+    "RemainingVisualGaps": [
+      "Probe/BRDF reflections and lighting/exposure",
+      "Complex glass ordering",
+      "Exact vanilla flare scheduling/smoothing",
+      "Particle lighting/collision/quality and planet-weather placement",
+      "Later billboard LDR/PostPP/custom-projection composition",
+      "Broad content mods and live Interim/Linux"
+    ]
+  },
+  "PostprocessGpu": {
+    "Evidence": "TestResults/PostprocessGpuTests/result.json",
+    "Scope": "Controlled native pixel/counter fixtures; broad visual parity remains separate",
+    "Checks": 174,
+    "ValidationErrors": 0,
+    "Postprocess": {
+      "Size": 88,
+      "AbiVersion": 1,
+      "Frames": 119,
+      "ExposurePasses": 119,
+      "HistogramDispatches": 10,
+      "BloomPasses": 7,
+      "ToneDispatches": 119,
+      "FxaaPasses": 1,
+      "SsaoPasses": 3,
+      "ChromaticDispatches": 17,
+      "HbaoPasses": 631,
+      "ShadowDispatches": 119
+    },
+    "Highlights": {
+      "Size": 40,
+      "AbiVersion": 1,
+      "Frames": 36,
+      "Draws": 37,
+      "BlurPasses": 70,
+      "Compositions": 36
+    },
+    "Spots": {
+      "Size": 40,
+      "AbiVersion": 1,
+      "Frames": 6,
+      "Maps": 4,
+      "Draws": 3,
+      "Cookies": 1
+    },
+    "Resolution": {
+      "Size": 48,
+      "AbiVersion": 1,
+      "Width": 65,
+      "Height": 63,
+      "OutputWidth": 65,
+      "OutputHeight": 63,
+      "TimingSupported": 1,
+      "Reserved": 0,
+      "Samples": 119,
+      "Fraction": 1,
+      "GpuMs": 0.055904
+    },
+    "Occlusion": {
+      "Size": 48,
+      "AbiVersion": 1,
+      "Frames": 2,
+      "Queries": 6,
+      "Results": 6,
+      "Occluded": 1,
+      "Token": 2
+    }
+  },
+  "ProbeGpu": {
+    "Evidence": "TestResults/ProbeGpuTests/result.json",
+    "Scope": "Controlled native pixel/counter fixtures; broad visual parity remains separate",
+    "Checks": 98,
+    "ValidationErrors": 0,
+    "Probes": {
+      "Size": 64,
+      "AbiVersion": 1,
+      "Faces": 50,
+      "GeometryDraws": 19,
+      "PrefilterPasses": 468,
+      "BlendPasses": 454,
+      "Cycles": 4,
+      "AtmospherePasses": 6,
+      "Ready": 1,
+      "NextFace": 1
+    }
+  },
+  "PostprocessingCreative": {
+    "Scope": "Controlled Windows Legacy Creative submission, capture delivery, Display transaction and unload; full visual parity remains separate",
+    "VulkanRun": "TestResults\\CreativeFixture\\74c1d1d8494b498bb2c67bb8903e5f77",
+    "PluginSha256": "2CFC3907082C28B939E397E0FBDAB6B1665751DAC2317839826BE19C86FB1D8A",
+    "NativeSha256": "2C90BD76FAEDF01F20A6D6D9BCCEB895A2E3EE985EF3AEB834B1DEE27BC17948",
+    "ValidationErrors": 0,
+    "Postprocess": {
+      "Frames": 2449,
+      "Exposure": 2449,
+      "Histogram": 2449,
+      "Bloom": 22041,
+      "Tone": 2449,
+      "Fxaa": 2186,
+      "Ssao": 519,
+      "Chromatic": 2449,
+      "Hbao": 52085,
+      "Csm": 2449
+    },
+    "Probes": {
+      "Faces": 1590,
+      "GeometryDraws": 178158,
+      "PrefilterPasses": 28620,
+      "BlendPasses": 48880,
+      "AtmospherePasses": 0,
+      "Ready": 1
+    },
+    "Spots": {
+      "Draws": 265091,
+      "Maps": 2401,
+      "Cookies": 2401
+    },
+    "Visibility": {
+      "Queries": 30083,
+      "Results": 30083,
+      "Hidden": 2540,
+      "SceneCulls": 0
+    },
+    "TimestampSamples": 2449,
+    "Captures": [
+      "phase5-highlight",
+      "phase5-ssao",
+      "fixture-overview",
+      "fixture-lcd-text",
+      "fixture-lcd-sprites",
+      "fixture-animation",
+      "fixture-player-hud",
+      "fixture-astronaut-walking"
+    ],
+    "D3D11Observation": "Managed SharpDX.Direct3D11 native import call sites only; native overlays and other libraries are outside observation",
+    "VisualAcceptance": "Matched held views reviewed: corrected skybox orientation and recognizable geometry/HUD/LCD; world/LCD brightness differs, broad visual parity remains pending",
+    "Dx11Run": "TestResults\\CreativeFixture\\88ef330f07c247f5b787a57740f07e76",
+    "MatchedCaptureCameras": {
+      "phase5-highlight": "X:15 Y:11 Z:-19",
+      "phase5-ssao": "X:0 Y:0.3 Z:-10.5"
+    },
+    "NativeCaptureEvidence": "TestResults/PostprocessingNativeCommands.json",
+    "NativeCaptureScope": "Same final native DLL, earlier managed snapshot before the background matrix correction",
+    "Evidence": "TestResults/PostprocessingAcceptance.json",
+    "State": "Active"
+  },
+  "PostprocessingNativeCapture": {
+    "Capture": "CreativeFixture/8d65b68a5c654e25bd3cc0749a5b0f08/Reports/fixture-native_frame3410.rdc",
+    "Scope": "RenderDoc captured Vulkan command chunks; separate from replay and visual parity verification",
+    "Driver": "Vulkan",
+    "Commands": {
+      "vkCmdBeginRendering": 188,
+      "vkCmdDrawIndexed": 1017,
+      "vkCmdEndRendering": 188,
+      "vkCmdDraw": 473,
+      "vkCmdDispatch": 4,
+      "vkCmdDispatchIndirect": 0,
+      "vkCmdDrawIndexedIndirect": 0,
+      "vkCmdBeginQuery": 18,
+      "vkCmdEndQuery": 18,
+      "vkCmdWriteTimestamp2": 2,
+      "vkQueueSubmit2": 1
+    },
+    "XmlEvidence": "TestResults\\PostprocessingNativeCapture.zip.xml",
+    "XmlSha256": "EE5DD29C999EC0310652AD1C403A2C9F2694E302B2487E5DA001CD8940622A54"
+  }
+}

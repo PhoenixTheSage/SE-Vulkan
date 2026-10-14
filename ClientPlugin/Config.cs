@@ -1,142 +1,53 @@
-using ClientPlugin.Settings;
-using ClientPlugin.Settings.Elements;
-using Sandbox.Graphics.GUI;
-using System.Collections.Generic;
+using System;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
-using System.Text;
-using ClientPlugin.Settings.Tools;
-using VRage.Input;
-using VRageMath;
-
+using System.Xml.Serialization;
+using ClientPlugin.Bootstrap;
+using ClientPlugin.Diagnostics;
+using ClientPlugin.Settings;
+using ClientPlugin.Settings.Elements;
 
 namespace ClientPlugin;
 
-public enum ExampleEnum
+public sealed class Config : INotifyPropertyChanged
 {
-    FirstAlpha,
-    SecondBeta,
-    ThirdGamma,
-    AndTheDelta,
-    Epsilon
-}
-
-public class Config : INotifyPropertyChanged
-{
-    #region Options
-
-    // TODO: Define your configuration options and their default values
-    private bool toggle = true;
-    private int integer = 2;
-    private float number = 0.1f;
-    private string text = "Default Text";
-    private ExampleEnum dropdown = ExampleEnum.FirstAlpha;
-    private Color color = Color.Cyan;
-    private Color colorWithAlpha = new Color(0.8f, 0.6f, 0.2f, 0.5f);
-    private Binding keybind = new Binding(MyKeys.None);
-
-    #endregion
-
-    #region User interface
-
-    // TODO: Settings dialog title
-    public readonly string Title = "Config Demo";
-
-    [Separator("Some settings")]
-        
-    // TODO: Settings dialog controls, one property for each configuration option
-
-    [Checkbox(description: "Checkbox Tooltip")]
-    public bool Toggle
-    {
-        get => toggle;
-        set => SetField(ref toggle, value);
-    }
-
-    [Slider(-1f, 10f, 1f, SliderAttribute.SliderType.Integer, description: "Integer Slider Tooltip")]
-    public int Integer
-    {
-        get => integer;
-        set => SetField(ref integer, value);
-    }
-
-    [Slider(-5f, 4.5f, 0.5f, SliderAttribute.SliderType.Float, description: "Float Slider Tooltip")]
-    public float Number
-    {
-        get => number;
-        set => SetField(ref number, value);
-    }
-
-    [Textbox(description: "Textbox Tooltip")]
-    public string Text
-    {
-        get => text;
-        set => SetField(ref text, value);
-    }
-
-    [Dropdown(description: "Dropdown Tooltip")]
-    public ExampleEnum Dropdown
-    {
-        get => dropdown;
-        set => SetField(ref dropdown, value);
-    }
-
-    [Separator("More settings")]
-        
-    [Color(description: "RGB color")]
-    public Color Color
-    {
-        get => color;
-        set => SetField(ref color, value);
-    }
-
-    [Color(hasAlpha: true, description: "RGBA color")]
-    public Color ColorWithAlpha
-    {
-        get => colorWithAlpha;
-        set => SetField(ref colorWithAlpha, value);
-    }
-
-    [Keybind(description: "Keybind Tooltip - Unbind by right clicking the button")]
-    public Binding Keybind
-    {
-        get => keybind;
-        set => SetField(ref keybind, value);
-    }
-
-    [Button(description: "Button Tooltip")]
-    public void Button()
-    {
-        MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
-            MyMessageBoxStyleEnum.Info,
-            buttonType: MyMessageBoxButtonsType.OK,
-            messageText: new StringBuilder("You clicked me!"),
-            messageCaption: new StringBuilder("Custom Button Function"),
-            size: new Vector2(0.6f, 0.5f)
-        ));
-    }
-
-    #endregion
-
-    #region Property change notification boilerplate
-
+    private BackendConfiguration values = new BackendConfiguration();
     public static readonly Config Default = new Config();
     public static readonly Config Current = ConfigStorage.Load();
-
+    [XmlIgnore] public string Title => "Vulkan renderer";
+    // Renderer choice belongs to the transactional Display screen, not this live config dialog.
+    public RendererBackend RequestedBackend
+    {
+        get => values.RequestedBackend;
+        set { if (values.RequestedBackend == value) return; values.RequestedBackend = value; Changed(); }
+    }
+    [Checkbox("Enable validation", description: "Enables available Vulkan validation layers at the next game restart.")]
+    public bool EnableValidation
+    {
+        get => values.EnableValidation;
+        set { if (values.EnableValidation == value) return; values.EnableValidation = value; Changed(); }
+    }
+    public bool RecoveryRequired { get => values.RecoveryRequired; set => values.RecoveryRequired = value; }
+    public long RetryGeneration { get => values.RetryGeneration; set => values.RetryGeneration = value; }
+    public string LastFailure { get => values.LastFailure; set => values.LastFailure = value; }
+    [Button("Show Status", "Show bootstrap, Vulkan layers and visual-system coverage.")]
+    public void ShowStatus() => StatusScreen.Show();
+    [Button("Show Profiler", "Show frame time. Record keeps a 10 second gameplay average; turn it off to drop that history. Live samples the current frame, including while this menu is open.")]
+    public void ShowProfiler() => ProfilerScreen.Show();
+    [Button("Write report to log", "Write the same status snapshot into the game log.")]
+    public void WriteReport() => VulkanDiagnostics.WriteReportToLog();
+    [Button("Retry Vulkan next launch", "Explicitly acknowledge startup recovery and retry your requested Vulkan renderer after restarting.")]
+    public void RetryVulkan()
+    {
+        if (RequestedBackend != RendererBackend.Vulkan || !BackendRuntime.RecoveryRequired || BackendRuntime.ActiveBackend == RendererBackend.Vulkan) return;
+        ConfigStorage.Flush(); BackendRuntime.RetryVulkan(); ReplaceValues(BackendRuntime.Configuration);
+    }
+    internal BackendConfiguration Snapshot() => values.Copy();
+    internal void ReplaceValues(BackendConfiguration configuration) => values = configuration.Copy();
     public event PropertyChangedEventHandler PropertyChanged;
-
-    protected virtual void OnPropertyChanged(string propertyName)
+    private void Changed([CallerMemberName] string propertyName = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        ConfigStorage.ScheduleSave(this);
     }
-
-    private bool SetField<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
-    {
-        if (EqualityComparer<T>.Default.Equals(field, value)) return false;
-        field = value;
-        OnPropertyChanged(propertyName);
-        return true;
-    }
-
-    #endregion
 }

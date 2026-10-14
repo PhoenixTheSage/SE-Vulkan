@@ -1,0 +1,2641 @@
+{
+  "SchemaVersion": 1,
+  "GameAssemblySha256": "b4a6502f913b70e53c8f715bfc6dfebef2ae9e87be52a95c84eb7c5fedcdde3b",
+  "Target": "Vulkan 1.4 / SPIR-V 1.6",
+  "TotalVariants": 20736,
+  "Validated": 20736,
+  "Failed": 0,
+  "IntegratedVanillaVariants": 316,
+  "VisuallyVerifiedVanillaVariants": 0,
+  "UniqueModules": 1401,
+  "ToolchainSha256": [
+    "39a4a7347e870c99bc68bd6a07437e6bdb62032ff871fc47e9549e855ced5510"
+  ],
+  "Sources": [
+    {
+      "Path": "CacheGenerator.xml",
+      "Sha256": "f764f0431a2f85dbf10351563fa1f2b1c834ff545abbfd6d9911f169f2f5a458",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Common.hlsli",
+      "Sha256": "f8e82e9aca28698d6d103cb4531c1934f7e46b1390ba9e4e9851b0d6a54a64ea",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "D3DX_DXGIFormatConvert.inl",
+      "Sha256": "a27fb4d45849478adf9eefb23901f8a5c7b07cfe0c962820a7be66e6f9008b12",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DataVisualization.hlsli",
+      "Sha256": "9b3e9bf81ddc2d8c31b077c59c76b271a02f51916decd1d7820e3d1737632986",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DataVisualizationDebugHistogram.hlsl",
+      "Sha256": "208ea3851c64d2e2b5a00a2f6011ff7532455b3142ce5b0164d7fde14142a2c4",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DataVisualizationHistogram.hlsl",
+      "Sha256": "e3a2de1e6d10f53efc789acd80c36ec3ef1ced1bfb260396fa5dbf00c114cb03",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/Debug.hlsli",
+      "Sha256": "2629319f7bc1ae98705fc446b681967214f9ac2052892b860b7fdb46cfe38583",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugAlbedo.hlsl",
+      "Sha256": "d3f35bbde6813364934486400c1e320708bd12f2be3bdb7a9b63061665084ba7",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugAmbientDiffuse.hlsl",
+      "Sha256": "38d1e3e37998ffbb03ffef3dfc784621fdae883fb4fa2eab949f508029e09c75",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugAmbientOcclusion.hlsl",
+      "Sha256": "fcf0d727fbd4ed73a259244454275c12b3ae08086f389a7ca0a80596d5aed72f",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugAmbientSpecular.hlsl",
+      "Sha256": "360d0651acdab704cc6f51eaec38d77e90cbb06ffa08235f0c4c79355f71800f",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugBaseColor.hlsl",
+      "Sha256": "dada6365e43f313e6ebda9f6aba0100e0b7a741ac4af3deb453fab06328fc993",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugBlitTexture.hlsl",
+      "Sha256": "5cc0a6cfb554319dcae1491ee43c93ab589cc7df4f4717ab9a371befb0c101be",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugBlitTexture3D.hlsl",
+      "Sha256": "de9aca7e416b573a62c49d0fc79b0e397a4d25540efc7c735c29a90deed92099",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugBlitTextureArray.hlsl",
+      "Sha256": "63e8c42034cb40a46c8ebc5d292e757ecb18410632bd9fa0cb784af292b96614",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugBlitTextureDepth.hlsl",
+      "Sha256": "ef34203b8ec9f00c4a9d6bc477492e3d9dedcb26e663767e844c6c0bb713c6e3",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugDepth.hlsl",
+      "Sha256": "047ddd7ff8238e3c67639cec02c691c34ea9057ff2728d22eb5b027680f543bc",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugDepthReprojection.hlsl",
+      "Sha256": "b9221ac6d6fb879e3e88a24cdecb349d7d7e89df48c8c4f7370a748b762c8586",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugEdge.hlsl",
+      "Sha256": "d5453e808a9893ef2d1383a5353772f4676496e6bd76463aa5e48ea63618721a",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugEmissive.hlsl",
+      "Sha256": "6bc2a6b8f412735b96ee6f89c1ad9f68e28159e0fc058984ac6e50b74e096bad",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugGlossiness.hlsl",
+      "Sha256": "5e9c78230e8e5c202755ebc79db289e2d3544254542ce1828649813e9ca13676",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugLOD.hlsl",
+      "Sha256": "e62d911b9b76d139cc65b166d358b93d8aec686075e6a8bece0a7001a6646cc2",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugMetalness.hlsl",
+      "Sha256": "ac6e29af07d12ab217cbd65d8bd5fe517408eb4172772b0fb878c0bbddddcc31",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugNDotL.hlsl",
+      "Sha256": "0f610a3a295983dc903c3b4c2b138a7f073523e66c335e397d9224053c38b747",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugNormal.hlsl",
+      "Sha256": "5f2a27ab9b37e58120771eefd49d6c6aedea361f9edeb1fd912a075e4f550ecb",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugNormalView.hlsl",
+      "Sha256": "4eed039e4fe697268b04235a3754123edef75527028c5a05c72c5b5319ac90cb",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugRt.hlsl",
+      "Sha256": "42f99ce2ffe0348ccb5500751d24f6aea819d4719597138d88707c7b1a985962",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugShadows.hlsl",
+      "Sha256": "cc4c746e0274a30b98d332c1a84d319b69e6456fc643e1d7c5b94b2f96ab64b0",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugShadowSplits.hlsl",
+      "Sha256": "4554b218bdc1666100b48b3be15537915cf55570618878fb8b783445393f8b87",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DebugStencil.hlsl",
+      "Sha256": "42c5977b466b5045e28a1e4a267ba45a8cbfd65f14d29186fd3e0d510417848c",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/DisplayHdrIntensity.hlsl",
+      "Sha256": "16aa199063f03a48e5f023b03f778ec0ca74a6dda8ae9a671d2442e5a5c75692",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/HeatMap.hlsli",
+      "Sha256": "765364087f6d556fcff4d2fe3c79a7196cae4e25948108881bdae4e39a2c485a",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Debug/Histogram.hlsl",
+      "Sha256": "be3043e3965b74c2ee68cd1f84665160acf85cd113d5f009b537aa1321e51c97",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Decals/Decals.hlsl",
+      "Sha256": "66d16949edeefb9bc89a5d99e881495713241d9278e50db8eefea5e843e3c273",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Decals/DecalsCommon.hlsli",
+      "Sha256": "a374b13a94c431bbc01e14bf3954bc1e642f12c4b0e306ddbba0d335eeb76f1b",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "EnvProbe/EnvPrefiltering.hlsl",
+      "Sha256": "792fbfc7142b8de74a256c8b5f82398472b9b03abe2637ddb15fd458f95bba29",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "EnvProbe/EnvPrefiltering.hlsli",
+      "Sha256": "56a738a28a39f59546ad94ac14c81e447f0ffe9a939654e866fa44234e10a9b0",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "EnvProbe/EnvProbe.hlsl",
+      "Sha256": "26363f8f77241b607296fa5312fab7157b4fbbd677278d33bf8dbcc109b72684",
+      "Role": "LegacyUnreferenced",
+      "AuditReason": "@skipCache; no current runtime shader creation references; obsolete d_ggx/hammersley/g_smithschlick calls. Active probe shaders are separate catalog entries.",
+      "SkipCache": true
+    },
+    {
+      "Path": "EnvProbe/EnvProbeBlend.hlsl",
+      "Sha256": "57d355ccdd2c4279a48a85f1577c69fa67f4e0e0554ff6766f79c7858051f873",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "EnvProbe/EnvProbeCopy.hlsl",
+      "Sha256": "5d21e95416cac4103ee9b940c3d895e453e21167bdc964f2e0d4ee1605054751",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "EnvProbe/ForwardPostprocess.hlsl",
+      "Sha256": "8df723d822f6e2be16417a6e233699474a7ebf296dd7fa1b6efd99f4af3d134f",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Foliage/Foliage.hlsl",
+      "Sha256": "449d3b6a4aa0f2544217222e64eef48f1bed630f0f0ca7b7e40cec2051538019",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Foliage/Foliage.hlsli",
+      "Sha256": "344827a8d7ee7a3dad07a0661bab4f011e8e3cc2f46b5ebe62a5aec40ca6f279",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Foliage/FoliageStreaming.hlsl",
+      "Sha256": "ce2dcda7a8a39e872c06d48c5d0bb55c09a05fe7ee64285b45716ae91208a565",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Foliage/GrassFoliage.hlsli",
+      "Sha256": "a19ef1f2ebf022f86ec1684ac5ef4dd87b7cdc926a0b8e0e8da9c09818454b5e",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Foliage/RockFoliage.hlsli",
+      "Sha256": "6987e3ac7acf26ea6197ef0efa201470aa9506b0afd26c673f25313cb17378d8",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Frame.hlsli",
+      "Sha256": "2def1d2ab4fa3e02038211baebd5be19d8b6add85f957f07a85eba97a11328ed",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "GBuffer/GBuffer.hlsli",
+      "Sha256": "275317c25dd1d5d45ed5ba3e43aeb6c3ce4aef06d95af31fddd603cb7c275fee",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "GBuffer/GBufferWrite.hlsli",
+      "Sha256": "600067f3562db23f20bc6d4d3ec012bd8c3c7046951e107da6d87c21346d5f51",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "GBuffer/Surface.hlsli",
+      "Sha256": "a0a230331957bfef790c4145723cd4011d6d20c748e520c4ffe9d40b764fda6a",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/AlphamaskViews.hlsli",
+      "Sha256": "ef336f1c111e70f332e162101ddd1a0dd31c72b26a9e4e74903269fa04b0a029",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/AlphaMasked/Declarations.hlsli",
+      "Sha256": "007b5be745eb541a5b6dd719f6cb97813ae543451f3302c9293cbc936828d3cd",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/AlphaMasked/Pixel.hlsl",
+      "Sha256": "af05f711f4ef54f6a7178a9076819876c2aca9aa4f021be7d04fb7ac99878b68",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/AlphaMasked/Vertex.hlsl",
+      "Sha256": "a86c04afd86095530909daf65186ce29b209b506ebe825734715e685d76a2a77",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/AlphaMaskedArray/Declarations.hlsli",
+      "Sha256": "5577be0f3a2f4cb0f78e912f92f4d0837e62355d0e5d8db2977dbdeac350e460",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/AlphaMaskedArray/Pixel.hlsl",
+      "Sha256": "9fb7d7b571eee8241f662da98dfe4afe1c40fcafd9da5fa7ee87963603c4097d",
+      "Role": "LegacyUnreferenced",
+      "AuditReason": "Absent from CacheGenerator materials and current MyMaterialShaders/GeometryStage2 technique mappings. Active impostor/texture-array variants use AlphaMasked.",
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/AlphaMaskedArray/Vertex.hlsl",
+      "Sha256": "a96f44ab4ff5ef1d40dd09fff5d7d337bd311c1e9dfa5209f2091740c7ae7326",
+      "Role": "LegacyUnreferenced",
+      "AuditReason": "Absent from CacheGenerator materials and current MyMaterialShaders/GeometryStage2 technique mappings. Active impostor/texture-array variants use AlphaMasked.",
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Glass/Declarations.hlsli",
+      "Sha256": "b125dd94108f39d48d9e74cb7a8c5599586f9de34be97ecd3878d026e09b6462",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Glass/Pixel.hlsl",
+      "Sha256": "8931397b0f69915a7a220d09a2e94b515eac31a322c74dafde7146e893fa62c5",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Glass/Vertex.hlsl",
+      "Sha256": "497734ec4903c6d1df98707675dd0c2cb9a66ed7f1d7b426e634104c9ad412f4",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Holo/Declarations.hlsli",
+      "Sha256": "b125dd94108f39d48d9e74cb7a8c5599586f9de34be97ecd3878d026e09b6462",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Holo/Pixel.hlsl",
+      "Sha256": "20af4c68365b9e584c4e3dcb2d87af94fffd33375554b44323ca04bbda797881",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Holo/Vertex.hlsl",
+      "Sha256": "497734ec4903c6d1df98707675dd0c2cb9a66ed7f1d7b426e634104c9ad412f4",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/PixelUtilsMaterials.hlsli",
+      "Sha256": "67835d3061286e2cb6b15825c13b0e8c32ff826978ab95bdcad6eaca80020549",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Shield/Declarations.hlsli",
+      "Sha256": "1cd05d220223daf6388cd953eb0eab1fb95ae5509c3e04d95ae2dc519ea0dd29",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Shield/Pixel.hlsl",
+      "Sha256": "d1ae819ea46f79fa6b8f00aa7c871f028ab0d159e4121e94a44c5a8d57147c1e",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Shield/Vertex.hlsl",
+      "Sha256": "07dd8b6d7b4280b7b659740525a98bd501969a5a4f9372d2dcaa00c3e226a34c",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/ShieldLit/Declarations.hlsli",
+      "Sha256": "1cd05d220223daf6388cd953eb0eab1fb95ae5509c3e04d95ae2dc519ea0dd29",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/ShieldLit/Pixel.hlsl",
+      "Sha256": "d0830107eb35ec8645b45f008df229f986de6fb3f5f4b369800a64ca8ed69714",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/ShieldLit/Vertex.hlsl",
+      "Sha256": "07dd8b6d7b4280b7b659740525a98bd501969a5a4f9372d2dcaa00c3e226a34c",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Standard/Declarations.hlsli",
+      "Sha256": "e6991784d4305257941e3d1b75c1349e4ec286374ac7d9c62505dfd5886274a2",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Standard/Pixel.hlsl",
+      "Sha256": "91d2ea70a8c832efd2834a179c6a893035843f65b63ef461b24d5054ad31ef1e",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Standard/Vertex.hlsl",
+      "Sha256": "5f916141e75fb2d66bf080e27e975461d4f89c4b77f1d446fda5e9f371dd7829",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Test/Declarations.hlsli",
+      "Sha256": "03d38c8b3ef0e81fc7a132a29453b5e26232919ea315dd1104c687a6544dd8e3",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Test/Pixel.hlsl",
+      "Sha256": "88c534ff925d89210f9d705019c3734581dcf3524cfc61808fe5cc406c8bc1e7",
+      "Role": "LegacyUnreferenced",
+      "AuditReason": "Absent from stock material maps; uses obsolete VertexInterface/VertexStageOutputInterface and smoothness/id members. Retained in the source audit, excluded from runtime coverage.",
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/Test/Vertex.hlsl",
+      "Sha256": "6aed25d0613fcb7a73f5b66460601df9f174c2829ddec4e0e039f0381913be17",
+      "Role": "LegacyUnreferenced",
+      "AuditReason": "Absent from stock material maps; uses obsolete VertexInterface/VertexStageOutputInterface and smoothness/id members. Retained in the source audit, excluded from runtime coverage.",
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/TransparentConstants.hlsli",
+      "Sha256": "0144e8a826e7957d7d82c1778b253cc69c0e0ef5bcf376eb0fa165ca19aba360",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/TriplanarDebris/Declarations.hlsli",
+      "Sha256": "47e629d67d57c3c9dade9814708df11b1c5f961ffd5e9d7462c758285becfaf5",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/TriplanarDebris/Pixel.hlsl",
+      "Sha256": "7b84f1924713c3eb28a627b9bbadc35f2c2d4a3d08148e2e1defb35c924948a5",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/TriplanarDebris/Vertex.hlsl",
+      "Sha256": "4b0384e681003d6560a4645f57bce68606b9f05bb18e061aeee93f7409040509",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/TriplanarMaterialConstants.hlsli",
+      "Sha256": "61e6914c078648dc1a16acc3ffbb0efad74a8cc0c444253f233502ab0ea1f29e",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/TriplanarMulti/Declarations.hlsli",
+      "Sha256": "6e90c3cbc5eb5daa5fd19908230900f1a0671866da00ace6176f678382144c62",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/TriplanarMulti/Pixel.hlsl",
+      "Sha256": "a835f8a7cf4647921a221159df32068c1eb0b068a9382a59d9a28c6b0b117eb2",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/TriplanarMulti/Vertex.hlsl",
+      "Sha256": "9ffcbeb7992e9592c9053334a7f495f78205011f97eed998387d8af1785b6541",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/TriplanarSingle/Declarations.hlsli",
+      "Sha256": "3b0c86b0aaa72ab76fcc4281b106f161b4dfa220170c4ae2afa9d4527a2b74ad",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/TriplanarSingle/Pixel.hlsl",
+      "Sha256": "de2a02674385c1d83e7eeb40de3b309489dbda37dfcc2a337976ebf2efb40d40",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Materials/TriplanarSingle/Vertex.hlsl",
+      "Sha256": "ca20055f133673cb24a4945ca5754e4babb99f97cc3fa487b8a35ff9352b50fb",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/Depth/PixelStage.hlsli",
+      "Sha256": "31167f308fc38df1d1d8c5b435c13cdbaf4a06bd3c3e92903bd5b2a875a9d370",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/Depth/VertexStage.hlsli",
+      "Sha256": "94dafec8a45d9cb7676059b69794ca334cef8a2f5c32beb383e2d8f85654a9d3",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/FoliageStreaming/PixelStage.hlsli",
+      "Sha256": "dd33384594187c8f13764580f624a49e220a84f000f2b5d888e30f738333600d",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/FoliageStreaming/VertexStage.hlsli",
+      "Sha256": "496f7e5360382ac5110f3b63cd985d7aa6597b22676c741fdbc37ddb990eee10",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/Forward/Declarations.hlsli",
+      "Sha256": "aa99a11d57cca13f5e985bd22cd9d912edb1f29597fbd3443a1df80816237951",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/Forward/PixelStage.hlsli",
+      "Sha256": "a3e96d3a8a2bd5b19b02e554a782f715d7c9de8b921388f15280e21ba01b7a22",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/Forward/VertexStage.hlsli",
+      "Sha256": "852c7424be336aac7096de4fb538ab6eba95f967c82ca360b6370436a02a378a",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/GBuffer/PixelStage.hlsli",
+      "Sha256": "7d9953942b84d44cfbdd0682d465b6017f1059dfe253f632095b33059cccc133",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/GBuffer/VertexStage.hlsli",
+      "Sha256": "2b0af7cd0f1a65f0c813060f1bb77b81016181951e6afe419f31c4d472ea15c4",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/Highlight/PixelStage.hlsli",
+      "Sha256": "44e13d919778d1c12bcf9949a47e3495f76b1d8242806ab4d95a539ba951e5ac",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/Highlight/VertexStage.hlsli",
+      "Sha256": "f1c9e87f305f6ae90de827d602e75a37e5bb5ea922015fd367910490da594cde",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/PassesDefines.hlsli",
+      "Sha256": "cd91335756020e56dc8887e90f19893e7a3469367f3f1f5316dc5d586ca9b702",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/PixelStage.hlsli",
+      "Sha256": "82363c2216972a8ac2c2e4d2873bb99d771ad31414dc082d1db752a130b7f2a1",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/Test/PixelStage.hlsli",
+      "Sha256": "6fead6449869d4bc2ddda341bb5a5c8c19b1736ed4caede2de4f78cfdf127fbe",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/Test/VertexStage.hlsli",
+      "Sha256": "dcdaa26d9ac89e47785e72cc356747f1b3e76098b44d48c28e8745c4815023bf",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/Transparent/Declarations.hlsli",
+      "Sha256": "fb998f4dc5475ceccb1fa04be702d0463a3da4ee31f532b595657f1a24178c35",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/Transparent/PixelStage.hlsli",
+      "Sha256": "67a9f7c0177dce68ff5bfdcf01c657f47e0e3218c592fa9bb78c68ef31041623",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/Transparent/VertexStage.hlsli",
+      "Sha256": "6d0a8f9091bf7a859b83092db91835ebc1cef08d7afc587146b313b036ad41fa",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/TransparentForDecals/Declarations.hlsli",
+      "Sha256": "ac9c8b49681f72ddf373e837499d9709cb5890016a4f5b53ebdcee04d3152bbe",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/TransparentForDecals/PixelStage.hlsli",
+      "Sha256": "e6ebb844cce2f8e244008be89b4c6432a6a4270071df98c4082f338eb4b97491",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/TransparentForDecals/VertexStage.hlsli",
+      "Sha256": "eeb6cd7a9ce2e1ad7d821fcd66ee4d3212260b220e3957a8f272add0baabff20",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/Passes/VertexStage.hlsli",
+      "Sha256": "82e26a467628cb8eac69623035f78ab7eab1f800e38f2ba93903ffd6d007b16e",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/PixelTemplateBase.hlsli",
+      "Sha256": "b9f9f672d3443b84b0ecced9c60eb1cf745c93648b5589663c7332ab3191d053",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/TriplanarSampling.hlsli",
+      "Sha256": "7ebab2eff811483cb1148680723fde4f1e0d16ff0c1de7edf9b78ce5574f2a17",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/VertexMergeInstancing.hlsli",
+      "Sha256": "bcc77064d9051f2ece57cb7be6f26d465c32ecf473562d0b0774219bd81275cf",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Geometry/VertexTemplateBase.hlsli",
+      "Sha256": "f3117d8ec42afe2c5aca53f1d00959a3fe57cbf5e1e58c432cbca94f4a71cc1f",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/Brdf.hlsli",
+      "Sha256": "ba6dbfcbe3afef29dd16d56fff596b7bd283115d315f3a4410e492c73edde272",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/DiffuseOrenNayar.hlsli",
+      "Sha256": "075d6219e0d4f1b347187c72ed199d161b0063ec954ba77f634402af22a626cf",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/EnvAmbient.hlsli",
+      "Sha256": "4eb9707edb42edbce8638e7e252756cf17443dbe0f0f8c2932f7659c38e4cff6",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/Fog.hlsli",
+      "Sha256": "0827181b6f1bf6878de31d24eabf86178ee2360a45185493f004731ccb225a3c",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/Light.hlsli",
+      "Sha256": "a3e9ed30e5bb43de8f5a2092cc04aa2317eab26f33138a7e8cd7893a37895a8a",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/LightDefs.hlsli",
+      "Sha256": "20d88fa911a07344e9082d1a8b3e0aa96a034a40f6b212c2a8b30cac80bc51ec",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/LightDir.hlsl",
+      "Sha256": "7e3ad29428e124f4e9d615ce77e9137bcee5825ea880fabd39ad1a3b9c1de6c0",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/LightingModel.hlsli",
+      "Sha256": "1a952f21f64f7b1e389e4b8d01636a63e0ca45bc9e38c948291fe81117a31d90",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/LightPoint.hlsl",
+      "Sha256": "aea593a30665153eff2fb484acf412ff601f62a0484a54bb2ac789f1c01278f6",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/LightSpot.hlsl",
+      "Sha256": "2c23b0ed8714ea00fc202721159c1ca49605458ca46b55cd119ddda883201fd4",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/PrepareLights.hlsl",
+      "Sha256": "fb2abcf98fd1b4234d7700d8da2199d0baa568e6c30b056c8ab91d931a862942",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/SpecularGGX.hlsli",
+      "Sha256": "36c0d6fcbef7c7ff97f5245bc542bfa3e31e6128638ab381c288d875e9c4ad3d",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/SpecularPhong.hlsli",
+      "Sha256": "e7fdae14ace142837ae6ff61722021c5c4d7e7c0b13fe39e65c19fbff545154b",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Lighting/Utils.hlsli",
+      "Sha256": "47125ea7e4ce024c6698e4e5d8ffe0798509c9d095fd0925da08f17a0f6549ef",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Math/Color.hlsli",
+      "Sha256": "6e2e53773287d7f0f16553805230b28ea9508f4c1c90b9d8b23729dd14f52caa",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Math/Math.hlsli",
+      "Sha256": "c8b460a204885be97f3a8d34426ced3313f78960ec0f447e8309f859f6f9f3d1",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "PixelUtils.hlsli",
+      "Sha256": "adf309a993fc9e1f0a554a28b7f1f848c571d97915666d25888ebc6185738c19",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Bloom/Blur.hlsl",
+      "Sha256": "1e77736bda6d50fee2af0b27d474ba93a323ca30cd00b13433cdafabc4630363",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Bloom/Defines.hlsli",
+      "Sha256": "f038b4c61531da744d4aa3ef39cd616248296b72e386f0e74b1efbc1e93d1f91",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Bloom/DownsampleBlur.hlsl",
+      "Sha256": "18ea7ab8cdf5de4d6e7956d7d1407df18395dcfd6c3de63e9fa114258cb81282",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Bloom/Downscale2.hlsl",
+      "Sha256": "f0227e7420c4f94480d398bc1ce0a1836105864d51bc7e641bbacb6a58493772",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Bloom/Downscale4.hlsl",
+      "Sha256": "acc35930094d6f18a0eeb5a341123afec2a55595ad339da3647daac7e9ef9309",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Bloom/Init.hlsl",
+      "Sha256": "0053ac3834be76c9c14f10cd53086c32ab3e08e9603ce3808a76f8ad661b86d1",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Bloom/PreFilter.hlsl",
+      "Sha256": "2d984ecda9e5615b908f22c9837e00cfa64f3bdecfb6b99617b272c858a12b9e",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Bloom/UpsampleBlur.hlsl",
+      "Sha256": "872dff2e23b265e72b327e9225e542eb5d8d7cdbcb5d9de427d7875afa68fca7",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Blur.hlsl",
+      "Sha256": "fe710be41b7be279420a5b255e012c5e517628efcdcbcefbe943a0676c960ed0",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/ChromaticAberration/ChromaticAberration.hlsl",
+      "Sha256": "ace491da6553ef054411691ddbeeb8357141478de91e52ab04dee75772bef6ae",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Defines.hlsli",
+      "Sha256": "cce3af796faa49604b4fd23c501a018720ebc1d663be057844472c02a509626c",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/DepthResolve.hlsl",
+      "Sha256": "77e816bf5a28701366feb8813275af28caf218e4e621b2742f87bbacbb552dec",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/EdgeDetection.hlsl",
+      "Sha256": "addfa8fffb7afc01233fc8620a71c736097eb213c994083551fe9bb7b0b7603b",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/EyeAdaptation/ConstantExposure.hlsl",
+      "Sha256": "09065c30e128eed48b5cca4236384b8631d044c70479f040d184ec192da6f6bc",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/EyeAdaptation/DebugHistogram.hlsl",
+      "Sha256": "dab4b78fe2a0a9cffabd02ffac8e3f355e2e3fe90af96fa186c4627f253f62fd",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/EyeAdaptation/Defines.hlsli",
+      "Sha256": "99e06f8fcdd51c4d80d4b22e939b2a31944e05245beefecbdfa83c9a4273f509",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/EyeAdaptation/DownSample.hlsl",
+      "Sha256": "9555da085653c5d249848f7935d99ade565eae7e899285d0fe4a11c43f084db3",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/EyeAdaptation/EyeAdaptation.hlsl",
+      "Sha256": "2a3f02d1e93f243d9704e28e044ada8abff9bbf52245ed2e82681019b229ba3b",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/EyeAdaptation/EyeAdaptation.hlsli",
+      "Sha256": "f08ebd8d5606d2462d53545d58f8ade451902749ad1f367e00f3e8300eb63817",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/EyeAdaptation/UpdateHistogram.hlsl",
+      "Sha256": "53ed1160fcf88a2b0a493df5f87aa64bb4fd9d62050fc18ff0f359dc281854fc",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Fxaa.hlsl",
+      "Sha256": "d82b90907f36db0c738dff17858e72633ca443aa95cc0f1b807f70463e32fc19",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Fxaa3_11.hlsli",
+      "Sha256": "f40a04945edd03029b39dca3f1c81ee7d9bfa5c90a12e88c7669560f75ba4430",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/Blur_Common.hlsli",
+      "Sha256": "13e312fdf93db44b1d1732454f25acd7f3203071275e8f504bea663965dbdff7",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/BlurX.hlsl",
+      "Sha256": "686160332dcd8022261eff533ef1eae5c04056f35910ffb554df0283d4d18e0b",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/BlurY.hlsl",
+      "Sha256": "b2986b9e56ca924f3ac2f4b92f3db4ebabb7f61c71de15ad1120f4f4374d55f2",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/CoarseAO.hlsl",
+      "Sha256": "93ae2622e22f3cf6ed2283edbfa1a94e8c4be1f9f62d3f347795903f30444544",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/ConstantBuffers.hlsli",
+      "Sha256": "fb6234c0ada9df2790210fa71ef5da5496219cb24ddbdf56fc474c87b7f0dd2f",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/Copy.hlsl",
+      "Sha256": "0108f3c912f46b3db47c5be9b3d10090c9d93138723672b09f07a24558ea2fc8",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/DeinterleaveDepth.hlsl",
+      "Sha256": "f0892b412ee5ba5ee8115037b358eea280d486bdb924e4143aedb2cf8da0c24e",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/DrawNormals.hlsl",
+      "Sha256": "ac39bfc0d2126e597deea86028a097b48d9c91eca7cc76f785d7ace9882369cc",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/FetchNormal_Common.hlsli",
+      "Sha256": "37ebad9adfda8b5786db16bccd9e5816f6b8e9aae09eae3e5195512d95560734",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/FullScreenTriangle_Common.hlsli",
+      "Sha256": "1eb131d1b6734e4b85939daf592f1d9a0de994ab8cbf599208048d77e269fcf8",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/LinearizeDepth.hlsl",
+      "Sha256": "4bec249dd85e02295b7ad74303843d6375452e43b8f8bd4a350cdca5a609bd09",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/ReconstructNormal_Common.hlsli",
+      "Sha256": "ffa6503f882af6e618220e2f8e8511f592646403a53df047da2890a2fa15901d",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/ReconstructNormal.hlsl",
+      "Sha256": "851721b0bad7684b8965aee3d97f38d931d583c7aa6d042960d102b93fd8b136",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/ReinterleaveAO.hlsl",
+      "Sha256": "5ce59c0e60079f5d4298028364c9e11df0e4de9a113dfe26e43862d033395ea4",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/HBAO/SharedDefines.hlsli",
+      "Sha256": "f0de8d8e1bb01c423bd3c721632d4f69e731bb7af12ae9427967117e1bfc0e7c",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/LuminanceReduction/Defines.hlsli",
+      "Sha256": "6eae0c1d5ea628b3ad9b737e6c6f6c9bf18f467919834aba3885642dd5962c84",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/LuminanceReduction/Init.hlsl",
+      "Sha256": "ab5c3150e71e2f346210bde13d2159762fdb128df3ec200b34e002bf957801fd",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/LuminanceReduction/Skip.hlsl",
+      "Sha256": "424b4d77a9fb0e24b85a680c9df559713f4ef1f709f900703010fbb452602f30",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/LuminanceReduction/Sum.hlsl",
+      "Sha256": "a89b4d134994c89556a1734666d230901033e9e96b5804592e39424a610ab9ef",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Postprocess.hlsli",
+      "Sha256": "8b58c06d698c1e7bc3be31a00392cc68012abd709b6b08d33cd4d8ca09afdba7",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/PostprocessBase.hlsli",
+      "Sha256": "d5ffbe13c8346745c15f8ff246b53dae64a3a9c90453113613131563c6ce7316",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/PostprocessClearAlpha.hlsl",
+      "Sha256": "e9cdb5a8226a087954cc095a3fac24cc8861059b1e0f7016398262c54a228824",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/PostprocessColorizeExportedTexture.hlsl",
+      "Sha256": "11ebb49cdb69befc809ff806755be4c6961cbc1a128a884d65184c5a331e360b",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/PostprocessCopy.hlsl",
+      "Sha256": "e4f82fa11c8bb7433e782e88dd167aeddec83cf742000215e290e33fcfc418cf",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/PostprocessCopyFilter.hlsl",
+      "Sha256": "73fa5b4b1839ea4b8e05a677bbbcd22081b4286d81ae9702495432b1383d87db",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/PostprocessCopyInverseStencil.hlsl",
+      "Sha256": "36410cf3b96663b765629053eacbad724a622c21e689dc9ee6d198531f53caad",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/PostprocessCopyStencil.hlsl",
+      "Sha256": "1c016328e60047d03af47de17f6d5e1654235339a6183377bb8cef1b06d4817d",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/PostprocessStretch.hlsl",
+      "Sha256": "31a4422ca55842afabf03db93613bd2bb4788ea6628930082d90e102d4693625",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/SSAO/Ssao.hlsl",
+      "Sha256": "11ef8b21c7d8bbbb0a120284f5d9f1a00c67dbe9a20cadf7a4d964924baea1a8",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Tonemapping/Defines.hlsli",
+      "Sha256": "9b58ae675ac18078d1220a5531abb4326c1c064cfa47e175d1f4631a048092f6",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Tonemapping/Filters.hlsli",
+      "Sha256": "a4a73493084a5e75195daae69b1e809d4eddd9a6fb755cbac2c02db6d02d0f1a",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Postprocess/Tonemapping/Main.hlsl",
+      "Sha256": "e726fc36839e47617b6a8fdae87bad92509c8cefca0d4a33eff9f191bf77fcec",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Primitives/GroupOcclusionQuery.hlsl",
+      "Sha256": "abbe3a2d559d96c2860323105d6c94631d215008d56985c109ae89a7a404e927",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Primitives/Lines.hlsl",
+      "Sha256": "1a622218e9e96b0a488a0dac34602110620be47993b8b40ebcff9f1ae0c37f08",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Primitives/OcclusionQuery.hlsl",
+      "Sha256": "7dbb0cebaaa624894010295164f46b146a9cf76e14d42a0c5600ddb213c59f14",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Primitives/Primitives.hlsl",
+      "Sha256": "e0ba8b69eae07f78604226235ff6ac3f49d696f3efe3c683ba4e3eb394be6297",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Primitives/Sprites.hlsl",
+      "Sha256": "4d1cb43f962cd4980b2e7b00a9240374eef0e6df1c10fd8422f5a9c996281820",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "PSSL.hlsli",
+      "Sha256": "f43a2cffb9f9840a1b74e2a63bdccc387a41a551b332f9d2b6434c4b2069e317",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Random.hlsli",
+      "Sha256": "49dc39e495151df29d96835e6a6eb3141165ee490418026cf32e78591d152fa1",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Shadows/Csm.hlsli",
+      "Sha256": "9cbf039d29b20d82a5da6b7bd7e0885c57c221b3aae01e3eceacf848db48447f",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Shadows/Shadows.hlsl",
+      "Sha256": "be173472aceb7ace56e0f4159130c4cbf5d442c465f6cf5b8e323904c5dbfdc2",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Shadows/ShadowStats.hlsl",
+      "Sha256": "a9099519d76c59f5f8ce47868dded72b20c2d6afdd858109b63d34d32c043bc6",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Shadows/Shape.hlsl",
+      "Sha256": "bcce2117a911256e877344bc27af0f6ea67d303f2ce9d053b2b3195d084b53ee",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Stereo/StereoStencilMask.hlsl",
+      "Sha256": "86950b576b64a13a5926ed2bfac2aa5fee43638b1bd2ba87bbef46bac5d439dd",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Template.hlsli",
+      "Sha256": "1a60e2d7174c3f05b0cf1cd264770857d8a04684cc098cff012c2024fda31152",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/Atmosphere/AtmosphereCommon.hlsli",
+      "Sha256": "6779decc5b4baeb9456534cf7629aa66e1741edf3add78391a94ee6e8fc9fdc3",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/Atmosphere/AtmosphereEnv.hlsl",
+      "Sha256": "735b2c4381d1fa271e5078d1d752210e0ebe257df6704cef537c724597db9f49",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/Atmosphere/AtmosphereGBuffer.hlsl",
+      "Sha256": "b6f470e1bc8076098865b7fb19cc6c6efd60d48aea20e409e6e33b0d806e1915",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/Atmosphere/AtmospherePrecompute.hlsl",
+      "Sha256": "1f27a8e5c9e9442d84c2eb80a77dfd49800a2d21dd8f402a832c3ce421155d5d",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/Atmosphere/AtmosphereVS.hlsl",
+      "Sha256": "eb3f59a0c33d811f47cfa159909b931989dfcb0bed6f3af8e2df747b244d0842",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/Billboards.hlsl",
+      "Sha256": "8e42726af46fa5f6867c385662644d898fa42146826e5f0807a1d9983ef83115",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/Clouds/Clouds.hlsl",
+      "Sha256": "fcfd439f15e05c318fe9a2bf4c9009bdbde13bc31b10a4c69ab452ec474498a2",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/GPUParticles/Emit.hlsl",
+      "Sha256": "3466726befedeea2663c3822f2c8023e459c0021895a58a9925ecde07e6c1c14",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/GPUParticles/EmitSkipFix.hlsl",
+      "Sha256": "19fb8cc4e724ff3c86778c204d6693c888cfb6ab8b0cd6060c6c1034d9618b49",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/GPUParticles/Globals.hlsli",
+      "Sha256": "513bb3a6495a27ab495bc2b7cd62facc00e0f6decfa54039a74c93acbb7c005a",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/GPUParticles/InitDeadList.hlsl",
+      "Sha256": "df4df9aa95ed98e0a7ad7c14dbd720039eb0b2692ead479e43c1db1f390ef7ff",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/GPUParticles/Render.hlsl",
+      "Sha256": "e72f637497a4c9d34c3c5ccc9de27e9d5a50231aa42682c6c6abf3345f33bbff",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/GPUParticles/Reset.hlsl",
+      "Sha256": "85e2a60a24a7061802e305f582fc47a953c9a749bd34dbc8fe739ab676cec2f8",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/GPUParticles/Simulation.hlsl",
+      "Sha256": "a6858c818165629403539188a377fffe5466f570316ca68c1e7746d910f5d6d5",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/GPUParticles/Simulation.hlsli",
+      "Sha256": "b2aa9fbfc0d1a0bb0bfc6cff9629d69ff65b0f16277f44b02c75c38505f84237",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/GPUParticles/SimulationArgs.hlsl",
+      "Sha256": "e6f7d7a11abd02278340b262c3a471edf541660937a6dc710d0e8fe28c112f65",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/OIT/Globals.hlsli",
+      "Sha256": "9b42df3677bf2f5d6cfe757f42f2a8639431b5ce9ebaed0afd35213a04ca2082",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/OIT/Resolve.hlsl",
+      "Sha256": "acb74094202cd75f04e06cfbcf94c6404107197386cbec00f2c90a1e6be0e374",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "Transparent/ResolveAccumIntoHeatMap.hlsl",
+      "Sha256": "402baf16bf707335359d88945b047af9600cdd49d71d9067d890540762f4e0e4",
+      "Role": "Entrypoint",
+      "AuditReason": null,
+      "SkipCache": false
+    },
+    {
+      "Path": "VertexTransformations.hlsli",
+      "Sha256": "50afa1f8d0dd47a14f9d4e94ba34f65ec8690579fe17bb2da96e62d142cbc04e",
+      "Role": "IncludeOrConfiguration",
+      "AuditReason": null,
+      "SkipCache": false
+    }
+  ],
+  "Families": {
+    "Debug": {
+      "Variants": 30,
+      "Validated": 30,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Decals": {
+      "Variants": 32,
+      "Validated": 32,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "EnvProbe": {
+      "Variants": 4,
+      "Validated": 4,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Foliage": {
+      "Variants": 7,
+      "Validated": 7,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry": {
+      "Variants": 19056,
+      "Validated": 19056,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Lighting": {
+      "Variants": 15,
+      "Validated": 15,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess": {
+      "Variants": 1141,
+      "Validated": 1141,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Primitives": {
+      "Variants": 12,
+      "Validated": 12,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Shadows": {
+      "Variants": 130,
+      "Validated": 130,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Stereo": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent": {
+      "Variants": 307,
+      "Validated": 307,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    }
+  },
+  "Entrypoints": {
+    "Debug/DataVisualizationDebugHistogram.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DataVisualizationHistogram.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugAlbedo.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugAmbientDiffuse.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugAmbientOcclusion.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugAmbientSpecular.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugBaseColor.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugBlitTexture.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugBlitTexture3D.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugBlitTextureArray.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugBlitTextureDepth.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugDepth.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugDepthReprojection.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugEdge.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugEmissive.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugGlossiness.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugLOD.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugMetalness.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugNDotL.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugNormal.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugNormalView.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugRt.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugShadowSplits.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugShadows.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DebugStencil.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/DisplayHdrIntensity.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Debug/Histogram.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Decals/Decals.hlsl": {
+      "Variants": 32,
+      "Validated": 32,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "EnvProbe/EnvPrefiltering.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "EnvProbe/EnvProbeBlend.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "EnvProbe/EnvProbeCopy.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "EnvProbe/ForwardPostprocess.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Foliage/Foliage.hlsl": {
+      "Variants": 6,
+      "Validated": 6,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Foliage/FoliageStreaming.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/AlphaMasked/Pixel.hlsl": {
+      "Variants": 4120,
+      "Validated": 4120,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/AlphaMasked/Vertex.hlsl": {
+      "Variants": 4120,
+      "Validated": 4120,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/Glass/Pixel.hlsl": {
+      "Variants": 854,
+      "Validated": 854,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/Glass/Vertex.hlsl": {
+      "Variants": 854,
+      "Validated": 854,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/Holo/Pixel.hlsl": {
+      "Variants": 854,
+      "Validated": 854,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/Holo/Vertex.hlsl": {
+      "Variants": 854,
+      "Validated": 854,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/Shield/Pixel.hlsl": {
+      "Variants": 854,
+      "Validated": 854,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/Shield/Vertex.hlsl": {
+      "Variants": 854,
+      "Validated": 854,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/ShieldLit/Pixel.hlsl": {
+      "Variants": 12,
+      "Validated": 12,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/ShieldLit/Vertex.hlsl": {
+      "Variants": 12,
+      "Validated": 12,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/Standard/Pixel.hlsl": {
+      "Variants": 2364,
+      "Validated": 2364,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/Standard/Vertex.hlsl": {
+      "Variants": 2364,
+      "Validated": 2364,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/TriplanarDebris/Pixel.hlsl": {
+      "Variants": 139,
+      "Validated": 139,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/TriplanarDebris/Vertex.hlsl": {
+      "Variants": 139,
+      "Validated": 139,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/TriplanarMulti/Pixel.hlsl": {
+      "Variants": 149,
+      "Validated": 149,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/TriplanarMulti/Vertex.hlsl": {
+      "Variants": 149,
+      "Validated": 149,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/TriplanarSingle/Pixel.hlsl": {
+      "Variants": 182,
+      "Validated": 182,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Geometry/Materials/TriplanarSingle/Vertex.hlsl": {
+      "Variants": 182,
+      "Validated": 182,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Lighting/LightDir.hlsl": {
+      "Variants": 4,
+      "Validated": 4,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Lighting/LightPoint.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Lighting/LightSpot.hlsl": {
+      "Variants": 8,
+      "Validated": 8,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Lighting/PrepareLights.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/Bloom/Blur.hlsl": {
+      "Variants": 648,
+      "Validated": 648,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/Bloom/DownsampleBlur.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/Bloom/Downscale2.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/Bloom/Downscale4.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/Bloom/Init.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/Bloom/PreFilter.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/Bloom/UpsampleBlur.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/Blur.hlsl": {
+      "Variants": 384,
+      "Validated": 384,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/ChromaticAberration/ChromaticAberration.hlsl": {
+      "Variants": 16,
+      "Validated": 16,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/DepthResolve.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/EdgeDetection.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/EyeAdaptation/ConstantExposure.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/EyeAdaptation/DebugHistogram.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/EyeAdaptation/DownSample.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/EyeAdaptation/EyeAdaptation.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/EyeAdaptation/UpdateHistogram.hlsl": {
+      "Variants": 4,
+      "Validated": 4,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/Fxaa.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/HBAO/BlurX.hlsl": {
+      "Variants": 4,
+      "Validated": 4,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/HBAO/BlurY.hlsl": {
+      "Variants": 4,
+      "Validated": 4,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/HBAO/CoarseAO.hlsl": {
+      "Variants": 32,
+      "Validated": 32,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/HBAO/Copy.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/HBAO/DeinterleaveDepth.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/HBAO/DrawNormals.hlsl": {
+      "Variants": 8,
+      "Validated": 8,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/HBAO/LinearizeDepth.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/HBAO/ReconstructNormal.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/HBAO/ReinterleaveAO.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/LuminanceReduction/Init.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/LuminanceReduction/Skip.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/LuminanceReduction/Sum.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/PostprocessClearAlpha.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/PostprocessColorizeExportedTexture.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/PostprocessCopy.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/PostprocessCopyFilter.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/PostprocessCopyInverseStencil.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/PostprocessCopyStencil.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/PostprocessStretch.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/SSAO/Ssao.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Postprocess/Tonemapping/Main.hlsl": {
+      "Variants": 4,
+      "Validated": 4,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Primitives/GroupOcclusionQuery.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Primitives/Lines.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Primitives/OcclusionQuery.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Primitives/Primitives.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Primitives/Sprites.hlsl": {
+      "Variants": 4,
+      "Validated": 4,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Shadows/ShadowStats.hlsl": {
+      "Variants": 64,
+      "Validated": 64,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Shadows/Shadows.hlsl": {
+      "Variants": 64,
+      "Validated": 64,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Shadows/Shape.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Stereo/StereoStencilMask.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/Atmosphere/AtmosphereEnv.hlsl": {
+      "Variants": 8,
+      "Validated": 8,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/Atmosphere/AtmosphereGBuffer.hlsl": {
+      "Variants": 8,
+      "Validated": 8,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/Atmosphere/AtmospherePrecompute.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/Atmosphere/AtmosphereVS.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/Billboards.hlsl": {
+      "Variants": 256,
+      "Validated": 256,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/Clouds/Clouds.hlsl": {
+      "Variants": 6,
+      "Validated": 6,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/GPUParticles/Emit.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/GPUParticles/EmitSkipFix.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/GPUParticles/InitDeadList.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/GPUParticles/Render.hlsl": {
+      "Variants": 16,
+      "Validated": 16,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/GPUParticles/Reset.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/GPUParticles/Simulation.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/GPUParticles/SimulationArgs.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/OIT/Resolve.hlsl": {
+      "Variants": 1,
+      "Validated": 1,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    },
+    "Transparent/ResolveAccumIntoHeatMap.hlsl": {
+      "Variants": 2,
+      "Validated": 2,
+      "Integrated": 0,
+      "VisuallyVerified": 0
+    }
+  },
+  "Origins": {
+    "StockCacheGenerator": 11948,
+    "RuntimeImpostors": 4120,
+    "RuntimeTextureArrays": 4216,
+    "GeometryStage2": 528,
+    "RuntimeMergeInstancing": 96
+  },
+  "CatalogSha256": "c475072906c37b1dc3833e0a465e825d35cb867dc3eb650d296b6e3255f5e33d",
+  "FinishedUtc": "2026-10-04T21:38:53.5517568Z",
+  "IntegrationMeaning": "Authenticated IDs selected by production source; runtime observation and per-variant visual verification remain separate.",
+  "IntegratedVariantIds": [
+    "024381c6ecafb91622aaf0c20afe3cfb1fae1d385cc48ef41997311565cae830",
+    "03232071cfa63e77c8454f59d37dcbb349883e5c9b51db653bf15edf1dec4aa8",
+    "042fe2dc9da442456759365dc54c1cb63657ac79b5b2f34c940d9809ff635d81",
+    "0614c02c347e6bd9e28c59df2d1c55fc385ba98c32478327b5605a3b3012e433",
+    "06cf745697c477c96b856cc4356999095ea80bd62459c9b708132a15f10c772d",
+    "07dddc57cae32bfc20980aff08117ee7880233d0d75c244d3a8de50e2b8d5ec9",
+    "08eadd653aaf8c2a673c016911a39a2736310755215aed6ac265fbba1c64fe2a",
+    "08f9c9f78825628de37fad38cc89af2c7dda1013dc3f78d3bfca64a709d37b0c",
+    "0a7126fff3cd9d849b98bdcc78047bf0f501a070988b0468a85172b1cc85c8c5",
+    "0b54d950ee04961fbfe87c2f11cfb08a0abc3e1998366cd6413fe47dd211c021",
+    "0c9b8d1953232084fa5f3c1e29cf15715f8738a0895a47190b42b1d0b9c96aa8",
+    "0cb5fee0d02fe6169b2eee5b212525649ae66d56b328d7643a75b2449ed74d3c",
+    "0d0390bc26af71226744de2c6fcd219271d11c1cdf39edb83c62b63773adc2a6",
+    "0d6ef833fd50c8e4f0d2c5327ffc0c360134b1492c90b8a99462fb3276882464",
+    "0ea78900fa2fe5d327a1582e56012b59528f6c637b5462b5a0cbce8c2dd3aad8",
+    "0eb24dc67c6c5d959328ea86566aeebd3edbd36c81ba92adbe96c38668e1e779",
+    "0f6534e7e53016748e8df6f9235612235e7e6536f1a6664c1d6e236099a19c05",
+    "10fee9e37062efe5a7d65b681f819162d2d17b1991ecd5c8271bed8c72a2b475",
+    "11b35a9f58048b08c5767f1238c9eae07366863bd7a0645c0cf8cbf2ebc07ddd",
+    "1242fa7ac0d184020d46aac8656d703a2d01f79662f70068ad77eb5a6bce5ae8",
+    "1242ff36f528eee82bb41f552a8db312b31340960b1c7df73e8702fedca457c5",
+    "125e51e5c30a569935ff340a4fac3847d926e3528883a4abc9d8497f0f7032e8",
+    "12e156efe4e38328488609f433227f5cfeb9ae395a77aa4ed5c28f39c550d9ac",
+    "12ef30e19360f239315d7644c6cbfe894c87ca028dd5c564658c8fb6ef7556a8",
+    "1389c15af6e1d6c3130ce51c34205ffb0683b71b468d50ce8b7a2f1397f93c0f",
+    "14206da2126f109f43be4a93cb6c5735312fc5440bf5302e61667958a0b5b17e",
+    "150583cf7969da6f9977c39d1955ecdebf9a835d536913bf2c3a669630e53a25",
+    "15241f91f0c7ea91253c0bf96870580add52f8bf5988b9199ca77e9c51c75dfb",
+    "158cc2e38980c690b5eaef2599a68de8cae16838f17a493dd6b16f26369725a3",
+    "18a47451d4eb61dbc999d44775359fb4ce96c87fe85b0707d1626ca2eaf9ee11",
+    "19219fab4754397c5b1fcb51b915677590868767c147c14f0cd6cb79a48ccfd1",
+    "193320979b9d2753c234dd431e331f0fbf1cebaddb80f7c7b0d175f0e1a0bf07",
+    "199fd3fc1871b1fbfcb53a1638f884e620b145cfa0e97faeba2fef0400ef8b6c",
+    "1a3cee5ffb84bfc444507ae5477702eea123697fd9081b215dfddcf503181635",
+    "1a563ec03830cd50852c34726ee7b6de72c658a582171397da3bfe33d4602341",
+    "1ae18b24cb749dd287986cf2444b89dae3afb3c3c259e58c2e7baef33a574da8",
+    "1b2e42336b293ab8f0a4c739044ee70bc43bb49d5e55d62429d002e69179b6de",
+    "1b9f9e3cc8c6ff564de8fa39eef0446989314ac4e8a1e833933a2b578e1e4660",
+    "1bb6f40fef889661d4a74d17f3dc6c2cdfbc083270382103ff395321ada20f05",
+    "1bcda7953598435b6170053cf09a6d347b48d4b8ee79a8d789b07f0502e16ffd",
+    "1cf478d0497e130e7bdb87fda720bd2e39e078e5396d787522d078d8b4b6d8a7",
+    "1e124ff187f7d6022692a237791b715152091c89eec94f9cac364c048ea2c7fb",
+    "1e9179e2a87c11b531cd8275f32ce05735a7682ff860b197ee92c272c2987e59",
+    "1ed18fbb497d4d0482b4caaf86629afdcf3d31cd4c9cac423694e615b702545f",
+    "1f96c35c982cc57b62ef748577916c042e18181a84a919be49de55823e226f04",
+    "1f994c5aea49042327fc6693fdfd21b423f75b30e8cfeb61005a58729b9c32a3",
+    "201f2ad1c97235ea4fc331624968086693d964b0c3aa275d03c0b9761e2e7b0d",
+    "20991d6fc83c9d276b8534f824d08f122678f2168be59d85bc40859ef0610d3b",
+    "210aae092009679cc9405fbd79c4dd6b2485d5c1ec4a767aae84ef6b80f86d18",
+    "2319caf24c991862088f4744fbf5d1f8075f61d0202ec9fca185bce6d3264c4c",
+    "233d2a7b38ae499599853a0c3c6b1a690bbf1887bc02d2c47dde5875673358c0",
+    "2458d5c7b921edff98d71c87471ed000464fb03693063ed98829d3507084ff9c",
+    "25013e20c65947a86ca086e3b8dc3dcd722db2cfdae3082adfaab1ff4ce13bde",
+    "251a328c54db754a92218f7c7919912e235b1f3ac26b36e86a588c8db83f51cc",
+    "2547fc3b4f1046eca9df6719afd1c21979193b407dd7ccb46edaba978e38ecfc",
+    "2557e230db853aadda9d0e25e52bac310b0fbdde5c83b0f6a491575ae2e21506",
+    "26596df902cf309ff3c6156d11f4554639fc17c4c1aaacbf8bb701529cdc2d55",
+    "268c5bd4f938c056f0dee280f11209ee116054b53cff8af25e59edbf02799f34",
+    "2790d59b901a07a3059d4bd50d6574ae4d30614552f4baa306558960fbc1b231",
+    "28403c62115e7e8398d2845615acd50ba695faf0339f44c009d190fe12c9f40e",
+    "29151616481380f2b5da364e6bec88a80b854a8fbb4db07627a0cf6a5e97dce4",
+    "2920f1fec623e1c429ac90111effd97388a204b76c7c5a3483dd28e4bb9053ca",
+    "29357570e5d5fe2df72e7065954e2ab3c96c134c93e6a811aebfa1109a4b7ad4",
+    "293ff588c68fc567cf623c9f255b516a2aae4713076a9053f87df25edcc94d57",
+    "2aa999d181a7168fe6fb0733c37378d6111805bc4ce0d35f3321224c4cbb9f17",
+    "2bc0998ce459b18c3f930f1035b6cf25cb09fd126b52a54e243b068460bb81c3",
+    "2d747745b0aae92a81991fd0364d110faa8ed2684fc1f76ada92b637685ff48a",
+    "2e020f32ecd5142853ccade0439b5e18de2f2bef9ac5c07ec5e136cb4b9984a8",
+    "2f11991959acf2083c1407a8b92d61d6d02f9dfde30c9f54500ee48ab1f43c8c",
+    "2f177b1ef6b4a4eb3c9cbc74c23b071ad032d17f0aec395b9f72efdbae5a969f",
+    "2f37614ceba311419681cf0b834e59c9c0cec0571d245ff32f6e994c3f606876",
+    "30b8244ce109a84de34caf242728f83242023418475e19ac72d306ecf3776b22",
+    "324ec62a8a2235a8a5032db6ebb16a45eec6f1c9f3e1fe0672f9e921fee97941",
+    "32bb643499769652dc73502cb553463f1a240ff7e70028c9c922f4d6672cfc7a",
+    "3474fcb9b2106d2637458d5d47a49d2262c8d2f7cc5528f1d62aefa7850d346e",
+    "3583fed65e00a2c43f7993cd3a3b5e97e1fd9f74d6dcc7606b60734fe7fc4893",
+    "35a7484125c795d3712b61056f743ece3dc3e0943f0a25b1ff2dc445edb0b29a",
+    "35c9b83a247b4ff53a62e094aadda21b350d5980e46494f913606c201bd7349a",
+    "36f961e1822cc2e8804c45263a44c315cdeca5065033c87f287aa074d23ce363",
+    "370a1a3a4ef64f6026aaf5153d0b002a19245aba824a929bacdb99c73e6425fa",
+    "376fdd048346a0d5e8a658c123c3d9b5f780d919294db248914194363da99ca6",
+    "38a758a2660e8c5677d1357bb8eb5913598b53d07ec3365d328246fe63aed342",
+    "39213da524293b251ea483801b494e75cb2beb2bcff9d3ef4a7cee02dba8beab",
+    "3950852e754063936b329017bed3751d4297b9e76ee3db8b06d7ef13867a0a5e",
+    "3a1c8379edc7d6a5b58922145ab08bcb3c00d5adac963979407368d20a7b0f6c",
+    "3a2d0daa4ce050b0782241f26b3decdc0b78fe81ec5489e65f17593d1724a93e",
+    "3a96f98f872d42cf6db00665fafcad76bfbe809e6d129deca7a5ae5066799ec4",
+    "3c4ccd0a3bec9c6d81e1165756304f35fe764e064f226aa17bb197ac6c3e34ce",
+    "3d6272f103a2d8ef999b2a728d6f266899b5b09a2a469f2287d1ae61b1a8438d",
+    "3d85193a9f76d45c28f05f39341bb7e7bb35828677788eb16fb43c54d46aca84",
+    "3d90ea7a045ca78f2264523c5bc0bd710cc198a1383e97231df4a24c42146749",
+    "3e1cc94f131e5b0e4cbbdb3be60d04be4c8937fa8b12f4a6feb1c9ba86c3b010",
+    "3e6eb597770102067255554220478e2a2d8b5882c4f53e3d8498d61a9d46f2d2",
+    "3fc184cf8787251ac387756d658bdd7aa1aa266b74a2f3ed38d8a48ece2f5a5c",
+    "4123c1270ef93579fda2cd3687ea60205d4daa1ddbdde8cf21ddf1270373d9db",
+    "4127d24853ff754aea47f607137295cc6e88616b416500d76bf5023ad3fc04dc",
+    "43064ff22420811c27fefdb62307d4f02ea8c7ca8f95a8ef7b1cc1b40f501b6e",
+    "4517c581150b632cd7f28b627a4c20659c3c4ad17065bf90952ceb9b50702516",
+    "45235c8bbc610bb38268d416441a2350cb98d29a80dac3c9e7f10745f49d2b36",
+    "4632cfec5ac123fa7ade2a84e4fa27d9e115a193c14d650ce217416407c865e3",
+    "486ce864a346aaea71f0934de8873577886139cc9e795869ed72c927c6066c0c",
+    "49c5832d314386c03d4e4ec5f6e549677dd9c5c323adbc2e8c05b286f5a445ab",
+    "4a693813ee809be95307c4a6f154a529c5349c7c90f5142998a7c5450d747d21",
+    "4a97e46852da3538155908bbe687e95932b145aa01b694678fee3cdf37da7b2c",
+    "4b5212cc08f678b5f9649eb9439901f23a2ae993638edc5db89923bc4b843682",
+    "4b64304455c0e46045725218a9473e017e62da050e34b6a730d822416b7a90c2",
+    "4d05347628aac484c39f412cead88f30772e4abcdaa1715dabb45e09136283c4",
+    "4d160b7820aeeefe7996445d176315c90988b9462f037bc4c6878e8e154d6062",
+    "50384fcc34a75a97966526814f63cc888a67a4ba4758a478b171a97b3595e214",
+    "51ea8f26fe1e22b49015eac2329d7168b9142588d114eb8bcabb56b68fe069ad",
+    "52f7b71a511591694d91946df71d44ec09c225f15a7640f9a7f3af2bd464e285",
+    "56f3f672a4557501489aa66cd07822b90e6f843435440c153fe9a2c9c87e82ab",
+    "56f94b0ff17376622c4e29316c33d18a363dfdd6963689386c3189d23dc5bf6d",
+    "5a2a38e38dca59c5088d121f3a26d6da248d40ccd520432f1a4be2cc8615a7e6",
+    "5a64ef9a256ed550fd9d090b94cfd8807b1c665cf8ee9f0e20b6ce85a813fe24",
+    "5ca90744b31ecf19fea3b7fa3d974a0a87dfd996f1bf926a42b1a3b034fca777",
+    "5d410c30cbd0d2e5dfcd1bd9f34ff4ccf05c77e7300c22580de8bb2726cb4e8f",
+    "5d72350d91fdd994a7d3e316a7d2dbe7d8bd7f46be6ec2cdb46f9414a84614a7",
+    "5db4a5fbd3815907e355008569cddda380c609473a09e90ea873f3cbe40262d2",
+    "5e6af31d91a7ddbbd379a352ec52faa57537457932860d050abdd86d7a74a258",
+    "5e6e0e8eac126aae2e6ecf89ed57b4eca002ede9f0961a67e9282de500dbb252",
+    "5f89dab4d557565ecd6a1e5635e2f8d4d635719f92ee63c372cca68fb69c9fac",
+    "60b4b3f1ba82ca066ba1699db4284e874e14325e4cd11f6e2e9bb34ebcfb7d9f",
+    "612deaf4808a02064399934ae4d31f39c5e56ea242b716d3f656eebcda7fe585",
+    "618b6939e586ea27679f965ed160c3f81e48130ce5f6a29260ae984a419583a7",
+    "61abfb5f5cfd277de7228754071acb798d5bece4053019ea2f3aaeda6960b945",
+    "61c5bf8bdea773f99843850a8207799efa3eee779845fc4de570563ae54645b2",
+    "62511a79f3d698b0e4db8d9931da4d7b0511291be308043cea85928a68ef4d90",
+    "627e1dd76546a6714be16c5c3a53f34efc8ae6437149a047d13167f8fd7da5ff",
+    "634f0bbe683ac79e9c94b774c4518880bc29eb30952a9faa6723bd9ed6997794",
+    "639cc6c3c9877739295b19dca5b3929c744ee78ecc88011cb57b9f828e27eb99",
+    "6505f5c53bb4749a52e0fe8cac5d3759f4f0adba87c05d9d2087c86c0505e30c",
+    "65658d9f2a81f66144e4334015ddf1082d26bc21a8eb8e138c2657fa8dd854d5",
+    "65972e3a34e17abed66c708b18dfb5d1b1caf5576816a94d27c0048ff44a0fe1",
+    "65a9921b799e208ac74d4df35507c5a52662d316d6fa5a3c1cdc0e0b4d634620",
+    "65c2414d8fd9bc0c691e6493a66717710bb73da24b9ebdcba7bdb6c63b406625",
+    "65f81b4c7714e6bdb3f850c42678effcb08504f43b4287b3a0e84b2420aa40f3",
+    "689517ba349da3d2ca3240f67f49111d274fd3f7d09e4a83137de9b28798c841",
+    "694e3d5f3835dd4ee4aa1a4437cff781fef4527741c727e94648f4ee6dd79d1a",
+    "695c981856389d14c47095fa9adc19354d4f0641b8e7875663bcf7726b9fbb91",
+    "6b876b666dee597d758ec298d55896fbedfc6bd75072fb5f4fdd6673f6efb92a",
+    "6c05d267427b4194af79a35b356c72182d331cd819814b288cb4ce15d7cc4dc1",
+    "6c5f32ea6292050b8565e94f4390658da1e1a225ad9450dd21ec8efb437d55df",
+    "6c956bb34baef42f0bcab9c63772fd45dcac85560118c4bfe7388531d5fa1575",
+    "6c9a368d76ca2fbcb0ba9c1b012e8c593f077e78504593b4556fb96bcce6e345",
+    "6d1ff24cc8475ac1d6ca33edf527a9b45eb22219a77c0ab61dc3effbc4f6884f",
+    "6d8ee5b579266f20b0f72911200577c0d08f6db332233d18b17cea04df6dfcc3",
+    "6e066e994de8b163b74a5084afe3ba2694ce10fb63cedb6652e63bc347edd527",
+    "6f212705c7c07abbaa9d7600878acb9d184d6eb9412a11601157cdba6c9cba3a",
+    "700b49d61982fcf82eb8a8b45d56a923dce1d57ed5c6c0e810d2c7f6f0e712fb",
+    "702e6d44fa1705f98786445b2cbde4b5d42a91b6c1aa76880bf77058130cb137",
+    "7082140127eec9dc4eff04cba58fef2e2a31265805ee4c533c46a38b8c0d4677",
+    "70b63d90fc37ac013275e81a8a9991e6a7b5941dac44219ca59403be4242146c",
+    "71d290ae65e7a14242c820c03ff8ed7451a50e31b74b09ceac9f810a1d13ade9",
+    "734f0d385faac31a9e13740ed3961357669e733d14e4408a1581e4d41254248c",
+    "745e6963e26e470ba91b092a6213026be9345b3bdeb1cff84d962eb01d8310bd",
+    "753bafc669d6239682ac67f849a593b6f0cae2cd759c726f84caba965950f9fb",
+    "7613a6cea8130d8eb36a6a75f55b08cf85bb28e5eccb1d53c9a842ddc5ec2468",
+    "76fcba14c7221e345e678f03aa4620250f69f7c39d6ea83ed764123721fcbf89",
+    "7759806da4613449e7e4e9e4390e89d74a3ec23e9769d44f1f453065d59074ba",
+    "78085a79c4e372baba9ae48f9d3f3522b5d7b1161155bc2be0f2c3c541b0fdf8",
+    "788eaec51d127ebde49a0124368fe5c296a714294c5e19e16a21d1d465ae6285",
+    "790503511e0bddb8e6983d3268d1ccd2a9998208d0fabd2edae453adab65375d",
+    "7b3f7b796d49d26501416f41aca1c2b76ad6f959f85f94f99d3f84be50668191",
+    "7b8b15165c759df548a3348c1ac424b7adcde06528ffbca3f2257f0e88779669",
+    "7d10151079219988008287acfe7357591af73428b2fc3993d89abcea8e369398",
+    "7d6e32d835d3ef7ee1fc6924dd6ca34f6bb12b5bbae4e7ff4b5812a5494e751b",
+    "7da684551b85911c4bacf0cba93526fc9762a6ce75b6d8d1f4803fe4e65c7a5a",
+    "7e3d3368a3fb36f805bf86ae46636d6e05092e183e108751496596e3f9c3d8d1",
+    "7e7f8a00e6cfc94f5e7f149a9a4df82ce433557cf56c91d2a08dfaa598952493",
+    "7fc631bbbc0cef27f42d199f8765fe496590ba90fcf9d52eb0576431096c3d77",
+    "807c9dee03e76f9036717284c799402d0e8b4bef1248a309227b953c48a22e48",
+    "80ef3fa63cd2a8ac009097c6990ce2003fcd0c29e3dc6424d8d7d2f1aff68676",
+    "80f43b8d4fb83f38d7374c1ae4bd50f9e1cf3149e8a99f219fa6c83234c677d7",
+    "816f562b63cba18bee1ab58867bfdfc936181c7c7faf56ecebda142584636962",
+    "82e2be6b7a3bec9a2c86a6b3275d0eb161818d2735399b394e26e0b68bf76a58",
+    "836707bdf60d015a051034bd564a351693474c9c3fd052a0c0e697028ea1edb1",
+    "8579ae1ce65b9da17d6328d807c4eefb7ea32c60e8d39ed79d8d6a10e4314ecb",
+    "85b5bfbc35ec6d97bf4425b24e0b60e670d47853028e9fbf3170f5de0a3e6151",
+    "863755fa8e5f4809e9fc1731692452980ce93569ad7230ede69652b5d196fb3c",
+    "87043d5bf600622da9081d4987cc3c5b92a389325bd3b8ce896130e5c1d2605a",
+    "880673b6ded2351b27b78e9d9673223f52cdc344710cc8a75e023cbcd02f53e8",
+    "889af677f2c024c565d48b75fcdef44ee2abfd40f7ec8393d359267d48c99402",
+    "892d5abdec356c90dce0dba9de781a7e977983665915f46d1aa0847b4859c5ed",
+    "8a6eca6d11fd19f8bd494eac62bac7cfd8bbc185ca1ce3f8acc4de403a6e5226",
+    "8c151611813032d1ec20fc717377635a09606c807b57af6997e4f2fba75e73fa",
+    "8d0e3326c9b5ae8b559e4c71afdf0e40332a4c23c4e4d3c8227f35bb868ea09c",
+    "8d6661b5f67d779edf0b2b947858e41da25925477275d1c6adb54a16c4c37f62",
+    "8e61141256e589f69cebda02af150159c015dc5cd168552624d6681900608123",
+    "8e9f711382621a669e921f954ebaee76fc0b6a8c7ba228b76a74c6002f77f855",
+    "92245de642e04e6cd7d74ffc88ecceb909c617acac12b2e1011d1d7e8bfe3433",
+    "924743d1ede29e5a2dec25ac326fe13161266596f3b9e93cf44f0ec1587fcb8d",
+    "92e1d675e62d4f23107cb521359f5ea3e7ca4cdcf0a1dd22dc3eb11e163e0b06",
+    "93741c103ef6c264355ebc5259df07523f848cbb56d54f68dde326e92271c6cd",
+    "94cf138f5f9ce1489ff91cdf6c9cd48fa3663f1975c693fa9a56b92edc482ba2",
+    "968adbba8f05e402931c11de1f4b59594ee6b860ff53bf4ab89a58e3904a92ec",
+    "99e5c98a03b8c13367d2022855308e245433052008bb458a776be2403e2b4cdc",
+    "9ad7764085558c25214a94bed4b789e807e2573f91f71edf64accf07952e01e3",
+    "9ae618bf25ef7a8bf80e75e30c0b491b205dc39417d32cc676acb3e485437388",
+    "9afddc9d102718acc01c4a42596d9cfd7fbe10249c1d299e7da70addd3e1d906",
+    "9b05c7de64766bb29398c6786ecfec00fb294476f819d2738636d4fdbb5b47ea",
+    "9b3caef7225ca4237ffd76f03d071752b6ea9a8b16e3b10688b779f7c5f4dc4c",
+    "9c11414fe14d136e77b78c377042375e458cc4e4ec012f444bdc11013e23d260",
+    "9cda434bfa5bd2dad3958ca4547f304bd2804855f210fb89e19faa48ac46bc65",
+    "9d2dde56921431a05dd47785cbe06a828dd3f7fd86a01f02f8f91d99dab36f95",
+    "9d649cd6691ba23ec5ae24bb31a317df04164f106af35be6000b25b8160b4009",
+    "9d864ad22b4552eea8acdebcbbd2a672d3d257dceba41487cad51b97558f4646",
+    "a0ef155f8349a8c0df54db773d556b920632a5f8b26e586b0e2d36b7d25c9803",
+    "a120f82b3301d381cbcad3ca632874159efba40e7acc596b2c3f0a6f68cabb1d",
+    "a1b699b3ad82adec90ba1af8318067d3410d117c5c94b9b424560f40e2fdf7b4",
+    "a4c06661b319a68bb343cfc134e620c1319f053416d394c712a6d023c4e1f78b",
+    "a4d6a5f82cbc20cc68d1a5a4676c034661330f87cc1f0faf9ca7c9a0e12d8eb3",
+    "a65f69f1d9b65799e4636440b5ea1577ed45b7b9b848435a6c6059482e0d51c5",
+    "a6747a44a134a20d82d257bfa3d5b0054d375952190f789e7ae5ddfc5e4c6ecf",
+    "a6a98288f3efd10effb6bf7192ff1e3fe3ec96ac4a7ef285b054d2a41459c78e",
+    "a78bf9e053dc2c686bea43de19f1ab997c851d098beae5ff4f7f0712737397dc",
+    "a8b2a14a40b6721fd07f53232be7137fc828184ba6a51d4b2081be1ff186666b",
+    "a90b2abae7399a4571b7a8ca5fad06b6638baa836f23deb59815759a92207cf0",
+    "a93c452076fc6d5f5cd4de0644c25e354acebed9a4f0a0a89ff3f99823ac3037",
+    "aa207bf60e0c831de4dae7b9ab3843db28137f985e1844d17a1dcbd3b12fb5dd",
+    "ab3bde338ec34402a4d414e8bb04829f2f37c5dd36fe3b8ca816209cea448cf7",
+    "ac699500f3e2c39bfe78beab13c30471045faffc8890a67242d0493a3f4862b8",
+    "ac767e8d8cffc5d7bcd74ac10be32ec1662f5916109990f19b9bfae0d0d82759",
+    "ae9a0f6553b210760f000558bd425789793e2017f599591eceee4d85f2492c2e",
+    "aea39c00be05c22edaf5e2467ebe91f0f1bcfdd3883bc42a1ca539f2717e3455",
+    "b0c78270cff7670686af64bfdb558e5b67a9cb4efab024239c7f85fe10624fee",
+    "b1ca365b9702c34d9a5f2ba6cd14580e93c385a78cc0bdd58eea25d739ee1c96",
+    "b271b014a016401b049127740283010c7beddfd76b340c3beff73ba89f11005e",
+    "b2e9f886cafe91ed51ecdde6f4e28d3aaae5fca30b017a959095681db52f38a6",
+    "b32169bf1a00a60f0951e47d94100953e150831804a2d9784bb598020449e71e",
+    "b362f74dfd60e89224bc73afb0ba9048db69049dda94085f4669b4e7984b1e59",
+    "b5cb9086d0bdcb2073359b7b3860b07fd565602d3f654d68474e21eafb5b65f1",
+    "b5f1a07335d6a086a9c6ac5f4812936f835930aee98c29381a0d403698b3a4f1",
+    "b7d69a9fa5026e6260fcf9915822ed2f6406ab003c393ab0e01f569e6065970a",
+    "b929c5202387c219c3a67ee4280024078c03379c27e5e022626443853fb63837",
+    "ba123036a2db31f0dce2c074620eef66df7bab3104db3cad7067ce40a18ccef1",
+    "ba693fc8d1096a8bbe48559004e71fc89b255e8823b97b2e6f27240e60848fea",
+    "babad18b0fbc76b619cc99914bbd22bc234ae57da0c44e005acc27b3996f2d93",
+    "bcb351e4d99db57b7fc56576be189d17665003b88501c3642d1aaab4f8e7676f",
+    "bd5f7c6183bbd1424205a5c63d042b9961dbc150e274f58aaccc57983590ac07",
+    "be5fb5486391fe7ffbccfbe3ac014c58f97dcc9e86c8fe81c54f4179ab1937a4",
+    "bec2a9c531f2da5f6db059f528cc6d0afdd2128b997f6ce0e3a8cc38723b6d03",
+    "bf713c84c6d8239b55b6a34ac145be31ec5c2b1b5c01549775fb0e6797148b95",
+    "c08084b00147ed7cf8bffba1216f4f33f4e2d5591ea2648e0d1685fd124ef4bf",
+    "c089b0fc4cc1dc79e405fea653dbecaa6d11802fd81114926a75c079ea508d7d",
+    "c0acd1568cc9fbf1477a08bfafc0574514ed64a31097fa7d636d6ca43cc42d1a",
+    "c1849afea21b68b6286519e95fb0415987e05b80b0fb89c254faeedce6dd15e6",
+    "c65dd63589810852b60a69f5facd453dcf06ea5d6f63711f0b83418207973af7",
+    "c6981c60d67477e3ffc465cfd8b33ab707cdd3bed0e99aed744074f71d992e61",
+    "c6f9586fc4a156a5c6c835e21af3b80e7792024bc6d122cf296337cf0979f322",
+    "c866f651d5617d98abe1bf8b680b13f90178e7e0cf7eb71fcf3575cb37972c69",
+    "c8cbb0e924a84561670f692c31c2db2bdb11af9788b169b67e363494ba76d43f",
+    "c8f41c86d8dfc5c5b8185a9c4c7f9605d2b1f7a0033e519d3111446236caa896",
+    "c97cc7cf24eed486fcf9109ebef75b8598bddeab31330725465218ba70aac271",
+    "c9a102ee127184f491df40010d3ac2765b4879654d97d63c87a8952b0d59d617",
+    "c9ef518682405d12e8da30fdfc06297e82b3ec2084eb3861f658f070ee52cecc",
+    "cb05845a033b2b4b1cd7300f45c0f3d926632c031c92dd3d067aaf30baa899bb",
+    "cbfa72779c81239af505108b06ec902ea5660eca1fae6dc1c57ff67ce850ac3d",
+    "cea6a4b6cc5116a9958edb09ff25430d4b01a895dd4afc3d6d0b34b0b927de34",
+    "cf83c74b684ac4dd5e91a09322923f98432b862700b355f2e7fd73f90c3cb75b",
+    "d0a0af24e5e809084e0da0d83f3fca84d7bc3f010fefeb44ddb4de585ef15634",
+    "d0fbcffefffdd189169431a3a1d96d0f0ab7b4c30faedafe263a63cef2a315d0",
+    "d115fb9abd9c569126b74b9696b3f2e20785f25254755a561f19ef4a5b9e8553",
+    "d154de3cb91b0382cd00f661b8fdbf76b4357b9b75ea9207f84da9cd2e71e244",
+    "d1c6e8e620838a77a449637e83aaee13fe7524207a6a542a8b2a827f046e3159",
+    "d2bbaed3f209b4df70c1c17b3d85fe1468eb54f0601ab78b8b963db9138f3da1",
+    "d2de00d034551aa70e2219855ecb0190cca7136a1e5b43f82810ef3db38d9d17",
+    "d41f385d07d6249fe4918baab898e441972bd014236c8e5c413cc526b41a43ad",
+    "d4394e22543a1127f085e5bef3a39f654dcdb2245b893ad58ea6ec5cc1a9a872",
+    "d5ff8d4baaaa244135c698b067159d1aa6b342fee7a19ac664d67f3a9e37a2aa",
+    "d6cb64614319ca3b2e84f37d6576b9511ac1b7ece447b99e23e9956c1612b621",
+    "d6d27249641061d8e7c2718f4bb764989920a3e19ba77fd0cfb43e8a934cff0c",
+    "d74896e46df3367e3acaf9ed9ceabfc9e27f220dd52e5e950ba739ff5cff6bf1",
+    "d79912acfb3a21b900d7a17f50ef7ab7c51ac28b7167ef46b78e69ed3b5d19d7",
+    "d89cc6d93c94ce3a8f20739650fb05659033838137e484f8f3dcdb6591fb2f80",
+    "d8b457850a27b26a83493d749dcba364cdb5d2ca079f4deb78a5a4b08d012ff1",
+    "db20680b83626510582b1f6d3e539ae942e01461fdc272513854924029bfdab8",
+    "dbf6997be9904bd8506cfb00fcf430f0e0f7a9fc7c6c708236b06ca9fd27423e",
+    "dcd615278dadab54357fd5095a1e1129971b42fec9cd01b93f1c9dd0a7f6369b",
+    "dd7d1e2fd44363bf2fe48e3d84449ea1683dc646ea3327a1eb7c41fa6e57d22c",
+    "e07178c40794d484f08c33f6c6a7bb1a30109467194f061a60bc0cad4ac08107",
+    "e08a8eb3bd5989f7ffce6be4150fd93caa723cf6610d751f5e51d572271aa830",
+    "e0eac7bfcf33987783a1b13c967ca343a7945ade571fa48eae89d618bdd1f311",
+    "e1be183630564f0b724a1a8643c561de2348c65b55ea1a0a92bee83ef360d6fc",
+    "e308d2d83c148063c04f58971b67af8a6491b73313c9f0903586b944d966735b",
+    "e3d1e676e98620be19d271c335b745b8c6e4d4a8c91063267608f6121ab67046",
+    "e3f37fa62b47102ed53cc1999afef9635aa999fa13765b970e2b9cfe6b88f453",
+    "e4574dfd901c0c7a8eec5c63af7453209190539aa7a0c2b8a72ffed464390cfb",
+    "e49bcf7f383f9f5f9deb26174a5b1aed7062d00c7bd1cb7893d541a62d8e417a",
+    "e55ca4f6ed5db96efa65bf16bec27a9e8565acc68d53d33cc74fb89ebe45cb0f",
+    "e8611984c679cae228e4e7c78e8fc16e5eb5490a113cf581afaeaa8aa60e505c",
+    "e95b8fa911e4bf33e3f445af3d5773517a815012d75b87351319a60f81729f7b",
+    "e98408f016ef4959fcba6fd806589082ab0410815561cad4fb45abfb5be63ba5",
+    "ea877546441b8c1fb439aabb0501c20565c42bb9667f1011893d3dc4180fe383",
+    "ec5064559240e9d7675cde6a90548e82ec80e2b682be65121c1b82b5678943d2",
+    "ec57b43e8fd7d4c4316ccd4f2509e33f873fb1a42953b769a227a2e604c8dd88",
+    "ec9287f1973089b6fe327d5b149ed8d0150504341680f8b598eae08d134972b2",
+    "ed4f496af18a59a8423a2a1432a0413a8a6225af3bfec7bb703f887804ec8bf4",
+    "ed781481457ffb2eccd00821f8abbf6e014e3d9c37c0eb421ff068cf5cdf1805",
+    "ee2c23a6a46347258902a269d371da0062a420d2df41d739076cbf6d12854684",
+    "f0090f1189ccc15156d6e634481442599ed708e3d869ecbdae7abcff380efbb2",
+    "f042fa3163b5af3006e125b197d2a4d614652c4b6bec320eb4fe88a3dede9cd8",
+    "f3c26ca75a95e7604f667f2ef024cfd5a3ef7fe6e66129b369411245fc1d2089",
+    "f43edd936e9fbc242034a054dddf62c239a9b7ba99d39a95173c31c65e241ef2",
+    "f5f3fa9266f1d37e6631dd15dc4c15b3c1c36afc114c072a3e1060894e4af807",
+    "f7fda686aec26cc1901a8d2b59faeccb50abf7aebdec67f8096f3a59a1238fcc",
+    "f8a6e5dd2eb8bdfc42fc057c7bc523f06445531cf7f70c07d0b5b6bb3940f805",
+    "f974109514d054e7880c8f7fb27b4406236daa43cb07f4e9ac6a4a7757dcf9ee",
+    "f9bff2c073fe1c5a1e31ecfe1d9b56bfd6ed8ac10f9ef4e73f06f4d8f31867a3",
+    "fb35222fbb701d23dbbea978052357337cdf327524e808d684f1eeec0c6d84c9",
+    "fb556e0d7928ba81299916a3e99efca2965b6dd456f72f6920a97123a4f6e21f",
+    "fba7752ec9f3f8d36b57bd9fcba780e44843d2dbb310b80d6b4f98dfc8a52366",
+    "fc2a576ad87db1c0a13619afeb8ac56fe725005cc338cd36ce4d2ecfa5e959f4",
+    "fd2343e0bf84360fd10dd2367c1f5384923b5a03a87596e7976a56186227df47",
+    "fdc8b7ae6dfbe17a5f684fb22ae8428551ba0db217ebfddc10e8af2c24bde998",
+    "fe88e6f27b028d322d0b23d65cea981d6bbad764bcfa59264a2ca5925cf151d0"
+  ]
+}

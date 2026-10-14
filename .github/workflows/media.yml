@@ -1,0 +1,72 @@
+name: Native media runtime
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  windows-media:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+      - name: Restore checksum-locked build dependencies
+        shell: msys2 {0}
+        run: bash scripts/prepare-media-windows.sh
+      - name: Build and package pinned LGPL media
+        shell: msys2 {0}
+        run: bash scripts/build-media.sh
+      - name: Generate owned WMV fixture
+        shell: msys2 {0}
+        run: |
+          mkdir -p Native/build-media/fixtures
+          "$(cygpath -u "$LOCALAPPDATA")/SE-Vulkan/Media-0.41.0/win-x64/bin/ffmpeg.exe" -y -f lavfi -i testsrc2=size=160x96:rate=15 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 2 -c:v wmv2 -c:a wmav2 Native/build-media/fixtures/motion.wmv
+      - name: Build and exercise native media
+        shell: pwsh
+        run: |
+          ./scripts/build-native.ps1 -Configuration Release
+          cmake -S Native -B Native/build -DSEVK_MEDIA_RUNTIME="$pwd/Assets/Media/win-x64" -DSEVK_MEDIA_FIXTURE="$pwd/Native/build-media/fixtures/motion.wmv"
+          cmake --build Native/build --config Release --target sevk_media_tests sevk_media_stream
+          ctest --test-dir Native/build -C Release -R "media_" --output-on-failure
+      - name: Cross-build the pinned glibc 2.34 media package
+        shell: msys2 {0}
+        run: |
+          pwsh -NoProfile -File scripts/build-native.ps1 -Configuration Release -CrossLinux
+          pwsh -NoProfile -File scripts/build-media.ps1 -CrossLinux -MsysRoot "$(cygpath -w /)"
+          python scripts/verify-media-assets.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-win-x64
+          path: Assets/Media/win-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-linux-x64
+          path: Assets/Media/linux-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-fixture
+          path: Native/build-media/fixtures/motion.wmv
+  linux-media:
+    needs: windows-media
+    runs-on: ubuntu-24.04
+    container: almalinux:9
+    steps:
+      - name: Native test compiler
+        run: |
+          dnf install -y gcc-c++ python3 git
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: media-linux-x64
+          path: Assets/Media/linux-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: media-fixture
+          path: Native/build-media/fixtures
+      - name: Exercise the packaged runtime without system media
+        run: |
+          python3 scripts/verify-media-assets.py --platform linux-x64
+          mkdir -p Native/build-media
+          g++ -std=c++20 -O2 -INative/include -INative/third_party/mpv/include Native/src/media.cpp Native/tests/media.cpp -ldl -pthread -o Native/build-media/media-tests
+          unset LD_LIBRARY_PATH
+          Native/build-media/media-tests "$PWD/Assets/Media/linux-x64" "$PWD/Native/build-media/fixtures/motion.wmv" --fixture

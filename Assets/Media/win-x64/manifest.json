@@ -1,0 +1,703 @@
+{
+  "platform": "win-x64",
+  "cross_compiled": false,
+  "sources": {
+    "mpv": {
+      "version": "0.41.0",
+      "sha256": "ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209",
+      "url": "https://codeload.github.com/mpv-player/mpv/tar.gz/refs/tags/v0.41.0"
+    },
+    "ffmpeg": {
+      "version": "8.0.1",
+      "sha256": "05ee0b03119b45c0bdb4df654b96802e909e0a752f72e4fe3794f487229e5a41",
+      "url": "https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz"
+    },
+    "libplacebo": {
+      "version": "7.349.0",
+      "sha256": "627e32439a0b3d2b90368ead7e919f470ee7446c87cc0f7841bbe319b23aa8b1",
+      "url": "https://codeload.github.com/haasn/libplacebo/tar.gz/refs/tags/v7.349.0"
+    }
+  },
+  "configuration": "LGPL; software video; WASAPI or PulseAudio/ALSA; file inputs",
+  "dependencies": [
+    {
+      "package": "mingw-w64-x86_64-libass",
+      "receipt": "Name            : mingw-w64-x86_64-libass\nVersion         : 0.17.5-1\nDescription     : A portable library for SSA/ASS subtitles rendering (mingw-w64)\nArchitecture    : any\nURL             : https://github.com/libass/libass\nLicenses        : spdx:ISC\nGroups          : None\nProvides        : None\nDepends On      : mingw-w64-x86_64-fribidi  mingw-w64-x86_64-fontconfig  mingw-w64-x86_64-freetype  mingw-w64-x86_64-libunibreak  mingw-w64-x86_64-libiconv  mingw-w64-x86_64-harfbuzz\nOptional Deps   : None\nRequired By     : None\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 892.10 KiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/28153762039/job/83377297867)\nBuild Date      : Thu Jun 25 03:22:07 2026\nInstall Date    : Wed Oct 14 07:00:28 2026\nInstall Reason  : Explicitly installed\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-libunibreak",
+      "receipt": "Name            : mingw-w64-x86_64-libunibreak\nVersion         : 7.0-1\nDescription     : An implementation of the line breaking algorithm as described in Unicode 5.2.0 Standard Annex 14, Revision 24 (mingw-w64)\nArchitecture    : any\nURL             : https://github.com/adah1972/libunibreak/\nLicenses        : spdx:Zlib\nGroups          : None\nProvides        : None\nDepends On      : None\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-libass\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 319.25 KiB\nPackager        : CI (msys2/msys2-autobuild/5dbc5ed2/24307495420)\nBuild Date      : Sun Apr 12 09:11:21 2026\nInstall Date    : Wed Oct 14 07:00:28 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-harfbuzz",
+      "receipt": "Name            : mingw-w64-x86_64-harfbuzz\nVersion         : 14.6.0-1\nDescription     : OpenType text shaping engine (mingw-w64)\nArchitecture    : any\nURL             : https://harfbuzz.github.io/\nLicenses        : spdx:MIT\nGroups          : None\nProvides        : None\nDepends On      : mingw-w64-x86_64-cc-libs  mingw-w64-x86_64-freetype  mingw-w64-x86_64-glib2  mingw-w64-x86_64-graphite2  mingw-w64-x86_64-libpng  mingw-w64-x86_64-zlib\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-freetype  mingw-w64-x86_64-libass\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 17.65 MiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/37556746731/job/112584645451)\nBuild Date      : Tue Oct  6 21:23:51 2026\nInstall Date    : Wed Oct 14 07:00:21 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-graphite2",
+      "receipt": "Name            : mingw-w64-x86_64-graphite2\nVersion         : 1.3.15-1\nDescription     : Font rendering capabilities for complex non-Roman writing systems (mingw-w64)\nArchitecture    : any\nURL             : https://github.com/silnrsi/graphite\nLicenses        : spdx:LGPL-2.1-or-later\nGroups          : None\nProvides        : None\nDepends On      : mingw-w64-x86_64-cc-libs\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-harfbuzz\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 598.31 KiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/26916211151/job/79406381143)\nBuild Date      : Wed Jun  3 18:18:41 2026\nInstall Date    : Wed Oct 14 07:00:21 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-libstdc++",
+      "receipt": "Name            : mingw-w64-x86_64-libstdc++\nVersion         : 16.2.0-6\nDescription     : C++ runtime libraries shipped by GCC (mingw-w64)\nArchitecture    : any\nURL             : https://gcc.gnu.org\nLicenses        : spdx:GPL-3.0-or-later WITH GCC-exception-3.1 AND GFDL-1.3-or-later\nGroups          : mingw-w64-x86_64-toolchain\nProvides        : None\nDepends On      : mingw-w64-x86_64-libgcc=16.2.0-6  mingw-w64-x86_64-libwinpthread  mingw-w64-x86_64-tzdata\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-cc-libs  mingw-w64-x86_64-gcc\nOptional For    : None\nConflicts With  : mingw-w64-x86_64-gcc-libs<16.2.0-4\nReplaces        : None\nInstalled Size  : 2.57 MiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/38372743753/job/115213507115)\nBuild Date      : Tue Oct 13 04:57:53 2026\nInstall Date    : Wed Oct 14 06:58:43 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-libwinpthread",
+      "receipt": "Name            : mingw-w64-x86_64-libwinpthread\nVersion         : 14.0.0.r426.g4564ee4b5-2\nDescription     : MinGW-w64 winpthreads library (mingw-w64)\nArchitecture    : any\nURL             : https://www.mingw-w64.org/\nLicenses        : spdx:MIT AND BSD-3-Clause\nGroups          : mingw-w64-x86_64-toolchain\nProvides        : mingw-w64-x86_64-libwinpthread-git\nDepends On      : None\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-binutils  mingw-w64-x86_64-libgcc  mingw-w64-x86_64-libstdc++  mingw-w64-x86_64-winpthreads\nOptional For    : None\nConflicts With  : mingw-w64-x86_64-libwinpthread-git\nReplaces        : mingw-w64-x86_64-libwinpthread-git\nInstalled Size  : 67.59 KiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/38333273652/job/115087604430)\nBuild Date      : Mon Oct 12 21:42:12 2026\nInstall Date    : Wed Oct 14 06:58:36 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-libgcc",
+      "receipt": "Name            : mingw-w64-x86_64-libgcc\nVersion         : 16.2.0-6\nDescription     : Low-level runtime library shipped by GCC (mingw-w64)\nArchitecture    : any\nURL             : https://gcc.gnu.org\nLicenses        : spdx:GPL-3.0-or-later WITH GCC-exception-3.1 AND GFDL-1.3-or-later\nGroups          : None\nProvides        : None\nDepends On      : mingw-w64-x86_64-libwinpthread\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-cc-libs  mingw-w64-x86_64-gcc  mingw-w64-x86_64-libstdc++\nOptional For    : None\nConflicts With  : mingw-w64-x86_64-gcc-libs<16.2.0-4\nReplaces        : None\nInstalled Size  : 183.43 KiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/38372743753/job/115213507115)\nBuild Date      : Tue Oct 13 04:57:53 2026\nInstall Date    : Wed Oct 14 06:58:36 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-glib2",
+      "receipt": "Name            : mingw-w64-x86_64-glib2\nVersion         : 2.90.1-1\nDescription     : Common C routines used by GTK+ 3 and other libs (mingw-w64)\nArchitecture    : any\nURL             : https://gitlab.gnome.org/GNOME/glib\nLicenses        : spdx:LGPL-2.1-or-later\nGroups          : None\nProvides        : None\nDepends On      : mingw-w64-x86_64-gettext-runtime  mingw-w64-x86_64-libffi  mingw-w64-x86_64-pcre2  mingw-w64-x86_64-python  mingw-w64-x86_64-python-packaging  mingw-w64-x86_64-zlib\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-harfbuzz\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 40.20 MiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/37676716326/job/112982006656)\nBuild Date      : Wed Oct  7 15:45:40 2026\nInstall Date    : Wed Oct 14 07:00:21 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-pcre2",
+      "receipt": "Name            : mingw-w64-x86_64-pcre2\nVersion         : 10.49-1\nDescription     : A library that implements Perl 5-style regular expressions (mingw-w64)\nArchitecture    : any\nURL             : https://pcre.org/\nLicenses        : spdx:BSD-3-Clause\nGroups          : None\nProvides        : None\nDepends On      : mingw-w64-x86_64-bzip2  mingw-w64-x86_64-wineditline  mingw-w64-x86_64-zlib\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-glib2  mingw-w64-x86_64-ncurses\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 7.11 MiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/36575950950/job/109431498245)\nBuild Date      : Tue Sep 29 09:37:35 2026\nInstall Date    : Wed Oct 14 06:58:57 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-gettext-runtime",
+      "receipt": "Name            : mingw-w64-x86_64-gettext-runtime\nVersion         : 1.0-1\nDescription     : GNU internationalization runtime library (mingw-w64)\nArchitecture    : any\nURL             : https://www.gnu.org/software/gettext/\nLicenses        : spdx:GPL-3.0-or-later AND LGPL-2.1-or-later\nGroups          : None\nProvides        : None\nDepends On      : mingw-w64-x86_64-cc-libs  mingw-w64-x86_64-libiconv\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-binutils  mingw-w64-x86_64-glib2  mingw-w64-x86_64-libtre  mingw-w64-x86_64-xz\nOptional For    : None\nConflicts With  : mingw-w64-x86_64-gettext<=0.22.4-3\nReplaces        : None\nInstalled Size  : 2.69 MiB\nPackager        : CI (msys2/msys2-autobuild/59a03c95/21544284235)\nBuild Date      : Sat Jan 31 07:16:49 2026\nInstall Date    : Wed Oct 14 06:58:44 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-libiconv",
+      "receipt": "Name            : mingw-w64-x86_64-libiconv\nVersion         : 1.19-1\nDescription     : Character encoding conversion library (mingw-w64)\nArchitecture    : any\nURL             : https://www.gnu.org/software/libiconv/\nLicenses        : spdx:LGPL-2.1-or-later  documentation:spdx:GPL-3.0-or-later\nGroups          : None\nProvides        : None\nDepends On      : None\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-gettext-runtime  mingw-w64-x86_64-libass\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 2.44 MiB\nPackager        : CI (msys2/msys2-autobuild/5e407709/23084514348)\nBuild Date      : Sat Mar 14 04:45:32 2026\nInstall Date    : Wed Oct 14 06:58:43 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-freetype",
+      "receipt": "Name            : mingw-w64-x86_64-freetype\nVersion         : 2.15.0-1\nDescription     : TrueType font rendering library (mingw-w64)\nArchitecture    : any\nURL             : https://www.freetype.org/\nLicenses        : spdx:GPL-2.0-or-later OR FTL\nGroups          : None\nProvides        : None\nDepends On      : mingw-w64-x86_64-cc-libs  mingw-w64-x86_64-brotli  mingw-w64-x86_64-bzip2  mingw-w64-x86_64-libpng  mingw-w64-x86_64-zlib  mingw-w64-x86_64-harfbuzz\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-fontconfig  mingw-w64-x86_64-harfbuzz  mingw-w64-x86_64-libass\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 2.82 MiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/38526321298/job/115727408100)\nBuild Date      : Wed Oct 14 03:08:47 2026\nInstall Date    : Wed Oct 14 07:00:22 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-zlib",
+      "receipt": "Name            : mingw-w64-x86_64-zlib\nVersion         : 1.3.2-2\nDescription     : Compression library implementing the deflate compression method found in gzip and PKZIP (mingw-w64)\nArchitecture    : any\nURL             : https://www.zlib.net/\nLicenses        : spdx:Zlib\nGroups          : None\nProvides        : None\nDepends On      : None\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-binutils  mingw-w64-x86_64-freetype  mingw-w64-x86_64-gcc  mingw-w64-x86_64-glib2  mingw-w64-x86_64-harfbuzz  mingw-w64-x86_64-libpng  mingw-w64-x86_64-libtiff  mingw-w64-x86_64-nasm  mingw-w64-x86_64-pcre2  mingw-w64-x86_64-python  mingw-w64-x86_64-sqlite3  mingw-w64-x86_64-tcl\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 428.95 KiB\nPackager        : CI (msys2/msys2-autobuild/ad23bc5d/22710411548)\nBuild Date      : Thu Mar  5 04:07:24 2026\nInstall Date    : Wed Oct 14 06:58:44 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-libpng",
+      "receipt": "Name            : mingw-w64-x86_64-libpng\nVersion         : 1.6.59-1\nDescription     : A collection of routines used to create PNG format graphics (mingw-w64)\nArchitecture    : any\nURL             : http://www.libpng.org/pub/png/libpng.html\nLicenses        : custom\nGroups          : None\nProvides        : None\nDepends On      : mingw-w64-x86_64-zlib\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-freetype  mingw-w64-x86_64-harfbuzz  mingw-w64-x86_64-libwebp\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 2.51 MiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/36575950950/job/109431498245)\nBuild Date      : Tue Sep 29 09:35:27 2026\nInstall Date    : Wed Oct 14 07:00:19 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-bzip2",
+      "receipt": "Name            : mingw-w64-x86_64-bzip2\nVersion         : 1.0.8-4\nDescription     : A high-quality data compression program (mingw-w64)\nArchitecture    : any\nURL             : https://sourceware.org/bzip2/\nLicenses        : custom\nGroups          : None\nProvides        : None\nDepends On      : None\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-freetype  mingw-w64-x86_64-pcre2  mingw-w64-x86_64-python\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 501.12 KiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/31803563300/job/94776980328)\nBuild Date      : Fri Aug 14 09:18:43 2026\nInstall Date    : Wed Oct 14 06:58:56 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-brotli",
+      "receipt": "Name            : mingw-w64-x86_64-brotli\nVersion         : 1.2.0-1\nDescription     : Brotli compression library (mingw-w64)\nArchitecture    : any\nURL             : https://github.com/google/brotli\nLicenses        : spdx:MIT\nGroups          : None\nProvides        : None\nDepends On      : None\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-freetype\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 2.10 MiB\nPackager        : CI (msys2/msys2-autobuild/db1199d2/19124245426)\nBuild Date      : Wed Nov  5 22:57:08 2025\nInstall Date    : Wed Oct 14 07:00:19 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-fribidi",
+      "receipt": "Name            : mingw-w64-x86_64-fribidi\nVersion         : 1.0.17-1\nDescription     : A Free Implementation of the Unicode Bidirectional Algorithm (mingw-w64)\nArchitecture    : any\nURL             : https://github.com/fribidi/fribidi\nLicenses        : spdx:LGPL-2.1-or-later\nGroups          : None\nProvides        : None\nDepends On      : None\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-libass\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 490.58 KiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/35691417671/job/106629026697)\nBuild Date      : Tue Sep 22 01:48:59 2026\nInstall Date    : Wed Oct 14 07:00:19 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-fontconfig",
+      "receipt": "Name            : mingw-w64-x86_64-fontconfig\nVersion         : 2.18.3-1\nDescription     : A library for configuring and customizing font access (mingw-w64)\nArchitecture    : any\nURL             : https://wiki.freedesktop.org/www/Software/fontconfig/\nLicenses        : custom\nGroups          : None\nProvides        : None\nDepends On      : mingw-w64-x86_64-cc-libs  mingw-w64-x86_64-expat  mingw-w64-x86_64-freetype\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-libass\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 1833.71 KiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/31154837955/job/92791986382)\nBuild Date      : Fri Aug  7 02:45:45 2026\nInstall Date    : Wed Oct 14 07:00:22 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : Yes\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "mingw-w64-x86_64-expat",
+      "receipt": "Name            : mingw-w64-x86_64-expat\nVersion         : 2.9.0-1\nDescription     : An XML parser library (mingw-w64)\nArchitecture    : any\nURL             : https://libexpat.github.io/\nLicenses        : spdx:MIT\nGroups          : None\nProvides        : None\nDepends On      : None\nOptional Deps   : None\nRequired By     : mingw-w64-x86_64-fontconfig  mingw-w64-x86_64-python\nOptional For    : None\nConflicts With  : None\nReplaces        : None\nInstalled Size  : 839.44 KiB\nPackager        : CI (https://github.com/msys2/msys2-autobuild/actions/runs/37432495244/job/112166395358)\nBuild Date      : Tue Oct  6 03:55:04 2026\nInstall Date    : Wed Oct 14 06:58:56 2026\nInstall Reason  : Installed as a dependency for another package\nInstall Script  : No\nValidated By    : SHA-256 Sum  Signature\n\n"
+    },
+    {
+      "package": "build-environment",
+      "installed": "base 2022.06-1\nbash 5.3.020-1\nbash-completion 2.18.0-1\nbrotli 1.2.0-1\nbsdtar 3.8.9-1\nbzip2 1.0.8-4\nca-certificates 20260816-1\ncoreutils 8.32-5\ncurl 8.22.0-1\ndash 0.5.13.4-1\ndiffutils 3.12-1\nfile 5.48-1\nfilesystem 2026.03.06-1\nfindutils 4.11.0-2\ngawk 5.4.1-1\ngcc-libs 15.3.0-1\ngetent 2.18.90-6\ngettext 0.22.5-1\ngmp 6.3.0-2\ngnupg 2.4.9-3\ngrep 1~3.0-7\ngzip 1.15-1\ninetutils 2.8-1\ninfo 7.2-3\nless 710-1\nlibargp 20260115-1\nlibasprintf 0.22.5-1\nlibassuan 3.0.2-1\nlibbz2 1.0.8-4\nlibcurl 8.22.0-1\nlibexpat 2.9.0-1\nlibffi 3.8.0-1\nlibgcrypt 1.12.4-1\nlibgettextpo 0.22.5-1\nlibgnutls 3.8.13-2\nlibgpg-error 1.61-1\nlibhogweed 4.0-1\nlibiconv 1.19-1\nlibidn2 2.3.8-1\nlibintl 0.22.5-1\nlibksba 1.8.1-1\nliblz4 1.10.0-1\nliblzma 5.8.4-1\nlibnettle 4.0-1\nlibnghttp2 1.70.0-1\nlibnghttp3 1.18.0-1\nlibngtcp2 1.25.0-1\nlibnpth 1.8-1\nlibopenssl 3.6.5-1\nlibp11-kit 0.26.5-1\nlibpcre 8.45-5\nlibpcre2_8 10.49-1\nlibpsl 0.23.2-1\nlibreadline 8.3.006-1\nlibsqlite 3.53.4-1\nlibssh2 1.11.1-1\nlibtasn1 4.21.0-1\nlibunistring 1.4.2-1\nlibutil-linux 2.40.2-2\nlibxcrypt 4.5.2-1\nlibzstd 1.5.7-1\nmake 4.4.1-3\nmingw-w64-x86_64-binutils 2.47-4\nmingw-w64-x86_64-brotli 1.2.0-1\nmingw-w64-x86_64-bzip2 1.0.8-4\nmingw-w64-x86_64-cc-libs 16.2.0-6\nmingw-w64-x86_64-crt 14.0.0.r426.g4564ee4b5-1\nmingw-w64-x86_64-expat 2.9.0-1\nmingw-w64-x86_64-fontconfig 2.18.3-1\nmingw-w64-x86_64-freetype 2.15.0-1\nmingw-w64-x86_64-fribidi 1.0.17-1\nmingw-w64-x86_64-gcc 16.2.0-6\nmingw-w64-x86_64-gettext-runtime 1.0-1\nmingw-w64-x86_64-giflib 6.1.3-1\nmingw-w64-x86_64-glib2 2.90.1-1\nmingw-w64-x86_64-glslang 16.6.0-1\nmingw-w64-x86_64-gmp 6.3.0-2\nmingw-w64-x86_64-graphite2 1.3.15-1\nmingw-w64-x86_64-harfbuzz 14.6.0-1\nmingw-w64-x86_64-headers 14.0.0.r426.g4564ee4b5-1\nmingw-w64-x86_64-isl 0.28-1\nmingw-w64-x86_64-jbigkit 2.1-6\nmingw-w64-x86_64-lcms2 2.19.1-1\nmingw-w64-x86_64-lerc 4.1.1-1\nmingw-w64-x86_64-libass 0.17.5-1\nmingw-w64-x86_64-libb2 0.98.1-3\nmingw-w64-x86_64-libdeflate 1.26-1\nmingw-w64-x86_64-libdovi 3.4.0-1\nmingw-w64-x86_64-libffi 3.8.0-1\nmingw-w64-x86_64-libgcc 16.2.0-6\nmingw-w64-x86_64-libiconv 1.19-1\nmingw-w64-x86_64-libjpeg-turbo 3.2.0-1\nmingw-w64-x86_64-libplacebo 7.360.1-2\nmingw-w64-x86_64-libpng 1.6.59-1\nmingw-w64-x86_64-libstdc++ 16.2.0-6\nmingw-w64-x86_64-libsystre 1.0.2-3\nmingw-w64-x86_64-libtiff 4.7.2-1\nmingw-w64-x86_64-libtre 0.9.0-2\nmingw-w64-x86_64-libunibreak 7.0-1\nmingw-w64-x86_64-libwebp 1.6.0-1\nmingw-w64-x86_64-libwinpthread 14.0.0.r426.g4564ee4b5-2\nmingw-w64-x86_64-meson 1.12.1-1\nmingw-w64-x86_64-mpc 1.4.1-1\nmingw-w64-x86_64-mpdecimal 4.0.1-3\nmingw-w64-x86_64-mpfr 4.2.2-3\nmingw-w64-x86_64-nasm 3.02-1\nmingw-w64-x86_64-ncurses 6.6-4\nmingw-w64-x86_64-ninja 1.13.2-1\nmingw-w64-x86_64-openssl 3.6.5-1\nmingw-w64-x86_64-pcre2 10.49-1\nmingw-w64-x86_64-pkgconf 1~3.0.8-1\nmingw-w64-x86_64-python 3.14.8-1\nmingw-w64-x86_64-python-jinja 3.1.6-4\nmingw-w64-x86_64-python-markupsafe 3.0.4-1\nmingw-w64-x86_64-python-packaging 26.3-1\nmingw-w64-x86_64-shaderc 2026.4-1\nmingw-w64-x86_64-spirv-cross 1~1.4.363.0-1\nmingw-w64-x86_64-spirv-tools 3~1.4.363.0-1\nmingw-w64-x86_64-sqlite3 3.54.0-1\nmingw-w64-x86_64-tcl 8.6.18-1\nmingw-w64-x86_64-tk 8.6.18-1\nmingw-w64-x86_64-tzdata 2026e-1\nmingw-w64-x86_64-vulkan-headers 1~1.4.363.0-1\nmingw-w64-x86_64-vulkan-loader 1~1.4.363.0-1\nmingw-w64-x86_64-windows-default-manifest 20260815-1\nmingw-w64-x86_64-wineditline 2.208-1\nmingw-w64-x86_64-winpthreads 14.0.0.r426.g4564ee4b5-2\nmingw-w64-x86_64-xz 5.8.4-1\nmingw-w64-x86_64-zlib 1.3.2-2\nmingw-w64-x86_64-zstd 1.5.7-2\nmintty 1~3.8.3-1\nmpfr 4.2.2-1\nmsys2-keyring 1~20260814-1\nmsys2-launcher 1.5-3\nmsys2-runtime 3.6.10-7\nnano 9.2-1\nncurses 6.6-2\nnettle 4.0-1\nopenssl 3.6.5-1\np11-kit 0.26.5-1\npacman 6.1.0-25\npacman-contrib 1.10.6-2\npacman-mirrors 20260129-1\npinentry 1.3.3-1\nrebase 4.5.0-5\nsed 4.9-1\ntar 1.35-3\ntime 1.10-1\ntzcode 2026e-1\nutil-linux 2.40.2-2\nwget 1.25.0-4\nwhich 2.25-1\nxz 5.8.4-1\nzlib 1.3.2-1\nzstd 1.5.7-1\n",
+      "archives": [
+        {
+          "name": "diffutils-3.12-1-x86_64.pkg.tar.zst",
+          "sha256": "7902c8ce3d4dd69a0f5e98dc9d5c83c17b23314ba486169db57ef6e2835ce3b6"
+        },
+        {
+          "name": "make-4.4.1-3-x86_64.pkg.tar.zst",
+          "sha256": "af0bdba17f06fe037f0194069adaa31a8fe45f1a11381501896aea1fae37bd5d"
+        },
+        {
+          "name": "mingw-w64-x86_64-binutils-2.47-4-any.pkg.tar.zst",
+          "sha256": "e36c52a7fe1d104c2efd97dc74162386eabf8323f6aeb9b83aeb574b291a7da0"
+        },
+        {
+          "name": "mingw-w64-x86_64-brotli-1.2.0-1-any.pkg.tar.zst",
+          "sha256": "f5f2f7e723a08378241d15f0537386950c1a48e2d82bc47bedd632bd61852aba"
+        },
+        {
+          "name": "mingw-w64-x86_64-bzip2-1.0.8-4-any.pkg.tar.zst",
+          "sha256": "123768f30ae14ba654a6feb70f8526146a331bc85f831a91a549ffb3f6cbffc7"
+        },
+        {
+          "name": "mingw-w64-x86_64-cc-libs-16.2.0-6-any.pkg.tar.zst",
+          "sha256": "0128c6f7fc227e5862351e970e52d42370c72c896db87b8413c2699c6337a13a"
+        },
+        {
+          "name": "mingw-w64-x86_64-crt-14.0.0.r426.g4564ee4b5-1-any.pkg.tar.zst",
+          "sha256": "5513117e204c933ed3b3e17b1bb809667653b72b3ca932d0c048ffc8f01f3801"
+        },
+        {
+          "name": "mingw-w64-x86_64-expat-2.9.0-1-any.pkg.tar.zst",
+          "sha256": "d81be70f6e22b988f00564bb16a2769347a6321964c99042d8ed8a7ed72b4829"
+        },
+        {
+          "name": "mingw-w64-x86_64-fontconfig-2.18.3-1-any.pkg.tar.zst",
+          "sha256": "7cdd32ad27ee9f8d176698744f3efa123feba57cecb833e87c221b50cd7224d1"
+        },
+        {
+          "name": "mingw-w64-x86_64-freetype-2.15.0-1-any.pkg.tar.zst",
+          "sha256": "426bd4e0e979118682be881ace475ef4d3ff1668084ac796350fb7e0504b82ef"
+        },
+        {
+          "name": "mingw-w64-x86_64-fribidi-1.0.17-1-any.pkg.tar.zst",
+          "sha256": "707f6a2f9a49c83938271bfd92a11f80bd4c18c4837210173fcb39e9d841e5ac"
+        },
+        {
+          "name": "mingw-w64-x86_64-gcc-16.2.0-6-any.pkg.tar.zst",
+          "sha256": "f9a78b7f257984bc8a2b62d5f93f1af45b03d4b84afaf2eafc7d90c9b8c4568e"
+        },
+        {
+          "name": "mingw-w64-x86_64-gettext-runtime-1.0-1-any.pkg.tar.zst",
+          "sha256": "be68d7f260633284b910c588c6d82ee304a81c8817a686d2cd9df83f872c27af"
+        },
+        {
+          "name": "mingw-w64-x86_64-giflib-6.1.3-1-any.pkg.tar.zst",
+          "sha256": "bfa540ab9892bbc5161e3f81fcfb0ca71f44bd2e00478b5df79f899825c523f5"
+        },
+        {
+          "name": "mingw-w64-x86_64-glib2-2.90.1-1-any.pkg.tar.zst",
+          "sha256": "152ba3b2cfb35feebc0fcb690889b16a6f0c2b89ced52e65aea45d089f86d219"
+        },
+        {
+          "name": "mingw-w64-x86_64-glslang-16.6.0-1-any.pkg.tar.zst",
+          "sha256": "cede283d63670793d3c4bd7934ae26d8f1523476a304f98d3a3a13c2598dbfef"
+        },
+        {
+          "name": "mingw-w64-x86_64-gmp-6.3.0-2-any.pkg.tar.zst",
+          "sha256": "8924433974c4add46cb46ea4f6ef283b5c5139d3f552375115b5580f855015cc"
+        },
+        {
+          "name": "mingw-w64-x86_64-graphite2-1.3.15-1-any.pkg.tar.zst",
+          "sha256": "6ad20d6c16e559f7c4b06fe71248e1201c7edf494d04e5721ed7f9b3f7fd1f74"
+        },
+        {
+          "name": "mingw-w64-x86_64-harfbuzz-14.6.0-1-any.pkg.tar.zst",
+          "sha256": "23a9b505159b3b9086ca918cc437c20e496d2f411aa25a050bd82b1070a079d1"
+        },
+        {
+          "name": "mingw-w64-x86_64-headers-14.0.0.r426.g4564ee4b5-1-any.pkg.tar.zst",
+          "sha256": "b6f06085e8f3858cb59ed72d581203c75000592bdaa55af2710be3b1a752a7bb"
+        },
+        {
+          "name": "mingw-w64-x86_64-isl-0.28-1-any.pkg.tar.zst",
+          "sha256": "03ed191718a89edc46e783deed46b8fd20ec47a09fcdefb37c6c4169b6188b08"
+        },
+        {
+          "name": "mingw-w64-x86_64-jbigkit-2.1-6-any.pkg.tar.zst",
+          "sha256": "3db9e32abca5d208920a096e5ae01952f2d8a361780428b9646b6da6750f7321"
+        },
+        {
+          "name": "mingw-w64-x86_64-lcms2-2.19.1-1-any.pkg.tar.zst",
+          "sha256": "f9858d910df27d3762590e5da75e2589f9f0216ebbf1b6d58bdddbab3d4f35ad"
+        },
+        {
+          "name": "mingw-w64-x86_64-lerc-4.1.1-1-any.pkg.tar.zst",
+          "sha256": "5bc170650bc02812a7c674a5f7b8ff2781b4bfa259ab2da2264c3008e2a04c72"
+        },
+        {
+          "name": "mingw-w64-x86_64-libass-0.17.5-1-any.pkg.tar.zst",
+          "sha256": "11966a8df12b99454ac552c587f58c4ea81bb040bad1cfdd219bf2f50f567f8d"
+        },
+        {
+          "name": "mingw-w64-x86_64-libb2-0.98.1-3-any.pkg.tar.zst",
+          "sha256": "3c898f08c5f19e25dc6d7e39aa36b6f323141f0e62c5c50f089cd3f89711854c"
+        },
+        {
+          "name": "mingw-w64-x86_64-libdeflate-1.26-1-any.pkg.tar.zst",
+          "sha256": "aa0d9b5e2d0413d5e01745a48ef0c8fa293172d48c13f87b61ada627ab7407ad"
+        },
+        {
+          "name": "mingw-w64-x86_64-libdovi-3.4.0-1-any.pkg.tar.zst",
+          "sha256": "371c8c7474c15d99b011e193d0413788a5d52098a3aee258c3977b78c5dda056"
+        },
+        {
+          "name": "mingw-w64-x86_64-libffi-3.8.0-1-any.pkg.tar.zst",
+          "sha256": "6dad7f3c6c900d3c64a4fe0c2764b405e678b22df3521d2284ffaeff0198b84b"
+        },
+        {
+          "name": "mingw-w64-x86_64-libgcc-16.2.0-6-any.pkg.tar.zst",
+          "sha256": "e0815432c4225892b0eef57055fe507fa0b9a036436f046605f6629696bd1b88"
+        },
+        {
+          "name": "mingw-w64-x86_64-libiconv-1.19-1-any.pkg.tar.zst",
+          "sha256": "21e334d0911f25de75d3e18e0697648bcecfa9658256d600cad0827d719c2f35"
+        },
+        {
+          "name": "mingw-w64-x86_64-libjpeg-turbo-3.2.0-1-any.pkg.tar.zst",
+          "sha256": "ef3f55cf5238a8045c8f37796d730e4a5ee619d29ca9254aaa62456e5b5b7e51"
+        },
+        {
+          "name": "mingw-w64-x86_64-libplacebo-7.360.1-2-any.pkg.tar.zst",
+          "sha256": "4a3e80c3ef2da2e948764f909c4dfabb2929a1b18fcc4b956c47cf3cf4dc2453"
+        },
+        {
+          "name": "mingw-w64-x86_64-libpng-1.6.59-1-any.pkg.tar.zst",
+          "sha256": "e1830319ea6c601c1e4d146b8e78264bcbb6326f0935b82c14a9b282af2127e1"
+        },
+        {
+          "name": "mingw-w64-x86_64-libstdc++-16.2.0-6-any.pkg.tar.zst",
+          "sha256": "924b47e8c3e20b6448e29d3333acc638a4f4783c1c45230e09673532f9c4f198"
+        },
+        {
+          "name": "mingw-w64-x86_64-libsystre-1.0.2-3-any.pkg.tar.zst",
+          "sha256": "ea20a54127fe2a606ef0f2bef62b1abef77710840b661b832a933b4020bfe316"
+        },
+        {
+          "name": "mingw-w64-x86_64-libtiff-4.7.2-1-any.pkg.tar.zst",
+          "sha256": "ebc466fa5664c1528834c59ee7134ba57df6db224e503b690870e2c613f30c3e"
+        },
+        {
+          "name": "mingw-w64-x86_64-libtre-0.9.0-2-any.pkg.tar.zst",
+          "sha256": "c4051508d063258e1e02dd29615edb7d73c5c5f582ae42795fdd92e7ddce506b"
+        },
+        {
+          "name": "mingw-w64-x86_64-libunibreak-7.0-1-any.pkg.tar.zst",
+          "sha256": "ec35669473cad90472a97cdf60f0dc4292383c7dab7bad348ec22c45134c1bce"
+        },
+        {
+          "name": "mingw-w64-x86_64-libwebp-1.6.0-1-any.pkg.tar.zst",
+          "sha256": "360b1690d41eb497dfe50526460a2424600a6a806cbb76c5b0fec9f14623ac59"
+        },
+        {
+          "name": "mingw-w64-x86_64-libwinpthread-14.0.0.r426.g4564ee4b5-2-any.pkg.tar.zst",
+          "sha256": "ac791deaf730ef7aa6fa66f31ce6ec53a02c43fa85562233a981c84c93456760"
+        },
+        {
+          "name": "mingw-w64-x86_64-meson-1.12.1-1-any.pkg.tar.zst",
+          "sha256": "0b9105d728bfebd4e887f96c59d2dbba4e45590351dd4d3859e04158eedec5ef"
+        },
+        {
+          "name": "mingw-w64-x86_64-mpc-1.4.1-1-any.pkg.tar.zst",
+          "sha256": "ce024a90d59c8a591d2c88ef94a386c6367750bf9edc6a944e80815ec5d93344"
+        },
+        {
+          "name": "mingw-w64-x86_64-mpdecimal-4.0.1-3-any.pkg.tar.zst",
+          "sha256": "8da7e7f78434f188664c4d2779c03ea7a80f7f5837a115834ab734b352a613e5"
+        },
+        {
+          "name": "mingw-w64-x86_64-mpfr-4.2.2-3-any.pkg.tar.zst",
+          "sha256": "9ecbc05f1f855bc656a8f111d367f61fbd90dbbfcf469ba74d6d5dd1ec07a542"
+        },
+        {
+          "name": "mingw-w64-x86_64-nasm-3.02-1-any.pkg.tar.zst",
+          "sha256": "63493c3f1ee2ea71727acfc338c53a6f5a18d1c2c21cdb5d39dea227756e2fe4"
+        },
+        {
+          "name": "mingw-w64-x86_64-ncurses-6.6-4-any.pkg.tar.zst",
+          "sha256": "7bf5159441d00262085d2619f6c26877ea7595d4dafc6840637c6c5fccda5cf5"
+        },
+        {
+          "name": "mingw-w64-x86_64-ninja-1.13.2-1-any.pkg.tar.zst",
+          "sha256": "107792ed3b5ffc9807e004602609661fbd95637546a66cfb5b7f661e9eb891aa"
+        },
+        {
+          "name": "mingw-w64-x86_64-openssl-3.6.5-1-any.pkg.tar.zst",
+          "sha256": "389d1af21e99223d9e2cd32d4c073131b276da85be7636bd8d23571f6938864f"
+        },
+        {
+          "name": "mingw-w64-x86_64-pcre2-10.49-1-any.pkg.tar.zst",
+          "sha256": "0abc5313085a0f9b4a77a1580d92b09761371cb3a1f31d01051a94a289fb9413"
+        },
+        {
+          "name": "mingw-w64-x86_64-pkgconf-1~3.0.8-1-any.pkg.tar.zst",
+          "sha256": "b8ef0afd0f5da42c40a455491148c6e8ca5436ab2f0167f0a93074d4eeb9249b"
+        },
+        {
+          "name": "mingw-w64-x86_64-python-3.14.8-1-any.pkg.tar.zst",
+          "sha256": "0b575caea0d7ce833c943b9658b6464ef1af1b97c338d870ef721ffa26548c58"
+        },
+        {
+          "name": "mingw-w64-x86_64-python-jinja-3.1.6-4-any.pkg.tar.zst",
+          "sha256": "6cc532ca389e21d91dc281aa6bcc4e9e4f99afeccc60358012587e8c9a59c7a3"
+        },
+        {
+          "name": "mingw-w64-x86_64-python-markupsafe-3.0.4-1-any.pkg.tar.zst",
+          "sha256": "22bccf1e651eb3657444196c2b20f47f287b4ee94de4b1ef0267d8280185cb1a"
+        },
+        {
+          "name": "mingw-w64-x86_64-python-packaging-26.3-1-any.pkg.tar.zst",
+          "sha256": "69e6eff5c623ebd1cc3cfca13d8bbc6c70b0ca1dfbc3704b251478a30a25b20e"
+        },
+        {
+          "name": "mingw-w64-x86_64-shaderc-2026.4-1-any.pkg.tar.zst",
+          "sha256": "8af380b68ba3cbb0abcd70eb17a1bb84fc7925915fd1a7a5d570cd1da8d0c2dc"
+        },
+        {
+          "name": "mingw-w64-x86_64-spirv-cross-1~1.4.363.0-1-any.pkg.tar.zst",
+          "sha256": "191494c8a289c246985cad164d9526c315621b976229e547d8b22bccd11e53d5"
+        },
+        {
+          "name": "mingw-w64-x86_64-spirv-tools-3~1.4.363.0-1-any.pkg.tar.zst",
+          "sha256": "c9fde26d5dafa8f175de4914fc81e38335d3cf58740445c8fec07232e11b7916"
+        },
+        {
+          "name": "mingw-w64-x86_64-sqlite3-3.54.0-1-any.pkg.tar.zst",
+          "sha256": "c139c0b99e79a45fbfb563457838d42bc4904dd877ebed2360b9f909914e7546"
+        },
+        {
+          "name": "mingw-w64-x86_64-tcl-8.6.18-1-any.pkg.tar.zst",
+          "sha256": "d95289300fd8e16bd5cb241b9928a256695aeebeca2885deef3326cd4a4d5ba8"
+        },
+        {
+          "name": "mingw-w64-x86_64-tk-8.6.18-1-any.pkg.tar.zst",
+          "sha256": "42aa79962e1679dd55e93f79a25dc1e50c7235f143ab501b3ec68debd0d32a3e"
+        },
+        {
+          "name": "mingw-w64-x86_64-tzdata-2026e-1-any.pkg.tar.zst",
+          "sha256": "6d28805f8fb6517011cc309aa452111565afa1bc9188ad784cb5f62df98f0988"
+        },
+        {
+          "name": "mingw-w64-x86_64-vulkan-headers-1~1.4.363.0-1-any.pkg.tar.zst",
+          "sha256": "d2e0c72a461e3d128caeac9fbf113fb3cce14644acece32339e448b984d8938d"
+        },
+        {
+          "name": "mingw-w64-x86_64-vulkan-loader-1~1.4.363.0-1-any.pkg.tar.zst",
+          "sha256": "281fa31b1a023485d4fd04a092a8b5e9ca2f59804df7fcf9f2d4e5aaa5438af0"
+        },
+        {
+          "name": "mingw-w64-x86_64-windows-default-manifest-20260815-1-any.pkg.tar.zst",
+          "sha256": "d2dd9a4f3a3362bc85ca273dff2b0f9868cfba7ba60151499b5935a049f00d74"
+        },
+        {
+          "name": "mingw-w64-x86_64-wineditline-2.208-1-any.pkg.tar.zst",
+          "sha256": "dfe7fab66632eececc73d84053eae2be8dd2146ecefe0fc2133277706084d7ea"
+        },
+        {
+          "name": "mingw-w64-x86_64-winpthreads-14.0.0.r426.g4564ee4b5-2-any.pkg.tar.zst",
+          "sha256": "c19924c9a353cbbca5d209cb95f0fc1c3a2051dd788f4b1a109ba4df97bbbe0f"
+        },
+        {
+          "name": "mingw-w64-x86_64-xz-5.8.4-1-any.pkg.tar.zst",
+          "sha256": "2de0f26da60b7ff7aa192a226330d7de6b1099cb9b9f9de4145affb80146bbc8"
+        },
+        {
+          "name": "mingw-w64-x86_64-zlib-1.3.2-2-any.pkg.tar.zst",
+          "sha256": "9e75842a070ba648e986e12424e1c92c9d7d77200e85f6a34eeb600819f2e694"
+        },
+        {
+          "name": "mingw-w64-x86_64-zstd-1.5.7-2-any.pkg.tar.zst",
+          "sha256": "1add6705b344664f6aca108c85f79ab5bdd9e1162662bb06a4cf40a34f6e0907"
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "path": "avcodec-62.dll",
+      "sha256": "1a5acbda272ae34966fdee6290926980ab1a41607697952beb625dacf5a4e3d8",
+      "bytes": 4513567
+    },
+    {
+      "path": "avfilter-11.dll",
+      "sha256": "e2acc8fbb45ac629937890c1b3841290d10fbfb1bf4cc3b82c7922f2dfc8a584",
+      "bytes": 336349
+    },
+    {
+      "path": "avformat-62.dll",
+      "sha256": "db99cc012379c818c7ba0a781939029c536169a0505ad01131630103a716596f",
+      "bytes": 823380
+    },
+    {
+      "path": "avutil-60.dll",
+      "sha256": "e971e05db852db5ed06fc2a0c9a2db85885a69116011fceec7799929a22a5250",
+      "bytes": 1296943
+    },
+    {
+      "path": "Legal/ffmpeg-8.0.1-COPYING.LGPLv2.1",
+      "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30",
+      "bytes": 26517
+    },
+    {
+      "path": "Legal/ffmpeg-8.0.1-LICENSE.md",
+      "sha256": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af",
+      "bytes": 4346
+    },
+    {
+      "path": "Legal/ffmpeg-config.h",
+      "sha256": "e07300aa9b37ad57138c9949de68589a5b2454c679db4fa24a71875e1cf62294",
+      "bytes": 23508
+    },
+    {
+      "path": "Legal/libplacebo-7.349.0-LICENSE",
+      "sha256": "b3aa400aca6d2ba1f0bd03bd98d03d1fe7489a3bbb26969d72016360af8a5c9d",
+      "bytes": 24478
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-brotli/LICENSE",
+      "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94",
+      "bytes": 1084
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-bzip2/LICENSE",
+      "sha256": "c6dbbf828498be844a89eaa3b84adbab3199e342eb5cb2ed2f0d4ba7ec0f38a3",
+      "bytes": 1896
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-expat/COPYING",
+      "sha256": "31b15de82aa19a845156169a17a5488bf597e561b2c318d159ed583139b25e87",
+      "bytes": 1144
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-fontconfig/COPYING",
+      "sha256": "51a51aa9823704fd90bccc616cdd17ebabb5b2b3e9cbde886ca02c7002288067",
+      "bytes": 8616
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-freetype/FTL.TXT",
+      "sha256": "5a5ee54c5001bbad1cdc1a57cc3dd4c42199b2da09d39c7ee41fab002d02967f",
+      "bytes": 6743
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-freetype/GPLv2.TXT",
+      "sha256": "c4120c6752c910c299e3bd9cb3a46ff262c268303ca2069b61f92f10a5656c18",
+      "bytes": 17994
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-fribidi/COPYING",
+      "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+      "bytes": 26419
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-gettext-runtime/COPYING",
+      "sha256": "03133addae5b99a6148c538300e6d97074453089be1423b741bd081f18e2b298",
+      "bytes": 65
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-gettext-runtime/COPYING.LIB",
+      "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+      "bytes": 26419
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-glib2/COPYING",
+      "sha256": "fa6f36630bb1e0c571d34b2bbdf188d08495c9dbf58f28cac112f303fc1f58fb",
+      "bytes": 25967
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-graphite2/COPYING",
+      "sha256": "2c272829ff23f182c8bf7ea12fedea69b0ae148663123ed5240c117cb129c9c1",
+      "bytes": 1235
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-graphite2/LICENSE",
+      "sha256": "cab46cd45adbfea4b1d0f14b033c70062c73074fa0b56532c2f351576ddf455e",
+      "bytes": 29228
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-harfbuzz/COPYING",
+      "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
+      "bytes": 1971
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-libgcc/COPYING.RUNTIME",
+      "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74",
+      "bytes": 3324
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-libgcc/COPYING3",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "bytes": 35147
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-libiconv/COPYING",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "bytes": 35147
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-libiconv/COPYING.LIB",
+      "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+      "bytes": 26419
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-libiconv/README",
+      "sha256": "4ae66e61d1c6593c84c47105b368d579bcee1af566dbb959ec63a0c48425dcf4",
+      "bytes": 5741
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-libpng/LICENSE",
+      "sha256": "bdb0a645ea18c60507d0368379b1ac5474b92255fcc2d115e07486a7672ba526",
+      "bytes": 5345
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-libstdc++/COPYING.RUNTIME",
+      "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74",
+      "bytes": 3324
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-libstdc++/COPYING3",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "bytes": 35147
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-libunibreak/LICENCE",
+      "sha256": "0c57e2ec42ece17791a75d2f9b2f8e0663181be008667a507f765b3ef22522db",
+      "bytes": 1045
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-libwinpthread/COPYING",
+      "sha256": "63263614cdd29f2f93cba85e992f041b31f9fc7b4033692f31269489a8a1b177",
+      "bytes": 2883
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-pcre2/COPYING",
+      "sha256": "99272c55f3dcfa07a8a7e15a5c1a33096e4727de74241d65fa049fccfdd59507",
+      "bytes": 97
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-pcre2/LICENCE.md",
+      "sha256": "197d8a73ffee0d6b09adba2f9c677b5f5aede24edf89258a68e48248d010d811",
+      "bytes": 4011
+    },
+    {
+      "path": "Legal/mingw-w64-x86_64-zlib/LICENSE",
+      "sha256": "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2",
+      "bytes": 1002
+    },
+    {
+      "path": "Legal/mpv-0.41.0-Copyright",
+      "sha256": "bfe9ee4cceabcb8ecbfadf208d04156f73d801e6a57369a5606bb8341e204a23",
+      "bytes": 4096
+    },
+    {
+      "path": "Legal/mpv-0.41.0-LICENSE.LGPL",
+      "sha256": "72b672113d642cbb8ef5dcc76938db801983c56e50b1400ab930f1a64d6dc8d9",
+      "bytes": 26410
+    },
+    {
+      "path": "Legal/mpv-build.log",
+      "sha256": "4be8f4a63d2fbc686dfcffd245b5788cc68fdbcd728f93e61fa469753e137041",
+      "bytes": 84735
+    },
+    {
+      "path": "Legal/mpv-config.h",
+      "sha256": "52d36fa84e041d15748bc9f49c415a4c88867c34a1def7543787e3f21a91561d",
+      "bytes": 4271
+    },
+    {
+      "path": "Legal/placebo-build.log",
+      "sha256": "5a813d597d143f8143f7b69182c5b2aab4769bd2017e05f4c3e8bddab670f81c",
+      "bytes": 18050
+    },
+    {
+      "path": "libass-9.dll",
+      "sha256": "d7e21a7fa952033ff5bbacd2564b343671bf0ad4ae9338613935f2709861b9d2",
+      "bytes": 351277
+    },
+    {
+      "path": "libbrotlicommon.dll",
+      "sha256": "ca7bc06ead80259971badf2cd0bfc688db9154dad65f139f49a38b4be9976f97",
+      "bytes": 143429
+    },
+    {
+      "path": "libbrotlidec.dll",
+      "sha256": "a142dc6cfa77cb907028aa9426f486f3d8de37855e8db2ae2894147908121881",
+      "bytes": 62461
+    },
+    {
+      "path": "libbz2-1.dll",
+      "sha256": "a4fbb97c26662d2b8a80bf4597ed3effb69b12048b0cb1eef2c3f211e2e66673",
+      "bytes": 108633
+    },
+    {
+      "path": "libexpat-1.dll",
+      "sha256": "6ceb3dd8d285f9a1ab8b9682565591580864c1ca2dcc9470c75872caab8fd8b8",
+      "bytes": 240092
+    },
+    {
+      "path": "libfontconfig-1.dll",
+      "sha256": "bed1827dbb226483026b2b33127866ce173aa2423d89ae7da6f88d6328792ec9",
+      "bytes": 508462
+    },
+    {
+      "path": "libfreetype-6.dll",
+      "sha256": "9f62ad75bdc24573940f2e0b0db1848464ce02928926808885e3744fc5272add",
+      "bytes": 807389
+    },
+    {
+      "path": "libfribidi-0.dll",
+      "sha256": "ae9e30c61e1c62886d36e23a91d2943970ae990f85155cbd222b9ba44de9c51b",
+      "bytes": 154276
+    },
+    {
+      "path": "libgcc_s_seh-1.dll",
+      "sha256": "661f70dc19fde8c25bb56387b807b7a9ab7e532cf58fa8aeee078256c19d8980",
+      "bytes": 149364
+    },
+    {
+      "path": "libglib-2.0-0.dll",
+      "sha256": "84b15dc907fd1d3bb1cd799fc034d2edcbc3946c8c4acd6a8dd3ace381f9e568",
+      "bytes": 1570710
+    },
+    {
+      "path": "libgraphite2.dll",
+      "sha256": "063a9ad34a5ec87d038b4646660957395224ecf2cf707917256b7d251a7c5f57",
+      "bytes": 167155
+    },
+    {
+      "path": "libharfbuzz-0.dll",
+      "sha256": "cfbe14d84474dae2b379a746a5325dcc10b7ebfa077bf5a8e9ec0d761f673b22",
+      "bytes": 1613362
+    },
+    {
+      "path": "libiconv-2.dll",
+      "sha256": "7a282a854e01be726c6cccfe46f548c716aa45b3014818468253aaa4efbcd067",
+      "bytes": 1143148
+    },
+    {
+      "path": "libintl-8.dll",
+      "sha256": "0537c3dd2378218508ebe3cc416d72a99ee2d24ae1c5525e23458f32544ef861",
+      "bytes": 298731
+    },
+    {
+      "path": "libmpv-2.dll",
+      "sha256": "52e12d5adf8071fc1735e5da03fd59d72f294e2a1f2ce1b69ee65c5732dbf63e",
+      "bytes": 3027025
+    },
+    {
+      "path": "libpcre2-8-0.dll",
+      "sha256": "68a7cee2acc36d6a61d73f78825d17dfd32f8580f4bb1bc399134719518213d5",
+      "bytes": 706915
+    },
+    {
+      "path": "libplacebo-349.dll",
+      "sha256": "62a22d0c1c984f682d2a5d9abe604a5c8a7248a391e428f4d1c1d039613ed669",
+      "bytes": 883356
+    },
+    {
+      "path": "libpng16-16.dll",
+      "sha256": "fdac85bb70ec3af940810036eb9838765dceb61aaf81a60b244209f99c617f3d",
+      "bytes": 260070
+    },
+    {
+      "path": "libstdc++-6.dll",
+      "sha256": "b720a96289bcd6d9ec6f5f1f5612f1b1a523ce15d3ada20fe119791274cb512f",
+      "bytes": 2659216
+    },
+    {
+      "path": "libunibreak-7.dll",
+      "sha256": "e146c2f36b2e36f620238f2bf0820ef9e74f5b39fbfb9ffe99183bb4a21809f0",
+      "bytes": 140772
+    },
+    {
+      "path": "libwinpthread-1.dll",
+      "sha256": "c26528202c73151e4bff49d0fae08c7e6dd6b78c0d45278253d46e33f2f1417e",
+      "bytes": 66333
+    },
+    {
+      "path": "swresample-6.dll",
+      "sha256": "302ec07628aa318f7efda6cd19f9b380c4c4a3ff9a02b408f52a489ab70ca8dd",
+      "bytes": 259226
+    },
+    {
+      "path": "swscale-9.dll",
+      "sha256": "8d3a794a2faafd999f0074b442716aa6d4a9b21e321a8dd3482ec5fc61c4a01e",
+      "bytes": 1957697
+    },
+    {
+      "path": "zlib1.dll",
+      "sha256": "93e9243a44c29200eeacaf9658efe2558581770e4b11ca4b500e18e424a6e3b5",
+      "bytes": 128488
+    }
+  ]
+}

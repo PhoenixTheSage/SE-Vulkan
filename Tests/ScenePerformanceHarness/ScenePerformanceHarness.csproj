@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework><AssemblyName>ScenePerformanceHarness</AssemblyName><ImplicitUsings>enable</ImplicitUsings><RunPostBuildEvent>Never</RunPostBuildEvent></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../ClientPlugin/ClientPlugin.csproj" />
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" />
+    <Reference Include="VRage"><HintPath>$(Bin64Dir)VRage.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Library"><HintPath>$(Bin64Dir)VRage.Library.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Math"><HintPath>$(Bin64Dir)VRage.Math.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Game"><HintPath>$(Bin64Dir)VRage.Game.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Render"><HintPath>$(Bin64Dir)VRage.Render.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.Game"><HintPath>$(Bin64Dir)Sandbox.Game.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.Common"><HintPath>$(Bin64Dir)Sandbox.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.Graphics"><HintPath>$(Bin64Dir)Sandbox.Graphics.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

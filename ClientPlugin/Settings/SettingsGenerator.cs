@@ -39,7 +39,7 @@ internal class SettingsGenerator
         Type type = Expression.GetDelegateType(methodArgs.Concat(new[] { methodInfo.ReturnType }).ToArray());
 
         // Create a delegate
-        return Delegate.CreateDelegate(type, null, methodInfo);
+        return methodInfo.IsStatic ? Delegate.CreateDelegate(type, methodInfo) : Delegate.CreateDelegate(type, Config.Current, methodInfo);
     }
 
     public SettingsGenerator()

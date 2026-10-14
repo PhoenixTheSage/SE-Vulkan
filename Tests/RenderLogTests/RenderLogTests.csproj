@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RunPostBuildEvent>Never</RunPostBuildEvent>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="../../ClientPlugin/Diagnostics/RenderSessionLog.cs" Link="RenderSessionLog.cs" />
+    <Reference Include="VRage"><HintPath>$(Bin64Dir)VRage.dll</HintPath></Reference>
+    <Reference Include="VRage.Library"><HintPath>$(Bin64Dir)VRage.Library.dll</HintPath></Reference>
+    <Reference Include="VRage.Math"><HintPath>$(Bin64Dir)VRage.Math.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

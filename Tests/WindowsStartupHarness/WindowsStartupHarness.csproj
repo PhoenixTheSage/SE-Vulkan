@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFrameworks>net48;net10.0</TargetFrameworks><LangVersion>14</LangVersion><PlatformTarget>x64</PlatformTarget><AssemblyName>WindowsStartupHarness</AssemblyName><RunPostBuildEvent>Never</RunPostBuildEvent><GenerateAssemblyInfo>true</GenerateAssemblyInfo></PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Vulkan" Condition="'$(ResolutionFillOnly)' != 'true'"><HintPath>../../ClientPlugin/bin/Release/$(TargetFramework)/Vulkan.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage"><HintPath>$(Bin64Dir)VRage.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Library"><HintPath>$(Bin64Dir)VRage.Library.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Math"><HintPath>$(Bin64Dir)VRage.Math.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Render"><HintPath>$(Bin64Dir)VRage.Render.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.Game"><HintPath>$(Bin64Dir)Sandbox.Game.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.Graphics"><HintPath>$(Bin64Dir)Sandbox.Graphics.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="ResolutionFillPlugin.cs" Condition="'$(ResolutionFillOnly)' != 'true'" />
+    <Compile Remove="Plugin.cs;DisplayTransactions.cs;ConfigControls.cs;MediaChecks.cs" Condition="'$(ResolutionFillOnly)' == 'true'" />
+  </ItemGroup>
+</Project>

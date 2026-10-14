@@ -1,0 +1,37 @@
+void begin_uploads() {
+    if(recording || batching_uploads)throw std::runtime_error("upload collection requires a closed frame and no nested batch");
+    batching_uploads=true;
+}
+void ensure_upload_command() {
+    if(batch_command)return;
+    auto& slot=upload_slots[upload_index];
+    if(slot.completion){uint64_t done{};check(vkGetSemaphoreCounterValue(device,timeline,&done),"query upload slot completion");if(done<slot.completion){++work.upload_slot_waits;wait(slot.completion);}}
+    for(auto& b:slot.pending) {
+        if(b.mapped && b.usage==VK_BUFFER_USAGE_TRANSFER_SRC_BIT && b.bytes<=64*1024*1024 && slot.cached_bytes+b.bytes<=64*1024*1024) {
+            slot.cached_bytes+=b.bytes;slot.reusable.push_back(b);b={};
+        }else destroy_buffer(b);
+    }
+    slot.pending.clear();
+    if(!slot.pool){VkCommandPoolCreateInfo p{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};p.queueFamilyIndex=queue_family;p.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        check(vkCreateCommandPool(device,&p,nullptr,&slot.pool),"create batched upload pool");
+        VkCommandBufferAllocateInfo a{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};a.commandPool=slot.pool;a.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;a.commandBufferCount=1;
+        check(vkAllocateCommandBuffers(device,&a,&slot.command),"allocate batched upload command");}
+    check(vkResetCommandPool(device,slot.pool,0),"recycle upload commands");
+    VkCommandBufferBeginInfo b{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};b.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    check(vkBeginCommandBuffer(slot.command,&b),"begin batched uploads");slot.completion=++next_completion;batch_command=slot.command;gpu_mark(batch_command,"upload batch begin",slot.completion);
+}
+void flush_uploads() {
+    if(!batch_command)return;
+    auto& slot=upload_slots[upload_index];
+    gpu_mark(batch_command,"upload batch end",slot.completion);check(vkEndCommandBuffer(batch_command),"end batched uploads");
+    VkCommandBufferSubmitInfo command{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};command.commandBuffer=batch_command;
+    VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};signal.semaphore=timeline;signal.value=slot.completion;signal.stageMask=VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};submit.commandBufferInfoCount=1;submit.pCommandBufferInfos=&command;submit.signalSemaphoreInfoCount=1;submit.pSignalSemaphoreInfos=&signal;
+    join_present();check_gpu(vkQueueSubmit2(queue,1,&submit,VK_NULL_HANDLE),"submit batched uploads");
+    upload_fence=slot.completion;++work.upload_batches;batch_command={};upload_index=(upload_index+1)%upload_slots.size();
+}
+void end_uploads(){flush_uploads();batching_uploads=false;}
+void cleanup_uploads() noexcept {
+    batch_command={};batching_uploads=false;
+    for(auto& slot:upload_slots){for(auto& b:slot.pending)destroy_buffer(b);for(auto& b:slot.reusable)destroy_buffer(b);if(slot.pool)vkDestroyCommandPool(device,slot.pool,nullptr);slot={};}
+}

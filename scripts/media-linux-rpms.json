@@ -1,0 +1,663 @@
+{
+  "alsa-lib-devel": {
+    "name": "alsa-lib-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/alsa-lib-devel-1.2.15.3-1.el9.x86_64.rpm",
+    "sha256": "49c73a5ba7b7409b40508a36d5c7ec7d51e9273305f8d3999827a696a7c9126c",
+    "source_rpm": "alsa-lib-1.2.15.3-1.el9.src.rpm",
+    "license": "LGPL-2.1-or-later",
+    "provides": [
+      "pkgconfig(alsa-topology)",
+      "pkgconfig(alsa)"
+    ]
+  },
+  "pulseaudio-libs-devel": {
+    "name": "pulseaudio-libs-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/pulseaudio-libs-devel-15.0-3.el9.x86_64.rpm",
+    "sha256": "b0658760650da62d4dc9b3caf6ed8d6799914dd5a6d34d9981171ae849d61a39",
+    "source_rpm": "pulseaudio-15.0-3.el9.src.rpm",
+    "license": "LGPLv2+",
+    "provides": [
+      "pkgconfig(libpulse-simple)",
+      "pkgconfig(libpulse-mainloop-glib)",
+      "pkgconfig(libpulse)"
+    ]
+  },
+  "freetype-devel": {
+    "name": "freetype-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/freetype-devel-2.10.4-10.el9_5.x86_64.rpm",
+    "sha256": "f646fc0c5034045ec06a995b82422fe21597e310863b0df3791528682f5d8cde",
+    "source_rpm": "freetype-2.10.4-10.el9_5.src.rpm",
+    "license": "(FTL or GPLv2+) and BSD and MIT and Public Domain and zlib with acknowledgement",
+    "provides": [
+      "pkgconfig(freetype2)"
+    ]
+  },
+  "fribidi-devel": {
+    "name": "fribidi-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/fribidi-devel-1.0.10-6.el9.2.x86_64.rpm",
+    "sha256": "e25eb68a0a64e26411a270c935c08d2121a51c8f17a7926508ad9e631b009437",
+    "source_rpm": "fribidi-1.0.10-6.el9.2.src.rpm",
+    "license": "LGPLv2+ and UCD",
+    "provides": [
+      "pkgconfig(fribidi)"
+    ]
+  },
+  "harfbuzz-devel": {
+    "name": "harfbuzz-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/harfbuzz-devel-2.7.4-10.el9.x86_64.rpm",
+    "sha256": "1ea6947ca0bb1e7b0403a027fdb1d29064f60b16f669d0ce5cca524bad7eb48f",
+    "source_rpm": "harfbuzz-2.7.4-10.el9.src.rpm",
+    "license": "MIT",
+    "provides": [
+      "pkgconfig(harfbuzz-subset)",
+      "pkgconfig(harfbuzz-icu)",
+      "pkgconfig(harfbuzz-gobject)",
+      "pkgconfig(harfbuzz)"
+    ]
+  },
+  "zlib-devel": {
+    "name": "zlib-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/zlib-devel-1.2.11-40.el9.x86_64.rpm",
+    "sha256": "ae610f63207d9fba5ac5a3c71b76fe2a3b6541ba8ffdd8035488310c0d5e3108",
+    "source_rpm": "zlib-1.2.11-40.el9.src.rpm",
+    "license": "zlib and Boost",
+    "provides": [
+      "pkgconfig(zlib)"
+    ]
+  },
+  "alsa-lib": {
+    "name": "alsa-lib",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/alsa-lib-1.2.15.3-1.el9.x86_64.rpm",
+    "sha256": "38da884c4b381b330fd8e4d0af0554b272f5d0955a99f647e2b4fb7af3778e61",
+    "source_rpm": "alsa-lib-1.2.15.3-1.el9.src.rpm",
+    "license": "LGPL-2.1-or-later",
+    "provides": [
+      "libatopology.so.2",
+      "libasound.so.2"
+    ]
+  },
+  "pulseaudio-libs": {
+    "name": "pulseaudio-libs",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/pulseaudio-libs-15.0-3.el9.x86_64.rpm",
+    "sha256": "cb7d153da9e932f4e292f0ea8f873497ef9ec167ad530a0d67bbc533f7a23cec",
+    "source_rpm": "pulseaudio-15.0-3.el9.src.rpm",
+    "license": "LGPLv2+",
+    "provides": [
+      "libpulsecommon-15.0.so",
+      "libpulse.so.0",
+      "libpulse-simple.so.0"
+    ]
+  },
+  "freetype": {
+    "name": "freetype",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/freetype-2.10.4-10.el9_5.x86_64.rpm",
+    "sha256": "a727459934963abc82dc8f01a6758211b82675b6c6c3453c0f272904768ec336",
+    "source_rpm": "freetype-2.10.4-10.el9_5.src.rpm",
+    "license": "(FTL or GPLv2+) and BSD and MIT and Public Domain and zlib with acknowledgement",
+    "provides": [
+      "libfreetype.so.6"
+    ]
+  },
+  "fribidi": {
+    "name": "fribidi",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/fribidi-1.0.10-6.el9.2.x86_64.rpm",
+    "sha256": "b4763ca410f8479b2775efb55ba09e6722948af7526180a56309e3e090c27010",
+    "source_rpm": "fribidi-1.0.10-6.el9.2.src.rpm",
+    "license": "LGPLv2+ and UCD",
+    "provides": [
+      "libfribidi.so.0"
+    ]
+  },
+  "harfbuzz": {
+    "name": "harfbuzz",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/harfbuzz-2.7.4-10.el9.x86_64.rpm",
+    "sha256": "1f81073019abe4176d4496723a89b55a349c31f507e96397a0b3efa7cea0ff61",
+    "source_rpm": "harfbuzz-2.7.4-10.el9.src.rpm",
+    "license": "MIT",
+    "provides": [
+      "libharfbuzz.so.0",
+      "libharfbuzz-subset.so.0",
+      "libharfbuzz-gobject.so.0"
+    ]
+  },
+  "zlib": {
+    "name": "zlib",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/zlib-1.2.11-40.el9.x86_64.rpm",
+    "sha256": "90d7d5d145c6d397645ffefdff40e3d2783e3bf3bfa7b6c1f089c2cad81a3191",
+    "source_rpm": "zlib-1.2.11-40.el9.src.rpm",
+    "license": "zlib and Boost",
+    "provides": [
+      "libz.so.1"
+    ]
+  },
+  "bzip2-libs": {
+    "name": "bzip2-libs",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/bzip2-libs-1.0.8-11.el9.x86_64.rpm",
+    "sha256": "7acf05eba06fc6aa63f7f83f974c4b178fc00c6ec13e9702d6233e02468565f4",
+    "source_rpm": "bzip2-1.0.8-11.el9.src.rpm",
+    "license": "BSD",
+    "provides": [
+      "libbz2.so.1"
+    ]
+  },
+  "dbus-libs": {
+    "name": "dbus-libs",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/dbus-libs-1.12.20-8.el9.x86_64.rpm",
+    "sha256": "4113248f231b84002e87ce15b021b9cf5dfce3a26539fd432f0c2af99f1c976e",
+    "source_rpm": "dbus-1.12.20-8.el9.src.rpm",
+    "license": "(GPLv2+ or AFL) and GPLv2+",
+    "provides": [
+      "libdbus-1.so.3"
+    ]
+  },
+  "glib2": {
+    "name": "glib2",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/glib2-2.68.4-19.el9_8.9.x86_64.rpm",
+    "sha256": "bd8cea4da3de121b653e44640b10d4c83883e039ef28ca76cd16c79e6ac25c62",
+    "source_rpm": "glib2-2.68.4-19.el9_8.9.src.rpm",
+    "license": "LGPLv2+",
+    "provides": [
+      "libgthread-2.0.so.0",
+      "libgobject-2.0.so.0",
+      "libgmodule-2.0.so.0",
+      "libglib-2.0.so.0",
+      "libgio-2.0.so.0"
+    ]
+  },
+  "graphite2": {
+    "name": "graphite2",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/graphite2-1.3.14-9.el9.x86_64.rpm",
+    "sha256": "1b8a5d4ebbeaa60dadefdb7b4c386809d349304dd658e57158f0fff36868e5e9",
+    "source_rpm": "graphite2-1.3.14-9.el9.src.rpm",
+    "license": "(LGPLv2+ or GPLv2+ or MPLv1.1) and (Netscape or GPLv2+ or LGPLv2+)",
+    "provides": [
+      "libgraphite2.so.3"
+    ]
+  },
+  "libasyncns": {
+    "name": "libasyncns",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/libasyncns-0.8-22.el9.x86_64.rpm",
+    "sha256": "3319c0352b06806a6af62eede142fa879ff1039ce2a926f11c8c7306e8e67ebb",
+    "source_rpm": "libasyncns-0.8-22.el9.src.rpm",
+    "license": "LGPLv2+",
+    "provides": [
+      "libasyncns.so.0"
+    ]
+  },
+  "libbrotli": {
+    "name": "libbrotli",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/libbrotli-1.0.9-9.el9_7.x86_64.rpm",
+    "sha256": "3d24c430a1edb4d196bbec70cd59e3580421f91c8ad0c25451b9cc7130cfe66a",
+    "source_rpm": "brotli-1.0.9-9.el9_7.src.rpm",
+    "license": "MIT",
+    "provides": [
+      "libbrotlienc.so.1",
+      "libbrotlidec.so.1",
+      "libbrotlicommon.so.1"
+    ]
+  },
+  "libpng": {
+    "name": "libpng",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/libpng-1.6.37-15.el9_8.x86_64.rpm",
+    "sha256": "00aaedecb801b34c23295f2789eff68dacda52c6cffdd50175d41082143fafd7",
+    "source_rpm": "libpng-1.6.37-15.el9_8.src.rpm",
+    "license": "zlib",
+    "provides": [
+      "libpng16.so.16"
+    ]
+  },
+  "libsndfile": {
+    "name": "libsndfile",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/libsndfile-1.0.31-9.el9_8.1.x86_64.rpm",
+    "sha256": "edcbaa987b7c20b174b3926b058bccae7154608e31188e657ba3bf619d868eb0",
+    "source_rpm": "libsndfile-1.0.31-9.el9_8.1.src.rpm",
+    "license": "LGPLv2+ and GPLv2+ and BSD",
+    "provides": [
+      "libsndfile.so.1"
+    ]
+  },
+  "libxcb": {
+    "name": "libxcb",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/libxcb-1.13.1-9.el9.x86_64.rpm",
+    "sha256": "840ea71fb8beb52093e9f6d23dd0bc7de86f9d6da8c48888d766b0915cf1e1bc",
+    "source_rpm": "libxcb-1.13.1-9.el9.src.rpm",
+    "license": "MIT",
+    "provides": [
+      "libxcb.so.1",
+      "libxcb-xvmc.so.0",
+      "libxcb-xv.so.0",
+      "libxcb-xtest.so.0",
+      "libxcb-xselinux.so.0",
+      "libxcb-xkb.so.1",
+      "libxcb-xinput.so.0",
+      "libxcb-xinerama.so.0",
+      "libxcb-xfixes.so.0",
+      "libxcb-xf86dri.so.0",
+      "libxcb-sync.so.1",
+      "libxcb-shm.so.0",
+      "libxcb-shape.so.0",
+      "libxcb-screensaver.so.0",
+      "libxcb-res.so.0",
+      "libxcb-render.so.0",
+      "libxcb-record.so.0",
+      "libxcb-randr.so.0",
+      "libxcb-present.so.0",
+      "libxcb-glx.so.0",
+      "libxcb-dri3.so.0",
+      "libxcb-dri2.so.0",
+      "libxcb-dpms.so.0",
+      "libxcb-damage.so.0",
+      "libxcb-composite.so.0"
+    ]
+  },
+  "systemd-libs": {
+    "name": "systemd-libs",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/systemd-libs-252-67.el9_8.6.alma.1.x86_64.rpm",
+    "sha256": "26a43dea5c28b30633de77567891ac6009ccf50cd14be5795e11a800c69ce896",
+    "source_rpm": "systemd-252-67.el9_8.6.alma.1.src.rpm",
+    "license": "LGPLv2+ and MIT",
+    "provides": [
+      "libudev.so.1",
+      "libsystemd.so.0",
+      "libnss_systemd.so.2",
+      "libnss_resolve.so.2",
+      "libnss_myhostname.so.2"
+    ]
+  },
+  "flac-libs": {
+    "name": "flac-libs",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/flac-libs-1.3.3-10.el9_2.1.x86_64.rpm",
+    "sha256": "2e49709324253ebf6526fa54fe0c3ecc5ec11ce2b10b970ed41220e7e963290c",
+    "source_rpm": "flac-1.3.3-10.el9_2.1.src.rpm",
+    "license": "BSD and GPLv2+ and GFDL",
+    "provides": [
+      "libFLAC.so.8",
+      "libFLAC++.so.6"
+    ]
+  },
+  "gsm": {
+    "name": "gsm",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/gsm-1.0.19-6.el9.x86_64.rpm",
+    "sha256": "03356e2a3d6d6bc7532617783055b2a5d009f0a0195b5b9a936594f439022c38",
+    "source_rpm": "gsm-1.0.19-6.el9.src.rpm",
+    "license": "MIT",
+    "provides": [
+      "libgsm.so.1"
+    ]
+  },
+  "libXau": {
+    "name": "libXau",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/libXau-1.0.9-8.el9.x86_64.rpm",
+    "sha256": "ad207494161e9404e2a44b1907d605de54842d1b6897c82c475df3ed0ee9701b",
+    "source_rpm": "libXau-1.0.9-8.el9.src.rpm",
+    "license": "MIT",
+    "provides": [
+      "libXau.so.6"
+    ]
+  },
+  "libcap": {
+    "name": "libcap",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/libcap-2.48-10.el9_8.1.x86_64.rpm",
+    "sha256": "181aa6162425218650d98a850e594acc99d258ef6e4f92d58ea853816414b931",
+    "source_rpm": "libcap-2.48-10.el9_8.1.src.rpm",
+    "license": "BSD or GPLv2",
+    "provides": [
+      "libpsx.so.2",
+      "libcap.so.2"
+    ]
+  },
+  "libffi": {
+    "name": "libffi",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/libffi-3.4.2-8.el9.x86_64.rpm",
+    "sha256": "1cf2d122e5c423681394c1bc599ee2281d2eafff5a3749842bc93c37db4bed5e",
+    "source_rpm": "libffi-3.4.2-8.el9.src.rpm",
+    "license": "MIT",
+    "provides": [
+      "libffi.so.8"
+    ]
+  },
+  "libgcc": {
+    "name": "libgcc",
+    "url": "https://repo.almalinux.org/vault/9.4/BaseOS/x86_64/os/Packages/libgcc-11.4.1-3.el9.alma.1.x86_64.rpm",
+    "sha256": "0e9c6a82731dd479136db3ce61f5057ec2f4d265a40f7abe516533243f1629cc",
+    "source_rpm": "gcc-11.4.1-3.el9.alma.1.src.rpm",
+    "license": "GPLv3+ and GPLv3+ with exceptions and GPLv2+ with exceptions and LGPLv2+ and BSD",
+    "provides": [
+      "libgcc_s.so.1"
+    ]
+  },
+  "libgcrypt": {
+    "name": "libgcrypt",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/libgcrypt-1.10.0-13.el9_8.x86_64.rpm",
+    "sha256": "400e5e650ed8ce295cf1db5ef051cc748042df93f221548b874bc1341975856f",
+    "source_rpm": "libgcrypt-1.10.0-13.el9_8.src.rpm",
+    "license": "LGPLv2+",
+    "provides": [
+      "libgcrypt.so.20"
+    ]
+  },
+  "libmount": {
+    "name": "libmount",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/libmount-2.37.4-25.el9.x86_64.rpm",
+    "sha256": "064515c3238b52a90bbe4203e00f6f3ec59b63347749d6e15504db18a840a3d9",
+    "source_rpm": "util-linux-2.37.4-25.el9.src.rpm",
+    "license": "LGPLv2+",
+    "provides": [
+      "libmount.so.1"
+    ]
+  },
+  "libogg": {
+    "name": "libogg",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/libogg-1.3.4-6.el9.x86_64.rpm",
+    "sha256": "83b4b333e335654674032d1cda4d7deb328b5a409f95e3952c3dc482b684fd8f",
+    "source_rpm": "libogg-1.3.4-6.el9.src.rpm",
+    "license": "BSD",
+    "provides": [
+      "libogg.so.0"
+    ]
+  },
+  "libselinux": {
+    "name": "libselinux",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/libselinux-3.6-3.el9.x86_64.rpm",
+    "sha256": "636371a0ead5a8c5e5dfcad34c35d95d1ad2c328a654fa2c2cbd12b7bd6948c3",
+    "source_rpm": "libselinux-3.6-3.el9.src.rpm",
+    "license": "Public Domain",
+    "provides": [
+      "libselinux.so.1"
+    ]
+  },
+  "libvorbis": {
+    "name": "libvorbis",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/libvorbis-1.3.7-5.el9.x86_64.rpm",
+    "sha256": "3c340337a073975636d198a282503f32a54bf85fb5345522a2c22e530b8d6c9e",
+    "source_rpm": "libvorbis-1.3.7-5.el9.src.rpm",
+    "license": "BSD",
+    "provides": [
+      "libvorbisfile.so.3",
+      "libvorbisenc.so.2",
+      "libvorbis.so.0"
+    ]
+  },
+  "libxcrypt": {
+    "name": "libxcrypt",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/libxcrypt-4.4.18-3.el9.x86_64.rpm",
+    "sha256": "a0d439a44585ba94577302fdea641c94d31467fe1e0c43c97a094ad0b3a881ac",
+    "source_rpm": "libxcrypt-4.4.18-3.el9.src.rpm",
+    "license": "LGPLv2+ and BSD and Public Domain",
+    "provides": [
+      "libcrypt.so.2"
+    ]
+  },
+  "libzstd": {
+    "name": "libzstd",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/libzstd-1.5.5-1.el9.x86_64.rpm",
+    "sha256": "33006cb9736d17f74c7a30cf9375438a9228023639239bf69c84b2530ad97462",
+    "source_rpm": "zstd-1.5.5-1.el9.src.rpm",
+    "license": "BSD and GPLv2",
+    "provides": [
+      "libzstd.so.1"
+    ]
+  },
+  "lz4-libs": {
+    "name": "lz4-libs",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/lz4-libs-1.9.3-5.el9.x86_64.rpm",
+    "sha256": "439e701491af6a957ac4d7dc69cccee1a945333f19d8bfcbd896b5119af01aab",
+    "source_rpm": "lz4-1.9.3-5.el9.src.rpm",
+    "license": "GPLv2+ and BSD",
+    "provides": [
+      "liblz4.so.1"
+    ]
+  },
+  "openssl-libs": {
+    "name": "openssl-libs",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/openssl-libs-3.5.8-2.el9_8.x86_64.rpm",
+    "sha256": "0dc8692e5eb52946e5dca0f3f885f4c05a19451d19cf728506f305eae4d97dbf",
+    "source_rpm": "openssl-3.5.8-2.el9_8.src.rpm",
+    "license": "Apache-2.0",
+    "provides": [
+      "libssl.so.3",
+      "libcrypto.so.3"
+    ]
+  },
+  "opus": {
+    "name": "opus",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/opus-1.3.1-10.el9.x86_64.rpm",
+    "sha256": "53b70739ea0dc03d8b3bae9df0a1d303197ca6fd9e31528128b60a73f2053b0f",
+    "source_rpm": "opus-1.3.1-10.el9.src.rpm",
+    "license": "BSD",
+    "provides": [
+      "libopus.so.0"
+    ]
+  },
+  "p11-kit": {
+    "name": "p11-kit",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/p11-kit-0.26.4-1.el9_8.x86_64.rpm",
+    "sha256": "cfe434c3548de6d93181399d2bf24e4af6ad92c4948ba0d178262b026e4e84d0",
+    "source_rpm": "p11-kit-0.26.4-1.el9_8.src.rpm",
+    "license": "BSD-3-Clause",
+    "provides": [
+      "libp11-kit.so.0"
+    ]
+  },
+  "pcre": {
+    "name": "pcre",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/pcre-8.44-4.el9.x86_64.rpm",
+    "sha256": "6cf80404b6bce41768313d9cc99a2bbc15dff0d682680f52481588030b8e2d64",
+    "source_rpm": "pcre-8.44-4.el9.src.rpm",
+    "license": "BSD",
+    "provides": [
+      "libpcreposix.so.0",
+      "libpcre.so.1"
+    ]
+  },
+  "xz-libs": {
+    "name": "xz-libs",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/xz-libs-5.2.5-8.el9_0.x86_64.rpm",
+    "sha256": "b75e6d24dd17688b0047572858f1e0bd5d3edcc9bba31075235e307eeb6195d3",
+    "source_rpm": "xz-5.2.5-8.el9_0.src.rpm",
+    "license": "Public Domain",
+    "provides": [
+      "liblzma.so.5"
+    ]
+  },
+  "libblkid": {
+    "name": "libblkid",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/libblkid-2.37.4-25.el9.x86_64.rpm",
+    "sha256": "bbe73d4d33c18ac14bccb9775889bd470ff9696b0335b488dab843c3469081ab",
+    "source_rpm": "util-linux-2.37.4-25.el9.src.rpm",
+    "license": "LGPLv2+",
+    "provides": [
+      "libblkid.so.1"
+    ]
+  },
+  "libgpg-error": {
+    "name": "libgpg-error",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/libgpg-error-1.42-5.el9.x86_64.rpm",
+    "sha256": "f28fabeb02add41b8156c394427da9dbf99882d8c42055367f872130ee424c97",
+    "source_rpm": "libgpg-error-1.42-5.el9.src.rpm",
+    "license": "LGPLv2+",
+    "provides": [
+      "libgpg-error.so.0"
+    ]
+  },
+  "libstdc++": {
+    "name": "libstdc++",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/libstdc++-11.5.0-14.el9.alma.1.x86_64.rpm",
+    "sha256": "3864ac910193a6d28bb18049c73b36ca1414445a691904f57a97520daba5fa77",
+    "source_rpm": "gcc-11.5.0-14.el9.alma.1.src.rpm",
+    "license": "GPLv3+ and GPLv3+ with exceptions and GPLv2+ with exceptions and LGPLv2+ and BSD",
+    "provides": [
+      "libstdc++.so.6"
+    ]
+  },
+  "pcre2": {
+    "name": "pcre2",
+    "url": "https://repo.almalinux.org/almalinux/9/BaseOS/x86_64/os/Packages/pcre2-10.40-7.el9_8.x86_64.rpm",
+    "sha256": "9b3a2901ccfc4d9191ae3987d1560edc8e4e1b94f2c7362b8a38d313cbd890b7",
+    "source_rpm": "pcre2-10.40-7.el9_8.src.rpm",
+    "license": "BSD",
+    "provides": [
+      "libpcre2-posix.so.3",
+      "libpcre2-8.so.0"
+    ]
+  },
+  "glib2-devel": {
+    "name": "glib2-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/glib2-devel-2.68.4-19.el9_8.9.x86_64.rpm",
+    "sha256": "ef8482a9dcbe1121d98a2c630dbb1f5624699f84bba017c7b57a90c575a964d0",
+    "source_rpm": "glib2-2.68.4-19.el9_8.9.src.rpm",
+    "license": "LGPLv2+",
+    "provides": [
+      "pkgconfig(gthread-2.0)",
+      "pkgconfig(gobject-2.0)",
+      "pkgconfig(gmodule-no-export-2.0)",
+      "pkgconfig(gmodule-export-2.0)",
+      "pkgconfig(gmodule-2.0)",
+      "pkgconfig(glib-2.0)",
+      "pkgconfig(gio-unix-2.0)",
+      "pkgconfig(gio-2.0)"
+    ]
+  },
+  "libffi-devel": {
+    "name": "libffi-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/libffi-devel-3.4.2-8.el9.x86_64.rpm",
+    "sha256": "483e4c58cb8af94143a0ff4b3e49b62cb7d6896766c8c0d9fe3659e68945b50e",
+    "source_rpm": "libffi-3.4.2-8.el9.src.rpm",
+    "license": "MIT",
+    "provides": [
+      "pkgconfig(libffi)"
+    ]
+  },
+  "pcre-devel": {
+    "name": "pcre-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/pcre-devel-8.44-4.el9.x86_64.rpm",
+    "sha256": "585a4de2ce4c70295227cd5c8d06f809030d6d55cac8b4bf1f55ec7bc8dec071",
+    "source_rpm": "pcre-8.44-4.el9.src.rpm",
+    "license": "BSD",
+    "provides": [
+      "pkgconfig(libpcreposix)",
+      "pkgconfig(libpcrecpp)",
+      "pkgconfig(libpcre32)",
+      "pkgconfig(libpcre16)",
+      "pkgconfig(libpcre)"
+    ]
+  },
+  "libselinux-devel": {
+    "name": "libselinux-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/libselinux-devel-3.6-3.el9.x86_64.rpm",
+    "sha256": "a110ba426f226b421593dcfd70dea188726a81cef689fd30054c3d4b599e9a19",
+    "source_rpm": "libselinux-3.6-3.el9.src.rpm",
+    "license": "Public Domain",
+    "provides": [
+      "pkgconfig(libselinux)"
+    ]
+  },
+  "pcre2-devel": {
+    "name": "pcre2-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/pcre2-devel-10.40-7.el9_8.x86_64.rpm",
+    "sha256": "62d48b581ad359bf9e94fd17b68edad16a6537ec2e2bd322dc4c146965fcdd37",
+    "source_rpm": "pcre2-10.40-7.el9_8.src.rpm",
+    "license": "BSD",
+    "provides": [
+      "pkgconfig(libpcre2-posix)",
+      "pkgconfig(libpcre2-8)",
+      "pkgconfig(libpcre2-32)",
+      "pkgconfig(libpcre2-16)"
+    ]
+  },
+  "libsepol-devel": {
+    "name": "libsepol-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/libsepol-devel-3.6-3.el9.x86_64.rpm",
+    "sha256": "e3df760b7db6ceb7c770524b5635723c73f3c9f669a96bde5db4c3b5d97bfb33",
+    "source_rpm": "libsepol-3.6-3.el9.src.rpm",
+    "license": "LGPLv2+",
+    "provides": [
+      "pkgconfig(libsepol)"
+    ]
+  },
+  "libmount-devel": {
+    "name": "libmount-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/libmount-devel-2.37.4-25.el9.x86_64.rpm",
+    "sha256": "b1dcc6170ebee3da9dd42fbd255dfaca2034ad4b24b77fc0174bebacd08c8e75",
+    "source_rpm": "util-linux-2.37.4-25.el9.src.rpm",
+    "license": "LGPLv2+",
+    "provides": [
+      "pkgconfig(mount)"
+    ]
+  },
+  "libblkid-devel": {
+    "name": "libblkid-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/libblkid-devel-2.37.4-25.el9.x86_64.rpm",
+    "sha256": "7161ff9477390544320dce60d4d5bd360840751baf09f9605ee8aa9ea5ff6e65",
+    "source_rpm": "util-linux-2.37.4-25.el9.src.rpm",
+    "license": "LGPLv2+",
+    "provides": [
+      "pkgconfig(blkid)"
+    ]
+  },
+  "sysprof-capture-devel": {
+    "name": "sysprof-capture-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/sysprof-capture-devel-3.40.1-3.el9.x86_64.rpm",
+    "sha256": "e10d359a0fa89995a61e7591f9f9c888ab24a133eecc78fcbf0bd8797d56cd11",
+    "source_rpm": "sysprof-3.40.1-3.el9.src.rpm",
+    "license": "BSD-2-Clause-Patent",
+    "provides": [
+      "pkgconfig(sysprof-capture-4)"
+    ]
+  },
+  "bzip2-devel": {
+    "name": "bzip2-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/bzip2-devel-1.0.8-11.el9.x86_64.rpm",
+    "sha256": "ec1785441db03f845062c2693ddf3ecee23a5418224fd4781b1424fbe3678d9f",
+    "source_rpm": "bzip2-1.0.8-11.el9.src.rpm",
+    "license": "BSD",
+    "provides": [
+      "pkgconfig(bzip2)"
+    ]
+  },
+  "graphite2-devel": {
+    "name": "graphite2-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/graphite2-devel-1.3.14-9.el9.x86_64.rpm",
+    "sha256": "c00088fa527aed5217e50a083c73699acf3f7cfe200fcae3f9f737c4491c6e44",
+    "source_rpm": "graphite2-1.3.14-9.el9.src.rpm",
+    "license": "(LGPLv2+ or GPLv2+ or MPLv1.1) and (Netscape or GPLv2+ or LGPLv2+)",
+    "provides": [
+      "pkgconfig(graphite2)"
+    ]
+  },
+  "libicu-devel": {
+    "name": "libicu-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/libicu-devel-67.1-10.el9_6.x86_64.rpm",
+    "sha256": "02588f237c80548cd6ff495d4e4ae5cbc4cad1ab21ad96da7a8ea0fc90b020b1",
+    "source_rpm": "icu-67.1-10.el9_6.src.rpm",
+    "license": "Unicode-DFS-2016 AND BSD-2-Clause AND BSD-3-Clause AND LicenseRef-Fedora-Public-Domain",
+    "provides": [
+      "pkgconfig(icu-uc)",
+      "pkgconfig(icu-io)",
+      "pkgconfig(icu-i18n)"
+    ]
+  },
+  "brotli-devel": {
+    "name": "brotli-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/brotli-devel-1.0.9-9.el9_7.x86_64.rpm",
+    "sha256": "7931809458a64e3df2ff19cd0e5fa6636a8cdcb12feedb48238483aca33fb60b",
+    "source_rpm": "brotli-1.0.9-9.el9_7.src.rpm",
+    "license": "MIT",
+    "provides": [
+      "pkgconfig(libbrotlienc)",
+      "pkgconfig(libbrotlidec)",
+      "pkgconfig(libbrotlicommon)"
+    ]
+  },
+  "libpng-devel": {
+    "name": "libpng-devel",
+    "url": "https://repo.almalinux.org/almalinux/9/AppStream/x86_64/os/Packages/libpng-devel-1.6.37-15.el9_8.x86_64.rpm",
+    "sha256": "438f04793570a1aa313dc9425066d4d5f5fda692eb89508c5204e5117e4952e2",
+    "source_rpm": "libpng-1.6.37-15.el9_8.src.rpm",
+    "license": "zlib",
+    "provides": [
+      "pkgconfig(libpng16)",
+      "pkgconfig(libpng)"
+    ]
+  }
+}

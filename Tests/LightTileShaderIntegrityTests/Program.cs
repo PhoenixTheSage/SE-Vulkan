@@ -1,0 +1,20 @@
+using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Xml.Linq;
+using ClientPlugin.Rendering.Shaders;
+var lib=new VulkanShaderLibrary(args[0],args[1],args[2]);var artifact=lib.LoadLightTiles();int checks=0;
+void Check(bool c,string text){if(!c)throw new Exception(text);checks++;Console.WriteLine("PASS "+text);}
+Check(artifact.Layout.WorkgroupSizeX==16 && artifact.Layout.WorkgroupSizeY==16 && artifact.Layout.ExecutionModel==5,"derived compute interface authenticates");
+string source=File.ReadAllText(Path.Combine(args[1],"Lighting/PrepareLights.hlsl"));
+Check(LightTileShader.DeriveSource(source).Contains("sLightMask[index / 32]"),"stock selection emits ordered64 mask");
+void Reject(Action a,string text){try{a();}catch(InvalidDataException){Check(true,text);return;}throw new Exception("accepted "+text);}
+Reject(()=>LightTileShader.DeriveSource(source.Replace("groupshared uint sTileNumLights;","changed")),"changed stock declaration rejected");
+string scratch=Path.GetFullPath("TestResults/LightTileShaderIntegrityTests/"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(scratch);
+using(var file=File.Create(Path.Combine(scratch,"catalog.xml.gz")))using(var gzip=new GZipStream(file,CompressionMode.Compress))new XDocument(new XElement("ShaderSuite",new XAttribute("Schema",1),new XAttribute("Api","1.4"),new XAttribute("Total",1),new XElement("Module",new XAttribute("Sha256",lib.Load(LightTileShader.Variant).Layout.SpirvSha256),new XAttribute("MetadataSha256",new string('0',64))),new XElement("Variant",new XAttribute("Id",LightTileShader.Variant),new XAttribute("Source","Lighting/PrepareLights.hlsl"),new XAttribute("Profile","cs_5_0"),new XAttribute("Entry","__compute_shader"),new XAttribute("Module",lib.Load(LightTileShader.Variant).Layout.SpirvSha256),new XAttribute("CacheKey",new string('0',64))))).Save(gzip);
+Directory.CreateDirectory(Path.Combine(scratch,"Modules"));var original=lib.Load(LightTileShader.Variant);File.Copy(original.SpirvPath,Path.Combine(scratch,"Modules",original.Layout.SpirvSha256+".spv"));File.Copy(Path.Combine(args[0],"Modules",original.Layout.SpirvSha256+".xml"),Path.Combine(scratch,"Modules",original.Layout.SpirvSha256+".xml"));
+// Replace synthetic registry with the original module's actual metadata hash.
+using(var file=File.OpenRead(Path.Combine(scratch,"catalog.xml.gz")))using(var gzip=new GZipStream(file,CompressionMode.Decompress)){var registry=XDocument.Load(gzip);registry.Root.Element("Module").SetAttributeValue("MetadataSha256",Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(Path.Combine(scratch,"Modules",original.Layout.SpirvSha256+".xml")))));using var mem=new MemoryStream();using(var z=new GZipStream(mem,CompressionMode.Compress,true))registry.Save(z);File.WriteAllBytes(Path.Combine(scratch,"replacement.gz"),mem.ToArray());}
+File.Copy(Path.Combine(scratch,"replacement.gz"),Path.Combine(scratch,"catalog.xml.gz"),true);
+File.Copy(Path.Combine(args[0],"coverage.xml"),Path.Combine(scratch,"coverage.xml"));string addon=Path.Combine(scratch,"LightTiles");Directory.CreateDirectory(addon);foreach(var path in Directory.GetFiles(Path.Combine(args[0],"LightTiles")))File.Copy(path,Path.Combine(addon,Path.GetFileName(path)));
+var copy=new VulkanShaderLibrary(scratch,args[1]);string module=Path.Combine(addon,artifact.Layout.SpirvSha256+".spv");var bytes=File.ReadAllBytes(module);File.WriteAllBytes(module,new byte[20]);Reject(()=>copy.LoadLightTiles(),"corrupt derived compute rejected");File.WriteAllBytes(module,bytes);
+var manifest=XDocument.Load(Path.Combine(addon,"manifest.xml"));manifest.Root.SetAttributeValue("Transform","different");manifest.Save(Path.Combine(addon,"manifest.xml"));var coverage=XDocument.Load(Path.Combine(scratch,"coverage.xml"));coverage.Root.SetAttributeValue("LightTilesSha256",Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(Path.Combine(addon,"manifest.xml")))));coverage.Save(Path.Combine(scratch,"coverage.xml"));Reject(()=>copy.LoadLightTiles(),"different transformation rejected with matching manifest hash");Console.WriteLine(checks+" light tile integrity checks passed.");

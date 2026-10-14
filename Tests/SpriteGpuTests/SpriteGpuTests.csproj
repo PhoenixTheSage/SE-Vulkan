@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><PlatformTarget>x64</PlatformTarget><ImplicitUsings>enable</ImplicitUsings><Nullable>disable</Nullable><RunPostBuildEvent>Never</RunPostBuildEvent></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../ClientPlugin/ClientPlugin.csproj" />
+    <Compile Include="../../ClientPlugin/Rendering/VulkanSprites.cs" Link="Production/VulkanSprites.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Content/PngWriter.cs" Link="Production/PngWriter.cs" />
+    <Content Include="decode_font.py" CopyToOutputDirectory="PreserveNewest" />
+    <Reference Include="VRage"><HintPath>$(Bin64Dir)VRage.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="VRage.Library"><HintPath>$(Bin64Dir)VRage.Library.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="VRage.Math"><HintPath>$(Bin64Dir)VRage.Math.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="VRage.Render"><HintPath>$(Bin64Dir)VRage.Render.dll</HintPath><Private>true</Private></Reference>
+  </ItemGroup>
+</Project>

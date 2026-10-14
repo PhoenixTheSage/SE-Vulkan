@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PluginData xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="GitHubPlugin">
+  <Id>AE72EBB8-F4A8-4ADB-A400-19CC46FDAB79</Id>
+  <RepoId>PhoenixTheSage/SE-Vulkan</RepoId>
+  <FriendlyName>Vulkan</FriendlyName>
+  <Author>PhoenixTheSage</Author>
+  <Tooltip>Native Vulkan 1.4 rendering for Space Engineers 1. Restart required to change renderer.</Tooltip>
+  <Description>Experimental native Vulkan 1.4 renderer. Select DX11 or Vulkan in Display and restart. The Pulsar status panel reports startup recovery, hooks, device and feature support, frame evidence and remaining visual systems. A separate Vulkan-compatible Pulsar profile is required; DX11 graphics plugins cause recovery to DX11. First playable Creative-scene acceptance and full visual parity are tracked separately.</Description>
+  <SourceDirectories><Directory>ClientPlugin</Directory></SourceDirectories>
+  <AssetFolder>Assets</AssetFolder>
+  <Runtimes>CLR,CoreCLR</Runtimes>
+  <Platforms>Windows,Linux</Platforms>
+  <NuGetReferences>
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" />
+    <PackageReference Include="Mono.Cecil" Version="0.11.6" />
+  </NuGetReferences>
+</PluginData>

@@ -1,0 +1,50 @@
+using System;
+using ClientPlugin.Diagnostics;
+using ClientPlugin.Rendering.Content;
+using ClientPlugin.Rendering.Interop;
+using VRageRender;
+using VRageRender.Messages;
+
+namespace ClientPlugin.Rendering;
+
+internal interface IVulkanMediaDevice : IDisposable
+{
+    bool Available { get; }
+    ulong ReserveTexture();
+    bool Play(uint id, string path, float volume);
+    NativeMediaFrame Update(uint id);
+    void Volume(uint id, float volume);
+    void Close(uint id);
+    void Upload(ulong texture, NativeMediaFrame frame);
+    void Remove(ulong texture);
+    void ReleaseProxy(uint id);
+    void Draw(MyRenderMessageDrawVideo draw, ulong texture, int width, int height);
+}
+
+internal sealed class VulkanMediaDevice : IVulkanMediaDevice
+{
+    private readonly NativeBackend backend;
+    private readonly VulkanTextureCache textures;
+    private readonly VulkanSprites sprites;
+    private IntPtr native;
+    public bool Available => native != IntPtr.Zero;
+    internal VulkanMediaDevice(NativeBackend backend, VulkanTextureCache textures, VulkanSprites sprites)
+    {
+        this.backend = backend; this.textures = textures; this.sprites = sprites;
+        try { if (!backend.TryCreateMedia(out native)) VulkanDiagnostics.Failure("Bundled libmpv runtime or one of its dependencies could not be loaded."); }
+        catch (Exception error) { VulkanDiagnostics.Failure("Native media runtime: " + error.Message); }
+    }
+    public ulong ReserveTexture() => textures.ReserveMediaHandle();
+    public bool Play(uint id, string path, float volume) => backend.PlayMedia(native, id, path, volume);
+    public NativeMediaFrame Update(uint id) => backend.UpdateMedia(native, id);
+    public void Volume(uint id, float volume) => backend.SetMediaVolume(native, id, volume);
+    public void Close(uint id) => backend.CloseMedia(native, id);
+    public void Upload(ulong texture, NativeMediaFrame frame) => backend.UploadMediaTexture(texture, frame);
+    public void Remove(ulong texture) { sprites.RemoveVideoTexture(texture); backend.RemoveResource(0, texture); }
+    public void ReleaseProxy(uint id)
+    {
+        if (MyRenderProxy.GetObjectType(id) == MyRenderProxy.ObjectType.Video) MyRenderProxy.RemoveMessageId(id, MyRenderProxy.ObjectType.Video);
+    }
+    public void Draw(MyRenderMessageDrawVideo draw, ulong texture, int width, int height) => sprites.AddVideo(draw, texture, width, height);
+    public void Dispose() { backend.DestroyMedia(native); native = IntPtr.Zero; }
+}

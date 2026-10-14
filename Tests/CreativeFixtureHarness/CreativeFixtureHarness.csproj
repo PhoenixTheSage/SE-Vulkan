@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework><LangVersion>14</LangVersion>
+    <AssemblyName>CreativeFixtureHarness</AssemblyName><RunPostBuildEvent>Never</RunPostBuildEvent>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Vulkan"><HintPath>../../ClientPlugin/bin/Release/net48/Vulkan.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage"><HintPath>$(Bin64Dir)VRage.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Library"><HintPath>$(Bin64Dir)VRage.Library.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Math"><HintPath>$(Bin64Dir)VRage.Math.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Game"><HintPath>$(Bin64Dir)VRage.Game.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Render"><HintPath>$(Bin64Dir)VRage.Render.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.Common"><HintPath>$(Bin64Dir)Sandbox.Common.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.Game"><HintPath>$(Bin64Dir)Sandbox.Game.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.Graphics"><HintPath>$(Bin64Dir)Sandbox.Graphics.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SpaceEngineers.ObjectBuilders"><HintPath>$(Bin64Dir)SpaceEngineers.ObjectBuilders.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SpaceEngineers.Game"><HintPath>$(Bin64Dir)SpaceEngineers.Game.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Sandbox.RenderDirect"><HintPath>$(Bin64Dir)Sandbox.RenderDirect.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Game.XmlSerializers"><HintPath>$(Bin64Dir)VRage.Game.XmlSerializers.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Render11"><HintPath>$(Bin64Dir)VRage.Render11.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

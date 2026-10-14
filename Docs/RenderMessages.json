@@ -1,0 +1,1594 @@
+{
+  "GameVersion": "1.210.014",
+  "Count": 147,
+  "CoverageMeaning": "Handler presence is separate from runtime observation and visual acceptance.",
+  "Messages": [
+    {
+      "Index": 0,
+      "Kind": "DrawCommands",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDrawCommands.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 1,
+      "Kind": "DrawSprite",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanSprites.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDrawSprite.cs"
+      ],
+      "Verified": false,
+      "Notes": "Texture, clipping, center rotation and rotation speed handled; secondary masks and live UI acceptance remain pending."
+    },
+    {
+      "Index": 2,
+      "Kind": "DrawSpriteExt",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanSprites.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDrawSpriteExt.cs"
+      ],
+      "Verified": false,
+      "Notes": "Texture, clipping and absolute rotation origin handled; secondary masks remain pending."
+    },
+    {
+      "Index": 3,
+      "Kind": "DrawSpriteAtlas",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanSprites.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDrawSpriteAtlas.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 4,
+      "Kind": "UnloadTexture",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUnloadTexture.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 5,
+      "Kind": "DeprioritizeTextures",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDeprioritizeTextures.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 6,
+      "Kind": "RenderProfiler",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageRenderProfiler.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 7,
+      "Kind": "CreateRenderEntity",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateRenderEntity.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 8,
+      "Kind": "CreateRenderEntityAtmosphere",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanEnvironment.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateRenderEntityAtmosphere.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied planet geometry; stock optical-depth LUT CS and HQ main-view atmosphere PS. Stock HQ atmosphere capture also supplies all six near/far probe faces."
+    },
+    {
+      "Index": 9,
+      "Kind": "CreateRenderEntityClouds",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanEnvironment.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateRenderEntityClouds.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied shell settings and texture list, stock MWM/VS/PS, gameplay-frame rotation, scaling, fades, far-to-near sorting, read-only depth."
+    },
+    {
+      "Index": 10,
+      "Kind": "AddRuntimeModel",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageAddRuntimeModel.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 11,
+      "Kind": "PreloadModel",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessagePreloadModel.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 12,
+      "Kind": "PreloadMaterials",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessagePreloadMaterials.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 13,
+      "Kind": "SetRenderEntityData",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSetRenderEntityData.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 14,
+      "Kind": "CreateRenderInstanceBuffer",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateRenderInstanceBuffer.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 15,
+      "Kind": "UpdateRenderInstanceBufferRange",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateRenderInstanceBufferRange.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 16,
+      "Kind": "UpdateRenderCubeInstanceBuffer",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "ClientPlugin/Rendering/Scene/VulkanDecals.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateRenderCubeInstanceBuffer.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 17,
+      "Kind": "SetInstanceBuffer",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSetInstanceBuffer.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 18,
+      "Kind": "CreateStaticGroup",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateStaticGroup.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 19,
+      "Kind": "CreateManualCullObject",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateManualCullObject.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 20,
+      "Kind": "SetParentCullObject",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSetParentCullObject.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 21,
+      "Kind": "SetCameraViewMatrix",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSetCameraViewMatrix.cs"
+      ],
+      "Verified": false,
+      "Notes": "Camera-relative main view handled; stereo and late camera update remain pending."
+    },
+    {
+      "Index": 22,
+      "Kind": "DrawScene",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDrawScene.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 23,
+      "Kind": "UpdateRenderObject",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "ClientPlugin/Rendering/Scene/VulkanVoxels.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateRenderObject.cs"
+      ],
+      "Verified": false,
+      "Notes": "Immediate value application with stock world-over-local precedence and pooled presence-flag cleanup; late pose updates remain pending."
+    },
+    {
+      "Index": 24,
+      "Kind": "UpdateRenderComponent",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 25,
+      "Kind": "UpdateRenderObjectVisibility",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateRenderObjectVisibility.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 26,
+      "Kind": "UpdateRenderEntity",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "ClientPlugin/Rendering/Scene/VulkanVoxels.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateRenderEntity.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 27,
+      "Kind": "RemoveRenderObject",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "ClientPlugin/Rendering/Scene/VulkanVoxels.cs",
+        "ClientPlugin/Rendering/Scene/VulkanEnvironment.cs",
+        "ClientPlugin/Rendering/Scene/VulkanDecals.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageRemoveRenderObject.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 28,
+      "Kind": "UpdateModelProperties",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateModelProperties.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 29,
+      "Kind": "UpdateModelHighlight",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanHighlights.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateModelHighlight.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied sections/subparts/instance selection, pulse/sepia and color; stock highlight geometry and all exponential blur radii; overlap composition."
+    },
+    {
+      "Index": 30,
+      "Kind": "UpdateOverlappingModelsForHighlight",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanHighlights.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateOverlappingModelsForHighlight.cs"
+      ],
+      "Verified": false,
+      "Notes": "Scene-owned overlap mask excludes stock interior/outer highlight blending."
+    },
+    {
+      "Index": 31,
+      "Kind": "UpdateColorEmissivity",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateColorEmissivity.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 32,
+      "Kind": "ChangeModel",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageChangeModel.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 33,
+      "Kind": "CreateGeneratedTexture",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateGeneratedTexture.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 34,
+      "Kind": "ResetGeneratedTexture",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageResetGeneratedTexture.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 35,
+      "Kind": "DestroyGeneratedTexture",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDestroyGeneratedTexture.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 36,
+      "Kind": "ChangeMaterialTexture",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageChangeMaterialTexture.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 37,
+      "Kind": "RenderOffscreenTexture",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageRenderOffscreenTexture.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 38,
+      "Kind": "UpdateGameplayFrame",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateGameplayFrame.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 39,
+      "Kind": "InvalidateClipmapRange",
+      "Disposition": "BaselineNoOp",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageInvalidateClipmapRange.cs"
+      ],
+      "Verified": false,
+      "Notes": "Vanilla message switch is a no-op. Stock storage range events invalidate the API-neutral controller directly; Vulkan consumes its replacement meshes."
+    },
+    {
+      "Index": 40,
+      "Kind": "ClipmapsReady",
+      "Disposition": "BaselineNoOp",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageClipmapsReady.cs"
+      ],
+      "Verified": false,
+      "Notes": "Vanilla message switch is a no-op. Stock controller Loaded callbacks preserve game-side clipmap readiness."
+    },
+    {
+      "Index": 41,
+      "Kind": "VoxelCreate",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanVoxels.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageVoxelCreate.cs"
+      ],
+      "Verified": false,
+      "Notes": "API-neutral asteroid/planet clipmap bound to Vulkan actor/processor; stock spherization constants and far-distance projection/culling supplied."
+    },
+    {
+      "Index": 42,
+      "Kind": "CreateRenderVoxelMaterials",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanVoxels.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateRenderVoxelMaterials.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied stock 128-entry material definitions, triplanar DDS arrays with GPU normalization/mip generation, stock generated missing-channel patterns."
+    },
+    {
+      "Index": 43,
+      "Kind": "UpdateRenderVoxelMaterials",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanVoxels.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateRenderVoxelMaterials.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied definition updates invalidate affected immutable material groups; native resources retire on the timeline."
+    },
+    {
+      "Index": 44,
+      "Kind": "PreloadVoxelMaterials",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanVoxels.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessagePreloadVoxelMaterials.cs"
+      ],
+      "Verified": false,
+      "Notes": "Bounded material residency hint; visible frame groups remain pinned during collection."
+    },
+    {
+      "Index": 45,
+      "Kind": "CreateRenderVoxelDebris",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateRenderVoxelDebris.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 46,
+      "Kind": "RebuildCullingStructure",
+      "Disposition": "BaselineNoOp",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageRebuildCullingStructure.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 47,
+      "Kind": "CreateEffect",
+      "Disposition": "BaselineNoOp",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 48,
+      "Kind": "CreateRenderLight",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateRenderLight.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 49,
+      "Kind": "UpdateRenderLight",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateRenderLight.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 50,
+      "Kind": "SetLightShadowIgnore",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanShadowExclusions.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSetLightShadowIgnore.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied light/entity identities; excluded native world draw indices preserve other shadow casters."
+    },
+    {
+      "Index": 51,
+      "Kind": "ClearLightShadowIgnore",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanShadowExclusions.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageClearLightShadowIgnore.cs"
+      ],
+      "Verified": false,
+      "Notes": "Clears exclusions for the selected light; subsequent frame depth replay resumes."
+    },
+    {
+      "Index": 52,
+      "Kind": "UpdateShadowSettings",
+      "Disposition": "Pending",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "ClientPlugin/Rendering/VulkanShadows.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateShadowSettings.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied count/distance/spread/bias/blur/frozen settings; stock CSM PCF and cascade blending. Small-object pruning and usage-based cascade cadence remain pending."
+    },
+    {
+      "Index": 53,
+      "Kind": "UpdateNewLoddingSettings",
+      "Disposition": "Pending",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "ClientPlugin/Rendering/Scene/VulkanEnvironment.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateNewLoddingSettings.cs"
+      ],
+      "Verified": false,
+      "Notes": "Global atmosphere/cloud fade duration copied; remaining actor LOD settings remain pending."
+    },
+    {
+      "Index": 54,
+      "Kind": "UpdateNewPipelineSettings",
+      "Disposition": "BaselineNoOp",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 55,
+      "Kind": "UpdateMaterialsSettings",
+      "Disposition": "BaselineNoOp",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 56,
+      "Kind": "ReloadEffects",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageReloadEffects.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 57,
+      "Kind": "ReloadModels",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageReloadModels.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 58,
+      "Kind": "ReloadTextures",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageReloadTextures.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 59,
+      "Kind": "UpdatePostprocessSettings",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "ClientPlugin/Rendering/Scene/VulkanPostprocess.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdatePostprocessSettings.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied complete stock layout; histogram/fixed exposure, bloom pyramid/dirt, Hable tone mapping, chromatic/vignette, grain, saturation/filters. Authenticated modules and pixel evidence."
+    },
+    {
+      "Index": 60,
+      "Kind": "UpdateRenderEnvironment",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateRenderEnvironment.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied sun/sky/environment settings; complete near/far cubemap capture, GGX mip filtering, blending, timeout and stock BRDF LUT."
+    },
+    {
+      "Index": 61,
+      "Kind": "UpdateSSAOSettings",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanPostprocess.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateSSAOSettings.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied stock SSAO parameters and sample kernels with optional Gaussian blur."
+    },
+    {
+      "Index": 62,
+      "Kind": "UpdateHBAO",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanPostprocess.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateHBAO.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied global/slice constants and all coarse/bilateral permutations; actual deinterleaved depth/normal/AO processing."
+    },
+    {
+      "Index": 63,
+      "Kind": "UpdateFogSettings",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanEnvironment.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateFogSettings.cs"
+      ],
+      "Verified": false,
+      "Notes": "Stock linear fog color/density/multiplier/sky/atmosphere constants, including weather overrides."
+    },
+    {
+      "Index": 64,
+      "Kind": "UpdateEnvironmentMap",
+      "Disposition": "BaselineNoOp",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateEnvironmentMap.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 65,
+      "Kind": "UpdateAtmosphereSettings",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanEnvironment.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateAtmosphereSettings.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied and normalized scattering settings invalidate optical-depth LUT parameters; bounded fade lifetimes."
+    },
+    {
+      "Index": 66,
+      "Kind": "EnableAtmosphere",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanEnvironment.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageEnableAtmosphere.cs"
+      ],
+      "Verified": false,
+      "Notes": "Stock global toggle suppresses atmosphere and associated cloud draws; unassociated cloud layers remain independent."
+    },
+    {
+      "Index": 67,
+      "Kind": "UpdateCloudLayerFogFlag",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateCloudLayerFogFlag.cs"
+      ],
+      "Verified": false,
+      "Notes": "Pending audit: vanilla stores this flag but the installed cloud draw path does not read it; no invented cloud-only fog effect."
+    },
+    {
+      "Index": 68,
+      "Kind": "PauseTimer",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanParticles.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessagePauseTimer.cs"
+      ],
+      "Verified": false,
+      "Notes": "Stock CPU and Vulkan GPU particle frame delta freeze; no simulation-time advance."
+    },
+    {
+      "Index": 69,
+      "Kind": "PlayVideo",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanMedia.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessagePlayVideo.cs"
+      ],
+      "Verified": false,
+      "Notes": "Bundled cross-platform libmpv; asynchronous opening; CPU frames and independent audio. Runtime acceptance is documented separately."
+    },
+    {
+      "Index": 70,
+      "Kind": "UpdateVideo",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanMedia.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateVideo.cs"
+      ],
+      "Verified": false,
+      "Notes": "Consumes newest bounded-buffer frame into a persistent sRGB Vulkan texture; no pooled message retained."
+    },
+    {
+      "Index": 71,
+      "Kind": "DrawVideo",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanMedia.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDrawVideo.cs"
+      ],
+      "Verified": false,
+      "Notes": "Stock destination geometry, tint, premultiplied blend, target texture, scissor, viewport and submission order."
+    },
+    {
+      "Index": 72,
+      "Kind": "CloseVideo",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanMedia.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCloseVideo.cs"
+      ],
+      "Verified": false,
+      "Notes": "Cancels workers, rejects retired-generation results and releases proxy video ID; GPU resources retire on completion."
+    },
+    {
+      "Index": 73,
+      "Kind": "SetVideoVolume",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanMedia.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSetVideoVolume.cs"
+      ],
+      "Verified": false,
+      "Notes": "Stock DirectShow decibel attenuation converted to libmpv cubic volume, including mute/fades."
+    },
+    {
+      "Index": 74,
+      "Kind": "CreateScreenDecal",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanDecals.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateScreenDecal.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied parent/topology/material state; stock GBuffer roles and two glass depth layers; deformed cube and bone attachments handled."
+    },
+    {
+      "Index": 75,
+      "Kind": "UpdateScreenDecal",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanDecals.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateScreenDecal.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied transform/position updates; no pooled message or array retained."
+    },
+    {
+      "Index": 76,
+      "Kind": "RemoveDecal",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanDecals.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageRemoveDecal.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 77,
+      "Kind": "SetDecalGlobals",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanDecals.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSetDecalGlobals.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 78,
+      "Kind": "SetDecalsBlacklist",
+      "Disposition": "BaselineNoOp",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 79,
+      "Kind": "RegisterDecalsMaterials",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanDecals.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied material dictionary/list values; immutable strings resolve through DDS cache."
+    },
+    {
+      "Index": 80,
+      "Kind": "ClearDecals",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanDecals.cs"
+      ],
+      "Verified": false,
+      "Notes": "Scene-owned decal state cleared; registered materials preserved."
+    },
+    {
+      "Index": 81,
+      "Kind": "TakeScreenshot",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageTakeScreenshot.cs"
+      ],
+      "Verified": false,
+      "Notes": "Native-size full-frame PNG handled; scaled/world-only capture remains pending."
+    },
+    {
+      "Index": 82,
+      "Kind": "ScreenshotTaken",
+      "Disposition": "OutboundResponse",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageScreenshotTaken.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 83,
+      "Kind": "ExportToObjComplete",
+      "Disposition": "OutboundResponse",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageExportToObjComplete.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 84,
+      "Kind": "Error",
+      "Disposition": "OutboundResponse",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageError.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 85,
+      "Kind": "CreateRenderCharacter",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateRenderCharacter.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 86,
+      "Kind": "SetCharacterSkeleton",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSetCharacterSkeleton.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 87,
+      "Kind": "SetCharacterTransforms",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "ClientPlugin/Rendering/Scene/VulkanDecals.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSetCharacterTransforms.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 88,
+      "Kind": "DebugDrawLine3D",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawLine3D.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 89,
+      "Kind": "DebugDrawLine2D",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawLine2D.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 90,
+      "Kind": "DebugDrawLine3DBatch",
+      "Disposition": "BaselineNoOp",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawLine3DBatch.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 91,
+      "Kind": "DebugDrawPoint",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawPoint.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 92,
+      "Kind": "DebugDrawSphere",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawSphere.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 93,
+      "Kind": "DebugDrawAABB",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawAABB.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 94,
+      "Kind": "DebugDrawAxis",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawAxis.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 95,
+      "Kind": "DebugDrawOBB",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawOBB.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 96,
+      "Kind": "DebugDrawFrustrum",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawFrustrum.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 97,
+      "Kind": "DebugDrawTriangle",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawTriangle.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 98,
+      "Kind": "DebugDrawCapsule",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawCapsule.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 99,
+      "Kind": "DebugDrawText2D",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawText2D.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 100,
+      "Kind": "DebugDrawText3D",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawText3D.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 101,
+      "Kind": "DebugDrawModel",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawModel.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 102,
+      "Kind": "DebugDrawTriangles",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawTriangles.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 103,
+      "Kind": "DebugCrashRenderThread",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugCrashRenderThread.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 104,
+      "Kind": "DebugHangRenderThread",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugHangRenderThread.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 105,
+      "Kind": "DebugDrawPlane",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawPlane.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 106,
+      "Kind": "DebugDrawCylinder",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawCylinder.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 107,
+      "Kind": "DebugDrawCone",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawCone.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 108,
+      "Kind": "DebugDrawMesh",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawMesh.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 109,
+      "Kind": "DebugDraw6FaceConvex",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDraw6FaceConvex.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 110,
+      "Kind": "DebugWaitForPresent",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugWaitForPresent.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 111,
+      "Kind": "DebugClearPersistentMessages",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugClearPersistentMessages.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 112,
+      "Kind": "DebugPrintAllFileTexturesIntoLog",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugPrintAllFileTexturesIntoLog.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 113,
+      "Kind": "UpdateDebugOverrides",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanShadows.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateDebugOverrides.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 114,
+      "Kind": "UnloadData",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUnloadData.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 115,
+      "Kind": "CreateFont",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanSprites.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateFont.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 116,
+      "Kind": "DrawString",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanSprites.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDrawString.cs"
+      ],
+      "Verified": false,
+      "Notes": "Glyph/kerning sprites handled; full wrapping/ellipsis acceptance remains pending."
+    },
+    {
+      "Index": 117,
+      "Kind": "DrawStringAligned",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanSprites.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDrawStringAligned.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 118,
+      "Kind": "PreloadTextures",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessagePreloadTextures.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 119,
+      "Kind": "AddToParticleTextureArray",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanParticles.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageAddToParticleTextureArray.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 120,
+      "Kind": "SetFrameTimeStep",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSetFrameTimeStep.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 121,
+      "Kind": "ResetRandomness",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageResetRandomness.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 122,
+      "Kind": "CollectGarbage",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCollectGarbage.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 123,
+      "Kind": "SpriteScissorPush",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanSprites.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSpriteScissorPush.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 124,
+      "Kind": "SpriteScissorPop",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanSprites.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSpriteScissorPop.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 125,
+      "Kind": "RenderColoredTexture",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageRenderColoredTexture.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 126,
+      "Kind": "CreateLineBasedObject",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateLineBasedObject.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 127,
+      "Kind": "UpdateLineBasedObject",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateLineBasedObject.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 128,
+      "Kind": "VideoAdaptersRequest",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageVideoAdaptersRequest.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 129,
+      "Kind": "VideoAdaptersResponse",
+      "Disposition": "OutboundResponse",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageVideoAdaptersResponse.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 130,
+      "Kind": "CreatedDeviceSettings",
+      "Disposition": "OutboundResponse",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreatedDeviceSettings.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 131,
+      "Kind": "SwitchDeviceSettings",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSwitchDeviceSettings.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 132,
+      "Kind": "SwitchRenderSettings",
+      "Disposition": "Pending",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSwitchRenderSettings.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied grass distance/density, scaling and wind settings; unsupported debug/graphics options remain pending."
+    },
+    {
+      "Index": 133,
+      "Kind": "SetVisibilityUpdates",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSetVisibilityUpdates.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 134,
+      "Kind": "UpdatePlanetSettings",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "ClientPlugin/Rendering/Scene/VulkanEnvironment.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdatePlanetSettings.cs"
+      ],
+      "Verified": false,
+      "Notes": "Copied atmosphere/cloud intensity controls; ambient probe atmosphere intensity/desaturation are also applied."
+    },
+    {
+      "Index": 135,
+      "Kind": "MainThreadCallback",
+      "Disposition": "OutboundResponse",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageMainThreadCallback.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 136,
+      "Kind": "UpdateLodImmediately",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateLodImmediately.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 137,
+      "Kind": "TasksFinished",
+      "Disposition": "OutboundResponse",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageTasksFinished.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 138,
+      "Kind": "PreloadModels",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessagePreloadModels.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 139,
+      "Kind": "SetGravityProvider",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSetGravityProvider.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 140,
+      "Kind": "UnloadTextures",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUnloadTextures.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 141,
+      "Kind": "CreateParticleEffect",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanParticles.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateParticleEffect.cs"
+      ],
+      "Verified": false,
+      "Notes": "Stock CPU effect/curve/emitter manager; native copied 464-byte emitters and authenticated stock compute/indirect rendering."
+    },
+    {
+      "Index": 142,
+      "Kind": "UpdateParticleEffect",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanParticles.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateParticleEffect.cs"
+      ],
+      "Verified": false,
+      "Notes": "Stock state update, stop/autodelete and output removal callback preserved."
+    },
+    {
+      "Index": 143,
+      "Kind": "ParticleEffectRemoved",
+      "Disposition": "OutboundResponse",
+      "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageParticleEffectRemoved.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 144,
+      "Kind": "DeferStateChanges",
+      "Disposition": "Pending",
+      "Sources": [
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDeferStateChanges.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    },
+    {
+      "Index": 145,
+      "Kind": "SpriteMainViewportScale",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/VulkanSprites.cs",
+        "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageSpriteMainViewportScale.cs"
+      ],
+      "Verified": false,
+      "Notes": "Centered bounded viewport and full IgnoreBounds viewport handled, including explicit scissor transforms; live UI acceptance remains separate."
+    },
+    {
+      "Index": 146,
+      "Kind": "InitSubsystemConsume",
+      "Disposition": "Handler",
+      "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs"
+      ],
+      "Verified": false,
+      "Notes": null
+    }
+  ]
+}

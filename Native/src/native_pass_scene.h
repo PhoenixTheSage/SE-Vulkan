@@ -1,0 +1,287 @@
+#pragma once
+#include "scene_actor_plan.h"
+#include <map>
+#include <vector>
+#include <tuple>
+#include <unordered_map>
+#include <limits>
+#include <bit>
+#include <compare>
+#include <chrono>
+#include <memory>
+#include <cstring>
+
+// Resident preparation-to-emission boundary. Prepared selections stay native;
+// callers receive only unique query owners, missing resources and fallbacks.
+namespace native_pass {
+using scene_actor::Bounds;using scene_actor::Vec3;using scene_actor::LodState;
+enum class Kind:uint32_t {Colour,Depth,Forward};
+struct Part {
+    uint64_t mesh{},colour{},normal{},extensions{},alpha{};
+    uint32_t first{},count{},material{},shader{};
+    bool masked{},double_sided{},depth=true,forward=true;
+};
+struct DepthPiece {uint32_t first{},count{},material{};};
+struct DepthSegment {Part range;std::vector<DepthPiece> pieces;};
+struct Model {std::vector<Part> parts;bool valid=true;std::vector<DepthSegment> depth;bool glass{};};
+struct Family {std::vector<float> distances;std::vector<uint64_t> levels;};
+struct Appearance {uint32_t material{};uint16_t colour[4]{0x3c00,0x3c00,0x3c00,0x3c00};bool visible=true;};
+struct Actor {
+    uint32_t owner{};uint64_t family{},group{};
+    scene_actor::Actor selection;LodState lod;Vec3 last_camera;bool have_camera{},supported=true,dynamic{};
+    // Camera-independent transform: three basis rows plus double translation.
+    float basis[9]{1,0,0,0,1,0,0,0,1};uint16_t key_colour[3]{};
+    std::vector<Appearance> appearance;
+    // Pose and ownership commits leave independently resident materials intact.
+    // This is an input operation; stored actors always own complete appearance.
+    bool replace_appearance=true;
+    uint64_t depth_epoch=1;
+};
+struct View {
+    uint32_t id{};Kind kind{};scene_actor::Frustum frustum;scene_actor::PassLod lod;
+    bool enabled=true,only_dynamic{},only_static{};double minimum_size_squared{},maximum_distance{};
+};
+struct Frame {scene_actor::Frame selection;std::vector<View> views;};
+struct QueryOwner {uint64_t group{},views{};uint32_t representative{};};
+struct QueryResult {uint64_t group{},hidden_views{};};
+struct Missing {uint64_t family{};uint32_t lod{};};
+struct Fallback {uint64_t actor{};uint32_t owner{};LodState lod;};
+struct TransparentRequest {uint64_t actor{};uint32_t owner{},lod{};float alpha{};};
+struct Transform {float rows[12]{};};
+struct ColourInstance {Transform transform;uint16_t key[4]{},colour[4]{};};
+static_assert(sizeof(Transform)==48 && sizeof(ColourInstance)==64);
+struct GroupKey {
+    uint32_t view{},shader{},first{},count{};uint64_t mesh{},colour{},normal{},extensions{},alpha{};
+    bool masked{},double_sided{};
+    auto operator<=>(const GroupKey&)const=default;
+};
+struct InstanceStream {
+    uint32_t index{};std::vector<uint8_t> instances;std::vector<uint32_t> owners;
+};
+struct Group {
+    GroupKey key;Kind kind{};std::shared_ptr<InstanceStream> stream;
+    uint32_t stride()const{return kind==Kind::Depth?48:64;}
+    uint32_t count()const{return uint32_t(stream->owners.size());}
+};
+template<class T>class Handles {
+    struct Entry {T value;uint32_t generation{};bool alive{};};
+    std::vector<Entry> entries;std::vector<uint32_t> free;uint32_t generation{};
+public:
+    uint64_t add(T value){if(generation==UINT32_MAX)throw std::runtime_error("pass handle generation exhausted");uint32_t i;if(free.empty()){i=uint32_t(entries.size());entries.emplace_back();}else{i=free.back();free.pop_back();}entries[i]={std::move(value),++generation,true};return (uint64_t(generation)<<32)|(i+1);}
+    T& get(uint64_t handle){uint32_t i=uint32_t(handle);if(!i||i>entries.size()||!entries[i-1].alive||entries[i-1].generation!=uint32_t(handle>>32))throw std::runtime_error("stale pass handle");return entries[i-1].value;}
+    bool valid(uint64_t handle)const{uint32_t i=uint32_t(handle);return i&&i<=entries.size()&&entries[i-1].alive&&entries[i-1].generation==uint32_t(handle>>32);}
+    void remove(uint64_t handle){get(handle);uint32_t i=uint32_t(handle)-1;entries[i].alive=false;entries[i].value={};free.push_back(i);}
+    template<class F>void each(F&& fn){for(uint32_t i=0;i<entries.size();++i)if(entries[i].alive)fn((uint64_t(entries[i].generation)<<32)|(i+1),entries[i].value);}
+};
+class Scene {
+    Handles<Model> models;Handles<Family> families;Handles<Actor> actors;
+    struct Selection {uint64_t handle{},views{};LodState next;Vec3 camera;bool main_candidate{};};
+    std::vector<Selection> selected;Frame frame;bool pending{};
+    std::vector<QueryOwner> queries;std::vector<Missing> missing;std::vector<Fallback> fallbacks;std::vector<Group> groups;std::vector<std::shared_ptr<InstanceStream>> streams;std::vector<uint32_t> visible_owners;
+    // Published groups are cleared with the frame so a retired publication cannot
+    // be recorded. The grouped instance storage stays. The next publication
+    // rewrites a row only when its owner, epoch, transition or material
+    // activation changes, and patches camera-relative translation in place.
+    using BatchKey=std::tuple<uint32_t,uint64_t,bool,std::vector<uint32_t>>;
+    struct RetainedBatch {
+        std::vector<uint32_t> owners,activated;std::vector<uint64_t> epochs;std::vector<float> states;
+        scene_actor::Vec3 camera{};std::shared_ptr<InstanceStream> base;std::map<uint32_t,std::shared_ptr<InstanceStream>> materials;
+    };
+    std::map<BatchKey,RetainedBatch> retained_batches;
+    std::map<std::pair<uint32_t,uint32_t>,std::pair<uint64_t,uint64_t>> spot_signature;
+    uint64_t spot_updates{};
+    std::vector<TransparentRequest> transparent;
+    bool model_ready(uint64_t handle){return models.valid(handle)&&models.get(handle).valid;}
+    static uint16_t half(float f){
+        // Stock packed instance stream uses IEEE binary16, round to nearest even.
+        uint32_t bits=std::bit_cast<uint32_t>(f),sign=(bits>>16)&0x8000,exponent=(bits>>23)&255,mantissa=bits&0x7fffff;
+        if(exponent==255)return uint16_t(sign|0x7c00|(mantissa?0x200:0));int e=int(exponent)-127+15;
+        if(e>=31)return uint16_t(sign|0x7c00);if(e<=0){if(e<-10)return uint16_t(sign);mantissa|=0x800000;uint32_t shift=uint32_t(14-e),result=mantissa>>shift,remainder=mantissa&((1u<<shift)-1),mid=1u<<(shift-1);return uint16_t(sign|result+(remainder>mid||(remainder==mid&&(result&1))));}
+        uint32_t result=(uint32_t(e)<<10)|(mantissa>>13),remainder=mantissa&8191;return uint16_t(sign|result+(remainder>4096||(remainder==4096&&(result&1))));
+    }
+    void idle()const{if(pending)throw std::runtime_error("resident mutation during prepared pass frame");}
+    static Transform transform(const Actor& actor,const Vec3& camera){Transform output{};const double translation[]{actor.selection.translation.x-camera.x,actor.selection.translation.y-camera.y,actor.selection.translation.z-camera.z};for(uint32_t r=0;r<3;++r){for(uint32_t c=0;c<3;++c)output.rows[r*4+c]=actor.basis[r*3+c];output.rows[r*4+3]=float(translation[r]);}return output;}
+    static const Appearance* appearance(const Actor& actor,uint32_t material){const Appearance* defaults=nullptr;for(auto& item:actor.appearance){if(item.material==material)return &item;if(item.material==UINT32_MAX)defaults=&item;}return defaults;}
+    int lod_for(const Family& family,const View& view,const Selection& selection,bool main)const{return std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.current+(main?view.lod.visible_shift:view.lod.shift)));}
+    void request(uint64_t family,uint32_t lod){auto item=Missing{family,lod};if(std::none_of(missing.begin(),missing.end(),[&](const Missing& m){return m.family==family&&m.lod==lod;}))missing.push_back(item);}
+public:
+    struct Profile {uint64_t prepares{},publishes{},committed_actors{},selected_actors{},emitted_rows{},stream_bytes{},groups{};double commits_us{},prepare_us{},requests_us{},publish_us{},emit_us{},spots_us{};uint64_t appearance_entries{};double actor_parse_us{},actor_apply_us{};};
+    struct CpuScope {double* destination{};std::chrono::steady_clock::time_point start;CpuScope(bool enabled,double& value){if(enabled){destination=&value;start=std::chrono::steady_clock::now();}}~CpuScope(){if(destination)*destination+=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();}};
+    bool profiling{};Profile profile;
+    uint64_t register_model(Model model){
+        if((model.parts.empty()&&!model.glass)||model.parts.size()>4096)throw std::runtime_error("invalid pass model");
+        for(auto& part:model.parts)if(!part.mesh||!part.count||part.count%3||part.first%3||uint64_t(part.first)+part.count>UINT32_MAX)throw std::runtime_error("invalid immutable pass range");
+        // Stock depth preprocessing belongs to immutable model/LOD registration.
+        // Shared mesh ranges retain alpha/skipped boundaries. Solid segments keep
+        // source material pieces so later visibility changes can split coverage
+        // without replaying the colour-material representation in every view.
+        model.depth.clear();bool merge=false;
+        for(auto& part:model.parts){
+            if(!part.depth){merge=false;continue;}
+            if(merge&&!part.masked&&model.depth.back().range.mesh==part.mesh&&model.depth.back().range.first+model.depth.back().range.count==part.first){
+                model.depth.back().range.count+=part.count;model.depth.back().pieces.push_back({part.first,part.count,part.material});
+            }else model.depth.push_back({part,{{part.first,part.count,part.material}}});
+            merge=!part.masked;
+        }
+        // Lazy resolution may register a model while a frame is prepared.
+        return models.add(std::move(model));
+    }
+    uint64_t register_family(std::vector<float> distances){idle();if(distances.size()>1024||!std::is_sorted(distances.begin(),distances.end()))throw std::runtime_error("invalid pass family");for(auto distance:distances)if(!std::isfinite(distance)||distance<0)throw std::runtime_error("invalid authored LOD distance");Family family{std::move(distances),{}};family.levels.resize(family.distances.size()+1);return families.add(std::move(family));}
+    void bind_level(uint64_t family,uint32_t lod,uint64_t model){models.get(model);auto& f=families.get(family);if(lod>=f.levels.size())throw std::runtime_error("invalid pass model LOD");f.levels[lod]=model;}
+    uint64_t register_actor(Actor actor){idle();families.get(actor.family);if(!actor.replace_appearance)throw std::runtime_error("registration requires complete resident appearance");return actors.add(std::move(actor));}
+    void update_actor(uint64_t handle,Actor actor){idle();families.get(actor.family);if(!actor.replace_appearance&&!actor.appearance.empty())throw std::runtime_error("preserved appearance commit contains replacement data");auto& current=actors.get(handle);actor.lod=current.lod;actor.last_camera=current.last_camera;actor.have_camera=current.have_camera;actor.depth_epoch=current.depth_epoch+1;if(!actor.replace_appearance)actor.appearance=std::move(current.appearance);actor.replace_appearance=true;current=std::move(actor);}
+    void update_actors(std::vector<std::pair<uint64_t,Actor>> updates){idle();std::map<uint64_t,bool> unique;for(auto& [handle,actor]:updates){actors.get(handle);families.get(actor.family);if(!actor.replace_appearance&&!actor.appearance.empty())throw std::runtime_error("preserved appearance commit contains replacement data");if(!unique.emplace(handle,true).second)throw std::runtime_error("duplicate resident actor commit");}for(auto& [handle,actor]:updates)update_actor(handle,std::move(actor));}
+    void remove_actor(uint64_t handle){idle();actors.remove(handle);}
+    void remove_family(uint64_t handle){idle();families.remove(handle);}
+    void remove_model(uint64_t handle){idle();models.remove(handle);}
+    Actor& actor_state(uint64_t handle){idle();return actors.get(handle);}
+    void invalidate_dependency(uint32_t kind,uint64_t id){if(kind!=0&&kind!=3)return;models.each([&](uint64_t,Model& model){for(auto& part:model.parts)if(kind==3?part.mesh==id:part.colour==id||part.normal==id||part.extensions==id||part.alpha==id){model.valid=false;break;}});}
+    void clear_frame(){idle();selected.clear();queries.clear();missing.clear();fallbacks.clear();groups.clear();streams.clear();visible_owners.clear();transparent.clear();spot_updates=0;}
+    uint64_t static_spot_updates()const{return spot_updates;}
+    const auto& main_visible_owners()const{return visible_owners;}
+    void prepare(Frame current){
+        CpuScope total(profiling,profile.prepare_us);if(profiling)++profile.prepares;
+        idle();if(current.views.size()>64)throw std::runtime_error("pass view budget");uint64_t ids=0;for(auto& view:current.views){if(view.id>=64||(ids&(uint64_t(1)<<view.id)))throw std::runtime_error("duplicate pass view");ids|=uint64_t(1)<<view.id;}
+        frame=std::move(current);selected.clear();queries.clear();missing.clear();fallbacks.clear();groups.clear();streams.clear();transparent.clear();
+        std::map<uint64_t,uint32_t> query_indices;
+        actors.each([&](uint64_t handle,Actor& actor){
+            if(!actor.supported||!families.valid(actor.family)){fallbacks.push_back({handle,actor.owner,actor.lod});return;}if(!actor.selection.visible)return;
+            auto& family=families.get(actor.family);Selection selection{handle,0,actor.lod,frame.selection.camera,false};
+            double dx=actor.last_camera.x-frame.selection.camera.x,dy=actor.last_camera.y-frame.selection.camera.y,dz=actor.last_camera.z-frame.selection.camera.z;
+            bool immediate=!actor.have_camera||std::sqrt(dx*dx+dy*dy+dz*dz)>frame.selection.global.smooth_camera_distance;
+            float x=float(actor.selection.translation.x-frame.selection.camera.x),y=float(actor.selection.translation.y-frame.selection.camera.y),z=float(actor.selection.translation.z-frame.selection.camera.z),scale=actor.selection.forward_scale>0?actor.selection.forward_scale:1;
+            float distance=(std::sqrt(x*x+y*y+z*z)/scale*frame.selection.coefficient+frame.selection.global.distance_add)*frame.selection.global.distance_mult;
+            for(auto& view:frame.views){if(!view.enabled||(view.kind==Kind::Colour&&actor.selection.skip_main)||(view.kind==Kind::Forward&&actor.selection.skip_forward)||(view.kind==Kind::Depth&&(!actor.selection.cast_flag||!actor.selection.casts))||(view.only_dynamic&&!actor.dynamic)||(view.only_static&&actor.dynamic)||scene_actor::disjoint(actor.selection.bounds,view.frustum))continue;
+                double sx=actor.selection.bounds.maximum.x-actor.selection.bounds.minimum.x,sy=actor.selection.bounds.maximum.y-actor.selection.bounds.minimum.y,sz=actor.selection.bounds.maximum.z-actor.selection.bounds.minimum.z;
+                if(view.maximum_distance>0){double radius=std::sqrt(sx*sx+sy*sy+sz*sz)*.5,dx=(actor.selection.bounds.minimum.x+actor.selection.bounds.maximum.x)*.5-frame.selection.camera.x,dy=(actor.selection.bounds.minimum.y+actor.selection.bounds.maximum.y)*.5-frame.selection.camera.y,dz=(actor.selection.bounds.minimum.z+actor.selection.bounds.maximum.z)*.5-frame.selection.camera.z;if(std::sqrt(dx*dx+dy*dy+dz*dz)>view.maximum_distance+radius)continue;}
+                if(view.kind==Kind::Depth && sx*sx+sy*sy+sz*sz<=view.minimum_size_squared)continue;
+                selection.views|=uint64_t(1)<<view.id;if(view.kind==Kind::Colour)selection.main_candidate=true;
+            }
+            if(!selection.views)return;selection.next.update(distance,family.distances,frame.selection.global,frame.selection.delta,immediate);
+            selected.push_back(selection);
+            if(profiling)++profile.selected_actors;
+            if(actor.group){auto [it,added]=query_indices.emplace(actor.group,uint32_t(queries.size()));if(added)queries.push_back({actor.group,selection.views,actor.owner});else queries[it->second].views|=selection.views;}
+            // Query results can change the per-view visible LOD shift. Resolve both
+            // choices now; publication reuses this selector without advancing it.
+            CpuScope resources(profiling,profile.requests_us);
+            for(auto& view:frame.views)if(selection.views&(uint64_t(1)<<view.id))for(bool main:{false,true}){
+                int lod=lod_for(family,view,selection,main);if(!model_ready(family.levels[lod]))request(actor.family,uint32_t(lod));
+                if(view.kind==Kind::Colour&&selection.next.previous>=0){int old=std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift)));if(!model_ready(family.levels[old]))request(actor.family,uint32_t(old));}
+            }
+        });pending=true;
+    }
+    const auto& query_owners()const{return queries;}const auto& missing_levels()const{return missing;}const auto& explicit_fallbacks()const{return fallbacks;}const auto& render_groups()const{return groups;}const auto& instance_streams()const{return streams;}
+    const auto& transparent_requests()const{return transparent;}
+    void publish(std::span<const QueryResult> results){
+        CpuScope total(profiling,profile.publish_us);if(profiling)++profile.publishes;
+        if(!pending)throw std::runtime_error("pass publication without preparation");
+        std::unordered_map<uint64_t,uint64_t> hidden;for(auto& result:results)if(!hidden.emplace(result.group,result.hidden_views).second)throw std::runtime_error("duplicate pass query result");
+        groups.clear();streams.clear();visible_owners.clear();transparent.clear();
+        decltype(spot_signature) next_spots;
+        struct Row {const Actor* actor;float state;};
+        struct Batch {const Model* model;const View* view;std::vector<Row> rows;};
+        // Stock groups by model/LOD, view and render state. Hidden material
+        // boundaries need distinct coverage; appearance values stay in streams.
+        std::map<BatchKey,Batch> batches;
+        auto select_batch=[&](const Actor& actor,uint64_t model_handle,const View& view,float state,bool transition){
+            CpuScope emission(profiling,profile.emit_us);
+            auto& model=models.get(model_handle);std::vector<uint32_t> hidden_materials;
+            if(model.parts.empty())return;
+            if(std::any_of(actor.appearance.begin(),actor.appearance.end(),[](const Appearance& a){return !a.visible;})){
+                for(auto& part:model.parts){auto material=appearance(actor,part.material);if(material&&!material->visible)hidden_materials.push_back(part.material);}
+                std::sort(hidden_materials.begin(),hidden_materials.end());hidden_materials.erase(std::unique(hidden_materials.begin(),hidden_materials.end()),hidden_materials.end());
+            }
+            auto [it,added]=batches.try_emplace({view.id,model_handle,transition,std::move(hidden_materials)});if(added){it->second.model=&model;it->second.view=&view;}it->second.rows.push_back({&actor,state});
+        };
+        for(auto& selection:selected){auto& actor=actors.get(selection.handle);auto& family=families.get(actor.family);uint64_t view_mask=selection.views & ~(actor.group?hidden[actor.group]:0);bool main=false;for(auto& view:frame.views)if(view.kind==Kind::Colour&&(view_mask&(uint64_t(1)<<view.id)))main=true;
+            bool missing_model=false;for(auto& view:frame.views)if(view_mask&(uint64_t(1)<<view.id)){int lod=lod_for(family,view,selection,main);if(!model_ready(family.levels[lod]))missing_model=true;if(view.kind==Kind::Colour&&selection.next.previous>=0){int old=std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift)));if(!model_ready(family.levels[old]))missing_model=true;}}
+            if(missing_model){fallbacks.push_back({selection.handle,actor.owner,actor.lod});continue;}
+            for(auto& view:frame.views)if(view_mask&(uint64_t(1)<<view.id)){
+                int lod=lod_for(family,view,selection,main);bool transition=view.kind==Kind::Colour&&selection.next.previous>=0&&selection.next.transition>0;
+                select_batch(actor,family.levels[lod],view,transition?1-selection.next.transition:0,transition);
+                if(view.id==0&&view.kind==Kind::Colour&&models.get(family.levels[lod]).glass)transparent.push_back({selection.handle,actor.owner,uint32_t(lod),transition?3-selection.next.transition:0});
+                if(view.id>=15&&view.only_static)next_spots[{view.id,actor.owner}]={family.levels[lod],actor.depth_epoch};
+                if(transition){int old=std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift)));select_batch(actor,family.levels[old],view,2+selection.next.transition,true);if(view.id==0&&models.get(family.levels[old]).glass)transparent.push_back({selection.handle,actor.owner,uint32_t(old),selection.next.transition});}
+            }
+            // The game-facing visibility set follows the managed contract:
+            // main frustum candidates are reported before occlusion rejection.
+            if(selection.main_candidate)visible_owners.push_back(actor.owner);
+            actor.lod=selection.next;actor.last_camera=selection.camera;actor.have_camera=true;
+        }
+        std::map<BatchKey,RetainedBatch> next_retained;
+        {
+            CpuScope emission(profiling,profile.emit_us);
+            for(auto& [batch_key,batch]:batches){
+                auto& view=*batch.view;auto& rows=batch.rows;auto& hidden_materials=std::get<3>(batch_key);
+                uint32_t stride=view.kind==Kind::Depth?48u:64u;
+                auto pack_row=[&](uint8_t* destination,size_t i,uint32_t material){
+                    auto& actor=*rows[i].actor;ColourInstance packed{};packed.transform=transform(actor,frame.selection.camera);
+                    if(view.kind!=Kind::Depth){std::copy_n(actor.key_colour,3,packed.key);packed.key[3]=half(rows[i].state);const uint16_t defaults[]{0x3c00,0x3c00,0x3c00,0x3c00};auto override=appearance(actor,material);std::copy_n(override?override->colour:defaults,4,packed.colour);}
+                    std::memcpy(destination,&packed,stride);
+                };
+                std::vector<uint32_t> owners,activated;std::vector<uint64_t> epochs;std::vector<float> states;
+                owners.reserve(rows.size());epochs.reserve(rows.size());states.reserve(rows.size());
+                for(auto& row:rows){owners.push_back(row.actor->owner);epochs.push_back(row.actor->depth_epoch);states.push_back(row.state);}
+                auto material_active=[&](uint32_t material){return std::any_of(rows.begin(),rows.end(),[&](const Row& row){return std::any_of(row.actor->appearance.begin(),row.actor->appearance.end(),[&](const Appearance& item){return item.material==material;});});};
+                if(view.kind!=Kind::Depth)for(auto& part:batch.model->parts)if(!std::binary_search(hidden_materials.begin(),hidden_materials.end(),part.material)&&(view.kind!=Kind::Forward||part.forward)&&material_active(part.material)&&std::find(activated.begin(),activated.end(),part.material)==activated.end())activated.push_back(part.material);
+                auto found=retained_batches.find(batch_key);
+                bool same_layout=found!=retained_batches.end()&&found->second.owners==owners&&found->second.activated==activated&&found->second.base&&found->second.base->instances.size()==rows.size()*stride&&found->second.materials.size()==activated.size();
+                if(same_layout)for(uint32_t material:activated){auto it=found->second.materials.find(material);if(it==found->second.materials.end()||!it->second||it->second->instances.size()!=rows.size()*stride)same_layout=false;}
+                RetainedBatch stored;
+                if(same_layout){
+                    bool same_rows=found->second.epochs==epochs&&found->second.states==states;
+                    bool same_camera=found->second.camera.x==frame.selection.camera.x&&found->second.camera.y==frame.selection.camera.y&&found->second.camera.z==frame.selection.camera.z;
+                    stored=std::move(found->second);
+                    if(!same_rows||!same_camera){
+                        auto rewrite=[&](InstanceStream& stream,uint32_t material){
+                            for(size_t i=0;i<rows.size();++i){
+                                bool dirty=epochs[i]!=stored.epochs[i]||(view.kind!=Kind::Depth&&states[i]!=stored.states[i]);
+                                if(dirty){pack_row(stream.instances.data()+i*stride,i,material);if(profiling){++profile.emitted_rows;profile.stream_bytes+=stride;}}
+                                else if(!same_camera){auto relative=transform(*rows[i].actor,frame.selection.camera);std::memcpy(stream.instances.data()+i*stride,&relative,sizeof(Transform));}
+                            }
+                        };
+                        rewrite(*stored.base,UINT32_MAX);for(uint32_t material:activated)rewrite(*stored.materials[material],material);
+                    }
+                    stored.epochs=std::move(epochs);stored.states=std::move(states);stored.camera=frame.selection.camera;
+                }else{
+                    auto make_stream=[&](uint32_t material){
+                        auto stream=std::make_shared<InstanceStream>();stream->instances.resize(rows.size()*stride);stream->owners=owners;
+                        for(size_t i=0;i<rows.size();++i)pack_row(stream->instances.data()+i*stride,i,material);
+                        if(profiling){profile.emitted_rows+=rows.size();profile.stream_bytes+=stream->instances.size();}return stream;
+                    };
+                    stored.base=make_stream(UINT32_MAX);for(uint32_t material:activated)stored.materials.emplace(material,make_stream(material));
+                    stored.owners=std::move(owners);stored.activated=std::move(activated);stored.epochs=std::move(epochs);stored.states=std::move(states);stored.camera=frame.selection.camera;
+                }
+                auto publish_stream=[&](const std::shared_ptr<InstanceStream>& stream){stream->index=uint32_t(streams.size());streams.push_back(stream);};
+                publish_stream(stored.base);for(auto& item:stored.materials)publish_stream(item.second);
+                auto stream_for=[&](uint32_t material){if(view.kind==Kind::Depth)return stored.base;auto it=stored.materials.find(material);return it==stored.materials.end()?stored.base:it->second;};
+                auto append=[&](const Part& part){GroupKey key{view.id,part.shader,part.first,part.count,part.mesh,part.colour,part.normal,part.extensions,part.alpha,part.masked,part.double_sided};
+                    if(view.kind==Kind::Depth){key.colour=key.normal=key.extensions=0;if(!part.masked)key.alpha=0;key.shader=part.masked?1:0;key.double_sided=false;}
+                    groups.push_back({key,view.kind,stream_for(part.material)});
+                };
+                if(view.kind!=Kind::Depth){
+                    for(auto& part:batch.model->parts)if(!std::binary_search(hidden_materials.begin(),hidden_materials.end(),part.material)&&(view.kind!=Kind::Forward||part.forward))append(part);
+                }else for(auto& segment:batch.model->depth){
+                    bool split=std::any_of(segment.pieces.begin(),segment.pieces.end(),[&](const DepthPiece& piece){return std::binary_search(hidden_materials.begin(),hidden_materials.end(),piece.material);});
+                    if(!split){append(segment.range);continue;}
+                    Part visible=segment.range;bool have=false;
+                    auto flush=[&](){if(have){append(visible);have=false;}};
+                    for(auto& piece:segment.pieces){
+                        if(std::binary_search(hidden_materials.begin(),hidden_materials.end(),piece.material)){flush();continue;}
+                        if(have&&visible.first+visible.count==piece.first)visible.count+=piece.count;
+                        else{flush();visible=segment.range;visible.first=piece.first;visible.count=piece.count;have=true;}
+                    }flush();
+                }
+                next_retained.emplace(batch_key,std::move(stored));
+            }
+        }
+        retained_batches.swap(next_retained);
+        spot_updates=0;
+        CpuScope spots(profiling,profile.spots_us);if(profiling)profile.groups+=groups.size();
+        for(auto& [key,value]:next_spots){auto previous=spot_signature.find(key);if(previous==spot_signature.end()||previous->second!=value)spot_updates|=uint64_t(1)<<key.first;}
+        for(auto& [key,value]:spot_signature)if(!next_spots.count(key))spot_updates|=uint64_t(1)<<key.first;
+        spot_signature=std::move(next_spots);pending=false;
+    }
+    void cancel(){if(!pending)throw std::runtime_error("pass cancel without preparation");pending=false;selected.clear();groups.clear();streams.clear();transparent.clear();}
+};
+}

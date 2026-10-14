@@ -1,0 +1,26 @@
+name: Native Vulkan
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  native:
+    strategy:
+      matrix:
+        os: [windows-2022, ubuntu-24.04]
+        configuration: [Debug, Release]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux build requirements
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libvulkan1 mesa-vulkan-drivers
+      - name: Configure
+        run: cmake -S Native -B Native/build -DCMAKE_BUILD_TYPE=${{ matrix.configuration }}
+      - name: Build
+        run: cmake --build Native/build --config ${{ matrix.configuration }} --parallel 4
+      - name: Test ABI and native draw where API 1.4 is available
+        run: ctest --test-dir Native/build -C ${{ matrix.configuration }} --output-on-failure
+      - name: Package
+        run: cmake --install Native/build --config ${{ matrix.configuration }} --component SEVK --prefix Native/package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ runner.os }}-${{ matrix.configuration }}
+          path: Native/package
