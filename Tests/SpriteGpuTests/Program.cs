@@ -116,10 +116,47 @@ internal static class Program
             mipExpected[c]=(int)Math.Round(Encoded(blended)*255);mipActual[c]=pixels[(4*64+4)*4+c];
             Require(Math.Abs(mipActual[c]-mipExpected[c])<=2,"actual minified font channel "+c+" samples uploaded mip two and blends against independent reference");
         }
-        NativeStats stats=backend.GetStats();Require(stats.ValidationErrors==0,"font GPU passes have zero core/synchronization validation errors");
+        CheckKeenLogo(content, output, backend, sprites);
+        NativeStats stats=backend.GetStats();Require(stats.ValidationErrors==0,"font and Keen logo GPU passes have zero core/synchronization validation errors");
         PngWriter.Save(Path.Combine(output,"font-minified.png"),64,64,pixels);
         File.WriteAllText(Path.Combine(output,"font-edge.json"),JsonSerializer.Serialize(new {atlas,edge.X,edge.Y,dds.Format,dds.IsRawRgba,source=edge.Pixel,prepared,tint=tintLinear,background=backgroundLinear,expected,actual,minification=new {mip=2,mipEdge.X,mipEdge.Y,source=mipEdge.Pixel,expected=mipExpected,actual=mipActual},stats.ValidationErrors,stats.SubmittedFrames,scope="Actual installed base/mip-two atlas texels plus stock preprocessing/shader formula; full live DX11 UI image comparison remains separate"},new JsonSerializerOptions{WriteIndented=true}));
         Console.WriteLine("Installed-font GPU evidence: "+output);
+    }
+    private static void CheckKeenLogo(string content, string output, NativeBackend backend, VulkanSprites sprites)
+    {
+        string path = Path.Combine(content, "Textures", "GUI", "KeenLogo.dds");
+        byte[] source = File.ReadAllBytes(path);
+        Require(BitConverter.ToUInt32(source, 80) == 0x20, "GPU logo fixture uses the installed P8 main-menu asset");
+        int width = checked((int)BitConverter.ToUInt32(source, 16)), height = checked((int)BitConverter.ToUInt32(source, 12));
+        backend.Resize((uint)width, (uint)height, 0);
+        sprites.BeginFrame();
+        sprites.Process(new MyRenderMessageDrawSprite { Texture = path, DestinationRectangle = new RectangleF(0, 0, width, height), Color = Color.White });
+        var packet = sprites.MainPackets(width, height).Single();
+        Require(packet.Texture != 0 && packet.Flags == 2, "production logo packet selects the premultiplied GUI texture");
+        Color background = new Color(35, 60, 85, 255);
+        Require(backend.BeginFrame(MatrixD.Identity, Vector3.Zero, Vector3.Zero, Vector3.Zero, background), "Keen logo GPU frame begins");
+        backend.DrawSprites(new[] { packet }); backend.RequestReadback(); backend.EndFrame();
+        byte[] pixels = backend.Readback(width, height);
+        float[] clear = NativeBackend.ColorValues(background);
+        int maxError = 0, transparent = 0, visible = 0, edges = 0;
+        // Independent reference: directly index the on-disk palette, then apply
+        // stock GUI preprocessing and the linear premultiplied blend formula.
+        for (int i = 0; i < width * height; ++i)
+        {
+            int palette = 128 + source[1152 + i] * 4;
+            byte alpha = source[palette + 3];
+            if (alpha == 0) ++transparent; else if (alpha == 255) ++visible; else ++edges;
+            for (int c = 0; c < 3; ++c)
+            {
+                byte prepared = (byte)(Math.Pow(Math.Pow(source[palette + c] / 255.0, 2.2) * (alpha / 255.0), .45454545454545453) * 255);
+                int expected = (int)Math.Round(Encoded(Linear(prepared / 255.0) + clear[c] * (1 - alpha / 255.0)) * 255);
+                maxError = Math.Max(maxError, Math.Abs(pixels[i * 4 + c] - expected));
+            }
+        }
+        Require(transparent > 0 && visible > 0 && edges > 0, "logo reference covers transparent, opaque and antialiased pixels");
+        Require(maxError <= 2, "all installed logo pixels match palette/alpha/blend reference within two byte values (max " + maxError + ")");
+        PngWriter.Save(Path.Combine(output, "keen-logo.png"), width, height, pixels);
+        File.WriteAllText(Path.Combine(output, "keen-logo.json"), JsonSerializer.Serialize(new { path, width, height, maxError, transparent, visible, edges, scope = "Installed main-menu asset through production DDS/cache/sprite code and Vulkan readback; live menu layout is separate." }, new JsonSerializerOptions { WriteIndented = true }));
     }
     private static double Linear(double c)=>c<=.04045?c/12.92:Math.Pow((c+.055)/1.055,2.4);
     private static double Encoded(double c)=>c<=.0031308?c*12.92:1.055*Math.Pow(c,1/2.4)-.055;

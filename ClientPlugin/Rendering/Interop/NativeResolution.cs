@@ -6,6 +6,13 @@ public sealed partial class NativeBackend
     private ResolutionFunctions resolutionApi;
     private ResolutionFunctions ResolutionApi=>resolutionApi??(resolutionApi=new ResolutionFunctions(GetSymbol));
     public void SetRenderFraction(float value){Check(ResolutionApi.Set(context,value),context);RenderFraction=value;}
+    public VRageMath.Vector2I ResolveRenderResolution(int width,int height)
+    {
+        if(width<=0 || height<=0)throw new ArgumentOutOfRangeException();
+        Check(ResolutionApi.Resolve(context,(uint)width,(uint)height,out uint renderWidth,out uint renderHeight,out float fraction),context);
+        RenderFraction=fraction;
+        return new VRageMath.Vector2I(checked((int)renderWidth),checked((int)renderHeight));
+    }
     public NativeResolutionStats GetResolutionStats(){var value=new NativeResolutionStats{Size=48,AbiVersion=AbiVersion};Check(ResolutionApi.Stats(context,ref value),context);return value;}
 }
 [StructLayout(LayoutKind.Sequential,Pack=8)]
@@ -14,6 +21,7 @@ internal sealed class ResolutionFunctions
 {
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]internal delegate int SetFn(IntPtr ctx,float value);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]internal delegate int StatsFn(IntPtr ctx,ref NativeResolutionStats value);
-    internal readonly SetFn Set;internal readonly StatsFn Stats;
-    internal ResolutionFunctions(Func<string,IntPtr> symbol){Set=(SetFn)Marshal.GetDelegateForFunctionPointer(symbol("sevk_set_render_fraction"),typeof(SetFn));Stats=(StatsFn)Marshal.GetDelegateForFunctionPointer(symbol("sevk_get_resolution_stats"),typeof(StatsFn));}
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]internal delegate int ResolveFn(IntPtr ctx,uint width,uint height,out uint renderWidth,out uint renderHeight,out float fraction);
+    internal readonly SetFn Set;internal readonly StatsFn Stats;internal readonly ResolveFn Resolve;
+    internal ResolutionFunctions(Func<string,IntPtr> symbol){Set=(SetFn)Marshal.GetDelegateForFunctionPointer(symbol("sevk_set_render_fraction"),typeof(SetFn));Stats=(StatsFn)Marshal.GetDelegateForFunctionPointer(symbol("sevk_get_resolution_stats"),typeof(StatsFn));Resolve=(ResolveFn)Marshal.GetDelegateForFunctionPointer(symbol("sevk_resolve_render_resolution"),typeof(ResolveFn));}
 }

@@ -327,11 +327,20 @@ void ngx_release_feature() {
     ngx.in_w = ngx.in_h = ngx.out_w = ngx.out_h = 0;
 }
 
+void ngx_release_parameters() {
+    using Destroy = int (*)(void*);
+    auto destroy = reinterpret_cast<Destroy>(ngx_symbol("NVSDK_NGX_VULKAN_DestroyParameters"));
+    if (destroy && ngx.eval_params) destroy(ngx.eval_params);
+    if (destroy && ngx.caps) destroy(ngx.caps);
+    ngx.eval_params = ngx.caps = nullptr;
+}
+
 bool ngx_init(const std::wstring& directory, uint32_t preset) {
     if (ngx.ready && ngx.directory == directory) return true;
     using Shutdown = int (*)(VkDevice);
     if (ngx.ready) {
         ngx_release_feature();
+        ngx_release_parameters();
         if (auto shutdown = reinterpret_cast<Shutdown>(ngx_symbol("NVSDK_NGX_VULKAN_Shutdown1"))) shutdown(device);
         ngx.ready = false;
         ngx.caps = ngx.eval_params = nullptr;
@@ -370,13 +379,13 @@ bool ngx_init(const std::wstring& directory, uint32_t preset) {
     if (!caps_fn || !ngx_ok(caps_fn(&caps)) || !caps) { if (shutdown) shutdown(device); ngx_publish(0, 0, 0, 0, false, false); ngx_set_status("NGX capability parameters missing"); return false; }
     ngx.caps = caps;
     void* eval = nullptr;
-    if (!alloc || !ngx_ok(alloc(&eval)) || !eval) { if (shutdown) shutdown(device); ngx.caps = nullptr; ngx_publish(0, 0, 0, 0, false, false); ngx_set_status("NGX eval parameters missing"); return false; }
+    if (!alloc || !ngx_ok(alloc(&eval)) || !eval) { ngx_release_parameters(); if (shutdown) shutdown(device); ngx_publish(0, 0, 0, 0, false, false); ngx_set_status("NGX eval parameters missing"); return false; }
     ngx.eval_params = eval;
     auto vt = *reinterpret_cast<void***>(caps);
     auto get_int = reinterpret_cast<int (*)(void*, const char*, int*)>(vt[11]);
     int available = 0;
     if (get_int && ngx_ok(get_int(caps, "SuperSampling.Available", &available)) && available == 0) {
-        if (shutdown) shutdown(device); ngx.caps = ngx.eval_params = nullptr;
+        ngx_release_parameters(); if (shutdown) shutdown(device);
         { auto& request = ngx_request(); std::lock_guard<std::mutex> lock(request.mu); request.debug.supported = 2; }
         ngx_publish(0, 0, 0, 0, false, false);
         ngx_set_status("NGX super sampling unavailable"); return false;
@@ -479,9 +488,11 @@ bool ngx_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
     bool first = !display_state.visited[slot & 1];
     display_state.visited[slot & 1] = 1;
     barrier(cmd, dest.handle, first ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_ASPECT_COLOR_BIT,
-        first ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-        first ? 0 : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+        first ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        first ? 0 : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT,
+        // NGX also clears output through transfer commands during evaluation.
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
     if (!ngx.eval_params) { ngx_publish(in_w, in_h, out_w, out_h, false, true); ngx_set_status("NGX eval parameters missing"); ngx.fail_frames = 60; return false; }
     barrier(cmd, color_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -522,7 +533,7 @@ bool ngx_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
     auto evaluate = reinterpret_cast<Eval>(ngx_symbol("NVSDK_NGX_VULKAN_EvaluateFeature"));
     int result = evaluate ? evaluate(cmd, ngx.feature, params, nullptr) : 0xBAD00000;
     barrier(cmd, dest.handle, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
     if (!ngx_ok(result)) {
         char text[96];
@@ -565,13 +576,12 @@ void ngx_from_tonemap(VkCommandBuffer cmd) {
 
 void cleanup_ngx() noexcept {
     ngx_release_feature();
+    // Parameter maps require an initialized NGX instance; release them before
+    // Shutdown1 tears down the driver allocator and its device state.
+    ngx_release_parameters();
     if (ngx.ready) {
         using Shutdown = int (*)(VkDevice);
         if (auto shutdown = reinterpret_cast<Shutdown>(ngx_symbol("NVSDK_NGX_VULKAN_Shutdown1"))) shutdown(device);
     }
-    using Destroy = int (*)(void*);
-    auto destroy = reinterpret_cast<Destroy>(ngx_symbol("NVSDK_NGX_VULKAN_DestroyParameters"));
-    if (destroy && ngx.eval_params) destroy(ngx.eval_params);
-    if (destroy && ngx.caps) destroy(ngx.caps);
     ngx = {};
 }

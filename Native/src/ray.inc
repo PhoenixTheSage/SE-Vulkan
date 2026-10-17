@@ -29,30 +29,8 @@ Buffer ray_device_buffer(Buffer& current, uint64_t& completion, VkDeviceSize byt
     completion = next_completion + 1;
     return current;
 }
-bool ray_invert(const float* m, float* o) {
-    float s0 = m[0] * m[5] - m[4] * m[1], s1 = m[0] * m[6] - m[4] * m[2], s2 = m[0] * m[7] - m[4] * m[3];
-    float s3 = m[1] * m[6] - m[5] * m[2], s4 = m[1] * m[7] - m[5] * m[3], s5 = m[2] * m[7] - m[6] * m[3];
-    float c5 = m[10] * m[15] - m[14] * m[11], c4 = m[9] * m[15] - m[13] * m[11], c3 = m[9] * m[14] - m[13] * m[10];
-    float c2 = m[8] * m[15] - m[12] * m[11], c1 = m[8] * m[14] - m[12] * m[10], c0 = m[8] * m[13] - m[12] * m[9];
-    float det = s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0;
-    if (!(std::fabs(det) > 1e-12f)) return false;
-    float inv = 1.f / det;
-    o[0] = (m[5] * c5 - m[6] * c4 + m[7] * c3) * inv; o[1] = (-m[1] * c5 + m[2] * c4 - m[3] * c3) * inv;
-    o[2] = (m[13] * s5 - m[14] * s4 + m[15] * s3) * inv; o[3] = (-m[9] * s5 + m[10] * s4 - m[11] * s3) * inv;
-    o[4] = (-m[4] * c5 + m[6] * c2 - m[7] * c1) * inv; o[5] = (m[0] * c5 - m[2] * c2 + m[3] * c1) * inv;
-    o[6] = (-m[12] * s5 + m[14] * s2 - m[15] * s1) * inv; o[7] = (m[8] * s5 - m[10] * s2 + m[11] * s1) * inv;
-    o[8] = (m[4] * c4 - m[5] * c2 + m[7] * c0) * inv; o[9] = (-m[0] * c4 + m[1] * c2 - m[3] * c0) * inv;
-    o[10] = (m[12] * s4 - m[13] * s2 + m[15] * s0) * inv; o[11] = (-m[8] * s4 + m[9] * s2 - m[11] * s0) * inv;
-    o[12] = (-m[4] * c3 + m[5] * c1 - m[6] * c0) * inv; o[13] = (m[0] * c3 - m[1] * c1 + m[2] * c0) * inv;
-    o[14] = (-m[12] * s3 + m[13] * s1 - m[14] * s0) * inv; o[15] = (m[8] * s3 - m[9] * s1 + m[10] * s0) * inv;
-    return true;
-}
 bool ray_matrix(const float* rows, VkTransformMatrixKHR& out) {
-    for (int i = 0; i < 12; ++i) if (!std::isfinite(rows[i])) return false;
-    out.matrix[0][0] = rows[0]; out.matrix[0][1] = rows[4]; out.matrix[0][2] = rows[8]; out.matrix[0][3] = rows[3];
-    out.matrix[1][0] = rows[1]; out.matrix[1][1] = rows[5]; out.matrix[1][2] = rows[9]; out.matrix[1][3] = rows[7];
-    out.matrix[2][0] = rows[2]; out.matrix[2][1] = rows[6]; out.matrix[2][2] = rows[10]; out.matrix[2][3] = rows[11];
-    return true;
+    return sevk_ray_instance_transform(rows, &out.matrix[0][0]);
 }
 void ray_prepare_shader() {
     if (ray.shader_attempted || !ray.supported) return;
@@ -75,11 +53,12 @@ void ray_prepare_shader() {
     VkPipelineShaderStageCreateInfo stage{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO }; stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; stage.module = ray.module; stage.pName = "main";
     VkComputePipelineCreateInfo pipeline{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO }; pipeline.stage = stage; pipeline.layout = ray.pipeline_layout;
     check(vkCreateComputePipelines(device, pipeline_cache, 1, &pipeline, nullptr, &ray.pipeline), "create ray query pipeline");
-    std::array<VkDescriptorPoolSize, 4> sizes{ { { VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1 }, { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 }, { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1 }, { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 } } };
-    VkDescriptorPoolCreateInfo pool{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO }; pool.maxSets = 1; pool.poolSizeCount = 4; pool.pPoolSizes = sizes.data();
+    std::array<VkDescriptorPoolSize, 4> sizes{ { { VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2 }, { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2 }, { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2 }, { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 } } };
+    VkDescriptorPoolCreateInfo pool{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO }; pool.maxSets = 2; pool.poolSizeCount = 4; pool.pPoolSizes = sizes.data();
     check(vkCreateDescriptorPool(device, &pool, nullptr, &ray.pool), "create ray descriptor pool");
-    VkDescriptorSetAllocateInfo sets{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO }; sets.descriptorPool = ray.pool; sets.descriptorSetCount = 1; sets.pSetLayouts = &ray.layout;
-    check(vkAllocateDescriptorSets(device, &sets, &ray.set), "allocate ray descriptor");
+    VkDescriptorSetLayout layouts[]{ray.layout, ray.layout};
+    VkDescriptorSetAllocateInfo sets{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO }; sets.descriptorPool = ray.pool; sets.descriptorSetCount = 2; sets.pSetLayouts = layouts;
+    check(vkAllocateDescriptorSets(device, &sets, ray.sets), "allocate frame-owned ray descriptors");
     ray.shader_ready = 1;
 }
 VkAccelerationStructureKHR ray_blas(uint64_t id, Mesh& mesh, VkCommandBuffer cmd, VkDeviceSize& scratch_need) {
@@ -117,7 +96,7 @@ VkAccelerationStructureKHR ray_blas(uint64_t id, Mesh& mesh, VkCommandBuffer cmd
 void trace_hardware_rays(VkCommandBuffer cmd) {
     SevkRayOptions options{};
     { std::lock_guard<std::mutex> lock(ray.mutex); options = ray.options; }
-    if (!options.enable || !ray.supported || !ray.hdr_storage || !world.hdr.handle || !world.gbuffer[3].handle) return;
+    if (!options.enable || !options.shadows || !ray.supported || !ray.visibility_storage || !world.shadows.handle || !world.gbuffer[3].handle) return;
     try { ray_prepare_shader(); } catch (...) { ray.shader_ready = 0; }
     if (!ray.shader_ready) return;
     const uint8_t* objects = world.retained_objects ? world.object_records.data.data() : world.current().draw_objects.data();
@@ -133,11 +112,20 @@ void trace_hardware_rays(VkCommandBuffer cmd) {
     };
     for (uint32_t index : world.current().main_selection) {
         auto& draw = world.current().draws[index]; if (!draw.geometry || draw.packet.pipeline >= 20 || draw.packet.pipeline >= world.pipelines.size()) continue;
+        // Alpha-tested geometry cannot certify an opaque hit without sampling
+        // its material. Keep those shadows on the stock path.
+        if (draw.packet.pipeline % 10 >= 5) continue;
         uint32_t type = world.pipelines[draw.packet.pipeline].type; if (type == 1 || type >= 3) continue;
         Mesh& mesh = *draw.geometry;
         if (type == 0) {
-            if (draw.object_n < 48 || uint64_t(draw.object_at) + 48 > object_bytes) continue;
-            push(draw.packet.mesh, mesh, reinterpret_cast<const float*>(objects + draw.object_at));
+            const auto& pipeline=world.pipelines[draw.packet.pipeline];
+            const uint32_t offsets[]{pipeline.row0,pipeline.row1,pipeline.row2};
+            float rows[12];bool valid=uint64_t(draw.object_at)+draw.object_n<=object_bytes;
+            for(uint32_t row=0;row<3&&valid;++row){
+                if(uint64_t(offsets[row])+16>draw.object_n){valid=false;break;}
+                std::memcpy(rows+row*4,objects+draw.object_at+offsets[row],16);
+            }
+            if(valid)push(draw.packet.mesh, mesh, rows);
         } else if (draw.instance_n >= 64 && uint64_t(draw.instance_at) + draw.instance_n <= world.current().instances.data.size()) {
             for (uint32_t i = 0; i < draw.instance_n / 64; ++i) push(draw.packet.mesh, mesh, reinterpret_cast<const float*>(world.current().instances.data.data() + draw.instance_at + i * 64));
         }
@@ -177,8 +165,8 @@ void trace_hardware_rays(VkCommandBuffer cmd) {
         ranges.push_back({ mesh->second.index_count / 3, 0, 0, 0 });
     }
     if (scratch_need) {
-        auto scratch = ray_device_buffer(ray.scratch, ray.scratch_completion, (scratch_need + 255) & ~VkDeviceSize(255), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, false);
-        VkDeviceAddress scratch_address = ray_address(scratch.handle);
+        auto scratch = ray_device_buffer(ray.scratch, ray.scratch_completion, scratch_need + ray.scratch_alignment - 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, false);
+        VkDeviceAddress scratch_address = (ray_address(scratch.handle)+ray.scratch_alignment-1)&~(ray.scratch_alignment-1);
         for (auto& build : builds) build.scratchData.deviceAddress = scratch_address;
     }
     for (uint32_t i = 0; i < builds.size(); ++i) {
@@ -186,8 +174,8 @@ void trace_hardware_rays(VkCommandBuffer cmd) {
         const VkAccelerationStructureBuildRangeInfoKHR* range = &ranges[i];
         vkCmdBuildAccelerationStructuresKHR(cmd, 1, &builds[i], &range);
         VkMemoryBarrier2 step{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
-        step.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR; step.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-        step.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR; step.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        step.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR; step.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        step.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR; step.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
         VkDependencyInfo dependency{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO }; dependency.memoryBarrierCount = 1; dependency.pMemoryBarriers = &step;
         vkCmdPipelineBarrier2(cmd, &dependency);
     }
@@ -228,8 +216,8 @@ void trace_hardware_rays(VkCommandBuffer cmd) {
     VkAccelerationStructureCreateInfoKHR tlas_info{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
     tlas_info.buffer = ray.tlas_storage.handle; tlas_info.size = tlas_sizes.accelerationStructureSize; tlas_info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
     check(vkCreateAccelerationStructureKHR(device, &tlas_info, nullptr, &ray.tlas), "create TLAS");
-    auto tlas_scratch = ray_device_buffer(ray.scratch, ray.scratch_completion, std::max(scratch_need, tlas_sizes.buildScratchSize + 255) & ~VkDeviceSize(255), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, false);
-    tlas_build.dstAccelerationStructure = ray.tlas; tlas_build.scratchData.deviceAddress = ray_address(tlas_scratch.handle);
+    auto tlas_scratch = ray_device_buffer(ray.scratch, ray.scratch_completion, std::max(scratch_need, tlas_sizes.buildScratchSize) + ray.scratch_alignment - 1, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, false);
+    tlas_build.dstAccelerationStructure = ray.tlas; tlas_build.scratchData.deviceAddress = (ray_address(tlas_scratch.handle)+ray.scratch_alignment-1)&~(ray.scratch_alignment-1);
     VkAccelerationStructureBuildRangeInfoKHR tlas_range{ instance_count, 0, 0, 0 }; const VkAccelerationStructureBuildRangeInfoKHR* tlas_ranges = &tlas_range;
     vkCmdBuildAccelerationStructuresKHR(cmd, 1, &tlas_build, &tlas_ranges);
     ray.tlas_completion = next_completion + 1;
@@ -238,39 +226,35 @@ void trace_hardware_rays(VkCommandBuffer cmd) {
     built.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT; built.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
     VkDependencyInfo built_dependency{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO }; built_dependency.memoryBarrierCount = 1; built_dependency.pMemoryBarriers = &built;
     vkCmdPipelineBarrier2(cmd, &built_dependency);
-    struct RayParams { float inv_view[16], inv_proj[16], sun_direction[4], sun_color[4], settings[4]; uint32_t width, height, light_count, reserved; float light_pos[8][4], light_color[8][4]; };
-    static_assert(sizeof(RayParams) == 448, "ray uniform layout");
+    struct RayParams { float inverse_view_projection[16], sun_direction[4], settings[4]; uint32_t width, height, reserved[2]; };
+    static_assert(sizeof(RayParams) == 112, "ray visibility uniform layout");
     RayParams params{};
-    if (!ray_invert(reinterpret_cast<const float*>(world.current().frame.data()), params.inv_view)) return;
-    std::memcpy(params.inv_proj, world.current().inverse.data(), sizeof(params.inv_proj));
+    // WorldSubmission::inverse is inverse VIEW-PROJECTION, not inverse projection.
+    // Reconstruct camera-relative world coordinates in one multiplication.
+    std::memcpy(params.inverse_view_projection, world.current().inverse.data(), sizeof(params.inverse_view_projection));
     std::memcpy(params.sun_direction, submitted_frame.sunlight_direction, 16);
-    std::memcpy(params.sun_color, submitted_frame.sunlight_color, 16);
     params.settings[0] = options.shadow_bias; params.settings[1] = options.exposure; params.settings[2] = options.solar_radians; params.settings[3] = options.shadows ? 1.f : 0.f;
     params.width = extent.width; params.height = extent.height;
-    for (uint32_t i = 0; i < light_count && params.light_count < 8; ++i) {
-        if (lights[i].flags & 1) continue;
-        for (int c = 0; c < 3; ++c) { params.light_pos[params.light_count][c] = lights[i].position[c]; params.light_color[params.light_count][c] = lights[i].color[c] * lights[i].intensity; }
-        params.light_pos[params.light_count][3] = lights[i].range; ++params.light_count;
-    }
     auto uniforms = ray_device_buffer(ray.uniforms, ray.uniform_completion, sizeof(params), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true);
     std::memcpy(uniforms.mapped, &params, sizeof(params));
     check(vmaFlushAllocation(allocator, uniforms.memory, 0, VK_WHOLE_SIZE), "flush ray uniforms");
     VkWriteDescriptorSetAccelerationStructureKHR written_as{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR }; written_as.accelerationStructureCount = 1; written_as.pAccelerationStructures = &ray.tlas;
     VkDescriptorBufferInfo uniform_info{ uniforms.handle, 0, sizeof(params) };
     VkDescriptorImageInfo depth_info{ VK_NULL_HANDLE, world.gbuffer[3].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    VkDescriptorImageInfo hdr_info{ VK_NULL_HANDLE, world.hdr.view, VK_IMAGE_LAYOUT_GENERAL };
+    VkDescriptorImageInfo shadow_info{ VK_NULL_HANDLE, world.shadows.view, VK_IMAGE_LAYOUT_GENERAL };
+    auto set = ray.sets[slot_index];
     std::array<VkWriteDescriptorSet, 4> writes{};
-    for (auto& write : writes) { write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; write.dstSet = ray.set; write.descriptorCount = 1; }
+    for (auto& write : writes) { write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; write.dstSet = set; write.descriptorCount = 1; }
     writes[0].pNext = &written_as; writes[0].dstBinding = 0; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     writes[1].dstBinding = 1; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[1].pBufferInfo = &uniform_info;
     writes[2].dstBinding = 2; writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; writes[2].pImageInfo = &depth_info;
-    writes[3].dstBinding = 3; writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[3].pImageInfo = &hdr_info;
+    writes[3].dstBinding = 3; writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[3].pImageInfo = &shadow_info;
     vkUpdateDescriptorSets(device, 4, writes.data(), 0, nullptr);
-    barrier(cmd, world.hdr.handle, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    barrier(cmd, world.shadows.handle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ray.pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ray.pipeline_layout, 0, 1, &ray.set, 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ray.pipeline_layout, 0, 1, &set, 0, nullptr);
     vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
-    barrier(cmd, world.hdr.handle, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    barrier(cmd, world.shadows.handle, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     { std::lock_guard<std::mutex> lock(ray.mutex); ++ray.dispatches; }
 }
 int get_ray_capabilities(SevkRayCapabilities* caps) {
@@ -288,7 +272,7 @@ int set_ray_options(const SevkRayOptions& options) {
 void cleanup_ray() noexcept {
     if (!device) return;
     if (ray.tlas && vkDestroyAccelerationStructureKHR) vkDestroyAccelerationStructureKHR(device, ray.tlas, nullptr);
-    for (auto& item : ray.blas) if (item.second.handle && vkDestroyAccelerationStructureKHR) vkDestroyAccelerationStructureKHR(device, item.second.handle, nullptr);
+    for (auto& item : ray.blas) {if (item.second.handle && vkDestroyAccelerationStructureKHR) vkDestroyAccelerationStructureKHR(device, item.second.handle, nullptr);destroy_buffer(item.second.storage);}
     for (auto& item : ray.retired) { if (item.handle && vkDestroyAccelerationStructureKHR) vkDestroyAccelerationStructureKHR(device, item.handle, nullptr); destroy_buffer(item.storage); }
     ray.blas.clear(); ray.retired.clear(); ray.tlas = {};
     destroy_buffer(ray.tlas_storage); destroy_buffer(ray.scratch); destroy_buffer(ray.instances); destroy_buffer(ray.uniforms);
@@ -297,5 +281,5 @@ void cleanup_ray() noexcept {
     if (ray.layout) vkDestroyDescriptorSetLayout(device, ray.layout, nullptr);
     if (ray.pool) vkDestroyDescriptorPool(device, ray.pool, nullptr);
     if (ray.module) vkDestroyShaderModule(device, ray.module, nullptr);
-    ray.pipeline = {}; ray.pipeline_layout = {}; ray.layout = {}; ray.pool = {}; ray.set = {}; ray.module = {}; ray.shader_ready = 0;
+    ray.pipeline = {}; ray.pipeline_layout = {}; ray.layout = {}; ray.pool = {}; ray.sets[0] = ray.sets[1] = {}; ray.module = {}; ray.shader_ready = 0;
 }

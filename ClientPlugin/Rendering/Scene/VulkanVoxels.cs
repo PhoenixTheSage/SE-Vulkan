@@ -14,7 +14,7 @@ using VRageRender.Voxels;
 
 namespace ClientPlugin.Rendering.Scene;
 /// <summary>Owner-thread clipmap bridge. Game workers mesh; Vulkan owns copied geometry.</summary>
-public sealed class VulkanVoxels : IDisposable
+public sealed partial class VulkanVoxels : IDisposable
 {
     private readonly NativeBackend backend;
     private readonly Dictionary<uint,Actor> actors=new Dictionary<uint,Actor>();

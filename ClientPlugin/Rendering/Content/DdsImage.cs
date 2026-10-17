@@ -148,6 +148,15 @@ namespace ClientPlugin.Rendering.Content
                 {
                     if (bits != 8 && bits != 16 && bits != 24 && bits != 32)
                         throw new NotSupportedException("Unsupported uncompressed DDS pixel depth " + bits + ".");
+                    // Legacy P8 DDS stores a 256-entry RGBA palette before the
+                    // index mip chain (including the stock main-menu Keen logo).
+                    // Match DDSHelper's expansion before GUI premultiplication.
+                    byte[] palette = null;
+                    if ((pixelFlags & 0x20) != 0)
+                    {
+                        if (bits != 8) throw new NotSupportedException("Unsupported paletted DDS pixel depth " + bits + ".");
+                        palette = ReadExact(reader, 256 * 4);
+                    }
                     int bytesPerPixel = (int)bits / 8;
                     var levels = new byte[mipCount][];
                     int w = width, h = height;
@@ -161,9 +170,14 @@ namespace ClientPlugin.Rendering.Content
                             byte[] row = ReadExact(reader, rowPitch);
                             for (int x = 0; x < w; ++x)
                             {
+                                int target = (y * w + x) * 4;
+                                if (palette != null)
+                                {
+                                    Buffer.BlockCopy(palette, row[x] * 4, output, target, 4);
+                                    continue;
+                                }
                                 uint pixel = 0;
                                 for (int b = 0; b < bytesPerPixel; ++b) pixel |= (uint)row[x * bytesPerPixel + b] << (8 * b);
-                                int target = (y * w + x) * 4;
                                 bool luminance = (pixelFlags & 0x20000) != 0;
                                 output[target] = Channel(pixel, red != 0 ? red : luminance ? bits == 32 ? uint.MaxValue : (1u << (int)bits) - 1 : 0, 0);
                                 output[target + 1] = luminance ? output[target] : Channel(pixel, green, 0);
@@ -173,7 +187,7 @@ namespace ClientPlugin.Rendering.Content
                         }
                         w = Math.Max(1, w / 2); h = Math.Max(1, h / 2);
                     }
-                    return new DdsImage { Width = width, Height = height, Format = 0, IsRawRgba = bits == 32 && red != 0 && green != 0 && blue != 0, Data = levels[0], Mips = levels };
+                    return new DdsImage { Width = width, Height = height, Format = 0, IsRawRgba = palette != null || (bits == 32 && red != 0 && green != 0 && blue != 0), Data = levels[0], Mips = levels };
                 }
                 var mips = new byte[mipCount][];
                 int mipWidth = width, mipHeight = height;

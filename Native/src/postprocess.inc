@@ -32,7 +32,7 @@ void post_transition(VkCommandBuffer cmd,PostImage& image,VkImageLayout layout){
 void post_image(PostImage& image,uint32_t width,uint32_t height,VkFormat format){
     if(image.image.handle && image.width==width && image.height==height)return;
     retire_image(image.image);image={};image.width=width;image.height=height;
-    VkImageUsageFlags usage=VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VkImageUsageFlags usage=VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if(format==VK_FORMAT_R8G8B8A8_UNORM)usage|=VK_IMAGE_USAGE_STORAGE_BIT;
     image.image=make_image(width,height,format,usage,VK_IMAGE_ASPECT_COLOR_BIT);
 }
@@ -86,7 +86,7 @@ void render_postprocess(VkCommandBuffer cmd,WorldSlot& slot){
     render_billboards(cmd,slot,3);
     if(flags&32){post_pass(cmd,slot,13,post.fxaa,{post.output->image.view});post.output=&post.fxaa;++post.stats.fxaa_passes;}
     frame_mark("highlights");render_highlights(cmd,slot);frame_mark("postprocess tail");
-    if(flags&256){post_pass(cmd,slot,14+post.config.chromatic_iterations,post.chromatic,{post.output->image.view});post.output=&post.chromatic;++post.stats.chromatic_dispatches;}render_billboards(cmd,slot,4);++post.stats.frames;
+    if(flags&256){post_pass(cmd,slot,14+post.config.chromatic_iterations,post.chromatic,{post.output->image.view});post.output=&post.chromatic;++post.stats.chromatic_dispatches;}++post.stats.frames;
 }
 void cleanup_postprocess(){
     for(auto& s:post.stages){if(s.pipeline)vkDestroyPipeline(device,s.pipeline,nullptr);if(s.pipeline_layout)vkDestroyPipelineLayout(device,s.pipeline_layout,nullptr);if(s.layout)vkDestroyDescriptorSetLayout(device,s.layout,nullptr);}

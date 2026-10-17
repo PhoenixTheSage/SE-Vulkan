@@ -34,7 +34,7 @@ VKAPI_ATTR void VKAPI_CALL mock_properties2(VkPhysicalDevice,VkPhysicalDevicePro
     properties->properties={}; // All optional attachment-local-read properties remain absent.
 }
 VKAPI_ATTR void VKAPI_CALL mock_features(VkPhysicalDevice,VkPhysicalDeviceFeatures2* features) {
-    ++mock_feature_queries;features->features.robustBufferAccess=(mock_missing&8192)?VK_FALSE:VK_TRUE;features->features.independentBlend=(mock_missing&4096)?VK_FALSE:VK_TRUE;features->features.textureCompressionBC=(mock_missing&16)?VK_FALSE:VK_TRUE;features->features.geometryShader=(mock_missing&1024)?VK_FALSE:VK_TRUE;features->features.shaderStorageImageExtendedFormats=(mock_missing&2048)?VK_FALSE:VK_TRUE;
+    ++mock_feature_queries;features->features.depthClamp=(mock_missing&16384)?VK_FALSE:VK_TRUE;features->features.robustBufferAccess=(mock_missing&8192)?VK_FALSE:VK_TRUE;features->features.independentBlend=(mock_missing&4096)?VK_FALSE:VK_TRUE;features->features.textureCompressionBC=(mock_missing&16)?VK_FALSE:VK_TRUE;features->features.geometryShader=(mock_missing&1024)?VK_FALSE:VK_TRUE;features->features.shaderStorageImageExtendedFormats=(mock_missing&2048)?VK_FALSE:VK_TRUE;
     for(auto* next=static_cast<VkBaseOutStructure*>(features->pNext);next;next=next->pNext) {
         if(next->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES) {
             auto* value=reinterpret_cast<VkPhysicalDeviceVulkan12Features*>(next);value->timelineSemaphore=(mock_missing&4)?VK_FALSE:VK_TRUE;value->scalarBlockLayout=(mock_missing&8)?VK_FALSE:VK_TRUE;
@@ -48,7 +48,7 @@ VKAPI_ATTR void VKAPI_CALL mock_queues(VkPhysicalDevice,uint32_t* count,VkQueueF
 VKAPI_ATTR VkResult VKAPI_CALL mock_device(VkPhysicalDevice,const VkDeviceCreateInfo* info,const VkAllocationCallbacks*,VkDevice*) {
     const auto* features=static_cast<const VkPhysicalDeviceFeatures2*>(info->pNext);
     require(features&&features->features.textureCompressionBC,"used BC feature explicitly enabled");
-    uint32_t enabled=16|(features->features.robustBufferAccess?8192:0)|(features->features.independentBlend?4096:0)|(features->features.geometryShader?1024:0)|(features->features.shaderStorageImageExtendedFormats?2048:0);
+    uint32_t enabled=16|(features->features.depthClamp?16384:0)|(features->features.robustBufferAccess?8192:0)|(features->features.independentBlend?4096:0)|(features->features.geometryShader?1024:0)|(features->features.shaderStorageImageExtendedFormats?2048:0);
     for(auto* next=static_cast<const VkBaseInStructure*>(features->pNext);next;next=next->pNext) {
         if(next->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES) {
             const auto* value=reinterpret_cast<const VkPhysicalDeviceVulkan12Features*>(next);enabled|=(value->timelineSemaphore?4:0)|(value->scalarBlockLayout?8:0);
@@ -58,7 +58,7 @@ VKAPI_ATTR VkResult VKAPI_CALL mock_device(VkPhysicalDevice,const VkDeviceCreate
             const auto* value=reinterpret_cast<const VkPhysicalDeviceVulkan14Features*>(next);require(!value->hostImageCopy&&!value->dynamicRenderingLocalRead,"unused optional features stay disabled");
         }
     }
-    require(enabled==15423,"all used features explicitly enabled");
+    require(enabled==31807,"all used features explicitly enabled");
     ++mock_device_creations;return VK_ERROR_INITIALIZATION_FAILED; // Stop before creating GPU resources.
 }
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL mock_proc(VkInstance,const char* name) {
@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
         require(sevk_create(&mocked,&context)<0&&!context&&mock_feature_queries==0&&mock_device_creations==0&&mock_destructions==1,
             "older physical device rejected before querying 1.4 features or device creation; instance cleaned up");
         mock_api=VK_API_VERSION_1_4;
-        for(uint32_t missing:{1u,2u,4u,8u,16u,32u,1024u,2048u,4096u,8192u}) {
+        for(uint32_t missing:{1u,2u,4u,8u,16u,32u,1024u,2048u,4096u,8192u,16384u}) {
             mock_missing=missing;uint32_t before=mock_destructions;
             require(sevk_create(&mocked,&context)<0&&!context&&mock_device_creations==0&&mock_destructions==before+1,
                 "each missing required feature rejected before device creation; instance cleaned up");
@@ -162,6 +162,26 @@ int main(int argc, char** argv) {
         }
 #endif
         ok(sevk_create(&info, &context), context);
+        uint32_t rw=0,rh=0;float fraction=0;
+        auto resolve=[&](uint32_t w,uint32_t h){ok(sevk_resolve_render_resolution(context,w,h,&rw,&rh,&fraction),context);};
+        ok(sevk_set_render_fraction(context,.75f),context);resolve(1919,1079);
+        require(rw==1439 && rh==809 && fraction==.75f,"DRS resolution resolves before frame constants with native rounding");
+        for(uint32_t mode: {0u,1u,2u,3u,4u}){
+            ok(sevk_set_render_fraction(context,1),context);
+            ok(sevk_ngx_configure(1,mode,0,"resolution-test-only"),context);resolve(1920,1080);
+            const uint32_t widths[]{1280,1114,960,640,1920},heights[]{720,626,540,360,1080};
+            require(rw==widths[mode] && rh==heights[mode],"NGX mode overrides DRS before frame constants, including DLAA");
+        }
+        ok(sevk_ngx_configure(0,0,0,nullptr),context);
+        ok(sevk_set_render_fraction(context,1),context);resolve(1920,1080);
+        require(rw==1920 && rh==1080 && fraction==1,"disabling NGX restores requested resolution without a stale frame");
+        ok(sevk_fsr_configure(1,1,.5f,"resolution-test-only"),context);resolve(1920,1080);
+        require(rw==1129 && rh==635,"FSR resolves its own Balanced scale before constants");
+        ok(sevk_ngx_configure(1,1,0,"resolution-test-only"),context);resolve(1920,1080);
+        require(rw==1114 && rh==626,"NGX retains precedence over FSR in resolution planning");
+        ok(sevk_ngx_configure(0,0,0,nullptr),context);ok(sevk_fsr_configure(0,0,.5f,nullptr),context);
+        ok(sevk_set_render_fraction(context,1),context);
+        require(sevk_resolve_render_resolution(context,0,1080,&rw,&rh,&fraction)<0,"zero logical render extent rejected");
         SevkGpuOpaqueCapabilities opaque_caps{sizeof(opaque_caps),SEVK_ABI_VERSION};
         ok(sevk_get_gpu_opaque_capabilities(context,&opaque_caps),context);
         require(sizeof(opaque_caps)==80,"GPU opaque caps ABI packing");
@@ -346,6 +366,11 @@ int main(int argc, char** argv) {
         ok(sevk_get_ray_capabilities(context, &ray_caps), context);
         require(ray_caps.dispatches==0, "enable 0 does not dispatch");
         ok(sevk_guest_create_image(context,9001,2,2,1,0),context);
+        ok(sevk_begin_frame(context,&frame),context);
+        ok(sevk_guest_create_image(context,9002,2,2,1,0),context);
+        ok(sevk_guest_update_image(context,9002,texels.data(),texels.size()),context);
+        ok(sevk_guest_create_image(context,9002,1,1,1,0),context);
+        ok(sevk_end_frame(context),context);
         ok(sevk_begin_uploads(context),context);
         ok(sevk_guest_update_image(context,9001,texels.data(),texels.size()),context);
         ok(sevk_end_uploads(context),context);

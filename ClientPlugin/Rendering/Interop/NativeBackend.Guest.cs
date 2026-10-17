@@ -18,6 +18,7 @@ public sealed partial class NativeBackend
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int GuestFlagsFn(IntPtr ctx, uint flags);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int GuestOwnerFn(IntPtr ctx, IntPtr id);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int GuestDropFn(IntPtr ctx);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate uint GuestFeaturesFn();
 
     static GuestResetFn guestReset;
     static GuestPipelineFn guestPipeline;
@@ -32,6 +33,14 @@ public sealed partial class NativeBackend
     static GuestFlagsFn guestFlags;
     static GuestOwnerFn guestOwner;
     static GuestDropFn guestDrop;
+    static GuestFeaturesFn guestFeatures;
+
+    internal int GuestFeatures()
+    {
+        if (context == IntPtr.Zero) return 0;
+        EnsureGuest();
+        return guestFeatures == null ? 7 : (int)guestFeatures();
+    }
 
     internal void GuestReset()
     {
@@ -131,6 +140,13 @@ public sealed partial class NativeBackend
         EnsureLoaded();
         if (guestReset != null) return;
         guestReset = Marshal.GetDelegateForFunctionPointer<GuestResetFn>(GetSymbol("sevk_guest_reset"));
+        try
+        {
+            var featuresSymbol = GetSymbol("sevk_guest_features");
+            if (featuresSymbol != IntPtr.Zero)
+                guestFeatures = Marshal.GetDelegateForFunctionPointer<GuestFeaturesFn>(featuresSymbol);
+        }
+        catch (EntryPointNotFoundException) { /* Older ABI-1 libraries support flags 0..2 only. */ }
         guestPipeline = Marshal.GetDelegateForFunctionPointer<GuestPipelineFn>(GetSymbol("sevk_guest_create_pipeline"));
         guestImage = Marshal.GetDelegateForFunctionPointer<GuestImageFn>(GetSymbol("sevk_guest_create_image"));
         guestUpdate = Marshal.GetDelegateForFunctionPointer<GuestUpdateFn>(GetSymbol("sevk_guest_update_image"));

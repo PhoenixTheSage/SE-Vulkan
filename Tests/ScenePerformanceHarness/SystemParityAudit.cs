@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using HarmonyLib;
+using Sandbox.Game.World;
 using ClientPlugin.Rendering;
 using VRageMath;
 using VRageRender;
@@ -30,6 +31,7 @@ public sealed partial class Plugin {
         benchmarkFrameLoaded=false;benchmarkFrames=benchmarkCameraMismatches=benchmarkEnvironmentMismatches=0;
         if(!selectionAudit&&!workloadAudit&&string.IsNullOrWhiteSpace(benchmarkPath))return;
         string path=Environment.GetEnvironmentVariable("SE_VULKAN_MATCH_FRAME");
+        if(CameraSweepEnabled&&Environment.GetEnvironmentVariable("SE_VULKAN_PLAYER_TURN")=="1")harmony.Patch(AccessTools.Method(typeof(Sandbox.Game.Gui.MyGuiScreenGamePlay),"HandleInput",new[]{typeof(bool)}),prefix:new HarmonyMethod(typeof(Plugin),nameof(SuppressBenchmarkGameplayInput)));
         if(!string.IsNullOrWhiteSpace(benchmarkPath)){
             if(selectionAudit||!string.IsNullOrWhiteSpace(path))throw new Exception("BenchmarkFrame and paused MatchFrame are separate capture modes.");
             byte[] bytes=File.ReadAllBytes(benchmarkPath);benchmarkFrameHash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
@@ -49,7 +51,14 @@ public sealed partial class Plugin {
         if(message is MyRenderMessageSetCameraViewMatrix camera){if(replay)matchedFrame.Camera.Apply(camera);latestSystemCamera=CameraState.Copy(camera);}
         if(message is MyRenderMessageUpdateRenderEnvironment environment){if(replay)environment.Data=matchedFrame.Environment;latestSystemEnvironment=environment.Data;haveSystemEnvironment=true;if(benchmarkFrameLoaded)benchmarkEnvironmentMatched=environment.Data.Equals(matchedFrame.Environment);}
     }
-    static bool SuppressBenchmarkGameplayInput()=>!benchmarkFrameLoaded||Sandbox.Game.World.MySession.Static==null||!Sandbox.Game.World.MySession.Static.Ready;
+    static bool SuppressBenchmarkGameplayInput(){
+        bool playerTurn=CameraSweepEnabled&&Environment.GetEnvironmentVariable("SE_VULKAN_PLAYER_TURN")=="1";
+        if((!benchmarkFrameLoaded&&!playerTurn)||MySession.Static==null||!MySession.Static.Ready)return true;
+        // Dispatch at the gameplay input boundary, after UpdateZeroMovement
+        // has reset last frame's command and before character simulation.
+        if(playerTurn)MySession.Static.LocalCharacter?.MoveAndRotate(Vector3.Zero,new Vector2(0,sweepTurnInput),0);
+        return false;
+    }
     static void ObserveBenchmarkCompletedFrame(){
         if(!benchmarkFrameLoaded)return;benchmarkFrames++;
         if(!matchedFrame.Camera.Matches(latestSystemCamera))benchmarkCameraMismatches++;

@@ -40,7 +40,7 @@ typedef struct SevkCreateInfo {
 typedef struct SevkProbe {
     uint32_t size, abi_version, loader_api, device_api;
     uint32_t device_count, compatible_device_count, features, validation_available;
-    /* features bits 0..5 and 10 (geometry), 11 (extended storage formats), 12 (independent blend), 13 (robust buffer access) required; bit6 host image copy, bit7 attachment local
+    /* features bits 0..5 and 10 (geometry), 11 (extended storage formats), 12 (independent blend), 13 (robust buffer access), 14 (depth clamp) required; bit6 host image copy, bit7 attachment local
      * read, bit8 depth/stencil local read, bit9 multisampled local read optional.
      * Availability does not imply enablement; optional paths remain disabled. */
     char device_name[256];
@@ -364,12 +364,25 @@ SEVK_API int32_t SEVK_CALL sevk_get_highlight_stats(void* ctx,SevkHighlightStats
  * Completed GPU timestamps are read without waiting by this status API. */
 typedef struct SevkResolutionStats {uint32_t size,abi_version,width,height,output_width,output_height,timing_supported,reserved;uint64_t samples;float fraction,gpu_ms;} SevkResolutionStats;
 SEVK_API int32_t SEVK_CALL sevk_set_render_fraction(void* ctx,float fraction);
+/* Resolve temporal-upscaler overrides before building frame/postprocess constants.
+ * width/height are logical world output dimensions, independent of the swapchain. */
+SEVK_API int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32_t height,uint32_t* render_width,uint32_t* render_height,float* fraction);
 SEVK_API int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionStats* stats);
 /* Anomaly guest bus. ABI 1 additive. Empty pass lists do not record work.
  * Marks: 1 AfterLighting, 2 AfterAtmosphere, 3 AfterTransparent,
  * 4 BeforeTonemap, 5 AfterTonemap, 6 AfterUpscale.
  * sizeof(SevkGuestPass) is 416 with natural alignment.
- * reserved bit0 depth-tests, bit1 dispatches compute.
+ * reserved bit0 depth-tests, bit1 dispatches compute, bit2 volume constants,
+ * bit3 copies sampled[0] into storage and generates its mip chain (no shader draw).
+ * bit4 clears compute storage to zero before dispatch, bit5 supplies b0 from
+ * uniforms instead of generated frame constants (up to 256 bytes). Compute
+ * width/height are invocation counts; workgroup size comes from SPIR-V.
+ * bit6 draws copied triangles with MIN distance blending (geometry_vertex
+ * entry), bit7 applies a copied viewport, bit8 clears color to 100000 metres.
+ * Geometry/viewport constants: matrices 0..127, float4 x/y/w/h at 128,
+ * uint vertex count at 144. Guest image format 6 is RGBA32F. Readback returns
+ * the image's native texel bytes (2/4/8/16 bytes), without color conversion.
+ * Query sevk_guest_features before using additive packet flags.
  * Sampled sentinels: HDR ..1, depth ..2, GBuffer0..2 ..3..5, upscale ..6, display ..7,
  * motion ..8, attachment0 ..9. Catalog velocity is ..A, volumeReactive is ..B, reactiveMask is ..C. */
 typedef struct SevkGuestPass {
@@ -379,11 +392,49 @@ typedef struct SevkGuestPass {
     uint8_t uniforms[256];
     uint64_t sampled[14];
 } SevkGuestPass;
+/* Extended guest resources, gated by sevk_guest_features bit9. ABI-1 packets
+ * are unchanged. contract=1 enables t0..47, b0..7 (<=4096 bytes each), s0..5,
+ * compute u0..4 and 3D invocation counts; contract=2 is two RGBA16F MRTs.
+ * s5 is a clamp comparison sampler (LESS_OR_EQUAL). Constants are copied by
+ * submit; caller pointers need only survive the call. Outputs cannot alias
+ * sampled inputs or one another. flags currently permits bit4 (zero clear).
+ * sizeof(SevkGuestPass2)=568 with natural alignment on 64-bit hosts. */
+/* Image kind 7 is sampled D32 depth (2D, single mip); kind 8 is R16F.
+ * Extended storage-image formats and dimensions must match SPIR-V exactly.
+ * Base-level readback includes all depth slices/array layers. */
+typedef struct SevkGuestPass2 {
+    uint32_t size, abi_version, mark, compose, width, height, depth, flags;
+    uint64_t pipeline;
+    uint64_t sampled[48], storage[5];
+    const void* constants[8];
+    uint32_t constant_bytes[8];
+    uint32_t reserved[2];
+} SevkGuestPass2;
+SEVK_API int32_t SEVK_CALL sevk_guest_create_pipeline2(void* ctx, const void* vs, uint64_t vs_bytes, const char* vs_entry, const void* ps, uint64_t ps_bytes, const char* ps_entry, uint32_t contract, uint64_t* pipeline);
+SEVK_API int32_t SEVK_CALL sevk_guest_submit2(void* ctx, const SevkGuestPass2* passes, uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_guest_reset(void* ctx);
+SEVK_API uint32_t SEVK_CALL sevk_guest_features(void);
+/* Feature bit12: extended flags 1024/2048 run before/after ordinary passes
+ * within their mark. Catalog mask bits0/1/2 report current recorded velocity,
+ * volumeReactive/reactiveMask. Reset and BeginFrame revoke older products.
+ * Extra attachment sentinels are 0xFFFF000000000010..12, separate from catalogs. */
+SEVK_API uint32_t SEVK_CALL sevk_guest_catalog_mask(void* ctx);
+/* Feature bit11: independent scene-depth views. Configure before BeginFrame,
+ * using <=3 guest kind-7 targets and copied camera-relative matrices. World
+ * draw reserved bits8..10 select these views, independent of stock bits0..7.
+ * The regular engine depth materials render before GBuffer/guest consumers.
+ * Requests are consumed once; ready is a current-frame recorded-view mask. */
+SEVK_API int32_t SEVK_CALL sevk_guest_depth_views(void* ctx,const uint64_t* images,const float* matrices,uint32_t count);
+SEVK_API uint32_t SEVK_CALL sevk_guest_depth_ready(void* ctx);
+/* Feature bit10 permits guest pipeline/image creation between BeginFrame and
+ * EndFrame. The allocation window closes before world recording. Guest image
+ * replacement waits for older submissions; structured updates retain their
+ * frame-fenced copies. These calls share the renderer API mutex. */
 SEVK_API int32_t SEVK_CALL sevk_guest_create_pipeline(void* ctx, const void* vs, uint64_t vs_bytes, const char* vs_entry, const void* ps, uint64_t ps_bytes, const char* ps_entry, uint64_t* pipeline);
 SEVK_API int32_t SEVK_CALL sevk_guest_create_image(void* ctx, uint64_t id, uint32_t width, uint32_t height, uint32_t depth, uint32_t format);
 SEVK_API int32_t SEVK_CALL sevk_guest_update_image(void* ctx, uint64_t id, const void* data, uint64_t bytes);
 SEVK_API int32_t SEVK_CALL sevk_guest_submit(void* ctx, const SevkGuestPass* passes, uint32_t count);
+/* HDR sentinel readback requires a completed world frame and returns RGBA16F. */
 SEVK_API int32_t SEVK_CALL sevk_guest_readback(void* ctx, uint64_t id, void* rgba, uint64_t bytes);
 SEVK_API int32_t SEVK_CALL sevk_guest_replay_now(void* ctx, uint32_t mark);
 SEVK_API uint64_t SEVK_CALL sevk_guest_replay_count(void* ctx);

@@ -29,6 +29,7 @@ public sealed class MyVulkanRender : IMyRender
     private sealed class Generated { public int Width, Height; public byte[] Pixels; public ulong Handle; }
     private sealed class Capture { public string Path; public bool Notify, IgnoreSprites; public Vector2 Scale; }
     private readonly MyNullRenderProfiler profiler = new();
+    private readonly VulkanRenderStats renderStats = new();
     private readonly NativeProbe probe;
     private readonly Action<MyRenderMessageBase> dispatchMessage;
     private readonly Action<MyUpdateFrame> returnPreFrame;
@@ -256,6 +257,9 @@ public sealed class MyVulkanRender : IMyRender
             }
             FrameProfiler.Lap(FrameProfiler.Section.Particles);
             }
+            GuestBridge.BeginScene(backend,scene);
+            if(drawScene)BackendRuntime.RaiseScene(new[]{camera.X,camera.Y,camera.Z},
+                new[]{-light.SunLightDirection.X,-light.SunLightDirection.Y,-light.SunLightDirection.Z});
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ShadowFit)){
             if (drawScene) shadows.Update(backend, cameraView, light.SunLightDirection,renderConfiguration,cameraProjection,camera);
             else backend.SetShadowCascades(Array.Empty<float>(), Array.Empty<float>());
@@ -270,6 +274,7 @@ public sealed class MyVulkanRender : IMyRender
             }
             FrameProfiler.Lap(FrameProfiler.Section.Voxels);
             }
+            if(drawScene)scene.CollectGuestSceneDepth(voxels);
             // Native uses a negative-height viewport for VRage's zero-to-one clip convention.
             // MyCamera supplies forward depth. Native main rendering uses reversed depth; shadow maps retain forward depth.
             MatrixD reversedProjection = viewProjection;
@@ -306,6 +311,7 @@ public sealed class MyVulkanRender : IMyRender
                 new Vector3(0.06f * Math.Max(0.1f, light.AmbientDiffuseFactor)), new Color(3, 5, 12));
             FrameProfiler.Lap(FrameProfiler.Section.FrameSlot);
             if (!frameOpen) { shadows.CancelPreparedFrame();FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); return; }
+            renderStats.Draw(sprites, BackBufferResolution.X);
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Sprites))backend.DrawSprites(sprites.MainPackets(BackBufferResolution.X, BackBufferResolution.Y));
             FrameProfiler.Lap(FrameProfiler.Section.Sprites);
             previousDraw = CurrentDrawTime;
@@ -320,7 +326,7 @@ public sealed class MyVulkanRender : IMyRender
             if (captures.Count > 0) backend.RequestReadback();
             FrameProfiler.Lap(FrameProfiler.Section.Host);
             long nativeStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            GuestBridge.Bind(backend);
+            GuestBridge.Bind(backend, scene);
             BackendRuntime.RaiseFrame();
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeRecord))backend.EndFrame(); frameOpen = false;
             shadows.CommitPreparedFrame();

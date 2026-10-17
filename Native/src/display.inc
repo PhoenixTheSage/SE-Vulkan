@@ -396,6 +396,7 @@ void present_generated_color(VkCommandBuffer cmd, uint32_t index) {
     world_write_image(set, 152, display_state.interpolant.view);
     VkPipeline grade = post.output && post.compose ? post.compose : world.compose;
     if (grade) world_fullscreen(cmd, grade, set, world.light_pipeline_layout);
+    if(transparency.output_depth_ready)render_output_billboards(cmd,wslot);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &slots[slot_index].descriptor, 0, nullptr);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 2, 1, &shadow_descriptor, 0, nullptr);
     emit_sprites(cmd, extent, frame_sprites.data(), static_cast<uint32_t>(frame_sprites.size()),

@@ -29,6 +29,10 @@ public sealed class VulkanResolution
             Fraction=MathHelper.Clamp(heuristic.QueryCurentFrameResolutionFraction(),.25f,1);
         }
         backend.SetRenderFraction(Fraction);
-        return new Vector2I(Math.Max(1,(int)Math.Round(device.BackBufferWidth*Fraction,MidpointRounding.AwayFromZero)),Math.Max(1,(int)Math.Round(device.BackBufferHeight*Fraction,MidpointRounding.AwayFromZero)));
+        // NGX/FSR can override DRS. Resolve before frame, light-tile and AO constants
+        // are built, rather than discovering the smaller target at EndFrame.
+        var size=backend.ResolveRenderResolution(device.BackBufferWidth,device.BackBufferHeight);
+        Fraction=backend.RenderFraction;
+        return size;
     }
 }

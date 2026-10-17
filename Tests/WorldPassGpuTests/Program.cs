@@ -20,6 +20,7 @@ class Program
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int RegisterModelRawFn(IntPtr context,[In]RawModelPart[] parts,uint count,byte[] objects,uint bytes,out ulong handle);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int ClearModelsRawFn(IntPtr context);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int AppendModelsRawFn(IntPtr context,[In]NativeModelInstance[] instances,uint count,[In]uint[] order,uint legacyCount,[Out]uint[] remap);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int NgxConfigureFn(uint enabled,uint mode,uint preset,[MarshalAs(UnmanagedType.LPUTF8Str)]string? directory);
     static int Main(string[] args)
     {
         string bin=Path.GetFullPath(args[0]);AssemblyLoadContext.Default.Resolving+=(_,name)=>{string path=Path.Combine(bin,name.Name+".dll");return File.Exists(path)?AssemblyLoadContext.Default.LoadFromAssemblyPath(path):null;};return Run(bin);
@@ -37,6 +38,30 @@ class Program
         var frameSettings=new MyRenderSettings();frameSettings.User.DistanceFade=3000;var frameLight=MyEnvironmentLightData.Default;frameLight.AmbientForwardPass=.3f;
         var encodedState=WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,MatrixD.Identity,64,64,frameLight,renderSettings:frameSettings);
         var frameReader=new ReflectedConstantBuffer(backend.WorldFrameLayout,"Frame");
+        var resolutionLibrary=NativeLibrary.Load(NativeBackend.LibraryPath);
+        try
+        {
+            var configure=Marshal.GetDelegateForFunctionPointer<NgxConfigureFn>(NativeLibrary.GetExport(resolutionLibrary,"sevk_ngx_configure"));
+            var planner=new VulkanResolution();var device=new MyRenderDeviceSettings{BackBufferWidth=1920,BackBufferHeight=1080};
+            try
+            {
+                foreach(uint mode in new uint[]{1,4,2,0,3,1})
+                {
+                    Check(configure(1,mode,0,"resolution-test-only")==0,"configure resolution-only NGX request");
+                    var size=planner.Update(backend,device,new MyRenderSettings(),true,16);
+                    int[] widths={1280,1114,960,640,1920},heights={720,626,540,360,1080};
+                    Check(size.X==widths[mode] && size.Y==heights[mode] && planner.Fraction==backend.RenderFraction,"managed planning sees current NGX mode before native EndFrame");
+                    var bytes=WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,MatrixD.Identity,size.X,size.Y,frameLight,renderFraction:planner.Fraction);
+                    int screen=frameReader.OffsetOf("frame_.Screen.resolution");
+                    Check(BitConverter.ToSingle(bytes,screen)==size.X && BitConverter.ToSingle(bytes,screen+4)==size.Y && BitConverter.ToUInt32(bytes,frameReader.OffsetOf("frame_.Light.tiles_x"))==(size.X+15)/16,"frame screen dimensions and light tiles match resolved render target");
+                    Check(BitConverter.ToSingle(bytes,frameReader.OffsetOf("frame_.Screen.drs"))==1,"exact-sized SSAO targets do not apply render fraction twice");
+                }
+            }
+            finally { configure(0,0,0,null);backend.SetRenderFraction(1); }
+            var restored=planner.Update(backend,device,new MyRenderSettings(),true,16);
+            Check(restored.X==1920 && restored.Y==1080 && planner.Fraction==1,"managed plan restores full resolution immediately after NGX disable");
+        }
+        finally { NativeLibrary.Free(resolutionLibrary); }
         Check(BitConverter.ToSingle(encodedState,frameReader.OffsetOf("frame_.DistanceFade"))==3000,"frame carries stock configured distance-fade threshold rather than zero");
         Check(BitConverter.ToSingle(encodedState,frameReader.OffsetOf("frame_.Light.forwardPassAmbient"))==.3f,"main frame ABI retains gathered stock forward ambient");
         backend.SetParallelCascades(false); // Explicit serial reference for paired GPU checks.

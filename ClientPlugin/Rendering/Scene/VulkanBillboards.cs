@@ -16,6 +16,7 @@ namespace ClientPlugin.Rendering.Scene
         private readonly NativeBackend backend;
         private readonly List<MyBillboard> generated = new List<MyBillboard>();
         private readonly List<MyBillboard> frame = new List<MyBillboard>();
+        private readonly List<MyBillboard> hudFrame = new List<MyBillboard>();
         private readonly List<ulong> handles = new List<ulong>();
         private static readonly uint[] Indices = { 0, 1, 2, 0, 2, 3 };
         public long Submitted { get; private set; }
@@ -35,11 +36,26 @@ namespace ClientPlugin.Rendering.Scene
             var projections=new float[512];for(int j=0;j<32;j++)Array.Copy(NativeBackend.MatrixValues(MatrixD.Identity),0,projections,j*16,16);
             if(shared!=null)foreach(var entry in shared.Billboards.Read.Matrices){if(entry.Key<0 || entry.Key>=32)continue;var data=entry.Value;float width=backend.PresentationWidth,height=backend.PresentationHeight;MatrixD viewport=MatrixD.Identity;viewport.M11=data.Viewport.Width/width;viewport.M22=data.Viewport.Height/height;viewport.M41=data.Viewport.OffsetX/width;viewport.M42=(height-data.Viewport.OffsetY-data.Viewport.Height)/height;MatrixD matrix=data.ViewAtZero*data.Projection*viewport;Array.Copy(NativeBackend.MatrixValues(matrix),0,projections,entry.Key*16,16);}backend.SetBillboardProjections(projections);
             Vector3D camera = scene.Environment.CameraPosition;
+            // Keen deliberately leaves LDR/PostPP in submission order. HUD
+            // backgrounds, labels and cursor share a plane and alpha-compose
+            // in that order; sorting their corners by distance hides controls.
+            hudFrame.Clear();
+            int worldCount = 0;
+            for (int i = 0; i < frame.Count; ++i)
+            {
+                MyBillboard billboard = frame[i];
+                if (billboard.BlendType == MyBillboard.BlendTypeEnum.LDR || billboard.BlendType == MyBillboard.BlendTypeEnum.PostPP)
+                    hudFrame.Add(billboard);
+                else
+                    frame[worldCount++] = billboard;
+            }
+            frame.RemoveRange(worldCount, frame.Count - worldCount);
             frame.Sort((a, b) =>
             {
                 int bucket = Bucket(a.BlendType).CompareTo(Bucket(b.BlendType));
                 return bucket != 0 ? bucket : Vector3D.DistanceSquared(WorldPosition(b), camera).CompareTo(Vector3D.DistanceSquared(WorldPosition(a), camera));
             });
+            frame.AddRange(hudFrame);
             for (int i = 0; i < frame.Count; ++i)
             {
                 MyBillboard billboard = frame[i];
@@ -86,10 +102,21 @@ namespace ClientPlugin.Rendering.Scene
                 Vector3D center = (a+b+c+d)*.25;
                 Vector2 uv0=material.UVOffset+billboard.UVOffset*material.UVSize,uv1=uv0+material.UVSize*billboard.UVSize;
                 var vertices=new float[20];void V(int index,Vector3D point,Vector2 uv){if(billboard.CustomViewProjection==-1)point-=camera;int j=index*5;vertices[j]=(float)point.X;vertices[j+1]=(float)point.Y;vertices[j+2]=(float)point.Z;vertices[j+3]=uv.X;vertices[j+4]=uv.Y;}
-                V(0,a,uv0);V(1,b,new Vector2(uv1.X,uv0.Y));V(2,c,uv1);V(3,d,new Vector2(uv0.X,uv1.Y));
+                var triangle = billboard as MyTriangleBillboard;
+                if (triangle != null)
+                {
+                    // Match Keen: the quad's second triangle is degenerate, and
+                    // triangle UVs are already final (including font atlas UVs).
+                    V(0,a,triangle.UV0);V(1,b,triangle.UV1);V(2,c,triangle.UV2);V(3,c,triangle.UV2);
+                }
+                else
+                {
+                    V(0,a,uv0);V(1,b,new Vector2(uv1.X,uv0.Y));V(2,c,uv1);V(3,d,new Vector2(uv0.X,uv1.Y));
+                }
                 var data=new byte[48];Vector4 color=billboard.Color;color.X*=billboard.ColorIntensity;color.Y*=billboard.ColorIntensity;color.Z*=billboard.ColorIntensity;
                 Buffer.BlockCopy(new[]{color.X,color.Y,color.Z,color.W},0,data,0,16);Buffer.BlockCopy(BitConverter.GetBytes(billboard.CustomViewProjection),0,data,16,4);
                 Vector3 normal=(Vector3)Vector3D.Cross(b-a,d-a);if(normal.LengthSquared()>1e-10f)normal.Normalize();
+                if (triangle != null) normal = triangle.Normal0;
                 Buffer.BlockCopy(new[]{billboard.Reflectivity,material.AlphaSaturation,billboard.AlphaCutout,normal.X,normal.Y,normal.Z,billboard.SoftParticleDistanceScale*material.SoftParticleDistanceScale},0,data,20,28);
                 uint flags=(material.CanBeAffectedByOtherLights?1u:0u)|(material.SoftParticleDistanceScale>0?2u:0u)|(material.AlphaCutout?4u:0u);
                 uint bucket=billboard.BlendType==MyBillboard.BlendTypeEnum.Standard?1u:billboard.BlendType==MyBillboard.BlendTypeEnum.AdditiveBottom?0u:billboard.BlendType==MyBillboard.BlendTypeEnum.AdditiveTop?2u:billboard.BlendType==MyBillboard.BlendTypeEnum.LDR?3u:4u;
@@ -107,7 +134,21 @@ namespace ClientPlugin.Rendering.Scene
             return actor == null ? billboard.Position0 : Vector3D.Transform(billboard.Position0, actor.WorldMatrix);
         }
 
-        private static MyBillboard Copy(MyBillboard b) => new MyBillboard { Material = b.Material, BlendType = b.BlendType, Position0 = b.Position0, Position1 = b.Position1, Position2 = b.Position2, Position3 = b.Position3, Color = b.Color, ColorIntensity = b.ColorIntensity, Reflectivity=b.Reflectivity,AlphaCutout=b.AlphaCutout,SoftParticleDistanceScale=b.SoftParticleDistanceScale, UVOffset = b.UVOffset, UVSize = b.UVSize, LocalType = b.LocalType, ParentID = b.ParentID, CustomViewProjection = b.CustomViewProjection };
+        private static MyBillboard Copy(MyBillboard b)
+        {
+            // Rich HUD submits pooled MyTriangleBillboards. Preserve the subtype
+            // and its payload before the producer can reuse the source object.
+            MyBillboard copy = b is MyTriangleBillboard triangle
+                ? new MyTriangleBillboard { UV0 = triangle.UV0, UV1 = triangle.UV1, UV2 = triangle.UV2, Normal0 = triangle.Normal0 }
+                : new MyBillboard();
+            copy.Material = b.Material; copy.BlendType = b.BlendType;
+            copy.Position0 = b.Position0; copy.Position1 = b.Position1; copy.Position2 = b.Position2; copy.Position3 = b.Position3;
+            copy.Color = b.Color; copy.ColorIntensity = b.ColorIntensity; copy.Reflectivity = b.Reflectivity;
+            copy.AlphaCutout = b.AlphaCutout; copy.SoftParticleDistanceScale = b.SoftParticleDistanceScale;
+            copy.UVOffset = b.UVOffset; copy.UVSize = b.UVSize; copy.LocalType = b.LocalType;
+            copy.ParentID = b.ParentID; copy.CustomViewProjection = b.CustomViewProjection;
+            return copy;
+        }
 
         public void AddPointBillboard(MyStringId material, Vector4 color, Vector3D origin, float radius, float angle, MyBillboard.BlendTypeEnum blendType = MyBillboard.BlendTypeEnum.Standard, int customViewProjection = -1, float intensity = 1)
         {
@@ -138,6 +179,6 @@ namespace ClientPlugin.Rendering.Scene
         }
         private static void Corners(Vector3D center, Vector3D right, Vector3D up, double x, double y, out Vector3D a, out Vector3D b, out Vector3D c, out Vector3D d)
         { right *= x; up *= y; a = center - right + up; b = center + right + up; c = center + right - up; d = center - right - up; }
-        public void Dispose() { foreach (ulong handle in handles) backend.RemoveResource(1, handle); handles.Clear(); lock (generated) generated.Clear(); frame.Clear(); }
+        public void Dispose() { foreach (ulong handle in handles) backend.RemoveResource(1, handle); handles.Clear(); lock (generated) generated.Clear(); frame.Clear(); hudFrame.Clear(); }
     }
 }

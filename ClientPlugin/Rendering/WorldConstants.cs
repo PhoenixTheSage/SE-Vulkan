@@ -15,7 +15,10 @@ public static class WorldConstants
         Matrix("view_matrix",view);Matrix("projection_matrix",projection);Matrix("projection_matrix_for_skybox",projection);Matrix("view_projection_matrix",view*projection);
         Matrix("inv_view_matrix",MatrixD.Invert(view));Matrix("inv_proj_matrix",MatrixD.Invert(projection));Matrix("inv_view_proj_matrix",MatrixD.Invert(view*projection));// Vanilla writes this one matrix without its usual CPU transpose; -Zpr needs the inverse storage convention.
         Matrix("background_orientation",MatrixD.Transpose(background??MatrixD.Identity));
-        result.Set("frame_.Screen.resolution",width,height);result.Set("frame_.Screen.drs",renderFraction);
+        // Vulkan allocates exact-sized world targets. Stock SSAO multiplies its
+        // screen coordinates by drs; applying the output fraction again would
+        // reconstruct positions from a second, incorrectly scaled viewport.
+        result.Set("frame_.Screen.resolution",width,height);result.Set("frame_.Screen.drs",1);
         result.Set("frame_.DistanceFade",(renderSettings??new MyRenderSettings()).User.DistanceFade);
         void Scalar(string name,float value)=>result.Set("frame_.Light."+name,value);
         void Vector(string name,Vector3 value)=>result.Set("frame_.Light."+name,value.X,value.Y,value.Z);

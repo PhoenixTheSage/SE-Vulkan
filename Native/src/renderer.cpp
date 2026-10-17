@@ -3,6 +3,7 @@
 #include "se_vulkan.h"
 #include "presentation_capture.h"
 #include "ray_policy.h"
+#include "ray_transform.h"
 #include "gpu_opaque_admission.h"
 #include "world_instance_arena.h"
 #include "world_indirect_plan.h"
@@ -80,7 +81,7 @@ template<size_t N> void copy_text(char (&to)[N], const std::string& text) {
     std::memset(to, 0, N); std::memcpy(to, text.data(), std::min(N - 1, text.size()));
 }
 constexpr uint32_t minimum_api = VK_API_VERSION_1_4;
-constexpr uint32_t required_features = 1 | 2 | 4 | 8 | 16 | 32 | 1024 | 2048 | 4096 | 8192; // dynamic rendering, sync2, timeline, scalar, BC, shader demote, geometry, extended storage formats
+constexpr uint32_t required_features = 1 | 2 | 4 | 8 | 16 | 32 | 1024 | 2048 | 4096 | 8192 | 16384; // depth clamp for stock billboard rasterization; dynamic rendering, sync2, timeline, scalar, BC, shader demote, geometry, extended storage formats
 bool features_supported(VkPhysicalDevice device, uint32_t& flags) {
     VkPhysicalDeviceVulkan14Features f14{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES };
     VkPhysicalDeviceVulkan13Features f13{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &f14 };
@@ -88,7 +89,7 @@ bool features_supported(VkPhysicalDevice device, uint32_t& flags) {
     VkPhysicalDeviceFeatures2 f{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f12 };
     vkGetPhysicalDeviceFeatures2(device, &f);
     flags = (f13.dynamicRendering ? 1 : 0) | (f13.synchronization2 ? 2 : 0) |
-        (f12.timelineSemaphore ? 4 : 0) | (f12.scalarBlockLayout ? 8 : 0) | (f.features.textureCompressionBC ? 16 : 0) | (f13.shaderDemoteToHelperInvocation?32:0) | (f.features.geometryShader?1024:0) | (f.features.shaderStorageImageExtendedFormats?2048:0) | (f.features.independentBlend?4096:0) | (f.features.robustBufferAccess?8192:0);
+        (f12.timelineSemaphore ? 4 : 0) | (f12.scalarBlockLayout ? 8 : 0) | (f.features.textureCompressionBC ? 16 : 0) | (f13.shaderDemoteToHelperInvocation?32:0) | (f.features.geometryShader?1024:0) | (f.features.shaderStorageImageExtendedFormats?2048:0) | (f.features.independentBlend?4096:0) | (f.features.robustBufferAccess?8192:0) | (f.features.depthClamp?16384:0);
     VkPhysicalDeviceVulkan14Properties p14{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_PROPERTIES };
     VkPhysicalDeviceProperties2 properties{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p14 };
     vkGetPhysicalDeviceProperties2(device, &properties);
@@ -229,7 +230,8 @@ struct ModelState {std::deque<ModelDefinition> definitions;uint32_t generation{}
 struct RayBlas { uint64_t stamp{}; uint32_t primitives{}; VkBuffer vertex{}, index{}; VkDeviceSize vertex_offset{}, index_offset{}; VkAccelerationStructureKHR handle{}; Buffer storage{}; };
 struct RayRetired { uint64_t completion{}; VkAccelerationStructureKHR handle{}; Buffer storage{}; };
 struct RayState {
-    bool supported{}, hdr_storage{}, shader_attempted{};
+    bool supported{}, hdr_storage{}, visibility_storage{}, shader_attempted{};
+    VkDeviceSize scratch_alignment=256;
     uint32_t max_primitives{}, max_instances{}, refused{}, shader_ready{};
     uint64_t builds{}, dispatches{}, geometry_stamp{1}, scratch_completion{}, instance_completion{}, uniform_completion{}, tlas_completion{};
     std::mutex mutex;
@@ -239,7 +241,7 @@ struct RayState {
     VkAccelerationStructureKHR tlas{};
     Buffer tlas_storage{}, scratch{}, instances{}, uniforms{};
     VkDescriptorSetLayout layout{}; VkPipelineLayout pipeline_layout{}; VkPipeline pipeline{};
-    VkDescriptorPool pool{}; VkDescriptorSet set{}; VkShaderModule module{};
+    VkDescriptorPool pool{}; VkDescriptorSet sets[2]{}; VkShaderModule module{};
 };
 struct LightTileState {
     bool requested{};
@@ -312,7 +314,8 @@ static_assert(sizeof(SevkSprite) == 88 && sizeof(SevkFrameInfo) == 144);
 static_assert(sizeof(SevkDrawMesh) == 152 && sizeof(SevkLight) == 64);
 
 struct TransparentDraw {SevkTransparentDraw packet{};std::vector<uint8_t> object,instances;};
-struct TransparencyState { VkDescriptorSetLayout layout{},resolve_layout{};VkPipelineLayout pipeline_layout{},resolve_pipeline_layout{};WorldPipeline glass[10]{},glass_depth[10]{};Image glass_layers[2]{};VkSampler point_sampler{};bool layers_initialized{};VkPipeline billboards[32]{},ldr_billboards[32]{};float custom_projections[512]{};VkImageView ldr_view{};VkImage ldr_image{};VkDescriptorSetLayout billboard_layout{};VkPipelineLayout billboard_pipeline_layout{};Buffer billboard_vertices[2]{},billboard_data[2]{},billboard_projections[2]{},billboard_indices{};std::vector<SevkBillboardDraw> billboard_draws;VkPipeline resolve{};Image accum{},coverage{},csm{};Buffer objects[2]{},materials[2]{},instances[2]{},shadow_constants[2]{};std::vector<TransparentDraw> draws;uint32_t width{},height{};bool initialized{};SevkTransparencyStats stats{sizeof(SevkTransparencyStats),SEVK_ABI_VERSION};};
+struct OutputBillboardProgram {VkShaderModule vs{},ps{};std::vector<VkVertexInputAttributeDescription> attributes;VkPipeline pipeline{};VkFormat format{};};
+struct TransparencyState { VkDescriptorSetLayout layout{},resolve_layout{};VkPipelineLayout pipeline_layout{},resolve_pipeline_layout{};WorldPipeline glass[10]{},glass_depth[10]{};Image glass_layers[2]{};VkSampler point_sampler{};bool layers_initialized{};VkPipeline billboards[32]{},ldr_billboards[32]{};OutputBillboardProgram output_billboards[32]{};Image output_depth{};uint32_t output_width{},output_height{};bool output_depth_ready{};float custom_projections[512]{};VkImageView ldr_view{};VkImage ldr_image{};VkDescriptorSetLayout billboard_layout{};VkPipelineLayout billboard_pipeline_layout{};Buffer billboard_vertices[2]{},billboard_data[2]{},billboard_projections[2]{},billboard_indices{};std::vector<SevkBillboardDraw> billboard_draws;VkPipeline resolve{};Image accum{},coverage{},csm{};Buffer objects[2]{},materials[2]{},instances[2]{},shadow_constants[2]{};std::vector<TransparentDraw> draws;uint32_t width{},height{};bool initialized{};SevkTransparencyStats stats{sizeof(SevkTransparencyStats),SEVK_ABI_VERSION};};
 struct ParticleStage {VkShaderModule module{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{};std::vector<std::pair<uint32_t,VkDescriptorType>> bindings;};
 struct ParticleState {ParticleStage stages[10]{};Buffer particle{},dead{},alive[2]{},counters[4]{},draw_args{},sim_args{},active{};VkBufferView draw_view{},sim_view{};Buffer emitters[2]{},emit_constants[2]{},readback[2]{},indices{};std::vector<uint8_t> packet;uint32_t count{},index{};uint64_t atlas{};bool initialized{},reset{},queued{},readback_valid[2]{};SevkParticleStats stats{sizeof(SevkParticleStats),SEVK_ABI_VERSION};};
 struct FlareState {VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{};Buffer queries[2]{},results[2]{},constants[2]{},readback[2]{};std::vector<SevkFlareQuery> packet;std::vector<SevkFlareResult> completed;float projection[16]{};uint32_t counts[2]{};bool valid[2]{};} ;
@@ -738,7 +741,7 @@ struct Renderer {uint32_t recipe_generation=1;
         VkPhysicalDeviceVulkan13Features f13{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES }; f13.dynamicRendering = VK_TRUE; f13.synchronization2 = VK_TRUE; f13.shaderDemoteToHelperInvocation=VK_TRUE;
         VkPhysicalDeviceVulkan12Features f12{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &f13 }; f12.timelineSemaphore = VK_TRUE; f12.scalarBlockLayout = VK_TRUE;
         VkPhysicalDeviceVulkan11Features f11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,&f12};
-        VkPhysicalDeviceFeatures2 features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11 }; features.features.robustBufferAccess=VK_TRUE;features.features.independentBlend=VK_TRUE; features.features.textureCompressionBC = VK_TRUE; features.features.geometryShader=VK_TRUE; features.features.shaderStorageImageExtendedFormats=VK_TRUE;
+        VkPhysicalDeviceFeatures2 features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11 }; features.features.robustBufferAccess=VK_TRUE;features.features.depthClamp=VK_TRUE;features.features.independentBlend=VK_TRUE; features.features.textureCompressionBC = VK_TRUE; features.features.geometryShader=VK_TRUE; features.features.shaderStorageImageExtendedFormats=VK_TRUE;
         if(opaque_caps.enabled){features.features.shaderFloat64=VK_TRUE;f11.shaderDrawParameters=VK_TRUE;
             f12.drawIndirectCount=VK_TRUE;f12.runtimeDescriptorArray=VK_TRUE;f12.shaderSampledImageArrayNonUniformIndexing=VK_TRUE;}
         float priority = 1;
@@ -777,7 +780,9 @@ struct Renderer {uint32_t recipe_generation=1;
                 device_extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);device_extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);device_extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
                 VkPhysicalDeviceAccelerationStructurePropertiesKHR limits{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,&limits};vkGetPhysicalDeviceProperties2(physical,&properties);
                 ray.max_primitives=limits.maxPrimitiveCount<2000000ull?uint32_t(limits.maxPrimitiveCount):2000000u;ray.max_instances=limits.maxInstanceCount<8192ull?uint32_t(limits.maxInstanceCount):8192u;
-                VkFormatProperties hdr{};vkGetPhysicalDeviceFormatProperties(physical,VK_FORMAT_R16G16B16A16_SFLOAT,&hdr);ray.hdr_storage=(hdr.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)!=0;}}
+                ray.scratch_alignment=std::max(1u,limits.minAccelerationStructureScratchOffsetAlignment);
+                VkFormatProperties hdr{};vkGetPhysicalDeviceFormatProperties(physical,VK_FORMAT_R16G16B16A16_SFLOAT,&hdr);ray.hdr_storage=(hdr.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)!=0;
+                VkFormatProperties visibility{};vkGetPhysicalDeviceFormatProperties(physical,VK_FORMAT_R8_UNORM,&visibility);ray.visibility_storage=(visibility.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)!=0;}}
         if(opaque_conditional){conditional.pNext=chain;chain=&conditional;}f13.pNext=chain;
         ngx_add_device_extensions(device_extensions, available, f12);
         VkDeviceCreateInfo create{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &features }; create.queueCreateInfoCount = 1; create.pQueueCreateInfos = &q;
@@ -1149,7 +1154,7 @@ struct Renderer {uint32_t recipe_generation=1;
             color_format = VK_FORMAT_R8G8B8A8_SRGB; extent = present_extent = { width, height }; readback_supported = true;
             offscreen = make_image(width, height, color_format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
         }
-        depth = make_image(extent.width, extent.height, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+        depth = make_image(extent.width, extent.height, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
         if (!sprite_pipeline || previous != color_format) {
             if (sprite_pipeline) vkDestroyPipeline(device, sprite_pipeline, nullptr);
             if (additive_pipeline) vkDestroyPipeline(device, additive_pipeline, nullptr);
@@ -1308,6 +1313,7 @@ struct Renderer {uint32_t recipe_generation=1;
     }
     int begin_frame(const SevkFrameInfo& frame) {
         submitted_frame=frame;
+        guest.depth_ready=0;++guest.catalog_epoch;
         join_present();
         match_surface_extent();
         if (recording) throw std::runtime_error("frame already begun");
@@ -1357,26 +1363,26 @@ struct Renderer {uint32_t recipe_generation=1;
         std::memcpy(slot.uniform.mapped, &constants, sizeof(constants)); check(vmaFlushAllocation(allocator, slot.uniform.memory, 0, sizeof(constants)), "flush frame constants");
         VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }; begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check(vkBeginCommandBuffer(slot.command, &begin), "begin frame command"); frame_mark("frame begin");
-        frame_meshes.clear(); frame_sprites.clear(); recording=true; return 0;
+        frame_meshes.clear(); frame_sprites.clear(); recording=true; guest.resources_open=true; return 0;
     }
-    void begin_main_rendering(const SevkFrameInfo& frame) {
+    void begin_main_rendering(const SevkFrameInfo& frame,bool load=false) {
         auto& slot=slots[slot_index];
         VkExtent2D target = present_extent.width ? present_extent : extent;
         VkImage image = swapchain ? swap_images[image_index] : offscreen.handle;
-        bool initialized = swapchain ? image_initialized[image_index] : offscreen_initialized;
-        barrier(slot.command, image, initialized ? (swapchain ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) : VK_IMAGE_LAYOUT_UNDEFINED,
+        bool initialized = load || (swapchain ? image_initialized[image_index] : offscreen_initialized);
+        barrier(slot.command, image, load ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : initialized ? (swapchain ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) : VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
             swapchain ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT : (initialized ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_NONE), initialized ? VK_ACCESS_2_MEMORY_WRITE_BIT : 0,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-        barrier(slot.command, depth.handle, depth_initialized ? VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-            VK_IMAGE_ASPECT_DEPTH_BIT, depth_initialized ? VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT : VK_PIPELINE_STAGE_2_NONE,
-            depth_initialized ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        barrier(slot.command, depth.handle, (load||depth_initialized) ? VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_ASPECT_DEPTH_BIT, (load||depth_initialized) ? VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT : VK_PIPELINE_STAGE_2_NONE,
+            (load||depth_initialized) ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0,
             VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
         VkRenderingAttachmentInfo color{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }; color.imageView = swapchain ? swap_views[image_index] : offscreen.view;
-        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; color.loadOp = load ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR; color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         std::memcpy(color.clearValue.color.float32, frame.clear_color, 4 * sizeof(float));
         VkRenderingAttachmentInfo d{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }; d.imageView = depth.view; d.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-        d.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; d.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; d.clearValue.depthStencil = { 0,0 };
+        d.loadOp = load ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR; d.storeOp = has_output_billboards() ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE; d.clearValue.depthStencil = { 0,0 };
         VkRenderingInfo rendering{ VK_STRUCTURE_TYPE_RENDERING_INFO }; rendering.renderArea = { {0,0},target }; rendering.layerCount = 1;
         rendering.colorAttachmentCount = 1; rendering.pColorAttachments = &color; rendering.pDepthAttachment = &d;
         vkCmdBeginRendering(slot.command, &rendering);
@@ -1488,6 +1494,10 @@ struct Renderer {uint32_t recipe_generation=1;
         critical_profile::Finish critical_finish{critical};
         critical_profile::Scope critical_record(critical_profile::RecordOwner,true);
         if (!recording) { if (suspended) return 1; throw std::runtime_error("end_frame without begin_frame"); }
+        // Host guest callbacks run after BeginFrame and before EndFrame.
+        // No guest resource has been referenced by this command buffer yet.
+        // Close that allocation window before recording the world/guest draws.
+        guest.resources_open=false;
         auto& slot = slots[slot_index];
         auto perf_stamp=std::chrono::steady_clock::now();
         auto perf_take=[&](){auto now=std::chrono::steady_clock::now();auto us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(now-perf_stamp).count());perf_stamp=now;return us;};
@@ -1506,14 +1516,19 @@ struct Renderer {uint32_t recipe_generation=1;
             resolution_stats.width=extent.width;resolution_stats.height=extent.height;resolution_stats.output_width=output_extent.width;resolution_stats.output_height=output_extent.height;resolution_stats.fraction=render_fraction;
             try{render_world();}catch(...){extent=saved_output;throw;}extent=saved_output;
         }else {frame_mark("menu shadows");render_shadows();}
+        guest.depth_configured=false;
         if(world.current().queued)prepare_display(slot.command);
         if(!opaque_stock.ready)prepare_opaque_reference(slot.command);
         record_opaque_reference_depths(slot.command);
         extent = output_extent;
+        // Guest passes own dynamic-rendering scopes. AfterUpscale must finish
+        // before the swapchain scope used by composition and sprites begins.
+        if(world.current().queued)guest_replay(slot.command,6);
         perf_take();frame_mark("swapchain pass"); begin_main_rendering(*static_cast<SevkFrameInfo*>(slot.uniform.mapped));
         if(world.current().queued) compose_world();
         record_opaque_reference(slot.command);
         frame_mark("meshes");for(const auto& draw:frame_meshes) emit_mesh(draw);
+        if(world.current().queued && has_output_billboards()){prepare_output_billboard_depth(slot.command);begin_main_rendering(*static_cast<SevkFrameInfo*>(slot.uniform.mapped),true);render_output_billboards(slot.command,world.slots[slot_index]);}
         performance.compose_us=perf_take();frame_mark("sprites");emit_sprites(slot.command,output_extent,frame_sprites.data(),static_cast<uint32_t>(frame_sprites.size()),sprite_pipeline,additive_pipeline,sprite_premul_pipeline,sprite_premul_additive_pipeline,sprite_w?float(sprite_w):float(output_extent.width),sprite_h?float(sprite_h):float(output_extent.height));
         performance.sprite_us=perf_take();
         vkCmdEndRendering(slot.command);
@@ -1539,6 +1554,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if(world.current().queued&&timing_pool){vkCmdWriteTimestamp2(slot.command,VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,timing_pool,slot_index*2+1);timing_valid[slot_index]=true;}
         frame_mark("frame end");if(profile_label_open){vkCmdEndDebugUtilsLabelEXT(slot.command);profile_label_open=false;}
         check(vkEndCommandBuffer(slot.command), "end frame command"); recording = false;
+        guest.passes.clear(); // Frame packets never replay implicitly in a later frame.
         performance.finish_us=perf_take();
         VkCommandBufferSubmitInfo command{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO }; command.commandBuffer = slot.command;
         VkSemaphoreSubmitInfo acquired{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO }; acquired.semaphore = slot.acquired; acquired.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1927,8 +1943,26 @@ int32_t SEVK_CALL sevk_fsr_configure(uint32_t enabled,uint32_t mode,float sharpn
 int32_t SEVK_CALL sevk_fsr_status(char* text,uint32_t capacity){return Renderer::fsr_copy_status(text,capacity);}
 int32_t SEVK_CALL sevk_fsr_debug(char* text,uint32_t capacity){return Renderer::fsr_copy_debug(text,capacity);}
 int32_t SEVK_CALL sevk_fg_status(SevkFrameGenStatus* status){return Renderer::fg_copy_status(status);}
+int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32_t height,uint32_t* render_width,uint32_t* render_height,float* fraction){
+    if(!width || !height || !render_width || !render_height || !fraction)return -1;
+    return call(ctx,[&](Renderer& r){
+        if(r.recording)throw std::runtime_error("cannot resolve world resolution during recording");
+        r.ngx_apply_scale();r.fsr_apply_scale();
+        *render_width=std::max(1u,uint32_t(std::lround(width*r.render_fraction)));
+        *render_height=std::max(1u,uint32_t(std::lround(height*r.render_fraction)));
+        *fraction=r.render_fraction;return 0;
+    });
+}
 int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){r.collect();*stats=r.resolution_stats;return 0;});}
-int32_t SEVK_CALL sevk_guest_reset(void* ctx){return call(ctx,[](Renderer& r){r.guest.passes.clear();return 0;});}
+uint32_t SEVK_CALL sevk_guest_features(void){return 8191u;}
+int32_t SEVK_CALL sevk_guest_depth_views(void* ctx,const uint64_t* images,const float* matrices,uint32_t count){
+    return call(ctx,[&](Renderer& r){r.guest_depth_views(images,matrices,count);return 0;});
+}
+uint32_t SEVK_CALL sevk_guest_depth_ready(void* ctx){
+    uint32_t ready=0;call(ctx,[&](Renderer& r){ready=r.guest.depth_ready;return 0;});return ready;
+}
+int32_t SEVK_CALL sevk_guest_reset(void* ctx){return call(ctx,[](Renderer& r){r.guest.passes.clear();++r.guest.catalog_epoch;return 0;});}
+uint32_t SEVK_CALL sevk_guest_catalog_mask(void* ctx){uint32_t mask=0;call(ctx,[&](Renderer& r){VkImageView v{};VkImage i{};uint32_t w{},h{};for(uint32_t b=0;b<3;b++)if(r.guest_catalog_view(0xFFFF00000000000Aull+b,v,i,w,h))mask|=1u<<b;return 0;});return mask;}
 int32_t SEVK_CALL sevk_guest_create_pipeline(void* ctx,const void* vs,uint64_t vs_bytes,const char* vs_entry,const void* ps,uint64_t ps_bytes,const char* ps_entry,uint64_t* pipeline){
     return call(ctx,[&](Renderer& r){if(!pipeline)throw std::runtime_error("null guest pipeline");*pipeline=r.guest_create_pipeline(vs,vs_bytes,vs_entry,ps,ps_bytes,ps_entry);return 0;});
 }
@@ -1940,6 +1974,12 @@ int32_t SEVK_CALL sevk_guest_update_image(void* ctx,uint64_t id,const void* data
 }
 int32_t SEVK_CALL sevk_guest_submit(void* ctx,const SevkGuestPass* passes,uint32_t count){
     return call(ctx,[&](Renderer& r){r.guest_submit(passes,count);return 0;});
+}
+int32_t SEVK_CALL sevk_guest_create_pipeline2(void* ctx,const void* vs,uint64_t vs_bytes,const char* vs_entry,const void* ps,uint64_t ps_bytes,const char* ps_entry,uint32_t contract,uint64_t* pipeline){
+    return call(ctx,[&](Renderer& r){if(!pipeline || contract<1 || contract>2)throw std::runtime_error("invalid extended guest pipeline");*pipeline=r.guest_create_pipeline(vs,vs_bytes,vs_entry,ps,ps_bytes,ps_entry,contract);return 0;});
+}
+int32_t SEVK_CALL sevk_guest_submit2(void* ctx,const SevkGuestPass2* passes,uint32_t count){
+    return call(ctx,[&](Renderer& r){r.guest_submit2(passes,count);return 0;});
 }
 int32_t SEVK_CALL sevk_guest_readback(void* ctx,uint64_t id,void* rgba,uint64_t bytes){
     return call(ctx,[&](Renderer& r){r.guest_readback(id,rgba,bytes);return 0;});

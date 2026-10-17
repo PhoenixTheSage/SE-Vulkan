@@ -53,6 +53,7 @@ public sealed partial class Plugin : IPlugin
     private bool started, sawSession, spawned, textCameraSet, textCaptured, spritesPrepared, spritesCaptured, playerCameraSet, playerCaptured, completed, unloading, exiting, failed;
     private bool doorOpened, doorClosed, animationCameraSet, animationCaptured;
     private double spawnedAt, nextReport, completedAt;
+    private double parityExerciseSeconds, parityLastExerciseTick;
     private int duration = 240;
     private MyCubeGrid platform, smallGrid, previewGrid;
     private MyCharacter astronaut;
@@ -183,6 +184,7 @@ public sealed partial class Plugin : IPlugin
         File.WriteAllText(Path.Combine(reports, "world-create-requested.txt"), "Stock EmptyWorld; Creative; offline; no mods, planets, asteroids or encounters.");
         VulkanDiagnostics.Set("Creative fixture acceptance", SubsystemState.Active, "Isolated test-only EmptyWorld loading; acceptance is awaiting gameplay and capture review.");
         Report("Starting a new stock EmptyWorld Creative session in isolated GameData.");
+        if(Environment.GetEnvironmentVariable("SE_VULKAN_ANOMALY_PARITY")=="1"){settings.EnableOxygen=true;settings.EnableOxygenPressurization=true;}
         MySessionLoader.StartNewSession(WorldName, settings, new List<MyObjectBuilder_Checkpoint.ModItem>(), scenario, asteroidAmount: 0, encounterAmount: 0);
     }
 
@@ -309,6 +311,8 @@ public sealed partial class Plugin : IPlugin
         foreach (var block in previewGrid.GetBlocks()) ((VRage.Game.ModAPI.IMySlimBlock)block).Dithering = .45f;
         Camera(new Vector3D(15, 11, -19), new Vector3D(0, 0, 0));
         spawned = true; spawnedAt = clock.Elapsed.TotalSeconds;
+        parityLastExerciseTick=spawnedAt;
+        BeginAnomalyParity();
     }
 
     private void SavePrivateFixture(bool preserveBaseline = false)
@@ -352,7 +356,16 @@ public sealed partial class Plugin : IPlugin
         MyTransparentGeometry.AddPointBillboard(square, new Vector4(0, 1, 0, .5f), new Vector3D(5.3, 1, -8), .4f, 0, blendType: MyBillboard.BlendTypeEnum.AdditiveBottom);
         MyTransparentGeometry.AddPointBillboard(square, new Vector4(0, 0, 1, .5f), new Vector3D(5.6, 1, -8), .4f, 0, blendType: MyBillboard.BlendTypeEnum.AdditiveTop);
         billboardCommands += 3;
-        double seconds = clock.Elapsed.TotalSeconds - spawnedAt;ExercisePostprocessing(seconds);if(transparencyMode)ExerciseTransparency(seconds);
+        double seconds = clock.Elapsed.TotalSeconds - spawnedAt;
+        if(anomalyParityMode) {
+            // Cold shader compilation must not schedule several camera/capture
+            // stages in one update. Keep wall time only for the outer timeout.
+            double now=clock.Elapsed.TotalSeconds;
+            parityExerciseSeconds+=Math.Min(.1,Math.Max(0,now-parityLastExerciseTick));
+            parityLastExerciseTick=now;seconds=parityExerciseSeconds;
+        }
+        ExercisePostprocessing(seconds);if(transparencyMode)ExerciseTransparency(seconds);
+        ExerciseAnomalyParity(seconds);
         if(asteroidMode)ExerciseAsteroid(seconds);
         if(planetMode)ExercisePlanet(seconds);
         if (door != null) doorMaximumOpenRatio = Math.Max(doorMaximumOpenRatio, door.OpenRatio);
@@ -371,7 +384,9 @@ public sealed partial class Plugin : IPlugin
         if (!textCaptured && seconds >= 25) { textCaptured = true; Capture("fixture-lcd-text"); }
         if (!animationCameraSet && door != null && seconds >= 29) { animationCameraSet = true; Camera(new Vector3D(15, 11, -19), Vector3D.Zero); }
         if (!animationCaptured && door != null && seconds >= 32) { animationCaptured = true; Capture("fixture-animation"); }
-        if (!doorClosed && door != null && seconds >= 34) { doorClosed = true; ((Sandbox.ModAPI.Ingame.IMyDoor)door).CloseDoor(); }
+        // A cold render compile can advance wall time past both thresholds in
+        // one Update. Preserve the actual open/close animation in that case.
+        if (!doorClosed && door != null && seconds >= 34 && door.OpenRatio > .95f) { doorClosed = true; ((Sandbox.ModAPI.Ingame.IMyDoor)door).CloseDoor(); }
         if (!spritesPrepared && seconds >= 35)
         {
             spritesPrepared = true;
@@ -448,8 +463,9 @@ public sealed partial class Plugin : IPlugin
             smallGridDeletionRequested = true;
             smallGrid.Close();
         }
-        if (seconds >= (planetMode?275:asteroidMode?175:transparencyMode?155:72))
+        if (seconds >= (planetMode?275:asteroidMode?175:transparencyMode?155:anomalyParityMode?150:72))
         {
+            if(anomalyParityMode && !parityComplete) { if(seconds>240)throw new InvalidOperationException("Anomaly parity did not reach producer readiness/capture completion; inspect anomaly-parity.txt.");return; }
             Vector3 gravity = MyGravityProviderSystem.CalculateTotalGravityInPoint(new Vector3D(0, 0, 0));
             if (gravity.Length() < 1 || !panel.IsWorking || platform.GetBlocks().Count < 80 || !smallGrid.Closed || astronautTravel < .1)
                 throw new InvalidOperationException("Fixture physics/power/lifecycle requirements failed: gravity=" + gravity + ", LCD working=" + panel.IsWorking

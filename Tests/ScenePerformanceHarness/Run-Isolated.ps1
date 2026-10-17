@@ -4,6 +4,9 @@ param(
     [Parameter(Mandatory=$true)][string]$Bin64,
     [Parameter(Mandatory=$true)][string]$Pulsar,
     [ValidateSet('Vulkan','Dx11')][string]$Backend='Vulkan',
+    [switch]$RichHudAudit,
+    [string]$AnomalyProject,
+    [string]$HudDlssProject,
     [switch]$CompareRigidBatching,
     [switch]$CompareBatchHints,
     [switch]$CompareBatchCells,
@@ -212,6 +215,35 @@ if($DeepProfile){
 }
 if($BenchmarkNative){Copy-Item -LiteralPath $BenchmarkNative -Destination (Join-Path $localVulkan 'Assets/Native/win-x64/se_vulkan_native.dll')}
 
+if($RichHudAudit){
+    if(!$AnomalyProject){throw 'RichHudAudit requires AnomalyProject (repository path).'}
+    $hudProject=Join-Path $AnomalyProject 'ClientPlugin/ClientPlugin.csproj'
+    if(!(Test-Path -LiteralPath $hudProject)){throw 'Anomaly shared project missing.'}
+    & dotnet build $hudProject -c Release -f net10.0 -p:RunPostBuildEvent=Never | Out-Host
+    if($LASTEXITCODE -ne 0){throw 'Anomaly audit build failed.'}
+    $localAnomaly=Join-Path $edition 'Local/Anomaly'
+    New-Item -ItemType Directory -Force -Path $localAnomaly | Out-Null
+    Copy-Item -LiteralPath (Join-Path $AnomalyProject 'ClientPlugin/bin/Release/net10.0/Anomaly.dll') -Destination (Join-Path $localAnomaly 'plugin.dll')
+    Copy-Item -LiteralPath (Join-Path $AnomalyProject 'Anomaly.xml') -Destination (Join-Path $localAnomaly 'plugin.xml')
+    Copy-Item -LiteralPath (Join-Path $AnomalyProject 'Assets') -Destination $localAnomaly -Recurse
+}
+if($RichHudAudit -and $HudDlssProject){
+    & dotnet build (Join-Path $HudDlssProject 'ClientPlugin/ClientPlugin.csproj') -c Release -f net10.0 -p:RunPostBuildEvent=Never -p:SkipDx11Satellite=true | Out-Host
+    if($LASTEXITCODE -ne 0){throw 'DLSS audit build failed.'}
+    $localDlss=Join-Path $edition 'Local/SpaceEngineersDLSS'
+    New-Item -ItemType Directory -Force -Path $localDlss | Out-Null
+    Copy-Item -LiteralPath (Join-Path $HudDlssProject 'ClientPlugin/bin/Release/net10.0/SpaceEngineersDLSS.dll') -Destination (Join-Path $localDlss 'plugin.dll')
+    Copy-Item -LiteralPath (Join-Path $HudDlssProject 'SpaceEngineersDLSS.xml') -Destination (Join-Path $localDlss 'plugin.xml')
+    Copy-Item -LiteralPath (Join-Path $HudDlssProject 'Assets') -Destination $localDlss -Recurse
+    # Local DLSS deployment is documented to discover NGX beside the DLL;
+    # remote Url assets have no local Path for Pulsar's LocalPlugin resolver.
+    $dlssManifestPath=Join-Path $localDlss 'plugin.xml'
+    $dlssManifest=[xml](Get-Content -LiteralPath $dlssManifestPath -Raw)
+    foreach($asset in @($dlssManifest.DocumentElement.SelectNodes('Asset'))){[void]$asset.ParentNode.RemoveChild($asset)}
+    $dlssManifest.Save($dlssManifestPath)
+    Copy-Item -LiteralPath (Join-Path $HudDlssProject 'Assets/nvngx_dlss.dll') -Destination $localDlss
+    Copy-Item -LiteralPath (Join-Path $sourceData 'Storage/SpaceEngineersDLSS.cfg') -Destination (Join-Path $data 'Storage/SpaceEngineersDLSS.cfg')
+}
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'bin/Release/net10.0/ScenePerformanceHarness.dll') -Destination (Join-Path $localHarness 'plugin.dll')
 Get-ChildItem -LiteralPath $sourceWorld | Where-Object Name -ne 'Backup' | Copy-Item -Destination (Join-Path $data 'World') -Recurse
 foreach($file in 'Sandbox.sbc','Sandbox_config.sbc'){
@@ -241,9 +273,13 @@ $profile.Profile.Name='Isolated scene performance '+$Backend
 $profile.Profile.SelectSingleNode('DevFolder').RemoveAll()
 $local=$profile.Profile.SelectSingleNode('Local');$local.RemoveAll()
 foreach($id in 'AE72EBB8-F4A8-4ADB-A400-19CC46FDAB79','ScenePerformanceHarness.dll'){$node=$profile.CreateElement('string');$node.InnerText=$id;[void]$local.AppendChild($node)}
+if($RichHudAudit){$node=$profile.CreateElement('string');$node.InnerText='A9C29274-E447-49EE-881B-C980E6D190FD';[void]$local.AppendChild($node)}
+if($RichHudAudit -and $HudDlssProject){$node=$profile.CreateElement('string');$node.InnerText='B6469FEE-83BF-44A9-93F9-B4A252527C35';[void]$local.AppendChild($node)}
 $profilePath=Join-Path $edition 'Profiles/ScenePerformance.xml';$profile.Save($profilePath)
 $arguments='-bin64 "{0}" -profile "{1}" -appdata "{2}" -noUpdate -noSplash -noDiscord -noStats -noPrompt -stableLogs' -f $Bin64,$profilePath,$data
 $changes=@{SE_VULKAN_PERF_DATA=$data;SE_VULKAN_PERF_BACKEND=$Backend;SE_VULKAN_ASSET_DIR=(Join-Path $localVulkan 'Assets')}
+$changes.SE_VULKAN_HUD_REQUIRE_NGX=if($RichHudAudit -and $HudDlssProject){'1'}else{'0'}
+$changes.SE_VULKAN_HUD_AUDIT=if($RichHudAudit){'1'}else{'0'}
 $changes.SE_VULKAN_COMPARE_BATCHING=if($CompareRigidBatching){'1'}else{'0'}
 $changes.SE_VULKAN_COMPARE_BATCH_HINTS=if($CompareBatchHints){'1'}else{'0'}
 $changes.SE_VULKAN_COMPARE_BATCH_CELLS=if($CompareBatchCells){'1'}else{'0'}

@@ -185,14 +185,20 @@ public sealed partial class Plugin : IPlugin
         if(workloadAudit && expected=="Dx11"){harmony.Patch(AccessTools.Method(AccessTools.TypeByName("VRage.Render11.GeometryStage2.Rendering.MyGeometryRenderer"),"Render"),prefix:new HarmonyMethod(typeof(Plugin),nameof(AuditNewRender)));harmony.Patch(AccessTools.Method(AccessTools.TypeByName("VRageRender.MyGeometryRendererOld"),"Render"),prefix:new HarmonyMethod(typeof(Plugin),nameof(AuditOldRender)));harmony.Patch(AccessTools.Method(AccessTools.TypeByName("VRageRender.MyGeometryRendererOld"),"TrimCullProxies"),prefix:new HarmonyMethod(typeof(Plugin),nameof(AuditOldSizeBeforeTrim)));}
         if(expected=="Dx11"&&Environment.GetEnvironmentVariable("SE_VULKAN_PROBE_COVERAGE_AUDIT")=="1")harmony.Patch(AccessTools.Method(AccessTools.TypeByName("VRage.Render11.LightingStage.EnvironmentProbe.MyEnvironmentProbe"),"UpdateCullQuery"),prefix:new HarmonyMethod(typeof(Plugin),nameof(RefreshSourceProbe)));
         Type renderer = expected == "Vulkan" ? typeof(MyVulkanRender) : AccessTools.TypeByName("VRageRender.MyRender11");
-        harmony.Patch(AccessTools.Method(renderer, "Draw", new[] { typeof(bool) }), prefix: new HarmonyMethod(typeof(Plugin), nameof(BeginDraw)));
-        harmony.Patch(AccessTools.Method(renderer, "Present"), postfix: new HarmonyMethod(typeof(Plugin), nameof(EndPresent)));
+        // Interactive reproduction must keep the renderer's production defaults.
+        // Benchmark hooks deliberately override feature switches for A/B timing.
+        if(!CameraSweepEnabled){
+            harmony.Patch(AccessTools.Method(renderer, "Draw", new[] { typeof(bool) }), prefix: new HarmonyMethod(typeof(Plugin), nameof(BeginDraw)));
+            harmony.Patch(AccessTools.Method(renderer, "Present"), postfix: new HarmonyMethod(typeof(Plugin), nameof(EndPresent)));
+        }
+        else if(SweepIsolation)harmony.Patch(AccessTools.Method(renderer, "Draw", new[] { typeof(bool) }),prefix:new HarmonyMethod(typeof(Plugin),nameof(ApplySweepPolicy)));
         nativeCriticalEnabled=Environment.GetEnvironmentVariable("SE_VULKAN_CRITICAL_PROFILE")=="1";haveCritical=false;InstallFrameStateAudit();InstallSystemParityAudit();InstallLightingReconciliation();
     }
     static void BeginDraw(object __instance) {BeginNativeCritical(__instance);ApplyMatchedFrameOnce(__instance);LightingBeginDraw(__instance);BeginWorkloadDiagnostics(__instance);captureWorkloadFrame=workloadAudit && (sampling || selectionArmed) && workloadSnapshot==null;if((captureWorkloadFrame || probeCoverageCollecting) && selectionAudit && __instance is MyVulkanRender)((NativeBackend)BackendField.GetValue(__instance)).BeginLogicalSelectionCapture();drawStarted = Stopwatch.GetTimestamp();RenderFrameEvents.Log.Begin(++profileFrameSequence);frameBatching=batchingEnabled;frameHints=hintsEnabled;frameWide=wideEnabled;frameVoxelLookup=voxelLookupEnabled;frameVoxelObject=voxelObjectEnabled;frameTextureValidation=textureValidationEnabled;frameIndirect=indirectEnabled;frameRetained=retainedEnabled;frameSubmission=submissionEnabled;frameActorLods=actorLodsEnabled;frameSize=sizeEnabled;frameFar=farEnabled;frameView=viewEnabled;frameRecipes=recipesEnabled;frameNewViews=newViewsEnabled;frameModels=modelsEnabled;frameBulkModels=bulkModelsEnabled;frameAsyncPresent=asyncPresentEnabled;frameGroupOcclusion=groupOcclusionEnabled;frameParallel=parallelEnabled;frameParallelQueue=parallelQueueEnabled;frameLightTiles=lightTilesEnabled;if(__instance is MyVulkanRender){var target=(NativeBackend)BackendField.GetValue(__instance);if(indirectApplied!=frameIndirect){target.SetWorldIndirect(frameIndirect);indirectApplied=frameIndirect;}if(parallelApplied!=frameParallel){target.SetParallelCascades(frameParallel);parallelApplied=frameParallel;}if(lightTilesApplied!=frameLightTiles){target.SetLightTiles(frameLightTiles);lightTilesApplied=frameLightTiles;}if(parallelQueueApplied!=frameParallelQueue){target.SetParallelQueue(frameParallelQueue);parallelQueueApplied=frameParallelQueue;}if(asyncPresentApplied!=frameAsyncPresent){target.SetAsyncPresent(frameAsyncPresent);asyncPresentApplied=frameAsyncPresent;}target.ObjectRetentionEnabled=frameRetained;target.RetainedSubmissionEnabled=frameSubmission;target.WorldRecipesEnabled=frameRecipes;target.ModelBatchingEnabled=frameModels;target.BulkModelsEnabled=frameBulkModels;((VulkanScene)SceneField.GetValue(__instance)).ActorLodsEnabled=frameActorLods;((VulkanScene)SceneField.GetValue(__instance)).NewActorViewsEnabled=frameNewViews;((VulkanScene)SceneField.GetValue(__instance)).ActorSizeCullingEnabled=frameSize;((VulkanScene)SceneField.GetValue(__instance)).StockFarCascadesEnabled=frameFar;((VulkanScene)SceneField.GetValue(__instance)).ViewEligibilityEnabled=frameView;((VulkanScene)SceneField.GetValue(__instance)).GroupOcclusionEnabled=frameGroupOcclusion;target.RigidBatchingEnabled=frameBatching;target.RigidBatchHintsEnabled=frameHints;target.WideRigidBatchesEnabled=frameWide;target.TextureValidationCacheEnabled=frameTextureValidation;((VulkanVoxels)VoxelsField.GetValue(__instance)).Materials.LookupCacheEnabled=frameVoxelLookup;VoxelObjectConstants.Enabled=frameVoxelObject;}}
     static object gpuSceneSnapshot;static ulong[] gpuTopologyFirst,gpuTopologyLast,gpuComputeFirst,gpuComputeLast,gpuCpuCostsFirst,gpuCpuCostsLast;
     static void EndPresent(object __instance)
     {
+        ObserveRichHud(__instance);
         long now = Stopwatch.GetTimestamp(), previous = previousPresent;previousPresent = now;RenderFrameEvents.Log.End(profileFrameSequence,(now-drawStarted)*1000.0/Stopwatch.Frequency);LightingAfterPresent(__instance);CaptureProbeState(__instance);ObserveProbeCoverage(__instance);if(probeCoverageCollecting && __instance is MyVulkanRender)((NativeBackend)BackendField.GetValue(__instance)).EndLogicalSelectionCapture();
         if(comparePixels && __instance is MyVulkanRender){
             var pixelTarget=(NativeBackend)BackendField.GetValue(__instance);
@@ -231,7 +237,7 @@ public sealed partial class Plugin : IPlugin
         if (finished) return;
         try
         {
-            if (lifetime.Elapsed.TotalSeconds > 240) throw new Exception("Benchmark load/sample timeout.");
+            if (lifetime.Elapsed.TotalSeconds > (CameraSweepEnabled?600:240)) throw new Exception("Benchmark load/sample timeout.");
             if (!loadRequested && lifetime.Elapsed.TotalSeconds > 10 && MyGuiScreenGamePlay.Static == null)
             {
                 if (BackendRuntime.ActiveBackend.ToString() != expected) throw new Exception("Requested backend was not active.\n"+VulkanDiagnostics.Report());
@@ -243,6 +249,8 @@ public sealed partial class Plugin : IPlugin
             if(transitionUntil>=0){if(lifetime.Elapsed.TotalSeconds<transitionUntil)return;transitionUntil=-1;sampleAt=lifetime.Elapsed.TotalSeconds;sampling=true;MyRenderProxy.TakeScreenshot(Vector2.One,Path.Combine(reports,"view.png"),debug:false,ignoreSprites:false,showNotification:false);}
             if (readyAt < 0) { readyAt = lifetime.Elapsed.TotalSeconds;File.WriteAllText(Path.Combine(reports,"ready.txt"),MySession.Static.Name); }
             double seconds = lifetime.Elapsed.TotalSeconds-readyAt;
+            if(HudAuditEnabled && seconds>=10){AuditRichHud(seconds);return;}
+            if(CameraSweepEnabled){SweepCamera(seconds);return;}
             if(selectionAudit && seconds>=45){if(lightingReconciliation)CaptureLightingReconciliation();else CapturePausedSelection();return;}
             if(comparePixels && seconds>=45){CapturePausedViews();return;}
             if (sampleAt < 0 && seconds >= 45)

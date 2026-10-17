@@ -3,6 +3,9 @@
   <ItemGroup>
     <Compile Include="Program.cs" /><Compile Include="RecordingBackend.cs" />
     <Compile Include="../../ClientPlugin/Rendering/VulkanSprites.cs" Link="Production/VulkanSprites.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/VideoGeometry.cs" Link="Production/VideoGeometry.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/VulkanRenderStats.cs" Link="Production/VulkanRenderStats.cs" />
+    <Compile Include="../../ClientPlugin/Diagnostics/FrameProfiler.cs" Link="Production/FrameProfiler.cs" />
     <Compile Include="../../ClientPlugin/Rendering/Content/DdsImage.cs" Link="Production/DdsImage.cs" />
     <Compile Include="../../ClientPlugin/Rendering/Content/VulkanTextureCache.cs" Link="Production/VulkanTextureCache.cs" />
     <Reference Include="VRage"><HintPath>$(Bin64Dir)VRage.dll</HintPath></Reference>

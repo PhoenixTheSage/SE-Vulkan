@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="../../ClientPlugin/ClientPlugin.csproj" />
     <Compile Include="../../ClientPlugin/Rendering/VulkanSprites.cs" Link="Production/VulkanSprites.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/VideoGeometry.cs" Link="Production/VideoGeometry.cs" />
     <Compile Include="../../ClientPlugin/Rendering/Content/PngWriter.cs" Link="Production/PngWriter.cs" />
     <Content Include="decode_font.py" CopyToOutputDirectory="PreserveNewest" />
     <Reference Include="VRage"><HintPath>$(Bin64Dir)VRage.dll</HintPath><Private>true</Private></Reference>

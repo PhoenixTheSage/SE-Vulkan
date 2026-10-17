@@ -21,6 +21,7 @@ public static class BackendRuntime
     public static bool DecisionMade { get; private set; }
     private static readonly List<Action<int>> guestListeners = new List<Action<int>>();
     private static readonly List<Action> frameListeners = new List<Action>();
+    private static readonly List<Action<double[],float[]>> sceneListeners = new();
     public static RendererBackend RequestedBackend { get { lock (Sync) return configuration.RequestedBackend; } }
     public static bool RestartRequired => RequestedBackend != ActiveBackend;
     public static bool RecoveryRequired { get { lock (Sync) return configuration.RecoveryRequired; } }
@@ -112,6 +113,15 @@ public static class BackendRuntime
     {
         if (listener == null) return;
         lock (Sync) frameListeners.Add(listener);
+    }
+    public static void AddSceneListener(Action<double[],float[]> listener)
+    { if(listener!=null)lock(Sync)sceneListeners.Add(listener); }
+    public static void RaiseScene(double[] camera,float[] sunToward)
+    {
+        Action<double[],float[]>[] copy;lock(Sync)copy=sceneListeners.ToArray();
+        foreach(var listener in copy)
+            try { listener((double[])camera.Clone(),(float[])sunToward.Clone()); }
+            catch(Exception error) { RecordFailure("guest scene: "+error.Message); }
     }
     public static void RaiseFrame()
     {

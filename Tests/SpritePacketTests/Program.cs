@@ -87,7 +87,7 @@ internal static class Program
 
         string fontPath = Path.Combine(content, "Fonts", "white", "FontDataPA.xml");
         Check(File.Exists(fontPath), "installed white font descriptor available");
-        sprites.Process(new MyRenderMessageCreateFont { FontId = 5, FontPath = fontPath, ColorMask = Color.White });
+        sprites.Process(new MyRenderMessageCreateFont { FontId = 5, FontPath = fontPath, ColorMask = Color.White, IsDebugFont = true });
         var font = new MyFont(fontPath); font.TryGetGlyphInfo('A', out var glyph);
         sprites.Process(new MyRenderMessageDrawString { FontIndex = 5, ScreenCoord = new Vector2(20, 30), ScreenScale = 1, ScreenMaxWidth = 200, Text = "A", ColorMask = Color.White, IgnoreBounds = true });
         packet = sprites.MainPackets(1000, 800).Single();
@@ -103,6 +103,25 @@ internal static class Program
             Check(backend.Mips[packet.Texture].Length==11 && backend.Mips[packet.Texture][2].SequenceEqual(dds.Mips[2]), "production GUI cache uploads the actual minification mip chain");
         }
         Check(packet.Flags == 2 && backend.Srgb[packet.Texture], "FontDataPA atlas metadata selects premultiplied input with sRGB sampling");
+        var statsOverlay = new VulkanRenderStats();
+        sprites.BeginFrame();
+        MyRenderProxy.DrawRenderStats = MyRenderProxy.MyStatsState.NoDraw;
+        statsOverlay.Draw(sprites, 1000);
+        Check(sprites.SpriteCount == 0, "disabled Shift-F11 HUD adds no sprite packets");
+        VRageRender.Utils.Stats.Timing.Write("FPS", 60, VRage.Stats.MyStatTypeEnum.CurrentValue, 0, 0);
+        MyRenderProxy.DrawRenderStats = MyRenderProxy.MyStatsState.SimpleTimingStats;
+        statsOverlay.Draw(sprites, 1000);
+        Check(sprites.SpriteCount > 0 && sprites.MainPackets(1000, 800).All(p => p.Clip[0] == 0 && p.Clip[2] == 1000), "stock timing collector renders through debug-font packets in the full viewport");
+        string timing = VulkanRenderStats.ReplaceGpuTiming("FPS: 60\nRender GPU Load: 0% 0.00ms\nSimulation speed: 1\n", new ClientPlugin.Diagnostics.FrameProfiler.View { HaveFrame = true, GpuSamples = 1, GpuMs = 2.5f }, true);
+        Check(timing.Contains("FPS: 60") && timing.Contains("Simulation speed: 1") && !timing.Contains("Render GPU Load") && timing.Contains("2.50ms (timestamps)"), "stock CPU/simulation values survive while DX11 GPU load is replaced by Vulkan timestamps");
+        Check(VulkanRenderStats.ReplaceGpuTiming("", default, true).Contains("unavailable"), "missing Vulkan timestamps do not display a fabricated zero GPU time");
+        MyRenderProxy.DrawRenderStats = MyRenderProxy.MyStatsState.MoveNext;
+        statsOverlay.Draw(sprites, 1000);
+        Check(MyRenderProxy.DrawRenderStats == MyRenderProxy.MyStatsState.Draw, "developer timing cycle enters a Vulkan renderer page");
+        MyRenderProxy.DrawRenderStats = MyRenderProxy.MyStatsState.MoveNext;
+        statsOverlay.Draw(sprites, 1000);
+        Check(MyRenderProxy.DrawRenderStats == MyRenderProxy.MyStatsState.Last, "developer cycle exits for the game's screen owner to close");
+        MyRenderProxy.DrawRenderStats = MyRenderProxy.MyStatsState.NoDraw;
         cache.Clear(); sprites.Clear();
         Check(sprites.FontCount == 1 && backend.Textures.Count == 0, "scene unload clears GPU atlases while preserving device-lifetime font definitions");
         sprites.Process(new MyRenderMessageDrawString { FontIndex = 5, ScreenCoord = Vector2.Zero, ScreenScale = 1, ScreenMaxWidth = 200, Text = "A", ColorMask = Color.White });
@@ -116,12 +135,49 @@ internal static class Program
         byte Premul(byte c) => (byte)(Math.Pow(Math.Pow(c / 255.0,2.2)*(128/255.0),.45454545454545453)*255);
         Check(raw && backend.Srgb[gui] && backend.Textures[gui].SequenceEqual(new byte[] {Premul(255),Premul(80),Premul(20),128}), "raw GUI RGBA uses stock gamma-2.2 premultiply table before sRGB upload");
         Check(gui != world && backend.Textures[world].SequenceEqual(rgba), "GUI preprocessing never changes the world-material texture variant");
+        CheckKeenLogo(content, cache, backend, sprites);
         sprites.BeginFrame();
         for (int i = 0; i < 100; ++i) sprites.Process(new MyRenderMessageDrawString { FontIndex = 99, Text = "missing" });
         Check(warnings.Count == 1, "missing-font warnings deduplicate across frames/messages");
         for (int i = 0; i < 300; ++i) sprites.Process(new MyRenderMessageDrawString { FontIndex = 1000 + i, Text = "missing" });
         Check(warnings.Count == 129 && warnings.Last().Contains("suppressed"), "unique sprite diagnostics remain bounded");
         Console.WriteLine(checks + " checks PASS; production sprite packets/cache, installed DDS/font; no GPU device created.");
+    }
+
+    private static void CheckKeenLogo(string content, VulkanTextureCache cache, NativeBackend backend, VulkanSprites sprites)
+    {
+        string path = Path.Combine(content, "Textures", "GUI", "KeenLogo.dds");
+        byte[] source = File.ReadAllBytes(path);
+        Check(BitConverter.ToUInt32(source, 80) == 0x20 && BitConverter.ToUInt32(source, 88) == 8, "installed main-menu Keen logo is palette-indexed P8 DDS");
+        using var input = new MemoryStream(source);
+        var image = DdsImage.Read(input, true);
+        Check(image.Width == 512 && image.Height == 256 && image.Mips.Length == 10 && image.IsRawRgba, "Keen logo expands to RGBA with all ten mip levels");
+        int offset = 128 + 1024, width = image.Width, height = image.Height;
+        foreach (byte[] mip in image.Mips)
+        {
+            var expected = new byte[width * height * 4];
+            for (int i = 0; i < width * height; ++i)
+                Array.Copy(source, 128 + source[offset + i] * 4, expected, i * 4, 4);
+            Check(mip.SequenceEqual(expected), "Keen logo mip " + width + "x" + height + " matches stock RGBA palette expansion");
+            offset += width * height; width = Math.Max(1, width / 2); height = Math.Max(1, height / 2);
+        }
+        Check(offset == source.Length && input.Position == source.Length, "palette is consumed once before the full mip chain");
+        ulong world = cache.GetTexture(path), gui = cache.GetSpriteTexture(path, out bool premultiplied);
+        Check(world != 0 && gui != 0 && world != gui && premultiplied && backend.Srgb[gui], "Keen logo uses separate world and premultiplied GUI uploads");
+        Check(backend.Textures[world].SequenceEqual(image.Data), "world variant preserves palette RGBA bytes");
+        var expectedGui = (byte[])image.Data.Clone();
+        for (int i = 0; i < expectedGui.Length; i += 4)
+            for (int c = 0; c < 3; ++c)
+                expectedGui[i + c] = (byte)(Math.Pow(Math.Pow(expectedGui[i + c] / 255.0, 2.2) * (expectedGui[i + 3] / 255.0), .45454545454545453) * 255);
+        Check(backend.Textures[gui].SequenceEqual(expectedGui), "palette RGBA follows stock GUI alpha preprocessing");
+        sprites.BeginFrame(); sprites.ViewportScale = 1;
+        sprites.Process(new MyRenderMessageDrawSprite { Texture = path, DestinationRectangle = new RectangleF(700, 20, 198, 99), Color = Color.White });
+        var packet = sprites.MainPackets(1000, 800).Single();
+        Check(packet.Texture == gui && packet.Flags == 2 && Near(packet.Destination, 700, 20, 198, 99), "main-menu logo draw reaches the sprite batch with its GUI texture");
+        using var truncated = new MemoryStream(source.Take(128 + 1023).ToArray());
+        bool rejected = false;
+        try { DdsImage.Read(truncated); } catch (EndOfStreamException) { rejected = true; }
+        Check(rejected, "truncated palette is rejected instead of decoded as pixels");
     }
 }
 

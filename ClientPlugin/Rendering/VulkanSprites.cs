@@ -27,6 +27,7 @@ internal sealed class VulkanSprites
     private readonly HashSet<string> warnings = new(StringComparer.Ordinal);
     private bool warningLimitReported;
     private readonly Batch main = new();
+    private int? debugFont;
     public int FontCount => fonts.Count;
     public int SpriteCount => main.Sprites.Count;
     public float ViewportScale = 1;
@@ -86,6 +87,20 @@ internal sealed class VulkanSprites
     // resend CreateFont on UnloadData; atlas textures reload through the cache.
     public void Clear() { BeginFrame(); targets.Clear(); }
 
+    // Renderer-owned overlays use the same font atlas as Keen's debug text,
+    // but go directly into the main Vulkan batch instead of DEBUG_TARGET.
+    public void DrawDebugText(string text, Vector2 position, float scale = .6f, bool rightAligned = false)
+    {
+        if (!debugFont.HasValue || !fonts.TryGetValue(debugFont.Value, out var entry)) return;
+        if (rightAligned) position.X -= entry.Font.MeasureString(text, scale).X;
+        AddText(main, new MyRenderMessageDrawString
+        {
+            FontIndex = debugFont.Value, Text = text, ScreenCoord = position,
+            ScreenScale = scale, ScreenMaxWidth = float.PositiveInfinity,
+            ColorMask = Color.Yellow, IgnoreBounds = true
+        }, 0, MyRenderTextAlignmentEnum.Align_Left);
+    }
+
     public bool Process(MyRenderMessageBase message)
     {
         if (message is MyRenderMessageCreateFont font)
@@ -97,6 +112,7 @@ internal sealed class VulkanSprites
                 entry.Premultiplied |= rawRgba || bitmap.strFilename.Contains("FontDataPA");
             }
             fonts[font.FontId] = entry;
+            if (font.IsDebugFont) debugFont = font.FontId;
             return true;
         }
         if (message is MyRenderMessageSpriteMainViewportScale viewport) { ViewportScale = viewport.ScaleFactor; return true; }

@@ -25,6 +25,8 @@ public sealed partial class NativeBackend : IDisposable
     private bool collectingPackets;
     public Vector3D CameraPosition { get; set; }
     public bool IsCreated => context != IntPtr.Zero;
+    static long nextGuestEpoch;
+    internal long GuestEpoch {get;private set;}
     public static string LibraryPath { get; private set; }
     public static string AssetsRoot { get; private set; }
 
@@ -63,6 +65,7 @@ public sealed partial class NativeBackend : IDisposable
             GetInstanceProcAddr = host?.GetInstanceProcAddr ?? IntPtr.Zero
         };
         Check(api.Create(ref info, out context), context);ResetWorldRecipes();PresentationWidth=width;PresentationHeight=height;
+        GuestEpoch=System.Threading.Interlocked.Increment(ref nextGuestEpoch);
         textureValidationCacheApplied=false;TextureValidationCacheEnabled=textureValidationCacheEnabled;
     }
 

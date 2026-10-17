@@ -1,5 +1,119 @@
 # Local validation evidence
 
+## Visible Rich HUD terminal with DLAA — 2026-10-16
+
+The earlier triangle, clipping and ordering corrections did not fix the actual
+DLAA presentation path. A private copy of the Pertam Orbiter save, Anomaly,
+Rich HUD Master and SE-DLSS reproduced the user symptom: `OpenMenu` registered
+successfully, the renderer received 164 PostPP triangles and queued 164 packets,
+and NGX reported `NGX evaluating`, but the screenshot contained no terminal.
+With Anomaly alone, the same terminal was visible.
+
+NGX evaluates AfterTonemap before the PostPP stage, and final composition selects
+its output instead of the later postprocess image. PostPP now draws after scene
+composition and temporal processing, before sprites, at output resolution.
+Composed depth is retained and copied for soft-particle sampling; output-format
+pipelines preserve premultiplied blending and depth testing. Generated presents
+replay the same overlay outside the interpolated scene image.
+
+The same saved-world/menu scenario now visibly shows the terminal while NGX is
+evaluating. The corrected run enabled Khronos core/synchronization validation
+(`enabled=True; available=1`) and reported no Vulkan validation errors.
+Evidence: `TestResults/HudRoute/before-dlaa.png`, `after-dlaa.png`, and the paired
+`before-packets.json` / `after-packets.json`. The trigger uses Rich HUD's public
+`OpenMenu` API; this is terminal rendering evidence, not a keyboard F2 test.
+
+PostprocessGpuTests (179 checks), TransparencyGpuTests (149 checks) and the
+non-NGX HudBillboardGpuTests pass with validation enabled and zero errors.
+Release native CTest: 15 passed, one unrelated GPU opaque reference skipped.
+Optional headless NGX readback assertions preserve 338 HUD pixels in both DLAA
+and Quality mode, with zero HUD history pixels after closing, but that process
+fails during native NGX teardown. The same shutdown access violation is present
+in the unchanged before-run and the corrected in-world run. Those NGX runs are
+not clean-exit test passes; fixing driver teardown is separate from this render
+route correction.
+
+## Rich HUD near-plane billboards — 2026-10-16
+
+Rich HUD Master places its PostPP triangles on `IMyCamera.NearPlaneDistance`
+(0.05 m). Keen's billboard rasterizer leaves depth clipping disabled; Vulkan
+previously clipped these primitives. With the stock complementary infinite
+projection, the focused GPU reproduction produced 338 red pixels at -0.05 m
+but zero at -0.049999 m. Enabling queried core `depthClamp` on billboard
+pipelines restores 338 pixels in the latter case. Depth tests and read-only
+depth attachments retain their existing settings. Other pipelines retain
+their clipping state. Required-feature bit 14 reports depth-clamp support.
+
+Keen also deliberately preserves LDR/PostPP submission order. Vulkan now keeps
+that order, preventing distance sorting of coplanar background/text/cursor
+layers. The earlier triangle snapshot/atlas UV fix remains in place.
+
+`HudBillboardGpuTests` passes all three plane cases plus an installed-texture
+transient `MyTriangleBillboard` through production scene conversion (338 pixels)
+on NVIDIA GeForce RTX 5070 Ti, with Khronos core/synchronization validation
+enabled and zero errors. Result: `TestResults/HudBillboardGpuTests/result.json`.
+`BillboardPacketTests` passes snapshot, atlas UV, degenerate triangle, ordinary
+quad and 32 transient HUD layer-order checks. Existing transparency (149 checks)
+and postprocessing (179 checks) GPU suites pass with zero validation errors.
+Release native CTest: 15 passed, one unrelated GPU opaque reference skipped;
+mock device preflight now checks missing/enabled depth clamp. Both managed
+targets build and deploy with matching native assets to Pulsar Local.
+
+The complete F2 menu interaction in a running world remains unverified.
+
+## DLSS internal-resolution alignment — 2026-10-15
+
+Managed world setup previously used the DRS-only dimensions while native EndFrame
+later replaced the fraction with NGX/FSR's mode scale. Balanced therefore rendered
+1114x626 images using 1920x1080 frame/postprocess constants. The new additive
+`sevk_resolve_render_resolution` export applies the same native mode precedence and
+rounding before managed frame/light-tile/SSAO/HBAO setup. Stock `Screen.drs` is unity
+for Vulkan's exact-sized targets, avoiding a second scale during SSAO reconstruction.
+
+Release native CTest: 15 passed, one unrelated GPU opaque reference test skipped.
+`WorldPassGpuTests`: 496 checks passed with the bundled Khronos validation layer,
+including NGX mode changes, immediate disable, matching frame dimensions/light tiles,
+and unity SSAO coordinate scaling. These NGX planning checks do not evaluate DLSS.
+`PostprocessGpuTests` also passes, including fractional-resolution output checks,
+with zero Vulkan core/synchronization validation errors.
+Managed net48/net10 Release builds pass with zero warnings/errors; both builds and
+the native library were deployed to Pulsar Local. The native SHA-256 is
+`336A0FB6BEF00D0AB694C98467BF09478CD252A4BBB98DBF96072944A0CA3606`.
+Live game DLSS-versus-DLAA visual verification remains pending after restart.
+Build/test logs are in `artifacts/dlss-resolution-*.log`.
+
+## Celestial scene-depth regression — 2026-10-15
+
+The Anomaly celestial guest draw used a writable pipeline with a read-only depth
+attachment, a sampled-depth descriptor declaring a different layout, and a
+discarding depth store operation. Its loaded HDR attachment also lacked the
+required read dependency. These contracts are corrected in `Native/src/guest.inc`.
+Vulkan 1.4's `STORE_OP_NONE` preserves the unchanged depth attachment without a
+store write; subsequent fragment and compute consumers retain their input.
+
+`Tests/EnvironmentGpuTests/CelestialDepthRegression.cs` submits an actual celestial
+draw over opaque geometry, then reads depth through a later guest pass and compares
+all depth bits against a frame without that draw. The original native library
+fails core/synchronization validation; the corrected library passes all 50
+environment checks with zero errors. `Tests/GuestDraw` also passes both hardware
+pixel checks with validation enabled. Logs are in `TestResults/CelestialDepth-*`.
+These establish the repaired GPU contract; they do not establish that the user's
+exact camera-dependent Pertam corruption has been reproduced or eliminated.
+
+The subsequent private Pertam run with Anomaly, DLAA and Final Frontier exposed
+NGX output transfer-clear hazards and an access violation at renderer shutdown.
+The NGX output barriers now cover compute and transfer writes. Explicitly owned
+parameter maps are released before NGX shutdown, following the lifetime contract
+in NVIDIA's `nvsdk_ngx_vk.h`. These use the same saved-camera integration route
+for their final verification; the focused celestial test remains separate.
+
+The final integrated replay reports validation enabled, zero errors and 2,813
+presented frames. The nearby reverse view renders normally. An access violation
+at `NativeBackend.Dispose` remains during shutdown despite correcting parameter
+lifetime ordering; the same failure occurred before these changes. This is not
+a clean full-session acceptance result. The exact screenshot pose remains
+unverified. The private fatal process was terminated after its evidence was saved.
+
 Recorded through 2026-10-05 against installed Space Engineers **1.210.014**, Windows x64, NVIDIA GeForce RTX 5070 Ti. The loader reports **1.4.341** and the selected device **1.4.351**. These are implementation checks; the complete Creative acceptance gate is tracked separately in `Acceptance.md`.
 
 ## Build, packaging and bootstrap
@@ -367,3 +481,50 @@ decoder integration proof. `Native/build-media/final-decoded-gpu.log` records
 the result; CMake registers `media_decoded_gpu` when the runtime and generated
 fixture paths are provided. Its Linux executable cross-builds, but execution
 still requires a Linux GPU host.
+
+## Main-menu Keen logo palette decoding, 2026-10-16
+
+The main menu's `MyGuiConstants.TEXTURE_KEEN_LOGO` points to
+`Textures/GUI/KeenLogo.dds`, a 512x256 legacy P8 image with ten mip levels.
+The reader previously interpreted its palette and indices as uncompressed
+channel data, producing opaque black. The stock DDSHelper consumes the
+1024-byte RGBA palette once, expands each index, then the GUI texture path
+premultiplies the expanded pixels. The Vulkan reader now follows that order.
+The indexed-format contract is also documented in
+[Microsoft DirectXTex](https://github.com/microsoft/DirectXTex/blob/main/DirectXTex/DirectXTexDDS.cpp).
+
+`SpritePacketTests` reproduced the failure before the fix and now passes
+**51 checks**, including byte-for-byte expansion of every installed logo mip,
+GUI/world cache separation, stock alpha preprocessing, the main sprite packet
+and truncated-palette rejection. `SpriteGpuTests` renders the installed asset
+through the production cache and sprite path: all **131,072 pixels** agree with
+an independent palette/preprocessing/blend reference within **one byte value**.
+The fixture includes 81,260 transparent, 17,642 opaque and 32,170 partial-alpha
+pixels. Existing font/base/mip-two and DXT4 checks also pass, with zero
+core/synchronization validation errors. Evidence: `TestResults/KeenLogoGpu`.
+Set `VK_LAYER_PATH` to `Native/build/validation/Bin` for the GPU test on this host.
+Release net48 and net10 builds pass.
+
+The isolated Interim startup run
+`TestResults/WindowsStartup/05170408cb3f4e35866f166f60007d70` captures the
+actual main menu with the logo visible at the upper right (`Reports/menu-native.png`).
+The older Legacy menu capture in run `e054b9369d0e4e6ab3a9923c4c122e59`
+shows the opaque black rectangle at that location; these use the same menu draw
+path but different launcher runtimes and background-video frames. The fixed
+Interim run completed its Display draft/cancel sequence, exited 0 and reported
+zero validation errors on the RTX 5070 Ti. Linux live verification remains separate.
+
+## Hardware ray sun visibility, 2026-10-15
+
+The repaired pass supplies opaque sun occlusion to stock directional lighting.
+`Tests/RayShadowGpuTests` passes 116 checks on the RTX 5070 Ti, including four
+rotations, rigid/generic streams, actual receiver shadows, exact unblocked pixels,
+over-budget native fallback, disabled shadows, both pending frame slots and clean
+cleanup. Core/synchronization validation reports zero errors. The existing world
+GPU suite passes 471 checks. An isolated Pertam first-person full turn and reverse
+return produced 49 clean captures with SE-RT and Hardware Acceleration enabled,
+678 BLAS builds, 330 ray dispatches, 344 budget refusals and zero validation errors.
+Evidence is under TestResults/RayShadowGpuTests and the ScenePerformance fixture;
+see Docs/HardwareRayShadows.md for scope. Native fallback and basic shadow behavior
+are accepted here; this does not accept full hardware GI, reflections or software
+RT reconstruction parity.

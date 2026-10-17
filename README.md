@@ -34,6 +34,8 @@ Windows cross-packaging uses `./scripts/build-native.ps1 -CrossLinux -Configurat
 
 ## Verification
 
+Shift-F11 uses the stock timing screen and collectors, drawn through Vulkan's debug font/sprite batch. FPS, simulation/CPU and network statistics retain Keen's values. The DX11 GPU-load row is replaced by the latest completed Vulkan GPU frame timestamp; it reports unavailable until a world sample exists. Developer-mode cycling adds one Vulkan renderer page with CPU phase timings and draw counts. The separate hierarchical render profiler still uses `MyNullRenderProfiler`. Packet coverage verifies the overlay routing; live Shift-F11 toggle, layout and developer-mode cycling acceptance remain pending.
+
 Run `dotnet run --project Tests/BootstrapTests -c Release -- <game Bin64>/SpaceEngineers.exe`, `dotnet run --project Tests/RenderProtocolTests -c Release`, `dotnet run --project Tests/InteropTests -c Release -- <game Bin64 path>`, and the scene/content smoke project. Native CTest covers GPU pixels, resource lifetime, LCD/light/shadow passes and Windows HWND capture. Rebuild the registry against the current prepared game source with `./scripts/update-coverage.ps1 -GameCodeRoot <decompiled root>`.
 
 Native media implements stock intro/menu playback, audio/fades and sprite composition through bundled cross-platform libmpv/FFmpeg. [Runtime build, ownership and acceptance](Docs/NativeMedia.md) distinguish implementation and package verification from live platform/visual evidence.

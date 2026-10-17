@@ -368,3 +368,28 @@ captures paused legacy/group/legacy visible output; Summarize-GroupPixels.py com
 RGB with repeat/return controls and permits physical packet regrouping. Both group
 and LOD policy remain experimental/off by default. Corrected timings are preserved
 by Summarize-GroupTimings.py separately from earlier LOD proxy-bound prototypes.
+
+Camera rotation diagnostics use SE_VULKAN_CAMERA_SWEEP=1. This mode bypasses
+the benchmark Draw/Present feature overrides, preserving the renderer's defaults.
+SE_VULKAN_PLAYER_TURN=1 routes yaw input through gameplay HandleInput and the
+saved character's MoveAndRotate, leaving the first-person camera and actor intact.
+It captures 49 settled views through a full turn and reverse return, with actual
+camera metadata. The usual private-data marker guard remains required. These
+captures require visual review and do not constitute performance samples.
+
+## Rich HUD terminal capture
+
+`-RichHudAudit -AnomalyProject '<Anomaly repository>'` builds and loads Anomaly
+in the private profile, opens the terminal with its public `OpenMenu` API, records
+transient billboard/material/packet data, captures `Reports/hud-terminal.png`,
+and exits without saving. Add `-HudDlssProject '<SE-DLSS repository>'` to load
+DLSS with the source profile's copied `Storage/SpaceEngineersDLSS.cfg`; this lane
+requires observed `NGX evaluating` status. The local NGX feature library is copied
+beside the private plugin, matching DLSS's documented local deployment. Add
+`-Validation` for the private Khronos core/synchronization layer.
+
+`Reports/hud-open.txt` is a command/registration acknowledgment, not visual proof.
+Inspect the screenshot and `hud-packets.json`. A populated packet queue can still
+be invisible if the final scene source bypasses it. Current NGX-enabled runs also
+reproduce a pre-existing shutdown access violation; distinguish a valid captured
+rendering observation from a clean-exit test pass.
