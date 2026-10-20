@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net48</TargetFramework><LangVersion>14</LangVersion><AssemblyName>CreativeFixtureHarness.Dx11</AssemblyName></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Shared/StockOldPartIdentityOracle.cs" Link="StockOldPartIdentityOracle.cs" />
+    <Compile Include="../Shared/StockOldLayoutIdentityOracle.cs" Link="StockOldLayoutIdentityOracle.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Content/StockOldMaterialIdentities.cs" Link="StockOldMaterialIdentities.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Content/StockOldMaterialDescriptions.cs" Link="StockOldMaterialDescriptions.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Content/StockOldPartIdentities.cs" Link="StockOldPartIdentities.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Content/StockOldVertexLayouts.cs" Link="StockOldVertexLayouts.cs" />
+    <Reference Include="VRage"><HintPath>$(Bin64Dir)VRage.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Library"><HintPath>$(Bin64Dir)VRage.Library.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Math"><HintPath>$(Bin64Dir)VRage.Math.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Render"><HintPath>$(Bin64Dir)VRage.Render.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="VRage.Render11"><HintPath>$(Bin64Dir)VRage.Render11.dll</HintPath><Private>false</Private></Reference>
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" />
+    <Reference Include="SharpDX"><HintPath>$(Bin64Dir)SharpDX.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SharpDX.Direct3D11"><HintPath>$(Bin64Dir)SharpDX.Direct3D11.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SharpDX.DXGI"><HintPath>$(Bin64Dir)SharpDX.DXGI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SharpDX.D3DCompiler"><HintPath>$(Bin64Dir)SharpDX.D3DCompiler.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

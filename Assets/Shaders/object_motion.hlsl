@@ -23,54 +23,7 @@ cbuffer PreviousProjection : register(b1)
     float4x4 PrevViewProj;
 };
 
-float4x4 FromRows(float4 a, float4 b, float4 c)
-{
-    return transpose(float4x4(a, b, c, float4(0, 0, 0, 1)));
-}
-
-static const float3 kPackedDir[6] =
-{
-    float3(0, 0, -1), float3(0, 0, 1), float3(-1, 0, 0), float3(1, 0, 0), float3(0, 1, 0), float3(0, -1, 0)
-};
-
-float4x4 CubeMatrix(float4 packed)
-{
-    float cell = floor(packed.w / 6);
-    float up = packed.w - cell * 6;
-    float3 forward = kPackedDir[(uint)clamp(cell, 0, 5)];
-    float3 upDir = kPackedDir[(uint)clamp(up, 0, 5)];
-    float3 right = cross(upDir, -forward);
-    return float4x4(float4(right, 0), float4(upDir, 0), float4(-forward, 0), float4(packed.xyz, 1));
-}
-
-float3 UnpackBone(float4 position, float range)
-{
-    return (position.xyz + (0.5 / 255.0) - 0.5) * range * 2;
-}
-
-float4x4 DeformedMatrix(float4 p0, float4 p1, float4 p2, float4 p3, float4 p4, float4 p5, float4 p6, float4 p7, float4 cube, uint4 indices, float4 weights)
-{
-    float4x4 m = CubeMatrix(cube);
-    if (p3.w)
-    {
-        float4 bones[9] =
-        {
-            p0, p1, p2, p3, p4, p5, p6, p7, float4(p0.w, p1.w, p2.w, 0)
-        };
-        float4x4 blended = float4x4(bones[indices.x], bones[indices.y], bones[indices.z], bones[indices.w]);
-        float3 extra = UnpackBone(mul(weights, blended), p4.w / 10.0 * 255.0);
-        m._41_42_43 += extra;
-    }
-    return m;
-}
-
-float3 WorldPosition(float4 position, float4x4 instance, float4x4 objectMatrix, bool instanced)
-{
-    float4 local = float4(position.xyz * position.w, 1);
-    if (instanced)
-        local = mul(local, instance);
-    return mul(local, objectMatrix).xyz;
-}
+#include "object_transforms.hlsli"
 
 float2 PixelDelta(float3 current, float3 previous)
 {
@@ -175,19 +128,35 @@ MotionOut __vertex_shader(MotionIn input)
     float4x4 previous = instance;
     bool instanced = false;
 #endif
-    float3 current = WorldPosition(input.position, instance, objectM, instanced);
+    float3 current = WorldPosition(input.position, instance, objectM, instanced, motion.screen.z);
 #ifdef ATTACH_VERTEX
     AttachOut output;
     output.position = mul(float4(current, 1), ViewProj);
     output.row0 = motion.rows[0];
     output.row1 = motion.rows[1];
     output.row2 = motion.rows[2];
+#ifdef MOTION_GENERIC
+    // Native simple-instancing streams already carry the actor transform.
+    // A negative width selects those rows for the attachment payload only.
+    if (motion.screen.x < 0)
+    {
+        output.row0 = input.curr0;
+        output.row1 = input.curr1;
+        output.row2 = input.curr2;
+    }
+#endif
     return output;
 #else
-    float3 prior = WorldPosition(input.position, previous, prevObject, instanced);
+    float3 prior = WorldPosition(input.position, previous, prevObject, instanced, motion.screen.w);
     MotionOut output;
     output.position = mul(float4(current, 1), ViewProj);
     output.motion = PixelDelta(current, prior);
+#ifdef MOTION_GENERIC
+    // Native pass history marks a newly visible/recreated actor with invalid
+    // prior rows. Its current geometry remains valid, but has no object motion.
+    if (!all(isfinite(input.prev0)) || !all(isfinite(input.prev1)) || !all(isfinite(input.prev2)))
+        output.motion = 0;
+#endif
     return output;
 #endif
 }

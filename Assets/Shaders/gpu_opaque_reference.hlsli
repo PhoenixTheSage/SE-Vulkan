@@ -17,7 +17,7 @@ struct Selection {int current,other;float alpha,other_alpha;};
 struct Reference {uint actor,view,material,reserved;float rows[12];float alpha;uint3 pad;};
 struct DrawRecord {uint actor,part,reference,old;};
 struct Indirect {uint index_count,instance_count,first_index;int vertex_offset;uint first_instance;};
-struct Control {Frame frame;uint actor_count,family_count,part_count,view_count,reference_capacity,draw_capacity,stage,batch;};
+struct Control {Frame frame;uint actor_count,family_count,part_count,view_count,reference_capacity,draw_capacity,stage,batch,distance_fade,padding;};
 [[vk::push_constant]] ConstantBuffer<Control> control;
 [[vk::binding(0,0)]] StructuredBuffer<Actor> actors;
 [[vk::binding(1,0)]] StructuredBuffer<Family> families;

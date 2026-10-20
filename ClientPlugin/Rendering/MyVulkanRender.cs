@@ -26,7 +26,7 @@ namespace ClientPlugin.Rendering;
 /// <summary>Owns the Vulkan render thread while preserving VRage's pooled frame protocol.</summary>
 public sealed class MyVulkanRender : IMyRender
 {
-    private sealed class Generated { public int Width, Height; public byte[] Pixels; public ulong Handle; }
+    private sealed class Generated { public int Width, Height; public byte[] Pixels; public ulong Handle; public bool MipMaps; }
     private sealed class Capture { public string Path; public bool Notify, IgnoreSprites; public Vector2 Scale; }
     private readonly MyNullRenderProfiler profiler = new();
     private readonly VulkanRenderStats renderStats = new();
@@ -64,6 +64,7 @@ public sealed class MyVulkanRender : IMyRender
     private readonly VulkanShadows shadows = new();
     private Vector3D camera;
     private MyEnvironmentLightData light = MyEnvironmentLightData.Default;
+    private MyTextureDebugMultipliers textureMultipliers=MyTextureDebugMultipliers.Defaults;
     private bool drawScene, frameOpen, disposed;
     private bool startupEvidence;
     private readonly RenderSessionLog sessionLog;
@@ -160,7 +161,7 @@ public sealed class MyVulkanRender : IMyRender
             else backend.ResizeOutput((uint)output.Width, (uint)output.Height, (uint)settings.BackBufferWidth, (uint)settings.BackBufferHeight, settings.VSync);
             ShaderSuiteStatus.Initialize(MyFileSystem.ContentPath, backend);
             if(!backend.WorldReady)throw new InvalidOperationException("Stock world pipeline initialization failed: "+(ShaderSuiteStatus.LastFailure??"the matching shader catalog was unavailable"));
-            scene = new VulkanScene(backend);particles=new VulkanParticles(backend,scene,SharedData);decals=new VulkanDecals(backend,scene); voxels=new VulkanVoxels(backend,scene.TextureCache); environment=new VulkanEnvironment(backend,scene); sprites = new VulkanSprites(scene.TextureCache);
+            scene = new VulkanScene(backend);scene.InitializeStockOldIdentities(renderConfiguration.UseGeometryArrayTextures);particles=new VulkanParticles(backend,scene,SharedData);decals=new VulkanDecals(backend,scene);scene.HasEntityDecals=decals.HasEntityDecals; voxels=new VulkanVoxels(backend,scene.TextureCache); environment=new VulkanEnvironment(backend,scene); sprites = new VulkanSprites(scene.TextureCache);
             scene.CascadeMaskFor=shadows.CascadeMask;voxels.CascadeMaskFor=shadows.CascadeMask;
             scene.ShadowSystem=shadows;
             scene.ContentFailed += (path, error) => VulkanDiagnostics.Failure("Content " + path + ": " + error.Message);
@@ -253,7 +254,7 @@ public sealed class MyVulkanRender : IMyRender
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Particles)){
             if (drawScene)
             {
-                scene.ExternalDepthRevision=voxels.MeshUpdates+voxels.LodChanges;scene.HighlightSepia=postprocess.Settings.Data.SepiaStrength;scene.ProbeDrawDistance=probes.Settings.DrawDistance;scene.RenderSettings=renderConfiguration;scene.ShadowDrawDistance=shadows.DrawDistance;scene.SetCamera(camera, CurrentDrawTime, animationDelta);particles.Draw(camera,animationDelta,renderConfiguration);decals.Draw(camera,CurrentDrawTime.Seconds,gameplayFrame,(int)renderConfiguration.User.ParticleQuality);
+                scene.ExternalDepthRevision=voxels.MeshUpdates+voxels.LodChanges;scene.HighlightSepia=postprocess.Settings.Data.SepiaStrength;scene.ProbeDrawDistance=probes.Settings.DrawDistance;scene.RenderSettings=renderConfiguration;scene.ShadowSettings=shadows.Settings.Data;scene.ShadowDrawDistance=shadows.DrawDistance;scene.SetCamera(camera, CurrentDrawTime, animationDelta);particles.Draw(camera,animationDelta,renderConfiguration);decals.Draw(camera,CurrentDrawTime.Seconds,gameplayFrame,(int)renderConfiguration.User.ParticleQuality);
             }
             FrameProfiler.Lap(FrameProfiler.Section.Particles);
             }
@@ -288,8 +289,8 @@ public sealed class MyVulkanRender : IMyRender
                 var frameLight=light;
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightingSetup)){
                 environment.GameplayFrame=gameplayFrame; environment.Draw(camera,cameraView*projection,light.SunLightDirection);
-                postprocess.Configure(backend,worldResolution.X,worldResolution.Y,renderConfiguration.User.AntialiasingMode==MyAntialiasingMode.FXAA,string.IsNullOrEmpty(postprocess.Settings.DirtTexture)?0:scene.TextureCache.GetTexture(postprocess.Settings.DirtTexture,false),cameraView,projection);
-                probes.Configure(backend,camera,light,postprocess.Settings,scene.BackgroundOrientation,scene.TextureCache.GetTexture("Textures/Miscellaneous/ambient_brdf.dds",false),animationDelta,(float)CurrentDrawTime.Seconds,()=>scene.GatherProbeAmbient(light.AmbientLightsGatherRadius,probes.Settings));
+                postprocess.Configure(backend,worldResolution.X,worldResolution.Y,renderConfiguration.User.AntialiasingMode==MyAntialiasingMode.FXAA,string.IsNullOrEmpty(postprocess.Settings.DirtTexture)?0:scene.TextureCache.GetTexture(postprocess.Settings.DirtTexture,false),cameraView,projection,renderConfiguration.User.AmbientOcclusionEnabled);
+                probes.Configure(backend,camera,light,postprocess.Settings,scene.BackgroundOrientation,scene.TextureCache.GetTexture("Textures/Miscellaneous/ambient_brdf.dds",false),animationDelta,(float)CurrentDrawTime.Seconds,()=>scene.GatherProbeAmbient(light.AmbientLightsGatherRadius,probes.Settings),renderSettings:renderConfiguration);
                 frameLight.AmbientForwardPass+=probes.LastAmbient;
                 FrameProfiler.Lap(FrameProfiler.Section.Setup);
                 }
@@ -298,13 +299,14 @@ public sealed class MyVulkanRender : IMyRender
                 if(backend.GpuSceneEnabled){using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads();uploadsOpen=false;}
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene))scene.PublishNativePassScene();if(scene.NativePassSceneEnabled||backend.GpuSceneEnabled)scene.AddVisible(SharedData.VisibleObjects.Write);
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.QueueWorld)){
-                backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,cameraView,projection,worldResolution.X,worldResolution.Y,frameLight,scene.BloomEmissiveness,scene.BackgroundOrientation,environment.Fog,(float)CurrentDrawTime.Seconds,animationDelta,renderConfiguration,haveParticleCamera?(Vector3)(camera-previousParticleCamera):Vector3.Zero,postprocess.Settings,backend.ProbesReady,resolution.Fraction),
+                backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,cameraView,projection,worldResolution.X,worldResolution.Y,frameLight,scene.BloomEmissiveness,scene.BackgroundOrientation,environment.Fog,(float)CurrentDrawTime.Seconds,animationDelta,renderConfiguration,haveParticleCamera?(Vector3)(camera-previousParticleCamera):Vector3.Zero,postprocess.Settings,backend.ProbesAvailableForFrame,resolution.Fraction,textureMultipliers),
                     NativeBackend.MatrixValues(reversedProjection),NativeBackend.MatrixValues(MatrixD.Invert(reversedProjection)));previousParticleCamera=camera;haveParticleCamera=true;
                 }
                 FrameProfiler.Lap(FrameProfiler.Section.Queue);
             }
             }
             finally { if(uploadsOpen)using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads(); }
+            backend.SetHdrQuality(renderConfiguration.User.HqTarget);
             FrameProfiler.Lap(FrameProfiler.Section.Queue);
             MatrixD reversedFrame=viewProjection;reversedFrame.M13=reversedFrame.M14-reversedFrame.M13;reversedFrame.M23=reversedFrame.M24-reversedFrame.M23;reversedFrame.M33=reversedFrame.M34-reversedFrame.M33;reversedFrame.M43=reversedFrame.M44-reversedFrame.M43;
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.FrameSlot))frameOpen = backend.BeginFrame(reversedFrame, light.SunLightDirection, light.SunColorRaw * light.SunDiffuseFactor,
@@ -444,20 +446,22 @@ public sealed class MyVulkanRender : IMyRender
             case MyRenderMessageEnum.SetCameraViewMatrix:
                 var cam = (MyRenderMessageSetCameraViewMatrix)message; haveCamera=true; camera = cam.CameraPosition;cameraWorld=MatrixD.Invert(cam.ViewMatrix);voxelFrustum=new BoundingFrustumD(cam.ViewMatrix*(MatrixD)cam.ProjectionMatrix);voxelFar=cam.FarPlane;GuestBridge.SetViewClip(voxelFar);cameraSmooth=cam.Smooth;voxelDrawFrustum=new BoundingFrustumD(cam.ViewMatrix*(MatrixD)cam.ProjectionFarMatrix);
                 cameraView = cam.ViewMatrix; cameraView.Translation = Vector3D.Zero; cameraProjection=cam.FOV>0?ReverseDepth(Matrix.CreatePerspectiveFovRhInfiniteComplementary(cam.FOV,BackBufferResolution.X/(float)BackBufferResolution.Y,cam.NearPlane)):cam.ProjectionMatrix;cameraProjection.M31=cam.ProjectionOffsetX;cameraProjection.M32=cam.ProjectionOffsetY; viewProjection = cameraView * cameraProjection; break;
-            case MyRenderMessageEnum.UpdateShadowSettings:disposition=MessageDisposition.Pending;Pending(message,"Count/distance/spread/bias/blur/frozen settings applied; small-object pruning and usage-based cascade cadence remain pending.");break;
+            case MyRenderMessageEnum.UpdateShadowSettings:
+                if(!shadows.StockFittingEnabled || !shadows.StockSchedulingEnabled){disposition=MessageDisposition.Pending;Pending(message,"Simplified shadow fallback selected; enable stock fitting and scheduling for projected-size pruning and usage-based cascade cadence.");}
+                break;
             case MyRenderMessageEnum.UpdatePlanetSettings:break;
             case MyRenderMessageEnum.UpdateNewLoddingSettings:disposition=MessageDisposition.Pending;Pending(message,"Atmosphere/cloud fade duration applied; remaining actor LOD settings pending.");break;
             case MyRenderMessageEnum.UpdateRenderEnvironment:
-                light = ((MyRenderMessageUpdateRenderEnvironment)message).Data.EnvironmentLight; break;
+                light = ((MyRenderMessageUpdateRenderEnvironment)message).Data.EnvironmentLight; textureMultipliers=((MyRenderMessageUpdateRenderEnvironment)message).Data.TextureMultipliers; break;
             case MyRenderMessageEnum.VideoAdaptersRequest:
                 var response = MyRenderProxy.MessagePool.Get<MyRenderMessageVideoAdaptersResponse>(MyRenderMessageEnum.VideoAdaptersResponse);
                 response.Adapters = adapters; EnqueueOutputMessage(response); break;
-            case MyRenderMessageEnum.SwitchRenderSettings:renderConfiguration=((MyRenderMessageSwitchRenderSettings)message).Settings;sessionLog?.RenderSettings(renderConfiguration);backend?.SetTextureAnisotropy(AnisotropySamples(renderConfiguration.User.AnisotropicFiltering));disposition=MessageDisposition.Pending;Pending(message,"Anisotropic filtering, grass distance/density, scaling and wind applied; remaining graphics/debug settings pending.");break;
+            case MyRenderMessageEnum.SwitchRenderSettings:renderConfiguration=((MyRenderMessageSwitchRenderSettings)message).Settings;if(scene!=null)scene.OldResources.GeometryArrays=renderConfiguration.UseGeometryArrayTextures;sessionLog?.RenderSettings(renderConfiguration);backend?.SetTextureAnisotropy(AnisotropySamples(renderConfiguration.User.AnisotropicFiltering));disposition=MessageDisposition.Pending;Pending(message,"Anisotropic filtering, grass distance/density, scaling and wind applied; remaining graphics/debug settings pending.");break;
             case MyRenderMessageEnum.SwitchDeviceSettings: ApplySettings(((MyRenderMessageSwitchDeviceSettings)message).Settings); break;
             case MyRenderMessageEnum.CreateGeneratedTexture:
                 var create = (MyRenderMessageCreateGeneratedTexture)message;
                 var pixels = ConvertPixels(create.Width, create.Height, create.Data, create.Type == MyGeneratedTextureType.Alphamask);
-                var target = new Generated { Width = create.Width, Height = create.Height, Pixels = pixels };
+                var target = new Generated { Width = create.Width, Height = create.Height, Pixels = pixels, MipMaps=create.GenerateMipMaps };
                 target.Handle = scene.TextureCache.PutGenerated(create.TextureName, target.Width, target.Height, pixels); generated[create.TextureName] = target; break;
             case MyRenderMessageEnum.ResetGeneratedTexture:
                 var reset = (MyRenderMessageResetGeneratedTexture)message;
@@ -467,7 +471,7 @@ public sealed class MyVulkanRender : IMyRender
             case MyRenderMessageEnum.RenderOffscreenTexture:
                 var offscreen = (MyRenderMessageRenderOffscreenTexture)message;
                 if (generated.TryGetValue(offscreen.OffscreenTexture, out var surface))
-                { backend.RenderTexture(surface.Handle, surface.Width, surface.Height, offscreen.BackgroundColor ?? Color.Transparent, sprites.ConsumeTarget(offscreen.OffscreenTexture), offscreen.AspectRatio); lcdPasses++; }
+                { backend.RenderTexture(surface.Handle, surface.Width, surface.Height, offscreen.BackgroundColor ?? Color.Transparent, sprites.ConsumeTarget(offscreen.OffscreenTexture), offscreen.AspectRatio,surface.MipMaps); lcdPasses++; }
                 else Pending(message, "Generated LCD target was not created: " + offscreen.OffscreenTexture); break;
             case MyRenderMessageEnum.TakeScreenshot:
                 var capture = (MyRenderMessageTakeScreenshot)message;
@@ -475,7 +479,7 @@ public sealed class MyVulkanRender : IMyRender
             case MyRenderMessageEnum.UnloadTextures:
                 foreach (string file in ((MyRenderMessageUnloadTextures)message).Files) scene.TextureCache.Unload(file); break;
             case MyRenderMessageEnum.UnloadData:
-                sessionLog?.UnloadSession();
+                sessionLog?.UnloadSession();textureMultipliers=MyTextureDebugMultipliers.Defaults;
                 decals?.Clear();haveParticleCamera=false;haveCamera=false;particles?.Clear();environment?.Clear(); voxels?.Clear(); scene.Clear(); sprites.Clear(); generated.Clear(); break;
             case MyRenderMessageEnum.SetFrameTimeStep: animationClock.StepOverride = ((MyRenderMessageSetFrameTimeStep)message).TimeStepInSeconds; break;
             case MyRenderMessageEnum.CollectGarbage: GC.Collect(); break;

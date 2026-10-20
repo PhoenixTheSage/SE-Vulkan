@@ -10,7 +10,7 @@ public sealed partial class NativeBackend
     private TransparencyFunctions transparencyApi;
     private TransparencyFunctions TransparencyApi=>transparencyApi??(transparencyApi=new TransparencyFunctions(GetSymbol));
     public readonly Dictionary<uint,ShaderMetadata> GlassLayouts=new Dictionary<uint,ShaderMetadata>();
-    private readonly List<(WorldPacket Geometry,byte[] Material)> glassPackets=new List<(WorldPacket,byte[])>();
+    private readonly List<(WorldPacket Geometry,byte[] Material,float? OldDecalDistance)> glassPackets=new List<(WorldPacket,byte[],float?)>();
     public void ConfigureTransparency(VulkanShaderLibrary library)
     {
         foreach(var spec in TransparencyShaderVariants.Glass){var v=library.Load(spec.Vertex);var p=library.Load(spec.Pixel);var vs=SpirvRuntimeModule.FromArtifact(v);var ps=SpirvRuntimeModule.FromArtifact(p);Check(TransparencyApi.Init(context,spec.Id,vs,(ulong)vs.Length,ps,(ulong)ps.Length),context);GlassLayouts[spec.Id]=v.Layout;}
@@ -23,12 +23,26 @@ public sealed partial class NativeBackend
     {
         var bytes=new byte[96];void V(int offset,VRageMath.Vector4 v){Buffer.BlockCopy(new[]{v.X,v.Y,v.Z,v.W},0,bytes,offset,16);}
         var config=settings??MyRenderSettings.Default;V(0,material.Color*config.TransparentColorMultiplier);V(16,material.ColorAdd);V(32,material.ShadowMultiplier);V(48,material.LightMultiplier);
-        Buffer.BlockCopy(new[]{material.Reflectivity*config.TransparentReflectivityMultiplier,material.Fresnel*config.TransparentFresnelMultiplier,material.ReflectionShadow,material.Gloss*config.TransparentGlossMultiplier,material.GlossTextureAdd,material.SpecularColorFactor,radius,material.SoftParticleDistanceScale},0,bytes,64,32);return bytes;
+        Buffer.BlockCopy(new[]{material.Reflectivity*config.TransparentReflectivityMultiplier,material.Fresnel*config.TransparentFresnelMultiplier,material.ReflectionShadow*config.TransparentGlossMultiplier,material.Gloss*config.TransparentGlossMultiplier,material.GlossTextureAdd,material.SpecularColorFactor,radius,material.SoftParticleDistanceScale},0,bytes,64,32);return bytes;
     }
-    public void AddGlassPacket(uint type,ulong mesh,ulong color,ulong normal,byte[] objects,byte[] material,byte[] instances=null,uint count=1)
+    public void AddGlassPacket(uint type,ulong mesh,ulong color,ulong normal,byte[] objects,byte[] material,byte[] instances=null,uint count=1,bool triangleFaceCulling=false,float? oldDecalDistanceSquared=null)
     {
         if(!GlassLayouts.ContainsKey(type)||glassPackets.Count>=8192||material==null||material.Length!=96)throw new ArgumentException("Invalid glass pipeline/material batch.");
-        glassPackets.Add((new WorldPacket{Pipeline=type,Mesh=mesh,Color=color,Normal=normal,Constants=objects,Instances=instances,Count=count},(byte[])material.Clone()));
+        if(oldDecalDistanceSquared.HasValue && (float.IsNaN(oldDecalDistanceSquared.Value)||oldDecalDistanceSquared.Value<0))throw new ArgumentException("Invalid old glass decal distance.");
+        glassPackets.Add((new WorldPacket{Pipeline=type,Mesh=mesh,Color=color,Normal=normal,Constants=objects,Instances=instances,Count=count,Flags=(triangleFaceCulling?1u:0u)|(oldDecalDistanceSquared.HasValue?2u:0u)},(byte[])material.Clone(),oldDecalDistanceSquared));
+    }
+    private uint[] GlassDecalDepthFlags()
+    {
+        var flags=new uint[glassPackets.Count];var old=new List<int>();
+        for(int i=0;i<glassPackets.Count;i++)if(glassPackets[i].OldDecalDistance is float distance && distance<10000)old.Add(i);
+        old.Sort((a,b)=>glassPackets[a].OldDecalDistance.Value.CompareTo(glassPackets[b].OldDecalDistance.Value));
+        int below=0;while(below<old.Count&&glassPackets[old[below]].OldDecalDistance.Value<2.25f)below++;
+        int far=old.Count-below;
+        // Installed MyTransparentModelRenderer.RenderDepthOnly loops j=below;
+        // j<count, not j<below+count. Preserve that observable source bound.
+        if(far>0){flags[old[0]]|=16;for(int j=below;j<far;j++)flags[old[j]]|=4;}
+        if(below>0){flags[old[0]]|=32;for(int j=0;j<below;j++)flags[old[j]]|=8;}
+        return flags;
     }
     public void SetBillboardProjections(float[] values){if(values==null || values.Length!=512)throw new ArgumentException("Expected 32 copied billboard matrices.");Check(TransparencyApi.Projections(context,values),context);}
     public readonly List<NativeBillboardDraw> BillboardPackets=new List<NativeBillboardDraw>();
@@ -38,7 +52,7 @@ public sealed partial class NativeBackend
         try{
             NativeTransparentDraw[] draws;
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.TransparencyPack)){
-                draws=new NativeTransparentDraw[glassPackets.Count];for(int i=0;i<draws.Length;++i){var p=glassPackets[i];if(p.Geometry.Constants==null || p.Geometry.Instances!=null && p.Geometry.Instances.LongLength!=p.Geometry.Count*64L)throw new ArgumentException("Invalid copied glass geometry.");draws[i]=new NativeTransparentDraw{Geometry=new NativeWorldDraw{Size=(uint)Marshal.SizeOf(typeof(NativeTransparentDraw)),Pipeline=p.Geometry.Pipeline,Count=p.Geometry.Count,Mesh=p.Geometry.Mesh,Color=p.Geometry.Color,Normal=p.Geometry.Normal,Constants=Pin(p.Geometry.Constants),ConstantBytes=(uint)p.Geometry.Constants.Length,Instances=p.Geometry.Instances==null?IntPtr.Zero:Pin(p.Geometry.Instances)},Material=p.Material};}
+                var depthFlags=GlassDecalDepthFlags();draws=new NativeTransparentDraw[glassPackets.Count];for(int i=0;i<draws.Length;++i){var p=glassPackets[i];if(p.Geometry.Constants==null || p.Geometry.Instances!=null && p.Geometry.Instances.LongLength!=p.Geometry.Count*64L)throw new ArgumentException("Invalid copied glass geometry.");draws[i]=new NativeTransparentDraw{Geometry=new NativeWorldDraw{Size=(uint)Marshal.SizeOf(typeof(NativeTransparentDraw)),Pipeline=p.Geometry.Pipeline,Count=p.Geometry.Count,Mesh=p.Geometry.Mesh,Color=p.Geometry.Color,Normal=p.Geometry.Normal,Flags=p.Geometry.Flags|depthFlags[i],Constants=Pin(p.Geometry.Constants),ConstantBytes=(uint)p.Geometry.Constants.Length,Instances=p.Geometry.Instances==null?IntPtr.Zero:Pin(p.Geometry.Instances)},Material=p.Material};}
             }
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeTransparencyQueue))Check(TransparencyApi.Queue(context,draws,(uint)draws.Length),context);
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeBillboardQueue))Check(TransparencyApi.Billboards(context,BillboardPackets.ToArray(),(uint)BillboardPackets.Count),context);

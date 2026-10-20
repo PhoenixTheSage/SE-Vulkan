@@ -36,13 +36,15 @@ int main() {
     selection = {0, 2}; build();
     require(plan.commands.empty() && plan.runs.size() == 2, "filtered selection expanded");
     selection = {0, 1};
-    for (int boundary = 0; boundary < 5; ++boundary) {
+    for (int boundary = 0; boundary < 7; ++boundary) {
         Packet original = packets[1];
         if (boundary == 0) ++packets[1].mesh;
         if (boundary == 1) ++packets[1].material;
         if (boundary == 2) ++packets[1].pipeline;
         if (boundary == 3) ++packets[1].index_count;
         if (boundary == 4) packets[1].eligible = false;
+        if (boundary == 5) packets[1].raster_state = 0x10000000u;
+        if (boundary == 6) packets[1].raster_state = 0x20000000u;
         build(); require(plan.commands.empty() && plan.runs.size() == 2, "binding/eligibility boundary crossed");
         packets[1] = original;
     }
@@ -63,5 +65,8 @@ int main() {
     selection={0,1};build();
     require(plan.runs.size()==1 && plan.runs[0].indirect && plan.commands[1].indexCount==6 && plan.commands[1].firstIndex==3 && plan.commands[1].vertexOffset==3,"shared pages did not retain distinct mesh index/base-vertex records");
     ++packets[1].vertex_buffer;build();require(plan.commands.empty(),"different vertex pages combined");
+    --packets[1].vertex_buffer;packets[0].old_order=packets[1].old_order={1653665488374690ull,23,34,12,0,1,0};build();require(plan.runs.size()==1&&plan.runs[0].indirect,"matching OLD source identity lost indirect eligibility");
+    packets[1].old_order.resource+=128;packets[1].old_order.material+=128;packets[1].old_order.layout+=64;build();require(plan.commands.empty()&&plan.runs.size()==2,"truncated OLD key collision crossed an indirect batch boundary");
+    packets[1].old_order=packets[0].old_order;packets[1].old_order.proxy++;build();require(plan.commands.empty(),"distinct OLD source proxies crossed an indirect batch boundary");
     std::cout << "PASS indirect commands, byte-exact bindings, selection identity, device limits and invalid ranges\n";
 }

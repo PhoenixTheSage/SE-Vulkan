@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><PlatformTarget>x64</PlatformTarget><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
   <ItemGroup>
+    <Compile Include="../CreativeFixtureHarness/LightingTermsSource.cs" Link="LightingTermsSource.cs" />
     <ProjectReference Include="../../ClientPlugin/ClientPlugin.csproj" />
     <Reference Include="VRage"><HintPath>$(Bin64Dir)VRage.dll</HintPath><Private>true</Private></Reference>
     <Reference Include="VRage.Math"><HintPath>$(Bin64Dir)VRage.Math.dll</HintPath><Private>true</Private></Reference>

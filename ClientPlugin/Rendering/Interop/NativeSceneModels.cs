@@ -12,6 +12,8 @@ public sealed partial class NativeBackend
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int AppendModelsFn(IntPtr context,IntPtr instances,uint count,IntPtr order,uint legacyCount,IntPtr remap);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int ModelStatsFn(IntPtr context,ref NativeModelGroupStats stats);
     RegisterModelFn registerModel;ClearModelsFn clearModels;AppendModelsFn appendModels;ModelStatsFn modelStats;
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int RegisterModelOrderedFn(IntPtr context,IntPtr parts,IntPtr orders,uint count,byte[] objects,uint bytes,out ulong handle);
+    RegisterModelOrderedFn registerModelOrdered;
     NativeModelInstance[] modelInstances=Array.Empty<NativeModelInstance>();
     uint[] modelLegacyOrder=Array.Empty<uint>(),modelLegacyRemap=Array.Empty<uint>();
     uint nativeModelEpoch=1,nativeModelBatchEpoch,modelSubmissionOrder,nativeModelPackets,nativeModelResourceRevision,nativeModelRegistrations;
@@ -45,14 +47,15 @@ public sealed partial class NativeBackend
         if(template.NativeEpoch!=nativeModelEpoch){
             if(registerModel==null){registerModel=(RegisterModelFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_register_model"),typeof(RegisterModelFn));clearModels=(ClearModelsFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_clear_models"),typeof(ClearModelsFn));appendModels=(AppendModelsFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_append_models"),typeof(AppendModelsFn));modelStats=(ModelStatsFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_get_model_group_stats"),typeof(ModelStatsFn));}
             var parts=new NativeModelPart[template.Parts.Length];template.NativeRecipes=new WorldRecipe[parts.Length];int used=0;var constants=new byte[template.Parts.Length][];
-            for(int i=0;i<parts.Length;i++){var p=template.Parts[i];constants[i]=WorldConstants.Object(WorldLayouts[p.Pipeline+2],MatrixD.Identity,p.Tint,Vector3.Zero,p.Emissive,0,null,p.Dither);WorldRecipe recipe=null;EnsureWorldRecipe(ref recipe,p.Pipeline+2,p.Mesh,p.Color,p.Normal,p.Extensions,p.Alpha,constants[i].Length);template.NativeRecipes[i]=recipe;parts[i]=new NativeModelPart{Recipe=recipe.Handle,ObjectOffset=(uint)used,Reserved=p.ViewFlags};used=checked(used+constants[i].Length);}
+            for(int i=0;i<parts.Length;i++){var p=template.Parts[i];constants[i]=WorldConstants.Object(WorldLayouts[p.Pipeline+2],MatrixD.Identity,p.Tint,Vector3.Zero,p.Emissive,0,null,p.Dither,lod:p.Lod);WorldRecipe recipe=null;EnsureWorldRecipe(ref recipe,p.Pipeline+2,p.Mesh,p.Color,p.Normal,p.Extensions,p.Alpha,constants[i].Length);template.NativeRecipes[i]=recipe;parts[i]=new NativeModelPart{Recipe=recipe.Handle,ObjectOffset=(uint)used,Reserved=p.ViewFlags};used=checked(used+constants[i].Length);}
             var objects=new byte[used];for(int i=0;i<parts.Length;i++)Buffer.BlockCopy(constants[i],0,objects,(int)parts[i].ObjectOffset,constants[i].Length);
-            fixed(NativeModelPart* definitions=parts)Check(registerModel(context,(IntPtr)definitions,(uint)parts.Length,objects,(uint)used,out template.NativeHandle),context);
+            var orders=new NativeOldPartOrder[parts.Length];bool ordered=false;for(int i=0;i<parts.Length;i++){orders[i]=template.Parts[i].OldOrder;ordered|=orders[i].Valid!=0;}
+            fixed(NativeModelPart* definitions=parts){if(ordered){registerModelOrdered??=(RegisterModelOrderedFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_register_model_ordered"),typeof(RegisterModelOrderedFn));fixed(NativeOldPartOrder* rows=orders)Check(registerModelOrdered(context,(IntPtr)definitions,(IntPtr)rows,(uint)parts.Length,objects,(uint)used,out template.NativeHandle),context);}else Check(registerModel(context,(IntPtr)definitions,(uint)parts.Length,objects,(uint)used,out template.NativeHandle),context);}
             template.NativeEpoch=nativeModelEpoch;template.NativeResourceRevision=nativeModelResourceRevision;nativeModelRegistrations++;
         }
         if(nativeModelCount>=65536)throw new InvalidOperationException("Bulk model representation budget exceeded.");
         if(modelInstances.Length<=nativeModelCount)Array.Resize(ref modelInstances,Math.Max(256,modelInstances.Length*2));
-        ref var instance=ref modelInstances[nativeModelCount++];instance.Model=template.NativeHandle;instance.Order=++modelSubmissionOrder;instance.Flags=flags;instance.Cascades=cascades;instance.Cell=(uint)cell;instance.X=x;instance.Y=y;instance.Z=z;instance.OriginX=origin.X;instance.OriginY=origin.Y;instance.OriginZ=origin.Z;instance.Radius=radius;instance.Reserved=0;
+        ref var instance=ref modelInstances[nativeModelCount++];instance.Model=template.NativeHandle;instance.Order=++modelSubmissionOrder;instance.Flags=flags;instance.Cascades=cascades;instance.Cell=(uint)cell;instance.X=x;instance.Y=y;instance.Z=z;instance.OriginX=origin.X;instance.OriginY=origin.Y;instance.OriginZ=origin.Z;instance.Radius=radius;instance.Reserved=NoteMainGroupOrder(flags,instance.Order);
         fixed(float* dest=instance.Instance)fixed(byte* source=actor.Instance){Buffer.MemoryCopy(source,dest,64,64);var hsv=actor.Parts[0].Hsv;dest[12]=hsv.X;dest[13]=hsv.Y;dest[14]=hsv.Z;dest[15]=0;}
         if(captureLogicalSelection)foreach(var p in actor.Parts)NoteLogicalDraw(p.Pipeline+2,p.Mesh,1,flags|p.ViewFlags,cascades);
         LogicalRigidDraws+=(uint)actor.Parts.Length;return true;

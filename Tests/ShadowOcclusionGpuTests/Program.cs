@@ -19,6 +19,23 @@ class Program {
         var library=new VulkanShaderLibrary(Path.GetFullPath("Assets/Shaders/Vanilla"),Path.Combine(content,"Shaders"),Path.Combine(bin,"VRage.Render11.dll"));
         using var backend=new NativeBackend(null);backend.Create(64,64,0,true,Path.Combine(output,"Cache"));backend.InitializeGBuffer(library.Load(VanillaGBufferShaders.VertexId),library.Load(VanillaGBufferShaders.PixelId));backend.ConfigureWorld(library,Path.Combine(content,"Shaders"));
         var projection=MatrixD.CreatePerspectiveFieldOfView(Math.PI/2,1,.1,100);projection.M13=projection.M14-projection.M13;projection.M23=projection.M24-projection.M23;projection.M33=projection.M34-projection.M33;projection.M43=projection.M44-projection.M43;
+        // The stock CSM comparison is less-or-equal: moving toward the sun
+        // must decrease shadow depth. Exercise the actual default fitter.
+        var defaultShadowType=typeof(NativeBackend).Assembly.GetType("ClientPlugin.Rendering.VulkanShadows",true)!;
+        var shadowOwner=Activator.CreateInstance(defaultShadowType,true)!;
+        Check((bool)defaultShadowType.GetProperty("StockSchedulingEnabled")!.GetValue(shadowOwner)! &&
+            (bool)defaultShadowType.GetProperty("StockFittingEnabled")!.GetValue(shadowOwner)!,
+            "production shadow defaults select stock scheduling and fitting");
+        var render=new MyRenderSettings();render.EnableShadows=true;var user=render.User;user.ShadowQuality=MyShadowsQuality.HIGH;render.User=user;
+        var sun=Vector3.Normalize(new Vector3(.3f,-.5f,-1));
+        defaultShadowType.GetMethod("Update")!.Invoke(shadowOwner,new object[]{backend,MatrixD.Identity,sun,render,projection,Vector3D.Zero});
+        var fitted=(MatrixD[])defaultShadowType.GetField("worldMatrices",BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(shadowOwner)!;
+        var point=new Vector3D(0,0,-10);var nearerSun=point-(Vector3D)sun;
+        Check(Vector3D.Transform(nearerSun,fitted[0]).Z<Vector3D.Transform(point,fitted[0]).Z,"default cascade depth decreases toward the sun for stock less-or-equal comparison");
+        defaultShadowType.GetProperty("StockFittingEnabled")!.SetValue(shadowOwner,false);
+        defaultShadowType.GetProperty("StockSchedulingEnabled")!.SetValue(shadowOwner,false);
+        defaultShadowType.GetMethod("Update")!.Invoke(shadowOwner,new object[]{backend,MatrixD.Identity,sun,render,projection,Vector3D.Zero});
+        Check(Vector3D.Transform(nearerSun,fitted[0]).Z<Vector3D.Transform(point,fitted[0]).Z,"simplified fallback also decreases depth toward the sun");
         var front=MatrixD.CreateLookAt(new Vector3D(0,0,10),new Vector3D(0,0,-5),Vector3D.Up)*MatrixD.CreateOrthographic(20,20,1,100);
         var back=MatrixD.CreateLookAt(new Vector3D(0,0,-20),new Vector3D(0,0,-5),Vector3D.Up)*MatrixD.CreateOrthographic(20,20,1,100);
         backend.SetShadowQuality(256,0);backend.SetShadowCascades(NativeBackend.MatrixValues(front).Concat(NativeBackend.MatrixValues(back)).ToArray(),new[]{100f,200f});backend.SetShadowSchedule(true,3,3);

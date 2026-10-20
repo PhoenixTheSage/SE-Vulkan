@@ -1,4 +1,5 @@
 using ClientPlugin.Rendering.Interop;
+using System.Threading;
 
 namespace ClientPlugin.Rendering;
 
@@ -11,10 +12,13 @@ public static class GuestBridge
     static NativeBackend current;
     static Scene.VulkanScene scene;
 
-    /// <summary>True keeps stock directional glare. A celestial draw that owns glare sets this false.</summary>
+    /// <summary>True keeps stock solar glare. A celestial draw that owns glare sets this false.</summary>
     public static bool NativeSunGlare { get; private set; } = true;
 
     public static void SetNativeSunGlare(bool enabled) => NativeSunGlare = enabled;
+    static uint sunLightRenderId=uint.MaxValue;
+    internal static uint SunLightRenderId=>Volatile.Read(ref sunLightRenderId);
+    internal static void SetSunLightRenderId(uint id)=>Volatile.Write(ref sunLightRenderId,id);
 
     internal static void Bind(NativeBackend backend, Scene.VulkanScene currentScene = null)
     {

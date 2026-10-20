@@ -63,6 +63,12 @@ void main(uint3 id:SV_DispatchThreadID,uint3 block:SV_GroupID,uint lane:SV_Group
         bool view_masks=(control.frame.flags&8)!=0;uint2 visible_views=0;bool selected_any=false,main=false;
         for(uint v=0;v<control.view_count;v++){[branch] if(view_masks){bool raw=member(a,views[v],v,true),visible=raw&&!(a.hidden_views[v/32]&(1u<<(v%32)));selected_any|=raw;main|=visible&&!(views[v].flags&34);if(visible)visible_views[v/32]|=1u<<(v%32);}else{selected_any|=member(a,views[v],v,true);main|=member(a,views[v],v)&&!(views[v].flags&34);}}
         Selector s=selectors[actor];if(selected_any)s=advance(a,f,s);selectors[actor]=s;
+        // Internal part metadata marks stock distance-fade depth shaders.
+        // OLD LOD selection is shared by all views; scan the selected family once.
+        bool fade_caster=false;
+        if(a.flags&2)for(uint p=f.first_part;p<f.first_part+f.part_count;p++){
+            Part part=parts[p];if((part.flags&1)&&part.padding&&(part.lod==s.current||(s.transition>0&&part.lod==s.other))){fade_caster=true;break;}}
+
         for(uint v=0;v<control.view_count;v++){
             Selection selected;selected.current=selected.other=-1;selected.alpha=selected.other_alpha=0;View view=views[v];
             bool visible;[branch] if(view_masks)visible=(visible_views[v/32]&(1u<<(v%32)))!=0;else visible=member(a,view,v);
@@ -76,8 +82,11 @@ void main(uint3 id:SV_DispatchThreadID,uint3 block:SV_GroupID,uint lane:SV_Group
                 }
             }
             selections[actor*control.view_count+v]=selected;
-            if(view.flags&128){uint first=(actor*64+view.id)*2;uint4 next=uint4(asuint(selected.current),asuint(selected.other),asuint(selected.alpha),asuint(selected.other_alpha));uint4 meta=uint4(a.generation,selected.current>=0?a.depth_revision:0,view.light+1,1);
-                bool changed=any(spot_signatures[first]!=next)||any(spot_signatures[first+1]!=meta)||(view.flags&64);spot_signatures[first]=next;spot_signatures[first+1]=meta;
+            if(view.flags&128){uint first=(actor*64+view.id)*3;uint4 next=uint4(asuint(selected.current),asuint(selected.other),asuint(selected.alpha),asuint(selected.other_alpha));uint4 meta=uint4(a.generation,selected.current>=0?a.depth_revision:0,view.light+1,1);
+                uint4 fade=0;
+                if(fade_caster&&selected.current>=0)fade=uint4(asuint((float3)(a.translation-control.frame.camera)),control.distance_fade);
+                bool changed=any(spot_signatures[first]!=next)||any(spot_signatures[first+1]!=meta)||any(spot_signatures[first+2]!=fade)||(view.flags&64);
+                spot_signatures[first]=next;spot_signatures[first+1]=meta;spot_signatures[first+2]=fade;
                 if(changed){uint unused;InterlockedOr(counts[control.view_count*control.batch+1+v],1,unused);}}
 
         }return;
@@ -149,7 +158,7 @@ void main(uint3 id:SV_DispatchThreadID,uint3 block:SV_GroupID,uint lane:SV_Group
             arg.first_index=part.first_index;arg.vertex_offset=part.vertex_offset;arg.first_instance=old?a.source_first:first;
             DrawRecord d;d.actor=r.actor;d.part=p;d.reference=first+i;d.old=old;
             arguments[dst]=arg;draw_records[dst]=d;
-            stock_draws.Store4(dst*32,uint4(old?(first+i+1)*128:0,part.material,a.source_first,0));stock_draws.Store4(dst*32+16,part.textures);
+            stock_draws.Store4(dst*32,uint4(old?(first+i+1)*128:0,part.material,a.source_first,r.actor));stock_draws.Store4(dst*32+16,part.textures);
         }
     }
 }

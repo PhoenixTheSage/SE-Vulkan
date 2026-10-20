@@ -1,10 +1,27 @@
 #include "../src/gpu_opaque_registry.h"
 #include <iostream>
 using namespace gpu_scene;
-int main(){
+int main(){try{
     uint32_t checks=0;auto require=[&](bool ok,const char* label){if(!ok)throw std::runtime_error(label);++checks;};
     auto rejects=[&](auto fn,const char* label){bool rejected=false;try{fn();}catch(const std::runtime_error&){rejected=true;}require(rejected,label);};
     Registry registry;
+    {
+        Registry ordered;
+        Model model;model.old=true;Part p{{100,1,10,20,0,3,0},{1,0,32,64,0,{1,2,3,4}}};
+        p.old_order={1653665488374690ull,23,34,12,0,1,0};model.parts={p,p,p};
+        model.parts[1].old_order.resource+=128;model.parts[1].old_order.material+=128;model.parts[1].old_order.layout+=64;
+        model.parts[2].old_order.proxy=1;
+        for(auto& part:model.parts)validate_old_order(part.old_order);
+        auto handle=ordered.register_model(model);uint64_t levels[]{handle};Actor entry;entry.family=ordered.register_family({},levels);entry.input.owner=1;entry.input.generation=1;entry.input.flags=1|2;entry.input.scale=1;
+        Source stream;stream.bytes.resize(64);entry.source=ordered.register_source(std::move(stream));ordered.register_actor(entry);
+        auto snapshot=ordered.snapshot();require(snapshot.batches.size()==3,"OLD truncated-key collisions or source proxies were merged on shared pages");
+        for(auto& key:snapshot.batches)require(key.old_order.valid&&key.old_order.key==1653665488374690ull,"snapshot lost immutable OLD key metadata");
+        auto changed=std::make_shared<Model>(model);Family a,b;a.old=b.old=true;a.levels.push_back(changed);b.levels.push_back(std::make_shared<Model>(*changed));
+        auto other=std::make_shared<Model>(*changed);other->parts[0].old_order.proxy++;b.levels[0]=other;require(!compatible_bindings(a,b),"OLD ordering change admitted as texture-only binding patch");
+        auto bad=model;bad.parts[0].old_order.reserved=1;rejects([&]{ordered.register_model(bad);},"reserved OLD metadata admitted");
+        bad=model;bad.parts[0].old_order.key^=1;rejects([&]{ordered.register_model(bad);},"OLD packed/full material identity mismatch admitted");
+        bad=model;bad.old=false;rejects([&]{ordered.register_model(bad);},"NEW model admitted OLD identity metadata");
+    }
     Model near;near.parts.push_back({{100,1,10,20,0,3,0},{1,0,4,8,0,{1,2,3,4}}});
     Model far=near;far.parts[0].geometry.mesh=101;far.parts[0].geometry.first=3;far.parts[0].material.textures={5,6,7,8};
     auto nm=registry.register_model(near),fm=registry.register_model(far);uint64_t levels[]{nm,fm};
@@ -12,8 +29,17 @@ int main(){
     auto family=registry.register_family({10},levels);Actor actor;actor.family=family;actor.input.owner=1000;actor.input.generation=1;actor.input.flags=1|16;actor.input.source_count=1;actor.input.scale=1;
     auto a=registry.register_actor(actor);actor.input.owner=1001;auto b=registry.register_actor(actor);auto first=registry.snapshot();
     require(first.actors.size()==2&&first.families.size()==1,"resident owners/families are complete");
-    require(first.batches.size()==1,"material bindings fragment pipeline/page batches");
-    auto upload=registry.upload();require(upload.batches.size()==1&&upload.parts.size()==4&&upload.actors.size()==2,"upload retains fixed batches and dedicated depth geometry");require(upload.handles.size()==2&&upload.objects.size()==256&&upload.actors[0].family==upload.actors[1].family,"upload preserves resident owner/object/family identities");
+    require(first.batches.size()==2,"NEW LOD part identity was lost in shared page batches");
+    auto upload=registry.upload();require(upload.batches.size()==2&&upload.parts.size()==4&&upload.actors.size()==2,"upload retains ordered NEW parts and dedicated depth geometry");require(upload.handles.size()==2&&upload.objects.size()==256&&upload.actors[0].family==upload.actors[1].family,"upload preserves resident owner/object/family identities");
+    {
+        Registry ordered;Model group=near;auto cutout=near.parts[0];cutout.geometry.first=3;cutout.material.colour_pipeline=14;cutout.material.forward_pipeline=UINT32_MAX;cutout.depth=cutout.forward=false;group.parts.push_back(cutout);
+        auto registeredFirst=ordered.register_model(near),registeredLast=ordered.register_model(group);uint64_t aLevels[]{registeredLast},bLevels[]{registeredFirst};auto aFamily=ordered.register_family({},aLevels),bFamily=ordered.register_family({},bLevels);
+        Actor entry=actor;entry.family=aFamily;entry.input.owner=5000;ordered.register_actor(entry);entry.family=bFamily;entry.input.owner=5001;ordered.register_actor(entry);auto grouped=ordered.upload();
+        require(grouped.batches.size()==3&&grouped.batches[0].main_pipeline==0&&grouped.batches[1].main_pipeline==14&&grouped.batches[2].main_pipeline==0,"shared pages split NEW groups by shader instead of first-seen parts");
+        require(grouped.actors[0].family==0&&grouped.actors[1].family==1,"NEW family order follows allocation rather than committed encounter order");
+        Model oldGroup=group;oldGroup.old=true;Registry oldRegistry;auto oldModel=oldRegistry.register_model(oldGroup);uint64_t oldLevels[]{oldModel};entry.family=oldRegistry.register_family({},oldLevels);Source oldSource;oldSource.bytes.resize(64);entry.source=oldRegistry.register_source(std::move(oldSource));entry.input.owner=6000;entry.input.flags|=2;oldRegistry.register_actor(entry);auto oldUpload=oldRegistry.upload();
+        require(oldUpload.batches.size()==2&&oldUpload.source.batches[0].group==0&&oldUpload.source.batches[1].group==0,"OLD page/shader batching acquired NEW group constraints");
+    }
     auto bindingFamily=*first.families[0];auto bindingModel=std::make_shared<Model>(*bindingFamily.levels[0]);bindingModel->parts[0].material.textures={50,51,52,53};bindingModel->depth[0].range.material.textures={50,51,52,53};bindingFamily.levels[0]=bindingModel;
     require(compatible_bindings(*first.families[0],bindingFamily),"texture-only binding cannot retain geometry");
     require(binding_textures(*first.families[0]).size()==upload.families[0].part_count,"binding table differs from publication part layout");
@@ -60,4 +86,4 @@ int main(){
     oldVersion=arena.versions[0];arena.object(0,object.data());arena.commit(std::span(spans,1));require(arena.versions[0]==oldVersion,"unchanged appearance/object commit invalidated its span");
     spans[1].entries.resize(gpu_opaque::appearance_limit+1);auto beforeArena=arena.bytes;rejects([&]{arena.commit(spans);},"oversized appearance batch admitted");require(arena.bytes==beforeArena,"rejected appearance batch partially mutated the arena");
     std::cout<<checks<<" resident registry checks passed\n";
-}
+}catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

@@ -7,7 +7,7 @@ namespace ClientPlugin.Rendering.Shaders;
 public static class LightTileShader
 {
     public const string Variant="f1bcea60cd6e8a9656e38f518e5aa7fb00b1ada6ffbb87dd8ccdb1feb4f7b753";
-    public const string Contract="StockDepthTiles-Ordered64-1";
+    public const string Contract="StockDepthTiles-Ordered4096-2";
     public static string DeriveSource(string source)
     {
         string Replace(string text,string pattern,string value)
@@ -16,8 +16,8 @@ public static class LightTileShader
             if(regex.Matches(text).Count!=1)throw new InvalidDataException("Stock tile source contract changed: "+pattern);
             return regex.Replace(text,value);
         }
-        source=Replace(source,@"groupshared uint sTileNumLights;","groupshared uint sTileNumLights;\ngroupshared uint sLightMask[2];");
-        source=Replace(source,@"sTileNumLights = 0;","sTileNumLights = 0;\n        sLightMask[0] = sLightMask[1] = 0;");
+        source=Replace(source,@"groupshared uint sTileNumLights;","groupshared uint sTileNumLights;\ngroupshared uint sLightMask[128];");
+        source=Replace(source,@"sTileNumLights = 0;","sTileNumLights = 0;\n        for (uint word = 0; word < 128; ++word) sLightMask[word] = 0;");
         source=Replace(source,@"uint listIndex;\s*InterlockedAdd\(sTileNumLights, 1, listIndex\);\s*TileIndices\[frame_\.Light\.tiles_num \+ tileIndex \* frame_\.Light\.maxTileLights \+ listIndex\] = index;",
             "InterlockedOr(sLightMask[index / 32], 1u << (index % 32));");
         source=Replace(source,@"TileIndices\[tileIndex\] = sTileNumLights;",

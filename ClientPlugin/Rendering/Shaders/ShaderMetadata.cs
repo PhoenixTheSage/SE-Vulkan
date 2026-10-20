@@ -16,6 +16,9 @@ public sealed class VulkanShaderRequest
     public bool GpuOpaque { get; set; }
     public string GpuOpaqueBaseModule { get; set; }
     public List<ShaderDependency> GpuOpaqueBaseDependencies { get; set; }
+    public bool HbaoNegativeBorder { get; set; }
+    public string HbaoBaseModule { get; set; }
+    public List<ShaderDependency> HbaoBaseDependencies { get; set; }
 }
 
 public sealed class VulkanShaderResult

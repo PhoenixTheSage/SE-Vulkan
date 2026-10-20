@@ -11,6 +11,7 @@
 extern "C" {
 #endif
 #define SEVK_ABI_VERSION 1u
+#include "se_old_order.h"
 #include "se_media.h"
 #include "se_gpu_opaque.h"
 #include "se_pass_scene.h"
@@ -110,6 +111,11 @@ SEVK_API int32_t SEVK_CALL sevk_upload_texture(void* context, uint64_t id, uint3
  * to at least one. Existing sevk_upload_texture remains a one-level upload. */
 SEVK_API int32_t SEVK_CALL sevk_upload_texture_mips(void* context, uint64_t id, uint32_t width, uint32_t height, uint32_t format, uint32_t srgb, const void* data, uint64_t bytes, uint32_t mip_count);
 SEVK_API int32_t SEVK_CALL sevk_upload_mesh(void* context, uint64_t id, const SevkVertex* vertices, uint32_t vertex_count, const uint32_t* indices, uint32_t index_count);
+/* Stock world lighting accepts up to 4096 points plus 64 spotlight identities.
+   Spotlight indices must remain below 64 for redraw/exclusion masks. The scene
+   owner applies stock's 32-spot and per-quality point budgets. Large batches
+   require initialized stock world pipelines; preview constants retain 64 entries.
+   The queued Frame's maxTileLights must cover the submitted point count. */
 SEVK_API int32_t SEVK_CALL sevk_set_lights(void* context, const SevkLight* lights, uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_set_shadow_cascades(void* context, const float* matrices, uint32_t count, const float* splits);
 /* Owner publishes fitted matrices plus a per-frame execution mask. Retained images
@@ -121,12 +127,33 @@ SEVK_API int32_t SEVK_CALL sevk_register_world_mesh_range(void* context,uint64_t
 typedef struct SevkShadowFeedback {uint32_t size,abi_version;uint64_t completion;uint32_t pixels[8],update_mask,valid_mask;} SevkShadowFeedback;
 SEVK_API int32_t SEVK_CALL sevk_init_shadow_usage(void* context,const void* data,uint64_t bytes);
 SEVK_API int32_t SEVK_CALL sevk_get_shadow_feedback(void* context,SevkShadowFeedback* feedback);
+/* CPU ownership state for queued world cascade contents. No GPU readback/wait.
+   A missing bit requires the scheduler to prepare that cascade's depth view. */
+SEVK_API int32_t SEVK_CALL sevk_get_shadow_cache_mask(void* context,uint32_t* mask);
 SEVK_API int32_t SEVK_CALL sevk_set_shadow_pass_constants(void* context,const void* data,uint32_t bytes);
 SEVK_API int32_t SEVK_CALL sevk_readback_shadow(void* context,uint32_t cascade,void* data,uint64_t bytes);
+// Completed main-frame R8 inputs: 0 = screen AO, 1 = resolved sun visibility.
+// Completed diagnostic input: 0 AO R8, 1 sun R8, 2/3 pre/post FXAA RGBA8,
+// 4 raw GBuffer0 sRGB RGBA8 (including the LOD/pipeline-marker alpha).
+SEVK_API int32_t SEVK_CALL sevk_readback_lighting_input(void* context,uint32_t input,void* data,uint64_t bytes);
+// Optional diagnostics; disabled by default. Stage snapshots are RGBA32F:
+// 0 after directional/ambient, 1 after points, 2 after spots; 3 current HDR.
+// Rendering accumulates points, spots, then additive directional/ambient:
+// stage 0 includes local lights; stages 1/2 exclude directional lighting.
+// Stage 3 needs no opt-in. Stages 4..10 require the optional seven-output
+// FP32 diagnostic shader installed by sevk_init_world_lighting(kind=5).
+// Disabling waits and releases all snapshot/term images.
+SEVK_API int32_t SEVK_CALL sevk_set_lighting_diagnostics(void* context,uint32_t enabled);
+// Isolated term-pass control only: 0 actual stock sampler (default),
+// 1 anisotropy enabled with maxAnisotropy=1. Main lighting is unaffected.
+// Disabling diagnostics releases this sampler and resets the mode to zero.
+SEVK_API int32_t SEVK_CALL sevk_set_lighting_diagnostic_sampler(void* context,uint32_t mode);
+SEVK_API int32_t SEVK_CALL sevk_readback_lighting_stage(void* context,uint32_t stage,void* data,uint64_t bytes);
 SEVK_API int32_t SEVK_CALL sevk_render_texture(void* context, uint64_t id, uint32_t width, uint32_t height, const float* clear_color, const SevkSprite* sprites, uint32_t count);
 /* Physical attachment size remains width/height; sprite coordinates and clips
  * use the logical viewport (game texture size multiplied by AspectRatio). */
 SEVK_API int32_t SEVK_CALL sevk_render_texture_aspect(void* context, uint64_t id, uint32_t width, uint32_t height, const float* clear_color, const SevkSprite* sprites, uint32_t count, float logical_width, float logical_height);
+SEVK_API int32_t SEVK_CALL sevk_render_texture_mips(void* context, uint64_t id, uint32_t width, uint32_t height, const float* clear_color, const SevkSprite* sprites, uint32_t count, float logical_width, float logical_height, uint32_t generate_mips);
 SEVK_API int32_t SEVK_CALL sevk_begin_frame(void* context, const SevkFrameInfo* frame);
 SEVK_API int32_t SEVK_CALL sevk_draw_mesh(void* context, const SevkDrawMesh* draw);
 SEVK_API int32_t SEVK_CALL sevk_draw_sprites(void* context, const SevkSprite* sprites, uint32_t count);
@@ -186,6 +213,9 @@ typedef struct SevkIndirectStats {
     uint32_t size,abi_version,supported,enabled,main_groups,shadow_groups,grouped_draws,prepared_commands;
 } SevkIndirectStats;
 SEVK_API int32_t SEVK_CALL sevk_set_world_indirect(void* context, uint32_t enabled);
+/* Stock main lighting precision: 0 R11G11B10, 1 RGBA16F (HqTarget).
+ * Changes require a closed frame/upload batch. HDR readback remains RGBA16F. */
+SEVK_API int32_t SEVK_CALL sevk_set_hdr_quality(void* context, uint32_t high_quality);
 typedef struct SevkObjectRecordStats { uint32_t size,abi_version,enabled,records,selected,changed;uint64_t live_bytes,capacity_bytes,uploaded_bytes; } SevkObjectRecordStats;
 SEVK_API int32_t SEVK_CALL sevk_get_object_record_stats(void* context,SevkObjectRecordStats* stats);
 typedef struct SevkCascadeRecordStats {uint32_t size,abi_version,enabled,tasks,commands,reserved[3];} SevkCascadeRecordStats;
@@ -208,7 +238,7 @@ typedef struct SevkWorldVertex { SevkGBufferVertex material; float weights[4]; u
  * Generic stream: transposed affine rows[3], HSV/dither. Cube stream:
  * eight packed byte4 bones, translation/packed rotation, HSV/dither. */
 typedef struct SevkWorldDraw {
-    uint32_t size,pipeline,instance_count,flags; /*0x02000000 excludes spotlight depth; cascade mask remains independent.*/
+    uint32_t size,pipeline,instance_count,flags; /*0x02000000 excludes spotlight depth; 0x04000000 identifies OLD geometry in stock main-pass ordering; 0x08000000 stock back-cull / 0x10000000 stock no-cull (mutually exclusive); 0x20000000 OLD depth no-cull override; zero retains raw legacy raster defaults; cascade mask remains independent.*/
     uint64_t mesh,color,normal,extensions,alpha;
     const void* object_constants; uint32_t object_bytes,reserved; /* reserved: cascade bits, bit c draws cascade c */
     const void* instances;
@@ -217,6 +247,8 @@ typedef struct SevkWorldDraw {
 SEVK_API int32_t SEVK_CALL sevk_init_world_pipeline(void* context,uint32_t pipeline,const void* vertex,uint64_t vertex_bytes,const void* pixel,uint64_t pixel_bytes);
 /* Kind 0 rigid, 1 generic instance, 2 cube, 3 deformed cube. Writes RG16F object motion. */
 SEVK_API int32_t SEVK_CALL sevk_init_object_motion(void* context,uint32_t kind,const void* vertex,uint64_t vertex_bytes,const void* pixel,uint64_t pixel_bytes);
+SEVK_API int32_t SEVK_CALL sevk_init_indexed_attachment(void* context,uint32_t slot,uint32_t format,uint32_t kind,const void* vertex,uint64_t vertex_bytes,const void* pixel,uint64_t pixel_bytes);
+SEVK_API int32_t SEVK_CALL sevk_init_indexed_motion(void* context,uint32_t kind,const void* vertex,uint64_t vertex_bytes,const void* pixel,uint64_t pixel_bytes);
 /* Extra GBuffer color target. Slot 0..2 is SV_Target4..6. Format 0 RGBA8, 1 RGBA16F,
  * 2 R32F, 3 RG16F, 4 R32_UINT, 5 RG32F. Kind matches object motion. The pixel shader
  * writes SV_Target0 and declares no descriptors. Stock color targets stay three. */
@@ -241,7 +273,7 @@ typedef struct SevkModelInstance {
     uint32_t order,flags,cascade_mask,cell;
     int32_t x,y,z;
     float origin[3],radius;
-    uint32_t reserved;
+    uint32_t reserved; /* Optional first-seen main-group order, <=order; zero uses order. */
     float instance[16];
 } SevkModelInstance;
 typedef struct SevkModelGroupStats {
@@ -249,8 +281,17 @@ typedef struct SevkModelGroupStats {
     uint64_t object_bytes,instance_bytes;
 } SevkModelGroupStats;
 SEVK_API int32_t SEVK_CALL sevk_register_model(void* ctx,const SevkModelPart* parts,uint32_t count,const uint8_t* objects,uint32_t object_bytes,uint64_t* handle);
+SEVK_API int32_t SEVK_CALL sevk_register_model_ordered(void* ctx,const SevkModelPart* parts,const SevkOldPartOrder* orders,uint32_t count,const uint8_t* objects,uint32_t object_bytes,uint64_t* handle);
 SEVK_API int32_t SEVK_CALL sevk_clear_models(void* ctx);
 SEVK_API int32_t SEVK_CALL sevk_append_models(void* ctx,const SevkModelInstance* instances,uint32_t count,const uint32_t* legacy_order,uint32_t legacy_count,uint32_t* legacy_remap);
+/* Optional ordering metadata for the queued legacy draws, before append_models.
+ * group is its first logical submission order; part is its preprocessed ordinal.
+ * Geometry draw IDs, object offsets and public draw layouts remain unchanged. */
+typedef struct SevkMainDrawOrder {uint32_t group,part;} SevkMainDrawOrder;
+SEVK_API int32_t SEVK_CALL sevk_world_main_order(void* ctx,const SevkMainDrawOrder* orders,uint32_t count);
+SEVK_API int32_t SEVK_CALL sevk_world_old_order(void* ctx,const SevkOldPartOrder* orders,uint32_t count);
+typedef struct SevkMainOwnerOrder {uint32_t owner,group;} SevkMainOwnerOrder;
+SEVK_API int32_t SEVK_CALL sevk_world_main_owners(void* ctx,const SevkMainOwnerOrder* owners,uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_get_model_group_stats(void* ctx,SevkModelGroupStats* stats);
 SEVK_API int32_t SEVK_CALL sevk_register_world_recipe(void* context,const SevkWorldRecipe* recipe,uint64_t* handle);
 SEVK_API int32_t SEVK_CALL sevk_queue_world_recipes(void* context,const void* frame,uint32_t frame_bytes,const float* projection,const float* inverse,const SevkRecipeDraw* draws,uint32_t count,const uint8_t* objects,uint32_t object_bytes,const uint8_t* instances,uint32_t instance_bytes);
@@ -259,7 +300,9 @@ typedef struct SevkQueueWorkStats {uint32_t size,abi_version,enabled,workers,dra
 SEVK_API int32_t SEVK_CALL sevk_set_parallel_world_queue(void* context,uint32_t enabled);
 SEVK_API int32_t SEVK_CALL sevk_get_queue_work_stats(void* context,SevkQueueWorkStats* stats);
 SEVK_API int32_t SEVK_CALL sevk_upload_world_cube(void* context,uint64_t id,uint32_t width,uint32_t height,uint32_t format,uint32_t srgb,const void* bytes,uint64_t byte_count);
+SEVK_API int32_t SEVK_CALL sevk_upload_world_cube_mips(void* context,uint64_t id,uint32_t width,uint32_t height,uint32_t format,uint32_t srgb,const void* bytes,uint64_t byte_count,uint32_t mip_count);
 SEVK_API int32_t SEVK_CALL sevk_set_world_skybox(void* context,uint64_t id);
+SEVK_API int32_t SEVK_CALL sevk_set_world_skyboxes(void* context,uint64_t visible,uint64_t indirect);
 typedef struct SevkVoxelStats { uint32_t size,abi_version;uint64_t frames,draws,meshes,arrays,materials; } SevkVoxelStats;
 SEVK_API int32_t SEVK_CALL sevk_get_voxel_stats(void* ctx,SevkVoxelStats* stats);
 SEVK_API int32_t SEVK_CALL sevk_build_voxel_array(void* ctx,uint64_t id,uint32_t size,uint32_t srgb,const uint64_t* source_textures,uint32_t layers);
@@ -289,6 +332,9 @@ SEVK_API int32_t SEVK_CALL sevk_upload_foliage(void* ctx,uint64_t id,const SevkF
 SEVK_API int32_t SEVK_CALL sevk_queue_foliage(void* ctx,const SevkFoliageDraw* draws,uint32_t count,const void* materials,uint32_t bytes);
 /* ABI-1 copied glass packets. Pipeline 0..4 glass rigid/skinned/generic/cube/deformed; 5..9 stock Holo partners.
  * Material is the reflected 96-byte TransparentConstants. Objects/instances are copied before return. */
+/* Glass geometry.flags: bit0 NEW visible back-cull (ignored for OLD), bit1 OLD source pipeline,
+   bits2/3 OLD far/near depth membership, bits4/5 OLD far/near pass requested.
+   No OLD bit means NEW geometric layers. Decal depth always back-culls. */
 typedef struct SevkTransparentDraw { SevkWorldDraw geometry;uint8_t material[96]; } SevkTransparentDraw;
 typedef struct SevkTransparencyStats {uint32_t size,abi_version;uint64_t frames,glass_draws,instances,resolves,billboard_draws,decal_draws,glass_layer_draws;} SevkTransparencyStats;
 SEVK_API int32_t SEVK_CALL sevk_init_transparency(void* ctx,uint32_t id,const void* vertex,uint64_t vertex_bytes,const void* pixel,uint64_t pixel_bytes);
@@ -311,8 +357,12 @@ SEVK_API int32_t SEVK_CALL sevk_queue_decals(void* ctx,const SevkDecalDraw* draw
 /* Camera-relative positions, radius in physical pixels; copied before return.
  * Results only contain completed frame slots; this call never waits for GPU work. */
 typedef struct SevkFlareQuery {uint64_t id;float position[3],radius;} SevkFlareQuery;
+/* NDC center/depth, positive NDC half extents and stock normalization area.
+   Pixel normalization is area * width * height / 4. */
+typedef struct SevkFlareRasterQuery {uint64_t id;float center[3],half_extent[2],area;} SevkFlareRasterQuery;
 typedef struct SevkFlareResult {uint64_t id;float occlusion;uint32_t reserved;} SevkFlareResult;
 SEVK_API int32_t SEVK_CALL sevk_queue_flares(void* ctx,const float* view_projection,const SevkFlareQuery* queries,uint32_t count);
+SEVK_API int32_t SEVK_CALL sevk_queue_flare_raster(void* ctx,const SevkFlareRasterQuery* queries,uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_get_flare_results(void* ctx,SevkFlareResult* results,uint32_t capacity,uint32_t* count);
 /* Copied postprocess configuration, no managed storage survives this call.
  * flags: enabled, eye adaptation, bloom, HQ bloom, anti-flicker, FXAA,
@@ -327,11 +377,14 @@ SEVK_API int32_t SEVK_CALL sevk_get_postprocess_stats(void* ctx,SevkPostprocessS
  * flags enabled/blur/clamp; coarse permutation background/foreground/threshold/GBuffer. */
 typedef struct SevkHbaoConfig {uint32_t size,abi_version,flags,coarse,blur,reserved;uint8_t constants[200];} SevkHbaoConfig;
 SEVK_API int32_t SEVK_CALL sevk_set_hbao(void* ctx,const SevkHbaoConfig* config);
+/* Sixteen stock MyHBAO per-pass jitter float4 values, copied before mutation. */
+SEVK_API int32_t SEVK_CALL sevk_set_hbao_jitter(void* ctx,const float* values,uint32_t count);
 typedef struct SevkProbeConfig {uint32_t size,abi_version,resolution,flags;uint64_t brdf;float blend;uint32_t reserved;uint8_t frames[7680];float projections[96];} SevkProbeConfig;
 typedef struct SevkProbeStats {uint32_t size,abi_version;uint64_t faces,geometry_draws,prefilter_passes,blend_passes,cycles,atmosphere_passes;uint32_t ready,next_face;} SevkProbeStats;
 typedef struct SevkProbeScheduleStats {uint32_t size,abi_version,stage,busy;uint64_t cycles,reserved;} SevkProbeScheduleStats;
 SEVK_API int32_t SEVK_CALL sevk_init_probes(void* ctx,uint32_t stage,const void* spirv,uint64_t bytes);
 SEVK_API int32_t SEVK_CALL sevk_set_probes(void* ctx,const SevkProbeConfig* config);
+SEVK_API int32_t SEVK_CALL sevk_set_probes_prefilter(void* ctx,const SevkProbeConfig* config,uint32_t skip_levels);
 SEVK_API int32_t SEVK_CALL sevk_get_probe_stats(void* ctx,SevkProbeStats* stats);
 SEVK_API int32_t SEVK_CALL sevk_get_probe_schedule_stats(void* ctx,SevkProbeScheduleStats* stats);
 /* Explicit verification capture: waits for completion, returns RGBA16F bytes.
@@ -381,7 +434,8 @@ SEVK_API int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionSta
  * entry), bit7 applies a copied viewport, bit8 clears color to 100000 metres.
  * Geometry/viewport constants: matrices 0..127, float4 x/y/w/h at 128,
  * uint vertex count at 144. Guest image format 6 is RGBA32F. Readback returns
- * the image's native texel bytes (2/4/8/16 bytes), without color conversion.
+ * owned images' native texel bytes (2/4/8/16 bytes), without color conversion.
+ * The HDR sentinel always expands to RGBA16F, including normal-quality R11G11B10.
  * Query sevk_guest_features before using additive packet flags.
  * Sampled sentinels: HDR ..1, depth ..2, GBuffer0..2 ..3..5, upscale ..6, display ..7,
  * motion ..8, attachment0 ..9. Catalog velocity is ..A, volumeReactive is ..B, reactiveMask is ..C. */

@@ -1,35 +1,51 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using ClientPlugin.Rendering.Interop;
 using ClientPlugin.Rendering;
 using VRageMath;
 using VRageRender;
 using VRageRender.Lights;
 using VRageRender.Messages;
+using VRage.Library.Utils;
 namespace ClientPlugin.Rendering.Scene;
 public sealed partial class VulkanScene
 {
     private ulong nextFlareId;private readonly Dictionary<ulong,float> flareOcclusion=new Dictionary<ulong,float>();
+    private static long flareQuerySequence;
+    private readonly Dictionary<ulong,StockFlareOcclusionState> flareStates=new Dictionary<ulong,StockFlareOcclusionState>();
+    private readonly Dictionary<ulong,ulong> pendingFlareOwners=new Dictionary<ulong,ulong>();
+    private readonly MyRandom flareRandom=new MyRandom();
     public long FlareQueries {get;private set;}public long FlareBillboards {get;private set;}
     public void DrawFlares(MatrixD view,MatrixD projection,int width,int height,float multiplier)
     {
-        var current=new HashSet<ulong>();foreach(var l in lights)current.Add(l.FlareId);
-        foreach(var r in backend.GetFlareResults())if(current.Contains(r.Id))flareOcclusion[r.Id]=r.Occlusion;
-        foreach(var key in new List<ulong>(flareOcclusion.Keys))if(!current.Contains(key))flareOcclusion.Remove(key);
-        var queries=new List<NativeFlareQuery>();MatrixD vp=view*projection,inv=MatrixD.Invert(vp),cameraRotation=MatrixD.Invert(view);
+        float now=(float)Environment.FrameTime.Milliseconds;
+        var current=new Dictionary<ulong,VulkanLightComponent>();foreach(var l in lights)current[l.FlareId]=l;
+        foreach(var r in backend.GetFlareResults())if(pendingFlareOwners.TryGetValue(r.Id,out ulong owner) && current.TryGetValue(owner,out var light) && flareStates.TryGetValue(owner,out var state)){
+            var glare=light.EffectiveData.Glare;if(state.Complete(r.Id,r.Occlusion,now,glare.QueryFreqMinMs,glare.QueryFreqRndMs,flareRandom.NextFloat()))pendingFlareOwners.Remove(r.Id);
+        }
+        foreach(var key in new List<ulong>(flareOcclusion.Keys))if(!current.ContainsKey(key))flareOcclusion.Remove(key);
+        foreach(var key in new List<ulong>(flareStates.Keys))if(!current.ContainsKey(key))flareStates.Remove(key);
+        foreach(var key in new List<ulong>(pendingFlareOwners.Keys))if(!current.ContainsKey(pendingFlareOwners[key]))pendingFlareOwners.Remove(key);
+        foreach(var entry in flareStates)flareOcclusion[entry.Key]=entry.Value.Sample(now);
+        var queries=new List<NativeFlareRasterQuery>();MatrixD vp=view*projection,inv=MatrixD.Invert(vp),cameraRotation=MatrixD.Invert(view);
         Vector3D camera=Environment.CameraPosition;
         foreach(var l in lights)
         {
-            var data=l.Data;var desc=data.Glare;if(!desc.Enabled||desc.Glares==null||desc.Glares.Length==0||!IsVisible(l.Owner))continue;
-            if(desc.Type==MyGlareTypeEnum.Directional && !GuestBridge.NativeSunGlare)continue;
+            var data=l.EffectiveData;var desc=data.Glare;if(!desc.Enabled||desc.Glares==null||desc.Glares.Length==0||!IsVisible(l.Owner))continue;
+            if(!GuestBridge.NativeSunGlare && GuestBridge.SunLightRenderId!=uint.MaxValue && l.Owner.ID==GuestBridge.SunLightRenderId)continue;
             Vector3D position=l.Position,relative=position-camera;double distance=relative.LengthSquared(),max=(double)desc.MaxDistance*desc.MaxDistance;
             if(max<=0||distance>max||distance<1e-12)continue;
             float intensity=desc.Intensity*multiplier;if(desc.Type==MyGlareTypeEnum.Directional){float dot=(float)Vector3D.Dot(-Vector3D.Normalize(relative),l.Owner.WorldMatrix.Forward)-.3f;intensity*=MathHelper.Saturate((float)Math.Pow(Math.Max(dot,0)*2,4));}
             float fade=distance>max*.64?(float)(1-(distance-max*.64)/(max*.36)):1;intensity*=fade*fade*fade*fade;if(intensity<1e-5f)continue;
             Vector4 clip=Vector4.Transform(new Vector4((Vector3)relative,1),vp);if(clip.W<=0)continue;Vector3 ndc=new Vector3(clip.X,clip.Y,clip.Z)/clip.W;
-            if(Math.Abs(ndc.X)>1||Math.Abs(ndc.Y)>1||ndc.Z<0||ndc.Z>1)continue;
-            Vector3 shifted=(Vector3)(relative-Vector3D.Normalize(relative)*desc.QueryShift);float radius=Math.Abs(desc.QuerySize*(float)projection.M22*height/(2*clip.W));
-            if(queries.Count>=4096)break;queries.Add(new NativeFlareQuery{Id=l.FlareId,X=shifted.X,Y=shifted.Y,Z=shifted.Z,Radius=radius*backend.RenderFraction});
+            Vector3 shifted=(Vector3)(relative-Vector3D.Normalize(relative)*desc.QueryShift);
+            Vector4 queryClip=Vector4.Transform(new Vector4(shifted,1),vp);
+            if(!flareStates.TryGetValue(l.FlareId,out var queryState)){queryState=new StockFlareOcclusionState();flareStates.Add(l.FlareId,queryState);flareOcclusion[l.FlareId]=queryState.Sample(now);}
+            if(queryState.ShouldQuery(now) && queries.Count<4096 && queryClip.W>0 && desc.QuerySize>0){float area=(float)Math.Abs(desc.QuerySize*desc.QuerySize*projection.M11*projection.M22/distance);
+                ulong request=unchecked((ulong)Interlocked.Increment(ref flareQuerySequence));queryState.Begin(request);pendingFlareOwners.Add(request,l.FlareId);
+                queries.Add(new NativeFlareRasterQuery{Id=request,X=queryClip.X/queryClip.W,Y=queryClip.Y/queryClip.W,Z=queryClip.Z/queryClip.W,
+                    HalfWidth=(float)Math.Abs(desc.QuerySize*projection.M11/(2*queryClip.W)),HalfHeight=(float)Math.Abs(desc.QuerySize*projection.M22/(2*queryClip.W)),Area=area});}
             // Until its first completed query, a flare stays occluded.
             if(!flareOcclusion.TryGetValue(l.FlareId,out float occlusion))continue;
             float baseIntensity=data.SpotLightOn?data.SpotIntensity:data.PointIntensity;Vector3 baseColor=data.SpotLightOn?data.SpotLight.Light.Color:data.PointLight.Color;
@@ -42,12 +58,12 @@ public sealed partial class VulkanScene
                 Vector3D origin=position;if(glare.ScreenCenterDistance!=Vector2.Zero){Vector2 ghost=screen*(Vector2.One-glare.ScreenCenterDistance);origin=camera+Vector3D.Transform(new Vector3D(ghost.X,ghost.Y,ndc.Z),inv);}
                 Vector2 size=glare.Size*(glare.FixedSize?Vector2.One:desc.SizeMultiplier*fade)*10;
                 Vector3 left=(Vector3)cameraRotation.Left,up=(Vector3)cameraRotation.Up;
-                if(glare.Type==SubGlareType.Rotated){Vector3 forward=Vector3.Normalize(camera-origin);left=Vector3.Cross((Vector3)cameraRotation.Up,forward);if(left.LengthSquared()<1e-8f)continue;left.Normalize();up=Vector3.Cross(forward,left);}
+                if(glare.Type==SubGlareType.Rotated){billboards.AddBillboardRotated(glare.Material,color,origin,camera,size.X,size.Y,MyBillboard.BlendTypeEnum.AdditiveTop);FlareBillboards++;continue;}
                 if(glare.Type==SubGlareType.Anamorphic)size.X=Math.Max(size.X*(1-Math.Abs(screen.X)),.0001f);if(glare.Type==SubGlareType.AnamorphicInverted)size.X=Math.Max(size.X*Math.Abs(screen.X),.0001f);
                 billboards.AddBillboardOriented(glare.Material,color,origin,left,up,size.X,size.Y,MyBillboard.BlendTypeEnum.AdditiveTop);FlareBillboards++;
             }
         }
-        backend.QueueFlares(vp,queries.ToArray());FlareQueries+=queries.Count;
+        backend.QueueFlareRaster(queries.ToArray());FlareQueries+=queries.Count;
     }
     public static float FlareCurve(MySubGlare.KeyPoint[] curve,float occlusion)
     {

@@ -3,7 +3,10 @@
 namespace gpu_opaque {
 constexpr uint32_t required_features=255, texture_capacity=4096,
     storage_capacity=20, draw_capacity=65536, storage_range=128u*1024*1024,
-    workgroup_size=64, max_parts=65535, max_batches=4096;
+    workgroup_size=64, max_parts=65535, max_batches=max_parts;
+// NEW batches retain part identity. At 64 views their count table is <17 MiB,
+// within the existing 128 MiB storage-range admission; no new GPU feature.
+static_assert((uint64_t(max_batches)*64+1+64)*4<=storage_range);
 // Linear work uses a two-dimensional dispatch above 65535 workgroups.
 // At 64 views, group storage still fits the admitted 128 MiB range.
 inline void admit(SevkGpuOpaqueCapabilities& c) {

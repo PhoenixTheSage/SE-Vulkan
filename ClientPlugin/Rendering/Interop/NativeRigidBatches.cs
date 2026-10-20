@@ -18,16 +18,17 @@ public sealed partial class NativeBackend
     public uint LogicalRigidDraws { get; private set; }
     internal readonly struct RigidBatchKey : IEquatable<RigidBatchKey>
     {
-        public readonly uint Pipeline,Flags,Cascades;
+        public readonly uint Pipeline,Flags,Cascades,Lod,MainGroup;
+        public readonly NativeOldPartOrder OldOrder;
         public readonly ulong Mesh,Color,Normal,Extensions,Alpha;
         public readonly Vector3 Tint;
         public readonly float Emissive,Dither;
         public readonly int X,Y,Z,Cell;
-        public RigidBatchKey(uint pipeline,ulong mesh,ulong color,ulong normal,ulong extensions,ulong alpha,Vector3 tint,float emissive,float dither,uint flags,uint cascades,Vector3 origin,int cell)
-        {Pipeline=pipeline;Mesh=mesh;Color=color;Normal=normal;Extensions=extensions;Alpha=alpha;Tint=tint;Emissive=emissive;Dither=dither;Flags=flags;Cascades=cascades;Cell=cell;X=(int)Math.Floor(origin.X/cell);Y=(int)Math.Floor(origin.Y/cell);Z=(int)Math.Floor(origin.Z/cell);}
-        public bool Equals(RigidBatchKey b)=>Pipeline==b.Pipeline && Mesh==b.Mesh && Color==b.Color && Normal==b.Normal && Extensions==b.Extensions && Alpha==b.Alpha && Tint==b.Tint && Emissive==b.Emissive && Dither==b.Dither && Flags==b.Flags && Cascades==b.Cascades && Cell==b.Cell && X==b.X && Y==b.Y && Z==b.Z;
+        public RigidBatchKey(uint pipeline,ulong mesh,ulong color,ulong normal,ulong extensions,ulong alpha,Vector3 tint,float emissive,float dither,uint flags,uint cascades,Vector3 origin,int cell,uint lod=0,uint mainGroup=0,NativeOldPartOrder oldOrder=default)
+        {OldOrder=oldOrder;Pipeline=pipeline;Lod=lod;MainGroup=mainGroup;Mesh=mesh;Color=color;Normal=normal;Extensions=extensions;Alpha=alpha;Tint=tint;Emissive=emissive;Dither=dither;Flags=flags;Cascades=cascades;Cell=cell;X=(int)Math.Floor(origin.X/cell);Y=(int)Math.Floor(origin.Y/cell);Z=(int)Math.Floor(origin.Z/cell);}
+        public bool Equals(RigidBatchKey b)=>OldOrder.Equals(b.OldOrder)&&Pipeline==b.Pipeline && Lod==b.Lod && MainGroup==b.MainGroup && Mesh==b.Mesh && Color==b.Color && Normal==b.Normal && Extensions==b.Extensions && Alpha==b.Alpha && Tint==b.Tint && Emissive==b.Emissive && Dither==b.Dither && Flags==b.Flags && Cascades==b.Cascades && Cell==b.Cell && X==b.X && Y==b.Y && Z==b.Z;
         public override bool Equals(object b)=>b is RigidBatchKey key && Equals(key);
-        public override int GetHashCode(){unchecked{int h=(int)Pipeline;h=h*31+Mesh.GetHashCode();h=h*31+Color.GetHashCode();h=h*31+Normal.GetHashCode();h=h*31+Extensions.GetHashCode();h=h*31+Alpha.GetHashCode();h=h*31+Tint.GetHashCode();h=h*31+Emissive.GetHashCode();h=h*31+Dither.GetHashCode();h=h*31+(int)Flags;h=h*31+(int)Cascades;h=h*31+Cell;h=h*31+X;h=h*31+Y;return h*31+Z;}}
+        public override int GetHashCode(){unchecked{int h=(int)Pipeline;h=h*31+(int)Lod;h=h*31+(int)MainGroup;h=h*31+Mesh.GetHashCode();h=h*31+Color.GetHashCode();h=h*31+Normal.GetHashCode();h=h*31+Extensions.GetHashCode();h=h*31+Alpha.GetHashCode();h=h*31+Tint.GetHashCode();h=h*31+Emissive.GetHashCode();h=h*31+Dither.GetHashCode();h=h*31+(int)Flags;h=h*31+(int)Cascades;h=h*31+Cell;h=h*31+X;h=h*31+Y;return h*31+Z;}}
     }
     internal sealed class RigidBatch
     {
@@ -46,14 +47,14 @@ public sealed partial class NativeBackend
     {
         submissionStats=new SceneSubmissionStats{Enabled=RetainedSubmissionEnabled?1u:0u};
         if(PacketProfilingEnabled)ResetPacketPreparation();
-        batchFrame++;BeginModelBatches();BeginNativeModels();LogicalRigidDraws=0;rigidBatchPackets=0;
+        batchFrame++;BeginModelBatches();BeginNativeModels();BeginMainGroups();LogicalRigidDraws=0;rigidBatchPackets=0;
         // Bound CPU residency across travel/world reloads; every entry can be
         // reconstructed from this frame's authoritative material parameters.
         if(rigidBatches.Count>32768){rigidBatches.Clear();rigidBatchSlots.Clear();rigidCacheEpoch++;}
     }
     // Only the scene's stock opaque rigid path calls this. When highlights or
     // shadow exclusions consume individual draw IDs, it uses AddWorldPacket.
-    public unsafe uint AddRigidWorldPacket(uint pipeline,ulong mesh,ulong color,ulong normal,ulong extensions,ulong alpha,MatrixD world,Vector3 tint,Vector3 hsv,float emissive,float dither,uint flags,uint cascades,Vector3 origin,float radius,RigidBatchHint hint=null)
+    public unsafe uint AddRigidWorldPacket(uint pipeline,ulong mesh,ulong color,ulong normal,ulong extensions,ulong alpha,MatrixD world,Vector3 tint,Vector3 hsv,float emissive,float dither,uint flags,uint cascades,Vector3 origin,float radius,RigidBatchHint hint=null,uint lod=0)
     {
         long detailAt=PacketProfilingEnabled?System.Diagnostics.Stopwatch.GetTimestamp():0;
         if(pipeline>=20 || pipeline%5!=0 || !WorldReady || !WorldLayouts.ContainsKey(pipeline+2))throw new InvalidOperationException("Rigid batching requires a matching stock generic pipeline.");
@@ -61,9 +62,9 @@ public sealed partial class NativeBackend
         // reference when the authenticated object-tint supplement is unavailable.
         if(tint!=Vector3.One && !tintedGenericPipelines.Contains(pipeline+2))
             return AddWorldPacket(pipeline,mesh,color,normal,extensions,alpha,
-                WorldConstants.Object(WorldLayouts[pipeline],world,tint,hsv,emissive,0,null,dither,true),
+                WorldConstants.Object(WorldLayouts[pipeline],world,tint,hsv,emissive,0,null,dither,true,lod),
                 null,1,flags,cascades,origin,radius);
-        var key=new RigidBatchKey(pipeline,mesh,color,normal,extensions,alpha,tint,emissive,dither,flags,cascades,origin,WideRigidBatchesEnabled?64:16);
+        var key=new RigidBatchKey(pipeline,mesh,color,normal,extensions,alpha,tint,emissive,dither,flags,cascades,origin,WideRigidBatchesEnabled?64:16,lod,MainGroupToken,oldPartOrder);
         RigidBatch batch;
         if(RigidBatchHintsEnabled && hint!=null && ReferenceEquals(hint.Owner,this) && hint.Epoch==rigidCacheEpoch && hint.Slot>=0 && hint.Slot<rigidBatchSlots.Count && hint.Key.Equals(key))
         {
@@ -72,7 +73,7 @@ public sealed partial class NativeBackend
         }
         else if(!rigidBatches.TryGetValue(key,out batch))
         {
-            batch=new RigidBatch{Frame=-1,CacheIndex=rigidBatchSlots.Count,Constants=WorldConstants.Object(WorldLayouts[pipeline+2],MatrixD.Identity,tint,Vector3.Zero,emissive,0,null,dither)};
+            batch=new RigidBatch{Frame=-1,CacheIndex=rigidBatchSlots.Count,Constants=WorldConstants.Object(WorldLayouts[pipeline+2],MatrixD.Identity,tint,Vector3.Zero,emissive,0,null,dither,lod:lod)};
             rigidBatches.Add(key,batch);
             rigidBatchSlots.Add(batch);
             if(PacketProfilingEnabled)createdBatches++;

@@ -152,6 +152,7 @@ public sealed class VulkanShaderCompiler : IDisposable
             }
             if (preprocessed.Contains("vk::counter_binding")) throw new InvalidDataException("Explicit counter bindings conflict with the renderer's counter range.");
             preprocessed=GpuOpaqueShaderAdapter.Apply(preprocessed,request,dependencies);
+            preprocessed=HbaoBorderShaderAdapter.Apply(preprocessed,request,dependencies);
             // DXC gives append/consume UAV counters separate descriptors. Their
             // default bindings do not follow -fvk-u-shift. Reserve one explicit
             // counter slot per source UAV, retaining the source descriptor set.
@@ -163,6 +164,7 @@ public sealed class VulkanShaderCompiler : IDisposable
                 .Append(request.NativeAbiVersion).Append('\n').Append(toolchain).Append('\n').Append(profile).Append('\n')
                 .Append(request.EntryPoint).Append('\n').Append(request.Debug).Append('\n').Append(preprocessed);
             if(request.GpuOpaque)keyContent.Append('\n').Append(GpuOpaqueShaderAdapter.Contract).Append('\n').Append(request.GpuOpaqueBaseModule);
+            if(request.HbaoNegativeBorder)keyContent.Append('\n').Append(HbaoBorderShaderAdapter.Contract).Append('\n').Append(request.HbaoBaseModule);
             foreach (var define in definitions) keyContent.Append('\n').Append(define.Key).Append('=').Append(define.Value ?? "1");
             foreach (ShaderDependency dependency in dependencies) keyContent.Append('\n').Append(dependency.Path).Append('=').Append(dependency.Sha256);
             string key = Hash(Encoding.UTF8.GetBytes(keyContent.ToString()));
@@ -195,7 +197,8 @@ public sealed class VulkanShaderCompiler : IDisposable
                 {
                     NativeAbiVersion = request.NativeAbiVersion, CacheKey = key, SpirvSha256 = Hash(spirv), ToolchainSha256 = toolchain,
                     SourcePath = Path.GetFullPath(request.SourcePath), EntryPoint = request.EntryPoint, Profile = profile, Dependencies = dependencies,
-                    SourceTransform=request.GpuOpaque?GpuOpaqueShaderAdapter.Contract:null,BaseSpirvSha256=request.GpuOpaqueBaseModule
+                    SourceTransform=request.GpuOpaque?GpuOpaqueShaderAdapter.Contract:request.HbaoNegativeBorder?HbaoBorderShaderAdapter.Contract:null,
+                    BaseSpirvSha256=request.GpuOpaque?request.GpuOpaqueBaseModule:request.HbaoBaseModule
                 };
                 SpirvMetadataReader.Reflect(spirv, metadata);
                 WriteAtomic(spirvPath, stream => stream.Write(spirv, 0, spirv.Length));
@@ -222,6 +225,7 @@ public sealed class VulkanShaderCompiler : IDisposable
             if (metadata.SchemaVersion != ShaderMetadata.CurrentSchemaVersion || metadata.NativeAbiVersion != request.NativeAbiVersion || metadata.CacheKey != key ||
                 metadata.ToolchainSha256 != toolchain || metadata.Profile != profile || metadata.EntryPoint != request.EntryPoint || metadata.SpirvSha256 != Hash(bytes)) return null;
             if(request.GpuOpaque&&(metadata.SourceTransform!=GpuOpaqueShaderAdapter.Contract||metadata.BaseSpirvSha256!=request.GpuOpaqueBaseModule))return null;
+            if(request.HbaoNegativeBorder&&(metadata.SourceTransform!=HbaoBorderShaderAdapter.Contract||metadata.BaseSpirvSha256!=request.HbaoBaseModule))return null;
             diagnostics += Validate(spirvPath, job);
             SpirvMetadataReader.Reflect(bytes, metadata);
             return new VulkanShaderResult { SpirvPath = spirvPath, MetadataPath = metadataPath, Metadata = metadata, Diagnostics = diagnostics, CacheHit = true };

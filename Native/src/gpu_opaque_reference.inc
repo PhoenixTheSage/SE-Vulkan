@@ -1,8 +1,8 @@
 // Owner-only verification lane. No WorldDraw packets or CPU selected groups.
-struct OpaqueReferenceControl {SevkOpaqueFrame frame;uint32_t actor_count,family_count,part_count,view_count,reference_capacity,draw_capacity,stage,batch;};
+struct OpaqueReferenceControl {SevkOpaqueFrame frame;uint32_t actor_count,family_count,part_count,view_count,reference_capacity,draw_capacity,stage,batch,distance_fade,padding;};
 static_assert(sizeof(SevkOpaqueActor)==320&&sizeof(SevkOpaqueFamily)==80&&sizeof(SevkOpaquePart)==196);
 static_assert(sizeof(SevkOpaqueView)==296&&sizeof(SevkOpaqueFrame)==80&&sizeof(SevkOpaqueSelector)==56);
-static_assert(sizeof(SevkOpaqueReference)==80&&sizeof(SevkOpaqueSelection)==16&&sizeof(OpaqueReferenceControl)==112);
+static_assert(sizeof(SevkOpaqueReference)==80&&sizeof(SevkOpaqueSelection)==16&&sizeof(OpaqueReferenceControl)==120);
 void cleanup_opaque_reference(){
     auto& s=opaque_reference;
     for(auto& slot:s.slots)for(auto* b:{&slot.actors,&slot.views,&slot.selections,&slot.groups,&slot.references,&slot.args,&slot.draws,&slot.counts,&slot.stock_objects,&slot.stock_colour,&slot.stock_depth,&slot.stock_draws,&slot.scan,&slot.object_inputs,&slot.parts})destroy_buffer(*b);
@@ -26,7 +26,9 @@ void validate_opaque_reference_actor(const SevkOpaqueActor& a,bool validate_sour
     if(!std::isfinite(a.scale))throw std::runtime_error("invalid opaque scale");}
     if(validate_source&&(a.flags&32))for(uint32_t i=a.source_first;i<a.source_first+a.source_count;i++){
         auto* row=s.source_inputs.data()+uint64_t(i)*64;float packed[4];std::memcpy(packed,row+32,16);
-        if(row[15]||!std::isfinite(packed[3])||packed[3]<0||packed[3]>35||std::floor(packed[3])!=packed[3])throw std::runtime_error("opaque cube is deformed or has invalid orientation");
+        // Only the standalone numerical reference lacks bone deformation.
+        // Shared stock geometry binds the authenticated deformed vertex shader.
+        if((row[15]&&!s.stock_geometry)||!std::isfinite(packed[3])||packed[3]<0||packed[3]>35||std::floor(packed[3])!=packed[3])throw std::runtime_error("opaque cube is deformed or has invalid orientation");
         uint32_t forward=uint32_t(packed[3])/6,up=uint32_t(packed[3])%6;if(forward/2==up/2)throw std::runtime_error("opaque cube has parallel axes");
         for(uint32_t k=0;k<3;k++)if(!std::isfinite(packed[k]))throw std::runtime_error("opaque cube translation nonfinite");
     }
@@ -54,7 +56,12 @@ void opaque_reference_read(Buffer& buffer,void* output,uint64_t bytes){
     if(bytes>buffer.bytes)throw std::runtime_error("opaque verification range");if(buffer.mapped){check(vmaInvalidateAllocation(allocator,buffer.memory,0,bytes),"invalidate opaque verification");std::memcpy(output,buffer.mapped,bytes);return;}
     auto staging=make_buffer(bytes,VK_BUFFER_USAGE_TRANSFER_DST_BIT,true,true);try{immediate([&](VkCommandBuffer cmd){VkMemoryBarrier2 m{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};m.srcStageMask=VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;m.srcAccessMask=VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;m.dstStageMask=VK_PIPELINE_STAGE_2_TRANSFER_BIT;m.dstAccessMask=VK_ACCESS_2_TRANSFER_READ_BIT;VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};d.memoryBarrierCount=1;d.pMemoryBarriers=&m;vkCmdPipelineBarrier2(cmd,&d);VkBufferCopy copy{0,0,bytes};vkCmdCopyBuffer(cmd,buffer.handle,staging.handle,1,&copy);m.srcStageMask=VK_PIPELINE_STAGE_2_TRANSFER_BIT;m.srcAccessMask=VK_ACCESS_2_TRANSFER_WRITE_BIT;m.dstStageMask=VK_PIPELINE_STAGE_2_HOST_BIT;m.dstAccessMask=VK_ACCESS_2_HOST_READ_BIT;vkCmdPipelineBarrier2(cmd,&d);});check(vmaInvalidateAllocation(allocator,staging.memory,0,bytes),"invalidate explicit opaque readback");std::memcpy(output,staging.mapped,bytes);}catch(...){destroy_buffer(staging);throw;}destroy_buffer(staging);
 }
-void opaque_reference_placeholder(Buffer& buffer,const void* data){
+void opaque_reference_placeholder(Buffer& buffer){
+    // MyRenderPassUtils.GetPlaceholderObjectCB: NEW draws share an identity
+    // object, not the first resident actor's OLD compatibility constants.
+    std::array<uint32_t,32> placeholder{};
+    for(uint32_t word:{8u,13u,18u,24u,25u,26u})placeholder[word]=std::bit_cast<uint32_t>(1.f);
+    placeholder[23]=255;const void* data=placeholder.data();
     if(buffer.mapped){std::memcpy(buffer.mapped,data,128);check(vmaFlushAllocation(allocator,buffer.memory,0,128),"flush NEW stock object placeholder");return;}
     auto staging=make_buffer(128,VK_BUFFER_USAGE_TRANSFER_SRC_BIT,true);std::memcpy(staging.mapped,data,128);check(vmaFlushAllocation(allocator,staging.memory,0,128),"flush stock placeholder staging");try{immediate([&](VkCommandBuffer cmd){VkBufferCopy copy{0,0,128};vkCmdCopyBuffer(cmd,staging.handle,buffer.handle,1,&copy);VkMemoryBarrier2 m{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};m.srcStageMask=VK_PIPELINE_STAGE_2_TRANSFER_BIT;m.srcAccessMask=VK_ACCESS_2_TRANSFER_WRITE_BIT;m.dstStageMask=VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT|VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;m.dstAccessMask=VK_ACCESS_2_SHADER_STORAGE_READ_BIT|VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT|VK_ACCESS_2_UNIFORM_READ_BIT;VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};d.memoryBarrierCount=1;d.pMemoryBarriers=&m;vkCmdPipelineBarrier2(cmd,&d);});}catch(...){destroy_buffer(staging);throw;}destroy_buffer(staging);
 }
@@ -75,10 +82,11 @@ void init_opaque_reference(const SevkOpaqueReferenceConfig& c,bool shared_geomet
         uint64_t(c.draw_capacity)*c.view_count>gpu_opaque::storage_range/32)throw std::runtime_error("invalid/admission-disabled opaque reference configuration: enabled="+std::to_string(opaque_caps.enabled)+", actors="+std::to_string(c.actor_count)+", families="+std::to_string(c.family_count)+", parts="+std::to_string(c.part_count)+", views="+std::to_string(c.view_count)+", sources="+std::to_string(c.source_count)+", references="+std::to_string(c.reference_capacity)+", draws="+std::to_string(c.draw_capacity)+", batches="+std::to_string(c.reserved)+", textures="+std::to_string(c.material_count));
     wait(next_completion);auto previous=std::move(opaque_reference);opaque_reference={};auto& s=opaque_reference;
     try{
+        s.stock_geometry=shared_geometry;
         s.view_batches=std::getenv("SE_VULKAN_GPU_OPAQUE_VIEW_BATCHES")&&std::string(std::getenv("SE_VULKAN_GPU_OPAQUE_VIEW_BATCHES"))=="1";
         s.role_streams=std::getenv("SE_VULKAN_GPU_OPAQUE_ROLE_STREAMS")&&std::string(std::getenv("SE_VULKAN_GPU_OPAQUE_ROLE_STREAMS"))=="1";
         s.actors.assign(c.actors,c.actors+c.actor_count);s.part_inputs.assign(c.parts,c.parts+c.part_count);s.batch_count=std::max(1u,c.reserved);s.family_inputs.assign(c.families,c.families+c.family_count);
-        if(c.source_count)s.source_inputs.assign(c.source_instances,c.source_instances+c.source_count*64ull);
+        if(c.source_count)s.source_inputs.assign(c.source_instances,c.source_instances+c.source_count*64ull);++opaque_source_epoch;
         s.material_ids.resize(gpu_opaque::texture_capacity);for(uint32_t t=0;t<c.material_count;t++)s.material_ids[t]=c.material_textures[t];
         s.part_count=c.part_count;s.view_count=s.view_capacity=c.view_count;s.reference_capacity=c.reference_capacity;s.draw_capacity=c.draw_capacity;s.source_count=c.source_count;
         for(uint32_t f=0;f<c.family_count;f++){auto& family=c.families[f];if(!family.generation||family.threshold_count>16||uint64_t(family.first_part)+family.part_count>c.part_count)throw std::runtime_error("invalid opaque immutable family");
@@ -118,7 +126,7 @@ void init_opaque_reference(const SevkOpaqueReferenceConfig& c,bool shared_geomet
         s.role_parts=opaque_reference_buffer(role_parts.size()*4ull,storage,role_parts.data());
         s.sources=opaque_reference_buffer(c.source_count*64ull,storage,c.source_instances);
         if(!shared_geometry){s.vertices=opaque_reference_buffer(c.vertex_count*12ull,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,c.vertices);s.indices=opaque_reference_buffer(c.index_count*4ull,VK_BUFFER_USAGE_INDEX_BUFFER_BIT,c.indices);}
-        s.selectors=opaque_reference_buffer(c.actor_count*sizeof(SevkOpaqueSelector),storage);s.spot_signatures=opaque_reference_buffer(c.actor_count*64ull*32,storage);
+        s.selectors=opaque_reference_buffer(c.actor_count*sizeof(SevkOpaqueSelector),storage);s.spot_signatures=opaque_reference_buffer(c.actor_count*64ull*48,storage);
         s.object_inputs.reset(c.actor_count);
         for(auto& slot:s.slots){slot.versions.resize(c.actor_count);slot.appearance_versions.resize(c.actor_count);
             if(gpu_owned_inputs)slot.parts=opaque_reference_buffer(c.part_count*sizeof(SevkOpaquePart),storage,s.gpu_part_inputs.data());
@@ -229,7 +237,7 @@ void opaque_reference_dependency(VkCommandBuffer cmd,VkPipelineStageFlags2 sourc
     VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};barrier.srcStageMask=source;barrier.srcAccessMask=src;barrier.dstStageMask=destination;barrier.dstAccessMask=dst;
     VkDependencyInfo info{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};info.memoryBarrierCount=1;info.pMemoryBarriers=&barrier;vkCmdPipelineBarrier2(cmd,&info);
 }
-OpaqueReferenceControl opaque_reference_control(){auto& s=opaque_reference;return {s.frame,uint32_t(s.actors.size()),uint32_t(s.family_inputs.size()),s.part_count,s.view_count,s.reference_capacity,s.draw_capacity,0,s.batch_count};}
+OpaqueReferenceControl opaque_reference_control(){auto& s=opaque_reference;return {s.frame,uint32_t(s.actors.size()),uint32_t(s.family_inputs.size()),s.part_count,s.view_count,s.reference_capacity,s.draw_capacity,0,s.batch_count,world_distance_fade_bits(),0};}
 void prepare_opaque_reference(VkCommandBuffer cmd){
     auto& s=opaque_reference;if(!s.initialized||!s.frame_ready)return;auto& slot=s.slots[slot_index];
     // begin_frame has waited THIS slot. Descriptors never change while in use.

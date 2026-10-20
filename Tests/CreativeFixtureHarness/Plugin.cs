@@ -105,8 +105,14 @@ public sealed partial class Plugin : IPlugin
         int parsed;
         if (int.TryParse(Environment.GetEnvironmentVariable("SE_VULKAN_CREATIVE_DURATION_SECONDS"), out parsed) && parsed >= 120 && parsed <= 600) duration = parsed;
         transparencyMode=Environment.GetEnvironmentVariable("SE_VULKAN_TRANSPARENCY_FIXTURE")=="1";
+        glassOverlapMode=Environment.GetEnvironmentVariable("SE_VULKAN_GLASS_OVERLAP_FIXTURE")=="1";
+        meshInstanceFade=Environment.GetEnvironmentVariable("SE_VULKAN_MESH_INSTANCE_FADE")=="1";
+        meshOldOrder=Environment.GetEnvironmentVariable("SE_VULKAN_MESH_OLD_ORDER")=="1";
+        meshInstanceMaterialColor=Environment.GetEnvironmentVariable("SE_VULKAN_MESH_INSTANCE_MATERIAL_COLOR")=="1";
+        meshInstanceColor=Environment.GetEnvironmentVariable("SE_VULKAN_MESH_INSTANCE_COLOR")=="1";meshRasterMode=Environment.GetEnvironmentVariable("SE_VULKAN_MESH_RASTER_FIXTURE")=="1";meshDecalMode=Environment.GetEnvironmentVariable("SE_VULKAN_MESH_DECAL_FIXTURE")=="1";meshDecalOverlap=Environment.GetEnvironmentVariable("SE_VULKAN_MESH_DECAL_OVERLAP")=="1";meshDecalCutout=Environment.GetEnvironmentVariable("SE_VULKAN_MESH_DECAL_CUTOUT")=="1";
         Directory.CreateDirectory(reports);
         RenderDocCapture.Initialize(reports);
+        InitializeLightingDiagnostics();
         // This is a private process configuration. Never synchronize test saves or config.
         MySandboxGame.Config.EnableCloud = false;
         MySandboxGame.Config.WelcomScreenCurrentStatus = MyConfig.WelcomeScreenStatus.AlreadySeen;
@@ -158,6 +164,7 @@ public sealed partial class Plugin : IPlugin
     {
         if (BackendRuntime.ActiveBackend != expectedBackend) throw new InvalidOperationException("The isolated fixture requires the requested active backend: " + expectedBackend);
         if (MySession.Static != null) throw new InvalidOperationException("An unrelated session appeared; fixture creation was refused.");
+        PinLightingGraphics();
         // Startup reloads the game config after plugin Init. Apply this only
         // after the menu is ready, immediately before loading the marked save.
         MySandboxGame.Config.ExperimentalMode = true;
@@ -349,6 +356,8 @@ public sealed partial class Plugin : IPlugin
 
     private void Exercise()
     {
+        if(glassOverlapMode){ExerciseGlassOverlap(clock.Elapsed.TotalSeconds-spawnedAt);return;}
+        if(meshDecalMode){ExerciseMeshDecals(clock.Elapsed.TotalSeconds-spawnedAt);return;}
         // Submit through the same public game path as mods and stock effects.
         // Native counters cannot establish this acceptance without live packets.
         var square = MyStringId.GetOrCompute("Square");
@@ -593,6 +602,7 @@ public sealed partial class Plugin : IPlugin
     }
     private void Capture(string name)
     {
+        if(name=="anomaly-volume-off")RequestLightingDiagnostics();
         captureNames.Add(name);
         RenderDocCapture.Request(name);
         MyRenderProxy.TakeScreenshot(Vector2.One, Path.Combine(reports, name + ".png"), debug: false, ignoreSprites: false, showNotification: false);
@@ -646,7 +656,7 @@ public sealed partial class Plugin : IPlugin
         VulkanDiagnostics.Set("Creative fixture acceptance", SubsystemState.Failed, error.Message);
         Report("Fixture failed: " + error);
     }
-    public void Dispose() { MySession.LoadingStep -= PreparePrivateSessionDirectory; if (reports != null) { Report("Harness disposed."); File.WriteAllText(Path.Combine(reports, "harness-disposed.txt"), DateTime.UtcNow.ToString("u")); } }
+    public void Dispose() { ShutdownLightingDiagnostics(); MySession.LoadingStep -= PreparePrivateSessionDirectory; if (reports != null) { Report("Harness disposed."); File.WriteAllText(Path.Combine(reports, "harness-disposed.txt"), DateTime.UtcNow.ToString("u")); } }
     private static string FullDirectory(string path) => string.IsNullOrWhiteSpace(path) ? throw new InvalidOperationException("An explicit isolated directory is required.") : Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     private static bool SameDirectory(string a, string b) => !string.IsNullOrWhiteSpace(a) && FullDirectory(a).Equals(FullDirectory(b), StringComparison.OrdinalIgnoreCase);
     private static bool IsWithin(string path, string root) => FullDirectory(path).StartsWith(FullDirectory(root) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);

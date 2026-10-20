@@ -8,6 +8,11 @@ public sealed partial class NativeBackend
     private ProbeFunctions probeApi;
     private ProbeFunctions ProbeApi=>probeApi??(probeApi=new ProbeFunctions(GetSymbol));
     public bool ProbesReady {get;private set;}
+    // Full startup captures complete before main lighting in this frame.
+    // ProbesReady deliberately reports only the already-published state.
+    public bool ProbesAvailableForFrame {
+        get {var flags=CurrentProbeConfig.Flags;if((flags&1)==0)return false;if(ProbesReady)return true;if((flags&4)!=0)return false;return (flags&24)!=0 || GetProbeStats().NextFace==5;}
+    }
     public void ConfigureProbes(VulkanShaderLibrary library)
     {
         foreach(var spec in ProbeShaderVariants.Extra){var vs=library.LoadExtra(spec.Id,spec.Material,"Vertex",spec.Defines);var ps=library.LoadExtra(spec.Id,spec.Material,"Pixel",spec.Defines);if(spec.Id>=256 && (spec.Id-256)%5==2)ps=library.LoadObjectTintPixel(spec.Id-192,ps);byte[] v=SpirvRuntimeModule.FromArtifact(vs),p=SpirvRuntimeModule.FromArtifact(ps);Check(WorldApi.InitPipeline(context,spec.Id-192,v,(ulong)v.Length,p,(ulong)p.Length),context);}
@@ -15,7 +20,9 @@ public sealed partial class NativeBackend
     }
     public void SetProbeAtmosphere(ulong id,float intensity,float desaturation,VRageMath.Vector3 direction)=>Check(ProbeApi.Atmosphere(context,id,intensity,desaturation,new[]{direction.X,direction.Y,direction.Z}),context);
     public NativeProbeConfig CurrentProbeConfig{get;private set;}
-    public void SetProbes(NativeProbeConfig config){Check(ProbeApi.Set(context,ref config),context);CurrentProbeConfig=config;}
+    private ProbeFunctions.SetPrefilterFn probePrefilter;
+    public void SetProbes(NativeProbeConfig config)=>SetProbes(config,0);
+    public void SetProbes(NativeProbeConfig config,uint skipLevels){if(skipLevels==0)Check(ProbeApi.Set(context,ref config),context);else{probePrefilter??=(ProbeFunctions.SetPrefilterFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_set_probes_prefilter"),typeof(ProbeFunctions.SetPrefilterFn));Check(probePrefilter(context,ref config,skipLevels),context);}CurrentProbeConfig=config;}
     public uint CurrentProbeFaceMask(){var config=CurrentProbeConfig;if((config.Flags&1)==0||(config.Flags&4)!=0)return 0;if(!ProbesReady||(config.Flags&16)!=0)return 63;var schedule=GetProbeScheduleStats();if((config.Flags&24)==0)return 1u<<((int)GetProbeStats().NextFace%6);return schedule.Stage<6?1u<<(int)schedule.Stage:0;}
 
     public NativeProbeStats GetProbeStats(){var s=new NativeProbeStats{Size=64,AbiVersion=AbiVersion};Check(ProbeApi.Stats(context,ref s),context);ProbesReady=s.Ready!=0;return s;}
@@ -31,6 +38,7 @@ internal sealed class ProbeFunctions
 {
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]internal delegate int InitFn(IntPtr ctx,uint id,byte[] data,ulong bytes);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]internal delegate int SetFn(IntPtr ctx,ref NativeProbeConfig config);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]internal delegate int SetPrefilterFn(IntPtr ctx,ref NativeProbeConfig config,uint skipLevels);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]internal delegate int StatsFn(IntPtr ctx,ref NativeProbeStats stats);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]internal delegate int ScheduleFn(IntPtr ctx,ref NativeProbeScheduleStats stats);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]internal delegate int ReadbackFn(IntPtr ctx,uint kind,uint face,uint mip,[Out]byte[] pixels,ulong capacity);

@@ -18,6 +18,7 @@ public sealed partial class Plugin
     float parityNear;
     int parityCommits,paritySamples,parityPhase;
     double parityStarted,parityReportAt;
+    bool staticLightingTurbineHidden;
 
     object AnomalyCall(string type,string method,params object[] values)
     {
@@ -61,7 +62,15 @@ public sealed partial class Plugin
     void ExerciseAnomalyParity(double seconds)
     {
         if(!anomalyParityMode)return;
+        if(lightingOwner==this && Volatile.Read(ref lightingPending)<0)throw new InvalidOperationException("Lighting buffer capture failed; inspect lighting-capture-failed.txt.");
         ExerciseInteriorParity();
+        if(!staticLightingTurbineHidden && seconds>=75 && Environment.GetEnvironmentVariable("SE_VULKAN_STATIC_LIGHTING_DIAGNOSTICS")=="1") {
+            if(turbine==null)throw new InvalidOperationException("Static lighting diagnostic needs the fixture turbine.");
+            // Earlier animation captures still exercise the actual moving turbine.
+            // Only the held lighting comparison excludes this asynchronous caster.
+            turbine.Render.Visible=false;staticLightingTurbineHidden=true;
+            File.WriteAllText(Path.Combine(reports,"lighting-scene.xml"),"<LightingScene Schema=\"1\" TurbineVisible=\"false\" Scope=\"Static held-camera isolation; earlier animation evidence retained\" />");
+        }
         bool ready=parityNear==1000 && interiorParityComplete;
         var state=new StringBuilder("backend="+expectedBackend+"; seconds="+seconds.ToString("F1",CultureInfo.InvariantCulture)+"; phase="+parityPhase+"; interiorPhase="+interiorParityPhase+"; interiorComplete="+interiorParityComplete+"; near="+parityNear+"; commits="+parityCommits);
         foreach(string name in new[]{"occupancy","pointShadowAtlas","playerDepth","litMips","volumeReactive"}) {
@@ -83,7 +92,7 @@ public sealed partial class Plugin
             AnomalyCall("Shaders.VolumetricMediumRegistry","SetEnabled",ParityMedium,true);AnomalyCall("Shaders.VolumetricMediumRegistry","RequestRenderer",ParityMedium,true);parityPhase=4;
         }
         if(parityPhase==4 && seconds-parityStarted>=20 && ready){Capture("anomaly-volume-on");parityPhase=5;}
-        if(parityPhase==5 && seconds-parityStarted>=25 && ready && File.Exists(Path.Combine(reports,"anomaly-volume-on.png")) && File.Exists(Path.Combine(reports,"anomaly-volume-off.png"))) {
+        if(parityPhase==5 && seconds-parityStarted>=25 && ready && (lightingOwner!=this || (Volatile.Read(ref lightingPending)==2 && Volatile.Read(ref lightingPostprocessReady)==3)) && File.Exists(Path.Combine(reports,"anomaly-volume-on.png")) && File.Exists(Path.Combine(reports,"anomaly-volume-off.png"))) {
             parityComplete=true;parityPhase=6;File.WriteAllText(Path.Combine(reports,"anomaly-producers-passed.txt"),state.ToString());
             Report("Anomaly live producers/capture delivery passed; visual comparison remains under review.");
         }

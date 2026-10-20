@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using SixLabors.ImageSharp.PixelFormats;
 using VRage.FileSystem;
@@ -41,6 +42,9 @@ namespace ClientPlugin.Rendering.Content
             return table;
         });
         public bool IsSingleChannel(ulong handle) => singleChannelTextures.ContainsKey(handle);
+        // Stock MakeSrgb applies to alpha-mask views too. Formats without an
+        // sRGB counterpart (notably BC4) retain their linear native format.
+        public ulong GetWorldAlpha(string path)=>GetTexture(path,true);
         public int Count => entries.Count + generated.Count + cubes.Count * 6;
         public event Action<string, Exception> LoadFailed;
 
@@ -51,12 +55,23 @@ namespace ClientPlugin.Rendering.Content
         public ulong GetWorldNormal(string path)
         {
             ulong result=GetTexture(path,false);if(result!=0)return result;RequireOwner();
-            if(neutralNormal==0){neutralNormal=nextHandle++;backend.UploadTexture(neutralNormal,1,1,0,new byte[]{128,128,255,0},false);}return neutralNormal;
+            // MyGeneratedTextureManager.ReleaseMissingNormalGlossTex uses127,
+            // not128. The one-byte tangent-space bias survives GBuffer packing.
+            if(neutralNormal==0){neutralNormal=nextHandle++;backend.UploadTexture(neutralNormal,1,1,0,new byte[]{127,127,255,0},false);}return neutralNormal;
         }
         public ulong GetWorldExtensions(string path)
         {
-            ulong result=GetTexture(path,false);if(result!=0)return result;RequireOwner();
-            if(neutralExtensions==0){neutralExtensions=nextHandle++;backend.UploadTexture(neutralExtensions,1,1,0,new byte[]{255,0,0,0},false);}return neutralExtensions;
+            // Stock MyGeometryTextureSystem and MyFileTexture use sRGB views
+            // for Extension RGB (AO/emissive); alpha/color-mask stays linear.
+            ulong result=GetTexture(path,true);if(result!=0)return result;RequireOwner();
+            if(neutralExtensions==0){neutralExtensions=nextHandle++;backend.UploadTexture(neutralExtensions,1,1,0,new byte[]{255,0,0,0},true);}return neutralExtensions;
+        }
+        public ulong GetWorldProbeCube(string path)
+        {
+            RequireOwner();if(string.IsNullOrWhiteSpace(path))return 0;
+            string resolved=ResolvePath(path);
+            string indirect=Path.Combine(Path.GetDirectoryName(resolved)??"",Path.GetFileNameWithoutExtension(resolved)+"Indirect"+Path.GetExtension(resolved));
+            return GetWorldCube(MyFileSystem.FileExists(indirect)?indirect:resolved);
         }
         public ulong GetWorldCube(string path)
         {
@@ -67,9 +82,8 @@ namespace ClientPlugin.Rendering.Content
                 using(var input=MyFileSystem.OpenRead(resolved))
                 {
                     if(input==null)throw new FileNotFoundException("World cubemap was not found.",resolved);
-                    var faces=DdsImage.ReadCube(input);var bytes=new byte[checked(faces[0].Data.Length*6)];
-                    for(int i=0;i<6;++i)Buffer.BlockCopy(faces[i].Data,0,bytes,i*faces[0].Data.Length,faces[0].Data.Length);
-                    handle=nextHandle++;backend.UploadWorldCube(handle,faces[0].Width,faces[0].Height,faces[0].Format,bytes,faces[0].Srgb || faces[0].Format!=7);
+                    var faces=DdsImage.ReadCube(input,true);
+                    handle=nextHandle++;backend.UploadWorldCubeMips(handle,faces[0].Width,faces[0].Height,faces[0].Format,faces.Select(f=>f.Mips).ToArray(),faces[0].Srgb || faces[0].Format!=7);
                     worldCubes.Add(resolved,handle);return handle;
                 }
             }
@@ -135,7 +149,9 @@ namespace ClientPlugin.Rendering.Content
                     // Keep a separate cache entry so world textures stay intact.
                     if (gui && rawRgba) foreach (var level in levels) PremultiplyGui(level);
                     handle = nextHandle++;
-                    backend.UploadTextureMips(handle, width, height, format, levels, srgb);
+                    // Stock MakeSrgb leaves floating-point RG16 unchanged;
+                    // that native format has no sRGB-compatible view.
+                    backend.UploadTextureMips(handle, width, height, format, levels, srgb && format!=9);
                     entries[key] = new Entry { Handle = handle, Width = width, Height = height, Format = format, PremultipliedSprite = rawRgba || premultiplied };
                     if (format == 5) singleChannelTextures.TryAdd(handle, 0); // BC4 is a red-only view.
                     return handle;
@@ -227,12 +243,12 @@ namespace ClientPlugin.Rendering.Content
                 using (var stream = MyFileSystem.OpenRead(resolved))
                 {
                     if (stream == null) throw new FileNotFoundException("Skybox cube DDS was not found.", resolved);
-                    var faces = DdsImage.ReadCube(stream);
+                    var faces = DdsImage.ReadCube(stream,true);
                     handles = new ulong[6];
                     for (int i = 0; i < faces.Length; ++i)
                     {
                         handles[i] = nextHandle++;
-                        backend.UploadTexture(handles[i], faces[i].Width, faces[i].Height, faces[i].Format, faces[i].Data, faces[i].Srgb || faces[i].Format != 7);
+                        backend.UploadTextureMips(handles[i], faces[i].Width, faces[i].Height, faces[i].Format, faces[i].Mips, faces[i].Srgb || faces[i].Format != 7);
                     }
                     cubes.Add(resolved, handles);
                     return handles;

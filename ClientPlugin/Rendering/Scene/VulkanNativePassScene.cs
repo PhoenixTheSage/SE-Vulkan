@@ -67,7 +67,7 @@ public sealed partial class VulkanScene
     {
         var model=models.GetLod(family.Root,lod);
         if(!PassModelSupported(model,family.Mixed)){family.Unsupported=true;foreach(var member in family.Members)DirtyNativePass(member);return;}
-        var opaque=model.Parts.Where(p=>p.Technique!=MyMeshDrawTechnique.GLASS).ToArray();
+        var opaque=(model.NewParts??model.Parts).Where(p=>p.Technique!=MyMeshDrawTechnique.GLASS).ToArray();
         var parts=new NativePassPart[opaque.Length];
         for(int i=0;i<parts.Length;i++){
             var part=opaque[i];family.Textures.TryGetValue(part.MaterialName??string.Empty,out var t);
@@ -78,7 +78,7 @@ public sealed partial class VulkanScene
             uint textureMask=(!string.IsNullOrEmpty(part.ColorTexture)?1u:0u)|(!string.IsNullOrEmpty(part.NormalTexture)?2u:0u)|(!string.IsNullOrEmpty(part.ExtensionTexture)?4u:0u);
             uint shader=cutout?4+textureMask*2+(family.Metal?1u:0u):(masked?1u:0u)+(family.Metal?2u:0u);
             parts[i]=new NativePassPart{Mesh=model.SharedMesh,First=part.IndexStart,Count=(uint)part.Indices.Length,Material=PassMaterialId(part.MaterialName),Shader=shader,Flags=(masked?1u:0u)|(part.Technique==MyMeshDrawTechnique.ALPHA_MASKED?2u:0u)|(cutout?4u:0u)|(part.Technique!=MyMeshDrawTechnique.MESH?8u:0u),
-                Color=TextureCache.GetTexture(t.ColorMetalFileName??part.ColorTexture),Normal=TextureCache.GetWorldNormal(t.NormalGlossFileName??part.NormalTexture),Extensions=TextureCache.GetWorldExtensions(t.ExtensionsFileName??part.ExtensionTexture),Alpha=TextureCache.GetTexture(t.AlphamaskFileName??part.AlphaTexture,false)};
+                Color=TextureCache.GetTexture(t.ColorMetalFileName??part.ColorTexture),Normal=TextureCache.GetWorldNormal(t.NormalGlossFileName??part.NormalTexture),Extensions=TextureCache.GetWorldExtensions(t.ExtensionsFileName??part.ExtensionTexture),Alpha=TextureCache.GetWorldAlpha(t.AlphamaskFileName??part.AlphaTexture)};
         }
         bool glass=model.Parts.Any(p=>p.Technique==MyMeshDrawTechnique.GLASS);
         ulong replacement=family.Mixed?backend.RegisterMixedPassModel(parts,glass):backend.RegisterPassModel(parts);backend.BindPassLevel(family.Handle,(uint)lod,replacement);
@@ -208,6 +208,7 @@ public sealed partial class VulkanScene
     }
     private void DrawNativePassGlass(NativePassTransparent ticket)
     {
+        if(!RenderSettings.DrawTransparentModelsInstanced)return;
         if(!actors.TryGetValue(ticket.Owner,out var actor)||!actor.PassOwned||actor.PassHandle!=ticket.Actor)return;
         var model=models.GetLod(actor.Model,(int)ticket.Lod);var world=actor.Actor.WorldMatrix;world.Translation-=Environment.CameraPosition;
         using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GlassParts,false);
@@ -216,8 +217,8 @@ public sealed partial class VulkanScene
             if(!MyTransparentMaterials.TryGetMaterial(VRage.Utils.MyStringId.GetOrCompute(part.MaterialName??string.Empty),out var glass)){UnsupportedMaterialDraws++;continue;}
             actor.Materials.TryGetValue(part.MaterialName??string.Empty,out var material);
             if(material!=null&&((material.Flags.Add&RenderFlags.SkipInMainView)!=0||(material.Flags.Remove&RenderFlags.Visible)!=0))continue;
-            var constants=WorldConstants.Object(backend.GlassLayouts[0],world,(material?.Color??actor.Color).ToVector3(),actor.Hsv+colorizeHsv,material?.Emissivity??1,ticket.Alpha,null,actor.Dithering,false);
-            backend.AddGlassPacket(0,part.Mesh,TextureCache.GetTexture(material?.Textures.ColorMetalFileName??glass.Texture),TextureCache.GetTexture(material?.Textures.NormalGlossFileName??glass.GlossTexture,false),constants,NativeBackend.GlassMaterial(glass,model.Bounds.HalfExtents.X,RenderSettings));DrawnMeshes++;
+            var constants=WorldConstants.Object(backend.GlassLayouts[0],world,(material?.Color??actor.Color).ToVector3(),actor.Hsv+colorizeHsv,material?.Emissivity??1,ticket.Alpha,null,actor.Dithering,false,255);
+            backend.AddGlassPacket(0,part.Mesh,TextureCache.GetTexture(material?.Textures.ColorMetalFileName??glass.Texture),TextureCache.GetTexture(material?.Textures.NormalGlossFileName??glass.GlossTexture,false),constants,NativeBackend.GlassMaterial(glass,model.Bounds.HalfExtents.X,RenderSettings),triangleFaceCulling:glass.TriangleFaceCulling);DrawnMeshes++;
         }
     }
     private void ClearNativePassScene()

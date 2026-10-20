@@ -18,7 +18,8 @@ public static class SpirvRuntimeModule
         using (var sha = SHA256.Create())
             if (BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant() != artifact.Layout.SpirvSha256)
                 throw new InvalidDataException("Shader artifact changed before native pipeline creation.");
-        return Prepare(bytes);
+        // Authenticate the catalog first; adapt only the executable copy.
+        return Dx11CubeLodAdapter.Apply(Prepare(bytes));
     }
     // D3D register namespaces are stage-local. Particle VS t0/t1 alias PS depth/atlas.
     // Move every VS descriptor into a disjoint range on an authenticated executable copy.

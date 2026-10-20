@@ -287,7 +287,7 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
     FsrDispatch work{};
     work.type = 0x00010001ull;
     work.command = cmd;
-    work.color = fsr_image(world.hdr.handle, 4, in_w, in_h, 0, 12);
+    work.color = fsr_image(world.hdr.handle, world.hdr_format==VK_FORMAT_B10G11R11_UFLOAT_PACK32?16u:4u, in_w, in_h, 0, 12);
     work.depth = fsr_image(world.gbuffer[3].handle, 28, in_w, in_h, 4, 12);
     work.motion = fsr_image(mv_image, 18, mv_w, mv_h, 0, 12);
     work.output = fsr_image(dest.handle, 4, out_w, out_h, 2, 2);

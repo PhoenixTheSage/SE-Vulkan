@@ -12,8 +12,9 @@ public sealed partial class NativeBackend
     public void NoteSubmissionRebuild(){submissionStats.RebuiltActors++;}
     public sealed class PreparedPart
     {
-        public readonly uint Pipeline;
+        public readonly uint Pipeline,Lod;
         public readonly uint ViewFlags;
+        public readonly NativeOldPartOrder OldOrder;
         public readonly ulong Mesh,Color,Normal,Extensions,Alpha;
         public readonly Vector3 Tint,Hsv;
         public readonly float Emissive,Dither;
@@ -22,8 +23,10 @@ public sealed partial class NativeBackend
         internal readonly int AlphaOffset;
         internal readonly RigidBatchHint Hint=new();
         internal WorldRecipe Recipe;
-        public PreparedPart(uint pipeline,ulong mesh,ulong color,ulong normal,ulong extensions,ulong alpha,Vector3 tint,Vector3 hsv,float emissive,float dither,ShaderMetadata layout,uint viewFlags=0)
-        {Pipeline=pipeline;ViewFlags=viewFlags;Mesh=mesh;Color=color;Normal=normal;Extensions=extensions;Alpha=alpha;Tint=tint;Hsv=hsv;Emissive=emissive;Dither=dither;Constants=WorldConstants.Object(layout,MatrixD.Identity,tint,hsv,emissive,0,null,dither);Rows=WorldConstants.ObjectRows(layout);AlphaOffset=new ReflectedConstantBuffer(layout,"Object").OffsetOf("object_.custom_alpha");}
+        public PreparedPart(uint pipeline,ulong mesh,ulong color,ulong normal,ulong extensions,ulong alpha,Vector3 tint,Vector3 hsv,float emissive,float dither,ShaderMetadata layout,uint viewFlags=0,uint lod=0)
+            :this(pipeline,mesh,color,normal,extensions,alpha,tint,hsv,emissive,dither,layout,viewFlags,lod,default){}
+        public PreparedPart(uint pipeline,ulong mesh,ulong color,ulong normal,ulong extensions,ulong alpha,Vector3 tint,Vector3 hsv,float emissive,float dither,ShaderMetadata layout,uint viewFlags,uint lod,NativeOldPartOrder oldOrder)
+        {OldOrder=oldOrder;Pipeline=pipeline;Lod=lod;ViewFlags=viewFlags;Mesh=mesh;Color=color;Normal=normal;Extensions=extensions;Alpha=alpha;Tint=tint;Hsv=hsv;Emissive=emissive;Dither=dither;Constants=WorldConstants.Object(layout,MatrixD.Identity,tint,hsv,emissive,0,null,dither,lod:lod);Rows=WorldConstants.ObjectRows(layout);AlphaOffset=new ReflectedConstantBuffer(layout,"Object").OffsetOf("object_.custom_alpha");}
     }
     public sealed class PreparedActor
     {
@@ -47,7 +50,8 @@ public sealed partial class NativeBackend
         int cell=WideRigidBatchesEnabled?64:16,x=(int)Math.Floor(origin.X/cell),y=(int)Math.Floor(origin.Y/cell),z=(int)Math.Floor(origin.Z/cell);
         if(lodAlpha==0&&stream==null&&count==1&&TryBulkModel(actor,flags,cascades,origin,radius,cell,x,y,z)){actor.UsedModelBatch=true;return;}
         if(lodAlpha==0&&stream==null&&count==1&&TryModelBatch(actor,flags,cascades,origin,radius,cell,x,y,z)){actor.UsedModelBatch=true;return;}
-        foreach(var part in actor.Parts){
+        for(int partIndex=0;partIndex<actor.Parts.Length;partIndex++){var part=actor.Parts[partIndex];MainPart=(uint)partIndex;
+            using var oldOrderScope=WithOldOrder(part.OldOrder);
             // Keep the rigid reference current too: batching can be disabled
             // without a pose change, and tinted generic coverage can differ.
             if(changed)WorldConstants.WriteMatrix(part.Constants,part.Rows,world);
@@ -60,10 +64,10 @@ public sealed partial class NativeBackend
     private void AppendPreparedRigid(PreparedPart part,byte[] instance,uint flags,uint cascades,Vector3 origin,float radius,int cell,int x,int y,int z)
     {
         var hint=part.Hint;RigidBatch batch;
-        if(RigidBatchHintsEnabled&&ReferenceEquals(hint.Owner,this)&&hint.Epoch==rigidCacheEpoch&&hint.Slot>=0&&hint.Slot<rigidBatchSlots.Count&&hint.Key.Flags==flags&&hint.Key.Cascades==cascades&&hint.Key.Cell==cell&&hint.Key.X==x&&hint.Key.Y==y&&hint.Key.Z==z)batch=rigidBatchSlots[hint.Slot];
+        if(RigidBatchHintsEnabled&&ReferenceEquals(hint.Owner,this)&&hint.Epoch==rigidCacheEpoch&&hint.Slot>=0&&hint.Slot<rigidBatchSlots.Count&&hint.Key.Flags==flags&&hint.Key.Cascades==cascades&&hint.Key.MainGroup==MainGroupToken&&hint.Key.OldOrder.Equals(part.OldOrder)&&hint.Key.Cell==cell&&hint.Key.X==x&&hint.Key.Y==y&&hint.Key.Z==z)batch=rigidBatchSlots[hint.Slot];
         else{
-            var key=new RigidBatchKey(part.Pipeline,part.Mesh,part.Color,part.Normal,part.Extensions,part.Alpha,part.Tint,part.Emissive,part.Dither,flags,cascades,origin,cell);
-            if(!rigidBatches.TryGetValue(key,out batch)){batch=new RigidBatch{Frame=-1,CacheIndex=rigidBatchSlots.Count,Constants=WorldConstants.Object(WorldLayouts[part.Pipeline+2],MatrixD.Identity,part.Tint,Vector3.Zero,part.Emissive,0,null,part.Dither)};rigidBatches.Add(key,batch);rigidBatchSlots.Add(batch);}
+            var key=new RigidBatchKey(part.Pipeline,part.Mesh,part.Color,part.Normal,part.Extensions,part.Alpha,part.Tint,part.Emissive,part.Dither,flags,cascades,origin,cell,part.Lod,MainGroupToken,part.OldOrder);
+            if(!rigidBatches.TryGetValue(key,out batch)){batch=new RigidBatch{Frame=-1,CacheIndex=rigidBatchSlots.Count,Constants=WorldConstants.Object(WorldLayouts[part.Pipeline+2],MatrixD.Identity,part.Tint,Vector3.Zero,part.Emissive,0,null,part.Dither,lod:part.Lod)};rigidBatches.Add(key,batch);rigidBatchSlots.Add(batch);}
             hint.Owner=this;hint.Epoch=rigidCacheEpoch;hint.Slot=batch.CacheIndex;hint.Key=key;
         }
         if(batch.Frame!=batchFrame){if(WorldRecipesEnabled)EnsureWorldRecipe(ref batch.Recipe,part.Pipeline+2,part.Mesh,part.Color,part.Normal,part.Extensions,part.Alpha,batch.Constants.Length);batch.Frame=batchFrame;rigidBatchPackets++;batch.PacketIndex=(int)AddWorldPacket(part.Pipeline+2,part.Mesh,part.Color,part.Normal,part.Extensions,part.Alpha,batch.Constants,batch.Instances,1,flags,cascades,origin,radius,false,batch.Recipe,false);var first=worldPackets[batch.PacketIndex];first.Count=0;first.InstanceCapacity=true;worldPackets[batch.PacketIndex]=first;}

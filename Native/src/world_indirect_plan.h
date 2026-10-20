@@ -4,6 +4,7 @@
 #include <span>
 #include <stdexcept>
 #include <vector>
+#include "old_part_order.h"
 
 // CPU-owned preparation for one caller-selected pass. Selection order and draw
 // identities survive batching; the GPU bridge supplies authenticated eligibility.
@@ -15,6 +16,8 @@ struct WorldIndirectPlan {
         bool eligible{};
         uint64_t vertex_buffer{},index_buffer{};
         uint32_t first_index{};int32_t vertex_offset{};bool arena{};
+        uint32_t raster_state{},main_order{},main_part{};
+        SevkOldPartOrder old_order{};
     };
     // VkDrawIndexedIndirectCommand layout, without requiring Vulkan in host tests.
     struct Command {
@@ -47,7 +50,7 @@ struct WorldIndirectPlan {
         auto compatible = [&](const Packet& a, const Packet& b) {
             bool geometry=a.arena==b.arena && (a.arena ? a.vertex_buffer==b.vertex_buffer && a.index_buffer==b.index_buffer : a.mesh==b.mesh && a.index_count==b.index_count);
             return a.eligible && b.eligible && geometry && a.material == b.material &&
-                a.pipeline == b.pipeline &&
+                a.pipeline == b.pipeline && a.raster_state == b.raster_state && a.main_order==b.main_order && a.main_part==b.main_part && old_order_equal(a.old_order,b.old_order) &&
                 a.object_bytes == b.object_bytes &&
                 std::memcmp(objects.data() + a.object_offset, objects.data() + b.object_offset,
                             a.object_bytes) == 0;

@@ -1,5 +1,15 @@
 # Stock actor LOD implementation
 
+2026-10-18 lighting acceptance update: old actor selection and newer-actor
+per-view selection are now enabled by default after matched live DX11/Vulkan
+geometry captures and focused GPU routing checks. `SE_VULKAN_ACTOR_LODS=0`
+and `SE_VULKAN_NEW_ACTOR_VIEWS=0` retain diagnostic opt-outs. See
+LightingParity.md for current evidence and remaining GBuffer LOD-channel work.
+The default-off descriptions and performance numbers below are historical.
+Skinned old-pipeline actors are now included as well, verified against direct
+authored geometry with nonuniform live poses and the existing 60-bone palettes.
+Static-group ownership remains a separate unverified selection path.
+
 Update: the earlier measurements below predate correction of unparented native
 actors' missing stock WorldAabb cache. Near-actor distance is now based on the
 authoritative world bound; see Performance-2026-10-07-GroupOcclusion.md for fresh

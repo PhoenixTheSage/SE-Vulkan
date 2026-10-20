@@ -6,7 +6,7 @@ var lib=new VulkanShaderLibrary(args[0],args[1],args[2]);var artifact=lib.LoadLi
 void Check(bool c,string text){if(!c)throw new Exception(text);checks++;Console.WriteLine("PASS "+text);}
 Check(artifact.Layout.WorkgroupSizeX==16 && artifact.Layout.WorkgroupSizeY==16 && artifact.Layout.ExecutionModel==5,"derived compute interface authenticates");
 string source=File.ReadAllText(Path.Combine(args[1],"Lighting/PrepareLights.hlsl"));
-Check(LightTileShader.DeriveSource(source).Contains("sLightMask[index / 32]"),"stock selection emits ordered64 mask");
+Check(LightTileShader.DeriveSource(source).Contains("sLightMask[index / 32]"),"stock selection emits ordered4096 mask");
 void Reject(Action a,string text){try{a();}catch(InvalidDataException){Check(true,text);return;}throw new Exception("accepted "+text);}
 Reject(()=>LightTileShader.DeriveSource(source.Replace("groupshared uint sTileNumLights;","changed")),"changed stock declaration rejected");
 string scratch=Path.GetFullPath("TestResults/LightTileShaderIntegrityTests/"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(scratch);

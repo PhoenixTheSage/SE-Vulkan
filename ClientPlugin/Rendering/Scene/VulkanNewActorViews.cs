@@ -6,7 +6,7 @@ using VRageRender;
 namespace ClientPlugin.Rendering.Scene;
 public sealed partial class VulkanScene
 {
-    public bool NewActorViewsEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_NEW_ACTOR_VIEWS")=="1";
+    public bool NewActorViewsEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_NEW_ACTOR_VIEWS")!="0";
     NewActorViewStats newViewStats;
     public NewActorViewStats GetNewActorViewStats()=>newViewStats;
     struct ActorViewSlice {public int Lod;public float Alpha;public bool Main,Probe,Spots;public uint Cascades;}
@@ -42,11 +42,13 @@ public sealed partial class VulkanScene
         if(actor.LastNewSpotLod!=spotLod){MarkSpots(bounds.Center,(float)bounds.HalfExtents.Length(),false);MarkSpots(bounds.Center,(float)bounds.HalfExtents.Length(),true);actor.LastNewSpotLod=spotLod;}
         planProfile.Dispose();using var emissionProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NewViewEmission,false);
         actor.SuppressViewHighlight=true;
-        try{for(int i=0;i<actorViewSliceCount;i++){var view=actorViewSlices[i];SelectRepresentation(actor,models.GetLod(actor.Model,view.Lod));actor.LodAlpha=view.Alpha;
+        // Stock GeometryStage2 uses the 255 pipeline marker in its placeholder
+        // object buffer; the selected geometry level belongs to the view plan.
+        try{for(int i=0;i<actorViewSliceCount;i++){var view=actorViewSlices[i];SelectRepresentation(actor,models.GetLod(actor.Model,view.Lod),255);actor.LodAlpha=view.Alpha;
                 actor.ExtraViewFlags=(view.Spots?0u:0x2000000u)|((view.Cascades==0&&!view.Spots)?512u:0u);
                 DrawWorld(target,actor,world,!view.Main,false,!view.Probe,bounds,view.Cascades);newViewStats.Representations++;}
         }finally{actor.ExtraViewFlags=0;actor.SuppressViewHighlight=false;}
-        if(HasHighlight(actor.Actor.ID)){SelectRepresentation(actor,actor.Model);actor.LodAlpha=0;actor.ExtraViewFlags=8192u|512u|0x2000000u;
+        if(HasHighlight(actor.Actor.ID)){SelectRepresentation(actor,actor.Model,255);actor.LodAlpha=0;actor.ExtraViewFlags=8192u|512u|0x2000000u;
             try{DrawWorld(target,actor,world,false,false,true,bounds,0);}finally{actor.ExtraViewFlags=0;}newViewStats.HighlightActors++;}
         return true;
     }

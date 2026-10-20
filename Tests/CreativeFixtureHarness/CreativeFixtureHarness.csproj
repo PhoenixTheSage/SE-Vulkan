@@ -4,6 +4,8 @@
     <AssemblyName>CreativeFixtureHarness</AssemblyName><RunPostBuildEvent>Never</RunPostBuildEvent>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Shared/MeshDecalFixtureAssets.cs" Link="MeshDecalFixtureAssets.cs" />
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" />
     <Reference Include="Vulkan"><HintPath>../../ClientPlugin/bin/Release/net48/Vulkan.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="VRage"><HintPath>$(Bin64Dir)VRage.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="VRage.Library"><HintPath>$(Bin64Dir)VRage.Library.dll</HintPath><Private>false</Private></Reference>

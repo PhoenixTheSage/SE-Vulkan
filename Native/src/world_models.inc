@@ -1,13 +1,14 @@
 static_assert(sizeof(SevkModelPart)==16 && sizeof(SevkModelInstance)==120 && sizeof(SevkModelGroupStats)==48);
-uint64_t register_model(const SevkModelPart* parts,uint32_t count,const uint8_t* objects,uint32_t bytes){
+uint64_t register_model(const SevkModelPart* parts,uint32_t count,const uint8_t* objects,uint32_t bytes,const SevkOldPartOrder* orders=nullptr){
     auto& models=world.models;
     if(recording || !parts || !count || count>4096 || !objects || bytes>16u*1024*1024 || models.definitions.size()>=65536 || models.resident_bytes+bytes>256ull*1024*1024)throw std::runtime_error("invalid/budgeted model registration");
     ModelDefinition definition{};definition.parts.reserve(count);uint32_t cursor=0;
     for(uint32_t i=0;i<count;++i){const auto& p=parts[i];uint32_t index=uint32_t(p.recipe)-1,generation=uint32_t(p.recipe>>32);
-        if(index>=world.recipes.size() || (p.reserved&~(512u|4096u|16384u)) || !generation)throw std::runtime_error("invalid model part recipe");
+        if(index>=world.recipes.size() || (p.reserved&~(512u|4096u|16384u|0x3c000000u)) || (p.reserved&0x18000000u)==0x18000000u || !generation)throw std::runtime_error("invalid model part recipe");
         auto& recipe=world.recipes[index];if(!recipe.alive || recipe.generation!=generation)throw std::runtime_error("stale model part recipe");validate_world_recipe(recipe);
         if(recipe.packet.pipeline>=20 || world.pipelines[recipe.packet.pipeline].type!=2 || p.object_offset!=cursor || uint64_t(cursor)+recipe.packet.object_bytes>bytes)throw std::runtime_error("model requires canonical generic object spans");
-        definition.parts.push_back({&recipe,generation,std::vector<uint8_t>(objects+cursor,objects+cursor+recipe.packet.object_bytes),p.reserved});cursor+=recipe.packet.object_bytes;
+        if(orders){validate_old_order(orders[i]);if(orders[i].valid&&!(p.reserved&0x04000000u))throw std::runtime_error("ordered model lost OLD provenance");}
+        definition.parts.push_back({&recipe,generation,std::vector<uint8_t>(objects+cursor,objects+cursor+recipe.packet.object_bytes),p.reserved,orders?orders[i]:SevkOldPartOrder{}});cursor+=recipe.packet.object_bytes;
     }
     if(cursor!=bytes)throw std::runtime_error("model object blob mismatch");
     definition.generation=++models.generation;if(!definition.generation)definition.generation=++models.generation;
@@ -26,8 +27,8 @@ void append_models(const SevkModelInstance* instances,uint32_t count,const uint3
     m.stats={sizeof(SevkModelGroupStats),SEVK_ABI_VERSION,1,count,0,0,uint32_t(m.definitions.size()),legacy_count};
     for(uint32_t i=1;i<legacy_count;++i)if(legacy_order[i]<=legacy_order[i-1])throw std::runtime_error("noncanonical legacy model ordering");
     for(uint32_t i=0;i<count;++i){const auto& source=instances[i];uint32_t index=uint32_t(source.model)-1,generation=uint32_t(source.model>>32);
-        if(index>=m.definitions.size() || !generation || m.definitions[index].generation!=generation || source.reserved || (source.cell!=16&&source.cell!=64) || (i && source.order<=instances[i-1].order))throw std::runtime_error("invalid model instance handle/order/cell");
-        ModelGroupKey key{source.model,source.flags,source.cascade_mask,source.cell,source.x,source.y,source.z};
+        if(index>=m.definitions.size() || !generation || m.definitions[index].generation!=generation || source.reserved>source.order || (source.cell!=16&&source.cell!=64) || (i && source.order<=instances[i-1].order))throw std::runtime_error("invalid model instance handle/order/cell");
+        ModelGroupKey key{source.model,source.flags,source.cascade_mask,source.cell,source.x,source.y,source.z,source.reserved};
         auto [entry,added]=m.lookup.try_emplace(key,uint32_t(m.groups.size()));if(added){m.groups.emplace_back();m.groups.back().key=key;}
         auto& group=m.groups[entry->second];
         if(group.frame!=m.frame){group.frame=m.frame;group.count=0;group.order=source.order;group.instances.clear();std::memcpy(group.origin,source.origin,12);group.radius=source.radius;m.active.push_back(entry->second);}
@@ -45,11 +46,12 @@ void append_models(const SevkModelInstance* instances,uint32_t count,const uint3
     world.current().draw_objects.reserve(size_t(object_bytes));world.current().instances.data.reserve(size_t(instance_bytes));m.merged.clear();m.merged.reserve(size_t(packets));uint32_t legacy=0;
     // First-seen model groups and legacy submissions are both ordered streams.
     // Merge once and return physical legacy indices to every identity consumer.
+    for(uint32_t i=0;i<legacy_count;++i)if(!world.current().draws[i].main_order)world.current().draws[i].main_order=legacy_order[i];
     for(auto index:m.active){const auto& group=m.groups[index];while(legacy<legacy_count && legacy_order[legacy]<group.order){remap[legacy]=uint32_t(m.merged.size());m.merged.push_back(world.current().draws[legacy++]);}
         if(legacy<legacy_count && legacy_order[legacy]==group.order)throw std::runtime_error("overlapping model/legacy order");
         uint32_t instance_at=uint32_t(world.current().instances.data.size());world.current().instances.data.insert(world.current().instances.data.end(),group.instances.begin(),group.instances.end());
         const auto& definition=m.definitions[uint32_t(group.key.model)-1];for(const auto& part:definition.parts){auto& recipe=*part.recipe;WorldDraw draw{};draw.packet=recipe.packet;draw.packet.instance_count=group.count;draw.packet.flags=group.key.flags|part.view_flags;draw.packet.reserved=group.key.cascades;std::memcpy(draw.packet.origin,group.origin,12);draw.packet.radius=group.radius;draw.recipe=&recipe;draw.recipe_generation=part.generation;draw.geometry=recipe.geometry;draw.object_at=uint32_t(world.current().draw_objects.size());draw.object_n=uint32_t(part.constants.size());draw.instance_at=instance_at;draw.instance_n=uint32_t(group.instances.size());
-            world.current().draw_objects.resize(world.current().draw_objects.size()+size_t(world_align(draw.object_n)));std::memcpy(world.current().draw_objects.data()+draw.object_at,part.constants.data(),draw.object_n);m.merged.push_back(draw);}
+            draw.main_order=group.key.main_order?group.key.main_order:group.order;draw.main_part=uint32_t(&part-definition.parts.data());draw.old_order=part.old_order;world.current().draw_objects.resize(world.current().draw_objects.size()+size_t(world_align(draw.object_n)));std::memcpy(world.current().draw_objects.data()+draw.object_at,part.constants.data(),draw.object_n);m.merged.push_back(draw);}
     }
     while(legacy<legacy_count){remap[legacy]=uint32_t(m.merged.size());m.merged.push_back(world.current().draws[legacy++]);}world.current().draws.swap(m.merged);
     world.current().validation_stats.draws=uint32_t(packets);world.current().queue_work.draws=uint32_t(packets);world.current().recipe_stats.draws=uint32_t(packets);world.current().recipe_stats.geometry_reused=uint32_t(packets);

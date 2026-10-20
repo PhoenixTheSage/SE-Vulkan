@@ -14,14 +14,14 @@ using VRageRender.Messages;
 
 class Program
 {
-    static int Main(string[] args){string bin=Path.GetFullPath(args[0]);AssemblyLoadContext.Default.Resolving+=(_,n)=>{string p=Path.Combine(bin,n.Name+".dll");return File.Exists(p)?AssemblyLoadContext.Default.LoadFromAssemblyPath(p):null;};return Run(bin);}
+    static int Main(string[] args){string bin=Path.GetFullPath(args[0]);AssemblyLoadContext.Default.Resolving+=(_,n)=>{string p=Path.Combine(bin,n.Name+".dll");return File.Exists(p)?AssemblyLoadContext.Default.LoadFromAssemblyPath(p):null;};try{return Run(bin,args.Contains("--normal-hdr"));}catch(Exception error){Console.Error.WriteLine(error);return 1;}}
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static int Run(string bin)
+    static int Run(string bin,bool normalHdr)
     {
         int checks=0;void Check(bool ok,string text){if(!ok)throw new Exception(text);checks++;Console.WriteLine("PASS "+text);}
         string output=Path.GetFullPath("TestResults/EnvironmentGpuTests");Directory.CreateDirectory(output);
         var library=new VulkanShaderLibrary(Path.GetFullPath("Assets/Shaders/Vanilla"),Path.Combine(bin,"../Content/Shaders"),Path.Combine(bin,"VRage.Render11.dll"));
-        using var backend=new NativeBackend(null);backend.Create(64,64,0,true,Path.Combine(output,"Cache"));backend.InitializeGBuffer(library.Load(VanillaGBufferShaders.VertexId),library.Load(VanillaGBufferShaders.PixelId));backend.ConfigureWorld(library,Path.Combine(bin,"../Content/Shaders"));
+        using var backend=new NativeBackend(null);backend.Create(64,64,0,true,Path.Combine(output,"Cache"));backend.InitializeGBuffer(library.Load(VanillaGBufferShaders.VertexId),library.Load(VanillaGBufferShaders.PixelId));backend.ConfigureWorld(library,Path.Combine(bin,"../Content/Shaders"));if(normalHdr)backend.SetHdrQuality(false);
         Check(backend.EnvironmentLayouts.Count==10,"ten authenticated stock planet/foliage/probe stages initialize");Check(Marshal.SizeOf<NativeEnvironmentDraw>()==192&&Marshal.SizeOf<NativeFoliageDraw>()==168&&Marshal.SizeOf<NativeFoliagePoint>()==16,"copied native ABI layouts");
         MatrixD projection=MatrixD.CreatePerspectiveFieldOfView(Math.PI/2,1,.1,200000);projection.M33=projection.M34-projection.M33;projection.M43=projection.M44-projection.M43;
         var light=MyEnvironmentLightData.Default;light.SunLightDirection=Vector3.Forward;light.SunDiscIntensity=0;light.SunColorRaw=Vector3.One;light.SunDiffuseFactor=1;
@@ -49,6 +49,6 @@ class Program
             environment.Process(new MyRenderMessageEnableAtmosphere{Enabled=false});ManagedFrame();Check(backend.GetEnvironmentStats().AtmosphereDraws==before+1,"stock atmosphere disable suppresses submissions");
             environment.Process(new MyRenderMessageEnableAtmosphere{Enabled=true});ManagedFrame();Check(backend.GetEnvironmentStats().AtmosphereDraws==before+2,"stock atmosphere re-enable resumes submissions");
         }
-        backend.BeginPacketCollection();backend.RemoveResource(7,1);backend.RemoveResource(3,2);backend.RemoveResource(3,7);backend.RemoveResource(0,3);backend.RemoveResource(0,4);backend.RemoveResource(5,5);backend.RemoveResource(5,6);Render();var stats=backend.GetStats();Check(backend.GetEnvironmentStats().Luts==0,"unload retires atmosphere LUT");Check(stats.ValidationEnabled!=0&&stats.ValidationErrors==0,"zero Vulkan core and synchronization validation errors");File.WriteAllText(Path.Combine(output,"result.json"),JsonSerializer.Serialize(new{Checks=checks,ValidationErrors=stats.ValidationErrors,Environment=backend.GetEnvironmentStats()},new JsonSerializerOptions{WriteIndented=true,IncludeFields=true}));return 0;
+        backend.BeginPacketCollection();backend.RemoveResource(7,1);backend.RemoveResource(3,2);backend.RemoveResource(3,7);backend.RemoveResource(0,3);backend.RemoveResource(0,4);backend.RemoveResource(5,5);backend.RemoveResource(5,6);Render();var stats=backend.GetStats();Check(backend.GetEnvironmentStats().Luts==0,"unload retires atmosphere LUT");Check(stats.ValidationEnabled!=0&&stats.ValidationErrors==0,"zero Vulkan core and synchronization validation errors");File.WriteAllText(Path.Combine(output,normalHdr?"result-normal-hdr.json":"result.json"),JsonSerializer.Serialize(new{Checks=checks,HighQualityHdr=!normalHdr,ValidationErrors=stats.ValidationErrors,Environment=backend.GetEnvironmentStats()},new JsonSerializerOptions{WriteIndented=true,IncludeFields=true}));return 0;
     }
 }

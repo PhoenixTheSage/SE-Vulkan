@@ -8,7 +8,11 @@ namespace ClientPlugin.Rendering.Shaders;
 
 public static class WorldConstants
 {
-    public static byte[] Frame(ShaderMetadata layout,MatrixD view,MatrixD projection,int width,int height,MyEnvironmentLightData light,float emission=1,MatrixD? background=null,MyRenderFogSettings? fog=null,float time=0,float delta=0,MyRenderSettings? renderSettings=null,Vector3? cameraDelta=null,MyPostprocessSettings? postprocess=null,bool specularProbes=false,float renderFraction=1)
+    public static uint PointLightCapacity(MyRenderQualityEnum quality)=>quality switch {
+        MyRenderQualityEnum.LOW=>256,MyRenderQualityEnum.NORMAL=>512,
+        MyRenderQualityEnum.HIGH=>2048,MyRenderQualityEnum.EXTREME=>4096,
+        _=>throw new ArgumentOutOfRangeException(nameof(quality))};
+    public static byte[] Frame(ShaderMetadata layout,MatrixD view,MatrixD projection,int width,int height,MyEnvironmentLightData light,float emission=1,MatrixD? background=null,MyRenderFogSettings? fog=null,float time=0,float delta=0,MyRenderSettings? renderSettings=null,Vector3? cameraDelta=null,MyPostprocessSettings? postprocess=null,bool specularProbes=false,float renderFraction=1,MyTextureDebugMultipliers? textureMultipliers=null)
     {
         var result=new ReflectedConstantBuffer(layout,"Frame");
         void Matrix(string name,MatrixD value)=>result.Set("frame_.Environment."+name,NativeBackend.MatrixValues(value));
@@ -29,25 +33,30 @@ public static class WorldConstants
         Scalar("aoDirLight",light.AODirLight);Scalar("aoIndirectLight",light.AOIndirectLight);Scalar("aoPointLight",light.AOPointLight);Scalar("aoSpotLight",light.AOSpotLight);
         Vector("SunDiscColor",light.SunDiscColor);Vector("SunDiscColor2",light.SunDiscColor2);Scalar("SunDiscInnerDot",light.SunDiscInnerDot);Scalar("SunDiscOuterDot",light.SunDiscOuterDot);Scalar("SunDiscIntensity",light.SunDiscIntensity);
         Scalar("skyboxBrightness",light.SkyboxBrightness);Scalar("AmbientFarDistance",Math.Max(1,light.AmbientRadius));Scalar("SkipIBLevels",specularProbes?Math.Max(0,light.SkipIBLevels):0);Scalar("shadowFadeout",light.ShadowFadeoutMultiplier);
-        result.SetUInt("frame_.Light.tiles_x",(uint)((width+15)/16));result.SetUInt("frame_.Light.tiles_num",(uint)(((width+15)/16)*((height+15)/16)));result.SetUInt("frame_.Light.maxTileLights",64);
+        result.SetUInt("frame_.Light.tiles_x",(uint)((width+15)/16));result.SetUInt("frame_.Light.tiles_num",(uint)(((width+15)/16)*((height+15)/16)));result.SetUInt("frame_.Light.maxTileLights",PointLightCapacity((renderSettings??new MyRenderSettings()).User.LightsQuality));
         object post=(postprocess??MyPostprocessSettings.Default).GetProcessedData();
         foreach(var field in typeof(MyPostprocessSettings.Layout).GetFields(System.Reflection.BindingFlags.Public|System.Reflection.BindingFlags.Instance))
         {string path="frame_.Post."+(field.Name=="Res2"?"LogLumThreshold":field.Name);object value=field.GetValue(post);if(value is Vector3 v)result.Set(path,v.X,v.Y,v.Z);else if(value is int n)result.SetInt(path,n);else result.Set(path,(float)value);}
         result.Set("frame_.Post.BloomEmissiveness",emission);
-        foreach(string name in new[]{"Albedo","Metalness","Gloss","Ao","Emissive","ColorMask"})result.Set("frame_.TextureDebugMultipliers."+name+"Multiplier",1);
+        var texture=textureMultipliers??MyTextureDebugMultipliers.Defaults;
+        foreach(var field in typeof(MyTextureDebugMultipliers).GetFields(System.Reflection.BindingFlags.Public|System.Reflection.BindingFlags.Instance))
+            if(field.FieldType==typeof(float))result.Set("frame_.TextureDebugMultipliers."+field.Name,(float)field.GetValue(texture));
+        // Scene submission already adds ColorizeHSV to each object's key color.
+        // Leave the frame vector zero to preserve that existing ownership.
         if(fog.HasValue){var f=fog.Value;Vector3 color=f.FogColor.ToVector3().ToLinearRGB();result.Set("frame_.Fog.color",color.X,color.Y,color.Z);result.Set("frame_.Fog.density",f.FogDensity);result.Set("frame_.Fog.mult",f.FogMultiplier);result.Set("frame_.Fog.sky",f.FogSkybox);result.Set("frame_.Fog.atmo",f.FogAtmo);}
         if(renderSettings.HasValue){var settings=renderSettings.Value;result.Set("frame_.Foliage.clipping_scaling",settings.User.GrassDrawDistance,settings.GrassGeometryScalingNearDistance*.4f,settings.GrassGeometryScalingFarDistance*.4f,settings.GrassGeometryDistanceScalingFactor);double angle=settings.WindAzimuth*Math.PI/180;result.Set("frame_.Foliage.wind_vec",(float)Math.Cos(angle)*settings.WindStrength,0,(float)Math.Sin(angle)*settings.WindStrength);}
         if(cameraDelta.HasValue){var d=cameraDelta.Value;result.Set("frame_.Environment.cameraPositionDelta",d.X,d.Y,d.Z);}result.Set("frame_.randomSeed", (float)((.314159 + time * .61803398875) % 1.0));
         result.Set("frame_.frameTime",time);result.Set("frame_.frameTimeDelta",delta);
         return result.Bytes;
     }
-    public static byte[] Object(ShaderMetadata layout,MatrixD world,Vector3 tint,Vector3 hsv,float emissivity,float dither,float[] bones=null,float? alphaY=null,bool pooled=false)
+    public static byte[] Object(ShaderMetadata layout,MatrixD world,Vector3 tint,Vector3 hsv,float emissivity,float dither,float[] bones=null,float? alphaY=null,bool pooled=false,uint lod=0)
     {
         var result=pooled?new ReflectedConstantBuffer(layout,"Object",ReflectedConstantBuffer.Rent(layout,"Object")):new ReflectedConstantBuffer(layout,"Object");
         result.Set("object_.matrix_row0",(float)world.M11,(float)world.M21,(float)world.M31,(float)world.M41);
         result.Set("object_.matrix_row1",(float)world.M12,(float)world.M22,(float)world.M32,(float)world.M42);
         result.Set("object_.matrix_row2",(float)world.M13,(float)world.M23,(float)world.M33,(float)world.M43);
         result.Set("object_.color_mul",tint.X,tint.Y,tint.Z);result.Set("object_.key_color",hsv.X,hsv.Y,hsv.Z);result.Set("object_.emissive",emissivity);result.Set("object_.custom_alpha",dither,alphaY??0);
+        result.SetUInt("object_.LOD",lod);
         if(bones!=null)result.Set("object_.bone_matrix",bones);
         return result.Bytes;
     }

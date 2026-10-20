@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><AllowUnsafeBlocks>true</AllowUnsafeBlocks><TargetFramework>net10.0</TargetFramework><LangVersion>14</LangVersion><ImplicitUsings>enable</ImplicitUsings><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup>
   <ItemGroup>
+    <Reference Include="VRage.Render"><HintPath>$(Bin64Dir)VRage.Render.dll</HintPath><Private>true</Private></Reference>
     <Compile Include="Program.cs" />
     <Compile Include="../../ClientPlugin/Rendering/Shaders/*.cs" Link="%(Filename)%(Extension)" />
     <Compile Include="../../ClientPlugin/Bootstrap/BootstrapAssets.cs" Link="BootstrapAssets.cs" />

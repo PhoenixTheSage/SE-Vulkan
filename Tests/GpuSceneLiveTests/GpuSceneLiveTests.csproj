@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><AllowUnsafeBlocks>true</AllowUnsafeBlocks><TargetFramework>net10.0</TargetFramework><PlatformTarget>x64</PlatformTarget><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
-  <ItemGroup><ProjectReference Include="../../ClientPlugin/ClientPlugin.csproj" />
+  <ItemGroup><Compile Include="../Shared/MeshDecalFixtureAssets.cs" Link="MeshDecalFixtureAssets.cs" /><ProjectReference Include="../../ClientPlugin/ClientPlugin.csproj" />
     <Reference Include="VRage.Math"><HintPath>$(Bin64Dir)VRage.Math.dll</HintPath></Reference>
     <Reference Include="VRage"><HintPath>$(Bin64Dir)VRage.dll</HintPath></Reference>
     <Reference Include="VRage.Library"><HintPath>$(Bin64Dir)VRage.Library.dll</HintPath></Reference>

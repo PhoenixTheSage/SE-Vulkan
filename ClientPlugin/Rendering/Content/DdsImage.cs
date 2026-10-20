@@ -15,8 +15,8 @@ namespace ClientPlugin.Rendering.Content
         public byte[] Data { get; private set; }
         public byte[][] Mips { get; private set; }
 
-        /// <summary>Reads the six cube faces in DDS order +X,-X,+Y,-Y,+Z,-Z, retaining mip zero only.</summary>
-        public static DdsImage[] ReadCube(Stream stream)
+        /// <summary>Reads six DDS faces in +X,-X,+Y,-Y,+Z,-Z order, optionally retaining their authored mip chains.</summary>
+        public static DdsImage[] ReadCube(Stream stream, bool retainMips = false)
         {
             if (!stream.CanSeek) throw new NotSupportedException("Cube DDS input must support seeking over mip chains.");
             byte[] header;
@@ -69,7 +69,7 @@ namespace ClientPlugin.Rendering.Content
                 }
                 stride = checked(stride + size); w = Math.Max(1, w / 2); h = Math.Max(1, h / 2);
             }
-            Buffer.BlockCopy(BitConverter.GetBytes(1u), 0, header, 28, 4);
+            if(!retainMips)Buffer.BlockCopy(BitConverter.GetBytes(1u), 0, header, 28, 4);
             Buffer.BlockCopy(BitConverter.GetBytes(0u), 0, header, 112, 4);
             long dataStart = stream.Position;
             if (stream.Length - dataStart < stride * 6) throw new EndOfStreamException("Truncated DDS cube face/mip data.");
@@ -78,11 +78,11 @@ namespace ClientPlugin.Rendering.Content
             {
                 stream.Position = dataStart + face * stride;
                 byte[] pixels;
-                using (var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, true)) pixels = ReadExact(reader, topSize);
+                using (var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, true)) pixels = ReadExact(reader, retainMips?checked((int)stride):topSize);
                 using (var flat = new MemoryStream(header.Length + pixels.Length))
                 {
                     flat.Write(header, 0, header.Length); flat.Write(pixels, 0, pixels.Length); flat.Position = 0;
-                    faces[face] = Read(flat);
+                    faces[face] = Read(flat,retainMips);
                 }
             }
             stream.Position = dataStart + stride * 6;

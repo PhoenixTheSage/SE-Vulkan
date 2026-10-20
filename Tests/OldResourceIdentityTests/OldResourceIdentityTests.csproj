@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFrameworks>net48;net10.0</TargetFrameworks><PlatformTarget>x64</PlatformTarget><LangVersion>14</LangVersion><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../ClientPlugin/Rendering/Content/StockOldMaterialIdentities.cs" Link="StockOldMaterialIdentities.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Content/StockOldMaterialDescriptions.cs" Link="StockOldMaterialDescriptions.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Content/StockOldResourceIndices.cs" Link="StockOldResourceIndices.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Content/StockOldPartIdentities.cs" Link="StockOldPartIdentities.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Content/StockOldFileIdentityReader.cs" Link="StockOldFileIdentityReader.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Content/StockOldFileIdentities.cs" Link="StockOldFileIdentities.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Content/StockOldVertexLayouts.cs" Link="StockOldVertexLayouts.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Content/StockOldTransientIdentities.cs" Link="StockOldTransientIdentities.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Content/StockOldResourceIdentities.cs" Link="StockOldResourceIdentities.cs" />
+    <Compile Include="../Shared/MeshDecalFixtureAssets.cs" Link="MeshDecalFixtureAssets.cs" />
+    <Reference Include="VRage"><HintPath>$(Bin64Dir)VRage.dll</HintPath></Reference>
+    <Reference Include="VRage.Library"><HintPath>$(Bin64Dir)VRage.Library.dll</HintPath></Reference>
+    <Reference Include="VRage.Math"><HintPath>$(Bin64Dir)VRage.Math.dll</HintPath></Reference>
+    <Reference Include="VRage.Render"><HintPath>$(Bin64Dir)VRage.Render.dll</HintPath></Reference>
+    <Reference Include="VRage.Render11"><HintPath>$(Bin64Dir)VRage.Render11.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

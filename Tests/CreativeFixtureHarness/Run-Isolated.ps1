@@ -7,14 +7,48 @@ param(
     [switch]$Asteroids,
     [switch]$Planets,
     [switch]$Transparency,
+    [switch]$GlassOverlap,
+    [switch]$MeshDecals,
+    [switch]$MeshDecalOverlap,
+    [switch]$MeshDecalCutout,
+    [switch]$MeshRaster,
+    [switch]$MeshOldOrder,
+    [switch]$MeshHdr16,
+    [switch]$MeshImmediateProbes,
+    [switch]$MeshInstanceColor,
+    [switch]$MeshInstanceMaterialColor,
+    [switch]$MeshInstanceFade,
     [switch]$Postprocessing,
     [switch]$AnomalyParity,
+    [switch]$LightingDiagnostics,
+    [switch]$StaticLightingDiagnostics,
+    [switch]$StockShadowSchedule,
+    [switch]$StockShadowFit,
+    [switch]$StockActorLods,
+    [switch]$StockNewActorViews,
     [switch]$PrepareOnly,
     [string]$LoadFixtureWorld,
     [string]$ValidationLayerPath,
     [string]$RenderDocDirectory
 )
 $ErrorActionPreference = 'Stop'
+if($MeshOldOrder -and (!$MeshDecals -or $MeshRaster -or $MeshInstanceColor -or $MeshDecalOverlap -or $MeshDecalCutout)){throw 'MeshOldOrder requires independent MeshDecals mode.'}
+if($MeshHdr16 -and !$MeshDecals){throw 'MeshHdr16 is a paired material-fixture HDR-format diagnostic and requires MeshDecals.'}
+if($MeshImmediateProbes -and !$MeshDecals){throw 'MeshImmediateProbes requires the paired MeshDecals diagnostic.'}
+if($MeshInstanceFade -and (!$MeshInstanceColor -or $MeshInstanceMaterialColor)){throw 'MeshInstanceFade requires the independent MeshInstanceColor scenario.'}
+if($MeshInstanceMaterialColor -and !$MeshInstanceColor){throw 'MeshInstanceMaterialColor requires MeshInstanceColor.'}
+if($MeshInstanceColor -and (!$MeshDecals -or $MeshDecalOverlap -or $MeshDecalCutout -or $MeshRaster)){throw 'MeshInstanceColor requires independent MeshDecals mode.'}
+if($MeshRaster -and (!$MeshDecals -or $MeshDecalOverlap -or $MeshDecalCutout)){throw 'MeshRaster requires independent MeshDecals mode.'}
+if($MeshDecalCutout -and !$MeshDecalOverlap){throw 'MeshDecalCutout requires MeshDecalOverlap.'}
+if($MeshDecalOverlap -and !$MeshDecals){throw 'MeshDecalOverlap requires MeshDecals.'}
+if($GlassOverlap -and ($Transparency -or $AnomalyParity -or $LightingDiagnostics -or $Postprocessing -or $Asteroids -or $Planets)){throw 'GlassOverlap is an independent, quality-pinned scene; do not combine it with other camera/effect scenarios.'}
+if($MeshDecals -and ($GlassOverlap -or $Transparency -or $AnomalyParity -or $LightingDiagnostics -or $Postprocessing -or $Asteroids -or $Planets)){throw 'MeshDecals requires its independent pinned scene.'}
+if($LightingDiagnostics -and !$AnomalyParity){throw 'LightingDiagnostics uses the controlled AnomalyParity camera/environment scenario.'}
+if($StaticLightingDiagnostics -and !$LightingDiagnostics){throw 'StaticLightingDiagnostics requires LightingDiagnostics.'}
+if($StockShadowFit -and !$StockShadowSchedule){throw 'StockShadowFit requires StockShadowSchedule and retained cascade ownership.'}
+if(($StockShadowFit -or $StockShadowSchedule) -and $Backend -ne 'Vulkan'){throw 'Stock shadow switches select the Vulkan implementation; DX11 already uses its stock implementation.'}
+if($StockActorLods -and $Backend -ne 'Vulkan'){throw 'StockActorLods selects the experimental Vulkan implementation; DX11 uses its stock implementation.'}
+if($StockNewActorViews -and $Backend -ne 'Vulkan'){throw 'StockNewActorViews selects the experimental Vulkan implementation; DX11 uses its stock implementation.'}
 function Copy-FixtureAssets([string]$Source,[string]$Target) {
     & robocopy $Source $Target /E /MT:8 /R:1 /W:1 /NFL /NDL /NJH /NJS /NP
     if($LASTEXITCODE -ge 8){throw "Fixture asset copy failed: robocopy exit $LASTEXITCODE"}
@@ -28,6 +62,7 @@ if (!$PrepareOnly -and (Get-Process -Name SpaceEngineers,Legacy,Interim -ErrorAc
 if (!(Test-Path -LiteralPath (Join-Path $gameBin 'SpaceEngineers.exe'))) { throw 'The game Bin64 path is invalid.' }
 if (!(Test-Path -LiteralPath (Join-Path $pulsarSource 'Legacy.exe'))) { throw 'The Pulsar path is invalid.' }
 $builtPlugin = Join-Path $repository 'ClientPlugin/bin/Release/net48/Vulkan.dll'
+if(($GlassOverlap -or $MeshDecals) -and !(Test-Path -LiteralPath (Join-Path $repository 'Native/build/Release/se_vulkan_native.dll'))){throw 'Build the current native renderer before the isolated material fixture.'}
 & dotnet build (Join-Path $repository 'ClientPlugin/ClientPlugin.csproj') -c Release -p:RunPostBuildEvent=Never
 if ($LASTEXITCODE -ne 0) { throw 'Current managed renderer build failed.' }
 if ($AnomalyParity) {
@@ -39,6 +74,10 @@ if ($AnomalyParity) {
 if (!(Test-Path -LiteralPath $builtPlugin)) { throw 'Build the Release managed plugin first.' }
 & dotnet build (Join-Path $PSScriptRoot 'CreativeFixtureHarness.csproj') -c Release -p:RunPostBuildEvent=Never
 if ($LASTEXITCODE -ne 0) { throw 'Creative fixture harness build failed.' }
+if(($LightingDiagnostics -or $MeshDecals) -and $Backend -eq 'Dx11') {
+    & dotnet build (Join-Path $PSScriptRoot '../CreativeFixtureHarness.Dx11/CreativeFixtureHarness.Dx11.csproj') -c Release -p:RunPostBuildEvent=Never
+    if($LASTEXITCODE -ne 0){throw 'DX11-only fixture readback companion build failed.'}
+}
 if ($ObserveD3D11) {
     & dotnet build (Join-Path $repository 'Tests/D3D11DeviceObserver/D3D11DeviceObserver.csproj') -c Release -p:RunPostBuildEvent=Never
     if ($LASTEXITCODE -ne 0) { throw 'D3D11 observer build failed.' }
@@ -63,8 +102,13 @@ Copy-Item -LiteralPath (Join-Path $repository 'Vulkan.xml') -Destination (Join-P
 Copy-FixtureAssets (Join-Path $repository 'Assets') (Join-Path $vulkanLocal 'Assets')
 $anomalyId = ''
 $anomalySha = ''
-if ($AnomalyParity) {
+if ($AnomalyParity -or $GlassOverlap -or $MeshDecals) {
     Copy-Item -LiteralPath (Join-Path $repository 'Native/build/Release/se_vulkan_native.dll') -Destination (Join-Path $vulkanLocal 'Assets/Native/win-x64/se_vulkan_native.dll')
+    # Keep private native shader interfaces paired with this build, without
+    # deploying either artifact into the normal asset directory.
+    Copy-Item -Path (Join-Path $repository 'Native/build/shaders/*.spv') -Destination (Join-Path $vulkanLocal 'Assets/Shaders/Compiled')
+}
+if ($AnomalyParity) {
     $anomalyLocal = Join-Path $edition 'Local/Anomaly'
     New-Item -ItemType Directory -Force -Path $anomalyLocal | Out-Null
     $anomalyBuilt = Join-Path $anomalyRoot 'ClientPlugin/bin/Release/net48'
@@ -77,6 +121,9 @@ if ($AnomalyParity) {
     $anomalyId = '<string>A9C29274-E447-49EE-881B-C980E6D190FD</string>'
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'bin/Release/net48/CreativeFixtureHarness.dll') -Destination (Join-Path $harnessLocal 'plugin.dll')
+if(($LightingDiagnostics -or $MeshDecals) -and $Backend -eq 'Dx11') {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../CreativeFixtureHarness.Dx11/bin/Release/net48/CreativeFixtureHarness.Dx11.dll') -Destination $harnessLocal
+}
 $observerId = ''
 if ($ObserveD3D11) {
     $observerLocal = Join-Path $edition 'Local/D3D11DeviceObserver'
@@ -106,6 +153,20 @@ Copy-Item -LiteralPath (Join-Path $pulsarSource 'Legacy/config.xml') -Destinatio
 <item><Key>WindowMode</Key><Value><Value xsi:type="xsd:string">0</Value></Value></item>
 </dictionary></Data></MyObjectBuilder_ConfigData>
 '@ | Set-Content -LiteralPath (Join-Path $gameData 'SpaceEngineers.cfg') -Encoding utf8
+if($LightingDiagnostics -or $GlassOverlap -or $MeshDecals) {
+    # Device auto-detection differs between backends. Seed every compared
+    # quality setting before startup; the harness reapplies and records the
+    # actual settings after the menu's config reload.
+    $qualityPath=Join-Path $gameData 'SpaceEngineers.cfg'
+    [xml]$qualityConfig=Get-Content -LiteralPath $qualityPath -Raw
+    $qualityValues=@{TreeViewDistance='2000';GrassDrawDistance='1000';GrassDensity='3';AntialiasingMode='1';ShadowMapResolution='2';AmbientOcclusionEnabled='True';TextureQuality='2';VoxelTextureQuality='2';AnisotropicFiltering='4';ModelQuality='2';VoxelQuality='2';ShaderQuality='2';LightsQuality='2';EnableDamageEffects='True'}
+    foreach($qualityKey in $qualityValues.Keys){
+        $item=$qualityConfig.CreateElement('item');$key=$qualityConfig.CreateElement('Key');$key.InnerText=$qualityKey;$item.AppendChild($key)|Out-Null
+        $outer=$qualityConfig.CreateElement('Value');$value=$qualityConfig.CreateElement('Value');$value.SetAttribute('type','http://www.w3.org/2001/XMLSchema-instance','xsd:string')|Out-Null;$value.InnerText=$qualityValues[$qualityKey];$outer.AppendChild($value)|Out-Null;$item.AppendChild($outer)|Out-Null
+        $qualityConfig.MyObjectBuilder_ConfigData.Data.dictionary.AppendChild($item)|Out-Null
+    }
+    $qualityConfig.Save($qualityPath)
+}
 @"
 <?xml version="1.0" encoding="utf-8"?>
 <VulkanConfig><RequestedBackend>$Backend</RequestedBackend><EnableValidation>true</EnableValidation><RecoveryRequired>false</RecoveryRequired><RetryGeneration>0</RetryGeneration><LastFailure /></VulkanConfig>
@@ -117,6 +178,18 @@ if ($Backend -eq 'Vulkan' -and !(Test-Path -LiteralPath (Join-Path $layerDirecto
 $environmentChanges = @{
     SE_VULKAN_POSTPROCESS_FIXTURE=([int]$Postprocessing.IsPresent).ToString()
     SE_VULKAN_ANOMALY_PARITY=([int]$AnomalyParity.IsPresent).ToString()
+    SE_VULKAN_LIGHTING_DIAGNOSTICS=([int]$LightingDiagnostics.IsPresent).ToString()
+    SE_VULKAN_GLASS_OVERLAP_FIXTURE=([int]$GlassOverlap.IsPresent).ToString()
+    SE_VULKAN_MESH_INSTANCE_FADE=([int]$MeshInstanceFade.IsPresent).ToString()
+    SE_VULKAN_MESH_INSTANCE_MATERIAL_COLOR=([int]$MeshInstanceMaterialColor.IsPresent).ToString()
+    SE_VULKAN_MESH_INSTANCE_COLOR=([int]$MeshInstanceColor.IsPresent).ToString()
+    SE_VULKAN_MESH_RASTER_FIXTURE=([int]$MeshRaster.IsPresent).ToString()
+    SE_VULKAN_MESH_OLD_ORDER=([int]$MeshOldOrder.IsPresent).ToString()
+    SE_VULKAN_MESH_HDR16=([int]$MeshHdr16.IsPresent).ToString()
+    SE_VULKAN_MESH_IMMEDIATE_PROBES=([int]$MeshImmediateProbes.IsPresent).ToString()
+    SE_VULKAN_MESH_DECAL_FIXTURE=([int]$MeshDecals.IsPresent).ToString()
+    SE_VULKAN_MESH_DECAL_OVERLAP=([int]$MeshDecalOverlap.IsPresent).ToString()
+    SE_VULKAN_MESH_DECAL_CUTOUT=([int]$MeshDecalCutout.IsPresent).ToString()
     SE_VULKAN_CREATIVE_FIXTURE='1'
     SE_VULKAN_CREATIVE_REPORT_DIR=$reports
     SE_VULKAN_CREATIVE_USER_DATA=$gameData
@@ -158,6 +231,11 @@ if ($Asteroids -and $Planets) { throw 'Choose one voxel fixture per run.' }
 if ($Asteroids) { $environmentChanges.SE_VULKAN_ASTEROID_FIXTURE = '1' }
 if ($Planets) { $environmentChanges.SE_VULKAN_PLANET_FIXTURE = '1' }
 if ($Transparency) { $environmentChanges.SE_VULKAN_TRANSPARENCY_FIXTURE = '1' }
+if ($StockShadowSchedule) { $environmentChanges.SE_VULKAN_STOCK_SHADOW_SCHEDULE = '1' }
+if ($StockShadowFit) { $environmentChanges.SE_VULKAN_STOCK_SHADOW_FIT = '1' }
+if ($StockActorLods) { $environmentChanges.SE_VULKAN_ACTOR_LODS = '1' }
+if ($StockNewActorViews) { $environmentChanges.SE_VULKAN_NEW_ACTOR_VIEWS = '1' }
+if ($StaticLightingDiagnostics) { $environmentChanges.SE_VULKAN_STATIC_LIGHTING_DIAGNOSTICS = '1' }
 if ($RenderDocDirectory) {
     if ($Backend -ne 'Vulkan') { throw 'This capture mode requires the native Vulkan fixture.' }
     $renderDoc = [IO.Path]::GetFullPath($RenderDocDirectory)

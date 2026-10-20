@@ -1,12 +1,13 @@
 static_assert(sizeof(SevkGpuSceneActor)==560);
-uint64_t register_gpu_scene_model(const SevkPassPart* parts,uint32_t count,uint32_t old){
+uint64_t register_gpu_scene_model(const SevkPassPart* parts,uint32_t count,uint32_t old,const SevkOldPartOrder* orders=nullptr){
     if(recording||!opaque_caps.enabled||old>1||!parts||!count||count>4096)throw std::runtime_error("invalid resident GPU model registration");gpu_scene::Model model;model.old=old!=0;
-    for(uint32_t i=0;i<count;i++){auto& p=parts[i];auto found=world.meshes.find(p.mesh);if(p.reserved||p.flags>15||found==world.meshes.end()||uint64_t(p.first)+p.count>found->second.index_count||p.shader>=(old?32u:20u))throw std::runtime_error("invalid resident model geometry/state");
+    for(uint32_t i=0;i<count;i++){auto& p=parts[i];auto found=world.meshes.find(p.mesh);if(p.reserved||p.flags>15||found==world.meshes.end()||uint64_t(p.first)+p.count>found->second.index_count||p.shader>=(old?2592u:20u) || (old && world_unfade(p.shader)>=32))throw std::runtime_error("invalid resident model geometry/state");
         auto& mesh=found->second;if(mesh.vertex_stride!=sizeof(SevkWorldVertex)||mesh.vertex_offset%sizeof(SevkWorldVertex)||mesh.vertex_offset/sizeof(SevkWorldVertex)>INT32_MAX)throw std::runtime_error("resident model requires stock shared vertex geometry");for(auto id:{p.colour,p.normal,p.extensions,p.alpha})if(!textures.count(id))throw std::runtime_error("resident material binding missing");
         uint32_t colour=old?p.shader:p.shader<4?p.shader:12+p.shader-4,depth=old?32+world_base_pipeline(p.shader):4+bool(p.flags&1),forward=old?64+p.shader:8+p.shader;
         auto& main=old?opaque_stock.older[colour]:opaque_stock.newer[colour];auto& ds=old?opaque_stock.older[depth]:opaque_stock.newer[depth];if(!main.back||(!(p.flags&4)&&!ds.back))throw std::runtime_error("resident model shader not admitted");
-        bool ff=!(p.flags&8);if(ff){if((!old&&p.shader>=4)||forward>=(old?96u:28u)||!(old?opaque_stock.older[forward]:opaque_stock.newer[forward]).back)throw std::runtime_error("resident forward shader not admitted");}
+        bool ff=!(p.flags&8);if(ff){if((!old&&p.shader>=4)||forward>=(old?2656u:28u) || (old && world_unfade(forward)>=96)||!(old?opaque_stock.older[forward]:opaque_stock.newer[forward]).back)throw std::runtime_error("resident forward shader not admitted");}
         model.parts.push_back({{p.mesh,mesh.ray_stamp,(uint64_t)mesh.vertices.handle,(uint64_t)mesh.indices.handle,p.first,p.count,int32_t(mesh.vertex_offset/sizeof(SevkWorldVertex))},{p.material,colour,depth,ff?forward:UINT32_MAX,(p.flags&2)?1u:0u,{p.colour,p.normal,p.extensions,p.alpha}},true,!(p.flags&4),ff,bool(p.flags&1)});
+        if(orders){validate_old_order(orders[i]);if(!old&&orders[i].valid)throw std::runtime_error("NEW resident model supplied OLD identity");model.parts.back().old_order=orders[i];}
     }return gpu_resident.registry.register_model(std::move(model));
 }
 gpu_scene::Actor gpu_scene_actor_input(const SevkGpuSceneActor& input,const SevkOpaqueAppearance* appearances,uint32_t count){

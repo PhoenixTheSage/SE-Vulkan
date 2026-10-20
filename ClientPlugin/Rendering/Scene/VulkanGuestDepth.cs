@@ -77,7 +77,7 @@ public sealed partial class VulkanScene
                         ulong normal=TextureCache.GetWorldNormal(material?.Textures.NormalGlossFileName??part.NormalTexture);
                         ulong extensions=TextureCache.GetWorldExtensions(material?.Textures.ExtensionsFileName??part.ExtensionTexture);
                         string alphaPath=material?.Textures.AlphamaskFileName??part.AlphaTexture;
-                        ulong alpha=TextureCache.GetTexture(alphaPath,false);
+                        ulong alpha=TextureCache.GetWorldAlpha(alphaPath);
                         if(!string.IsNullOrWhiteSpace(alphaPath) && alpha==0)throw new InvalidOperationException("Guest depth alpha texture unavailable: "+alphaPath);
                         byte[] Constants(float[] bones=null)=>WorldConstants.Object(backend.WorldLayouts[pipeline],world,
                             (material?.Color??actor.Color).ToVector3(),actor.Hsv+colorizeHsv,material?.Emissivity??1,0,bones,actor.Dithering,true);

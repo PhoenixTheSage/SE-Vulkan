@@ -64,6 +64,14 @@ DXC's `-fspv-reflect` retains HLSL semantic, user-type and logical counter annot
 
 Eight world/depth, seven glass and seven Holo combinations are absent from vanilla's precompile annotations. `Tests/WorldShaderPackage` builds their forty-four stages from the same installed Standard/AlphaMasked/Glass/Holo sources and generated declarations. `Extra/manifest.xml` authenticates binary, metadata and definition hashes; its hash is recorded in `coverage.xml`. The supplement is separate from the unchanged 20,736-row stock inventory. It is packaged before startup, so rendering does not launch DXC. `build-shader-suite.ps1 -Package` also builds this supplement.
 
+The packaging command also runs `Tests/LightTileShaderPackage` for the derived
+stock depth/frustum light selector. Its `Ordered4096` contract uses a 4096-bit
+selection mask and preserves ascending accumulation order. It supports the
+stock 256/512/2048/4096 point-light quality budgets; the frame declares the
+matching tile stride. `LightTiles/manifest.xml` authenticates source,
+binary and metadata, with its checksum in `coverage.xml`. Generated assets
+remain outside Git and must be regenerated when this transformation changes.
+
 `Tests/WorldPassGpuTests` passes **61 checks**, including all twenty main material variants, bone-palette-only animation, two generic instances in one draw, packed cube rotation/deformation, point/spot lighting, shadow replay, copied packet ownership, pending upload replacement/removal, minimize/resize/restore and unload. Its **41 frames / 41 material draws / 43 instances / 83 lighting passes** have **zero core/synchronization validation errors**. Four initial geometry/material uploads use one asynchronous batch. A production scene bridge separately imports actual armor/astronaut MWM and skybox DDS and verifies changed pixels and complete resource unload.
 
 Stock lighting integration currently uses a neutral diffuse ambient cube, conservative point-light tile lists and unshadowed spotlights with a neutral reflector mask. Prefiltered/specular probes, BRDF LUT integration, full stock cascade filtering, GPU light culling, broad material/transparency visual parity and remaining postprocess passes remain pending. The voxel and main-view environment integrations are described below. Compiled modules for those systems do not count as implemented effects.

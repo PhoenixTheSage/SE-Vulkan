@@ -21,7 +21,7 @@ namespace ClientPlugin.Rendering.Scene
         public void Draw(Vector3D camera)
         {
             if (string.IsNullOrWhiteSpace(path)) return;
-            if(backend.WorldReady){ulong cube=textures.GetWorldCube(path);backend.SetWorldSkybox(cube);Ready=cube!=0;if(Ready)Draws++;return;}
+            if(backend.WorldReady){ulong cube=textures.GetWorldCube(path);backend.SetWorldSkybox(cube,textures.GetWorldProbeCube(path));Ready=cube!=0;if(Ready)Draws++;return;}
             ulong[] faces = textures.GetCubeTextures(path);
             if (faces == null) return;
             MatrixD world = MatrixD.CreateFromQuaternion(orientation);

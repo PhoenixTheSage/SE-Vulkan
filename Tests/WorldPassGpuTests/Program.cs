@@ -9,7 +9,7 @@ using VRage;
 using VRageMath;
 using VRageRender;
 
-class Program
+partial class Program
 {
     [StructLayout(LayoutKind.Sequential,Pack=8)] struct BlobDraw{public uint Size,Pipeline,Count,Flags;public ulong Mesh,Color,Normal,Extensions,Alpha;public IntPtr Constants;public uint ConstantBytes,Reserved;public IntPtr Instances;public float X,Y,Z,Radius;}
     [StructLayout(LayoutKind.Sequential,Pack=8)] struct RecipeDraw{public ulong Recipe;public uint Count,Flags,Cascades,ObjectOffset,InstanceOffset,Reserved;public float X,Y,Z,Radius;}
@@ -23,16 +23,19 @@ class Program
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int NgxConfigureFn(uint enabled,uint mode,uint preset,[MarshalAs(UnmanagedType.LPUTF8Str)]string? directory);
     static int Main(string[] args)
     {
-        string bin=Path.GetFullPath(args[0]);AssemblyLoadContext.Default.Resolving+=(_,name)=>{string path=Path.Combine(bin,name.Name+".dll");return File.Exists(path)?AssemblyLoadContext.Default.LoadFromAssemblyPath(path):null;};return Run(bin);
+        string bin=Path.GetFullPath(args[0]);AssemblyLoadContext.Default.Resolving+=(_,name)=>{string path=Path.Combine(bin,name.Name+".dll");return File.Exists(path)?AssemblyLoadContext.Default.LoadFromAssemblyPath(path):null;};return Run(bin,args.Contains("--light-capacity-only"),args.Contains("--normal-hdr"),args.Contains("--mesh-decals-only"),args.Contains("--buffer-history-only"),args.Contains("--distance-history-only"),args.Contains("--shadow-cache-only"));
     }
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    static int Run(string bin)
+    static int Run(string bin,bool lightCapacityOnly,bool normalHdr,bool meshDecalsOnly,bool bufferHistoryOnly,bool distanceHistoryOnly,bool shadowCacheOnly)
     {
         int checks=0;void Check(bool condition,string message){if(!condition)throw new Exception(message);checks++;Console.WriteLine("PASS "+message);}
-        string output=Path.GetFullPath("TestResults/WorldPassGpuTests");Directory.CreateDirectory(output);
+        string output=Path.GetFullPath(normalHdr?"TestResults/WorldPassGpuTests-NormalHdr":"TestResults/WorldPassGpuTests");Directory.CreateDirectory(output);
         Check(Marshal.SizeOf<NativeWorldVertex>()==80 && Marshal.SizeOf<NativeWorkStats>()==112 && Marshal.SizeOf<NativePerformanceStats>()==84,"world ABI vertex/stat packing");
         var library=new VulkanShaderLibrary(Path.GetFullPath("Assets/Shaders/Vanilla"),Path.Combine(bin,"../Content/Shaders"),Path.Combine(bin,"VRage.Render11.dll"));
-        using var backend=new NativeBackend(null);backend.Create(64,64,0,true,Path.Combine(output,"Cache"));backend.InitializeGBuffer(library.Load(VanillaGBufferShaders.VertexId),library.Load(VanillaGBufferShaders.PixelId));backend.ConfigureWorld(library,Path.Combine(bin,"../Content/Shaders"));
+        using var backend=new NativeBackend(null);backend.Create(64,64,0,true,Path.Combine(output,"Cache"));backend.InitializeGBuffer(library.Load(VanillaGBufferShaders.VertexId),library.Load(VanillaGBufferShaders.PixelId));backend.ConfigureWorld(library,Path.Combine(bin,"../Content/Shaders"));if(normalHdr)backend.SetHdrQuality(false);
+        if(bufferHistoryOnly){BufferHistoryLifetimeChecks(backend,Check);Console.WriteLine(checks+" asynchronous buffer-history checks passed.");return 0;}
+        if(distanceHistoryOnly){DistanceHistoryChecks(backend,Check);Console.WriteLine(checks+" distance-fade history checks passed.");return 0;}
+        if(shadowCacheOnly){ShadowCacheMenuChecks(backend,Check);Console.WriteLine(checks+" shadow-cache menu checks passed.");return 0;}
         Check(backend.GetCascadeRecordStats().Enabled==(Environment.ProcessorCount>=4?1u:0u),"parallel recording default follows CPU concurrency when no override is set");
         backend.WorldRecipesEnabled=false; // Explicit legacy ABI reference; recipe cases enable it below.
         var frameSettings=new MyRenderSettings();frameSettings.User.DistanceFade=3000;var frameLight=MyEnvironmentLightData.Default;frameLight.AmbientForwardPass=.3f;
@@ -67,7 +70,7 @@ class Program
         backend.SetParallelCascades(false); // Explicit serial reference for paired GPU checks.
         backend.WideRigidBatchesEnabled=false; // Explicit legacy baseline; wide cases below change it deliberately.
         Check(backend.GetStats().ValidationEnabled!=0,"Khronos validation layer is active");
-        Check(backend.WorldLayouts.Count==54 && backend.WorldReady,"40 core, ten OLD cutouts and four voxel material/depth pipelines initialize");
+        Check(backend.WorldLayouts.Count==620 && backend.WorldReady,"core, OLD cutouts, blended mesh decals, 246 distance-fade variants and voxel material/depth pipelines initialize");
         NativeWorldVertex Vertex(float x,float y)
         {
             uint n=VF_Packer.PackNormal(Vector3.Backward);Vector4 tangent=new(1,0,0,1);uint t=VF_Packer.PackTangentSign(ref tangent);
@@ -77,15 +80,16 @@ class Program
         Check(backend.GetWorkStats().UploadBatches==1,"four geometry/material uploads use one asynchronous batch");
         MatrixD projection=MatrixD.CreatePerspectiveFieldOfView(Math.PI/2,1,.1,100);projection.M13=projection.M14-projection.M13;projection.M23=projection.M24-projection.M23;projection.M33=projection.M34-projection.M33;projection.M43=projection.M44-projection.M43;
         var light=MyEnvironmentLightData.Default;light.SunLightDirection=Vector3.Forward;light.SunColorRaw=new Vector3(2);light.SunDiffuseFactor=1;light.SunDiscIntensity=0;
-        int width=64,height=64;float testFraction=1;MatrixD testView=MatrixD.Identity;
+        int width=64,height=64;float testFraction=1;MatrixD testView=MatrixD.Identity;var lightingSettings=new MyRenderSettings();
         byte[] Render(uint pipeline=0,MatrixD? world=null,float[] bones=null,byte[] stream=null,uint count=1,uint flags=512,float lodAlpha=0)
         {
             backend.BeginPacketCollection();backend.AddWorldPacket(pipeline,1,10,11,12,0,WorldConstants.Object(backend.WorldLayouts[pipeline],world??MatrixD.Identity,Vector3.One,Vector3.Zero,1,lodAlpha,bones),stream,count,flags);
             int rw=Math.Max(1,(int)Math.Round(width*testFraction,MidpointRounding.AwayFromZero)),rh=Math.Max(1,(int)Math.Round(height*testFraction,MidpointRounding.AwayFromZero));
-            backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,testView,projection,rw,rh,light,renderFraction:testFraction),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(testView*projection)));
+            backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,testView,projection,rw,rh,light,renderSettings:lightingSettings,renderFraction:testFraction),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(testView*projection)));
             Check(backend.BeginFrame(projection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black),"world frame begins");backend.EndFrame();return backend.Readback(width,height);
         }
         int ChangedPixels(byte[] a,byte[] b)=>Enumerable.Range(0,a.Length/4).Count(i=>Math.Abs(a[i*4]-b[i*4])+Math.Abs(a[i*4+1]-b[i*4+1])+Math.Abs(a[i*4+2]-b[i*4+2])>12);
+        if(meshDecalsOnly){MeshDecalChecks(backend,projection,light,new[]{Vertex(-1,-1),Vertex(1,-1),Vertex(0,1)},Check);File.WriteAllText("TestResults/MeshDecalGpuTests/result.json",System.Text.Json.JsonSerializer.Serialize(new{Checks=checks,ValidationErrors=backend.GetStats().ValidationErrors,Scope="80 shader/blend variants; GBuffer/depth, native recipes, indirect and supported prepared submission"}));Console.WriteLine(checks+" mesh-decal checks passed.");return 0;}
         NativeLight TileLight(float x,float y,float z,float range,float intensity=5)=>new(){PositionRange=new[]{x,y,z,range},ColorIntensity=new[]{.2f,1f,.3f,intensity},DirectionCone=new[]{0f,0f,-1f,.8f}};
         byte[] TileFrame(bool enabled,NativeLight[] source){backend.SetLightTiles(enabled);backend.SetLights(source);return Render();}
         Check(Marshal.SizeOf<NativeLightTileStats>()==64,"light tile stats ABI packing");
@@ -111,6 +115,25 @@ class Program
 
         backend.SetLightTiles(false);backend.SetLights(Array.Empty<NativeLight>());
         Check(backend.GetStats().ValidationErrors==0,"GPU light tiles have zero core and synchronization validation errors");
+        var savedLight=light;light.SunColorRaw=light.SunSpecularColorRaw=Vector3.Zero;light.AmbientDiffuseFactor=light.AmbientSpecularFactor=0;
+        TileFrame(false,new[]{TileLight(0,0,-2,8,1)});var referenceDenseHdr=backend.ReadbackLightingStage(3,64,64);
+        foreach(var pair in new[]{(MyRenderQualityEnum.LOW,256),(MyRenderQualityEnum.NORMAL,512),(MyRenderQualityEnum.HIGH,2048),(MyRenderQualityEnum.EXTREME,4096)}){
+            lightingSettings.User.LightsQuality=pair.Item1;
+            var dense=Enumerable.Range(0,pair.Item2).Select(_=>TileLight(0,0,-2,8,1)).ToArray();
+            var conservative=TileFrame(false,dense);var denseHdr=backend.ReadbackLightingStage(3,64,64);
+            Console.WriteLine("DENSE "+pair.Item2+" maxNormalizedAbs="+denseHdr.Where((v,i)=>i%4<3).Zip(referenceDenseHdr.Where((v,i)=>i%4<3),(a,b)=>Math.Abs(a/pair.Item2-b)).Max()+" maxReference="+referenceDenseHdr.Max());
+            var rawDense=new byte[denseHdr.Length*4];Buffer.BlockCopy(denseHdr,0,rawDense,0,rawDense.Length);File.WriteAllBytes(Path.Combine(output,"dense-"+pair.Item2+".rgba32f"),rawDense);
+            var rawReference=new byte[referenceDenseHdr.Length*4];Buffer.BlockCopy(referenceDenseHdr,0,rawReference,0,rawReference.Length);File.WriteAllBytes(Path.Combine(output,"dense-reference.rgba32f"),rawReference);
+            Check(denseHdr.Where((v,i)=>i%4<3).All(float.IsFinite)&&denseHdr.Where((v,i)=>i%4<3).Zip(referenceDenseHdr.Where((v,i)=>i%4<3),(a,b)=>Math.Abs(a/pair.Item2-b)).Max()<.002,"all "+pair.Item2+" point lights retain normalized per-light reference radiance at stock quality "+pair.Item1);
+            Check(TileFrame(true,dense).SequenceEqual(conservative),"dense stock quality "+pair.Item1+" GPU/conservative tiles preserve exact output");
+            Check(backend.ReadbackLightingStage(3,64,64).SequenceEqual(denseHdr),"dense stock quality "+pair.Item1+" GPU/conservative tiles preserve exact HDR values");
+            TileFrame(true,dense);TileFrame(true,dense);Check(backend.GetLightTileStats().Points==pair.Item2&&backend.GetLightTileStats().Assignments>(ulong)pair.Item2,"completed dense tile lists retain the complete "+pair.Item2+"-light set");
+        }
+        var mixedDense=Enumerable.Range(0,32).Select(_=>{var value=TileLight(0,0,-2,8,.01f);value.Flags=1;return value;}).Concat(Enumerable.Range(0,4096).Select(_=>TileLight(0,0,-2,8,1f/4096))).ToArray();
+        TileFrame(true,mixedDense);TileFrame(true,mixedDense);TileFrame(true,mixedDense);Check(backend.GetLightTileStats().Points==4096,"32 independent spotlight entries do not displace any of 4096 point lights");
+        backend.SetLightTiles(false);backend.SetLights(Array.Empty<NativeLight>());light=savedLight;lightingSettings.User.LightsQuality=MyRenderQualityEnum.LOW;
+        Check(backend.GetStats().ValidationErrors==0,"dense mixed local lights have zero core and synchronization validation errors");
+        if(lightCapacityOnly){File.WriteAllText(Path.Combine(output,"light-capacity-result.json"),System.Text.Json.JsonSerializer.Serialize(new{Checks=checks,ValidationErrors=backend.GetStats().ValidationErrors}));Console.WriteLine(checks+" local-light capacity checks passed.");return 0;}
         backend.ObjectRetentionEnabled=false;
         byte[] keptA=WorldConstants.Object(backend.WorldLayouts[0],MatrixD.Identity,Vector3.One,Vector3.Zero,1,0);
         byte[] keptB=WorldConstants.Object(backend.WorldLayouts[0],MatrixD.CreateTranslation(.5,0,0),Vector3.One,Vector3.Zero,1,0);
@@ -174,14 +197,14 @@ class Program
         {
             var bytes=new byte[64];Buffer.BlockCopy(new[]{m.M11,m.M21,m.M31,m.M41,m.M12,m.M22,m.M32,m.M42,m.M13,m.M23,m.M33,m.M43,0f,0f,0f,0f},0,bytes,0,64);return bytes;
         }
-        byte[] IndirectPair(bool indirect,bool unequal=false,bool cascades=false,bool omitSecond=false)
+        byte[] IndirectPair(bool indirect,bool unequal=false,bool cascades=false,bool omitSecond=false,bool mixedRaster=false)
         {
             backend.SetWorldIndirect(indirect);backend.BeginPacketCollection();
             byte[] first=Instance(Matrix.CreateTranslation(-.8f,0,0)).Concat(Instance(Matrix.CreateTranslation(0,.6f,0))).ToArray();
             byte[] second=Instance(Matrix.CreateTranslation(.8f,0,0));
             for(int i=0;i<(omitSecond?1:2);++i)backend.AddWorldPacket(2,1,10,11,12,0,
                 WorldConstants.Object(backend.WorldLayouts[2],unequal&&i==1?MatrixD.CreateTranslation(0,.4,0):MatrixD.Identity,Vector3.One,Vector3.Zero,1,0),
-                i==0?first:second,i==0?2u:1u,cascades?0x1000000u:512u);
+                i==0?first:second,i==0?2u:1u,(cascades?0x1000000u:512u)|(mixedRaster?(i==0?NativeBackend.StockBackCull:NativeBackend.StockNoCull):0u));
             backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,projection,64,64,light),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(projection)));
             backend.BeginFrame(projection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black);backend.EndFrame();return backend.Readback(64,64);
         }
@@ -193,6 +216,9 @@ class Program
         Check(IndirectPair(true).SequenceEqual(directPair) && backend.GetIndirectStats().MainGroups==1,"indirect commands preserve pixels on the second fenced frame slot");
         byte[] unequalDirect=IndirectPair(false,true),unequalIndirect=IndirectPair(true,true);
         Check(unequalDirect.SequenceEqual(unequalIndirect) && backend.GetIndirectStats().MainGroups==0,"unequal object constants retain direct draws and exact pixels");
+        byte[] rasterDirect=IndirectPair(false,mixedRaster:true),rasterIndirect=IndirectPair(true,mixedRaster:true);
+        Check(Changed(directPair,rasterDirect)>25,"opposite stock raster flags produce different visible instance coverage");
+        Check(rasterDirect.SequenceEqual(rasterIndirect) && backend.GetIndirectStats().MainGroups==0,"indirect preparation keeps unequal raster states in separate exact draws");
         MatrixD indirectShadow=MatrixD.CreateLookAt(new Vector3D(0,0,2),new Vector3D(0,0,-3),Vector3D.Up)*MatrixD.CreateOrthographic(12,12,.1,20);
         backend.SetShadowCascades(Enumerable.Range(0,4).SelectMany(_=>NativeBackend.MatrixValues(indirectShadow)).ToArray(),new[]{5f,10f,20f,40f});
         byte[] shadowDirect=IndirectPair(false,cascades:true);uint shadowCalls=backend.GetPerformanceStats().ShadowCommands;
@@ -545,10 +571,12 @@ class Program
         var canonicalModelObject=WorldConstants.Object(backend.WorldLayouts[2],MatrixD.Identity,Vector3.One,Vector3.Zero,1,0);NativeBackend.WorldRecipe rawModelRecipe=null;backend.EnsureWorldRecipe(ref rawModelRecipe,2,1,10,11,12,0,canonicalModelObject.Length);
         ulong rawRecipeHandle=(ulong)rawModelRecipe.GetType().GetField("Handle",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!.GetValue(rawModelRecipe)!;
         Check(registerModelRaw(nativeContext,new[]{new RawModelPart{Recipe=rawRecipeHandle,ObjectOffset=1}},1,canonicalModelObject,(uint)canonicalModelObject.Length,out _)!=0,"native model registration rejects a noncanonical object span");
+        Check(registerModelRaw(nativeContext,new[]{new RawModelPart{Recipe=rawRecipeHandle,Reserved=NativeBackend.StockBackCull|NativeBackend.StockNoCull}},1,canonicalModelObject,(uint)canonicalModelObject.Length,out _)!=0,"native model registration rejects conflicting raster flags");
         Check(registerModelRaw(nativeContext,new[]{new RawModelPart{Recipe=rawRecipeHandle}},1,canonicalModelObject,(uint)canonicalModelObject.Length,out ulong rawModelHandle)==0,"raw native model registration publishes a valid generational handle");
         void EmptyModelFrame(){backend.BulkModelsEnabled=false;backend.BeginPacketCollection();backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,projection,64,64,light),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(projection)));}
         EmptyModelFrame();Check(appendModelsRaw(nativeContext,new[]{new NativeModelInstance{Model=rawModelHandle,Cell=0,Order=1}},1,null,0,null)!=0,"bulk model frame rejects invalid cell ownership");
-        EmptyModelFrame();Check(appendModelsRaw(nativeContext,new[]{new NativeModelInstance{Model=rawModelHandle,Cell=16,Order=1,Reserved=1}},1,null,0,null)!=0,"bulk model frame rejects reserved record bits");
+        EmptyModelFrame();Check(appendModelsRaw(nativeContext,new[]{new NativeModelInstance{Model=rawModelHandle,Cell=16,Order=1,Reserved=2}},1,null,0,null)!=0,"bulk model frame rejects a group order after its own submission");
+        EmptyModelFrame();Check(appendModelsRaw(nativeContext,new[]{new NativeModelInstance{Model=rawModelHandle,Cell=16,Order=1,Reserved=1}},1,null,0,null)==0,"bulk model frame accepts its explicit first-seen group order");
         EmptyModelFrame();Check(appendModelsRaw(nativeContext,new[]{new NativeModelInstance{Model=rawModelHandle,Cell=16,Order=2},new NativeModelInstance{Model=rawModelHandle,Cell=16,Order=1}},2,null,0,null)!=0,"bulk model frame rejects reversed instance publication order");
         Check(clearModelsRaw(nativeContext)==0,"native model registry clears outside recording");EmptyModelFrame();Check(appendModelsRaw(nativeContext,new[]{new NativeModelInstance{Model=rawModelHandle,Cell=16,Order=1}},1,null,0,null)!=0,"retired model handle cannot survive registry reset");
         backend.BulkModelsEnabled=false;backend.SetLights(Array.Empty<NativeLight>());backend.SetSpots(512,Array.Empty<NativeSpot>());backend.SetShadowCascades(Array.Empty<float>(),Array.Empty<float>());backend.RemoveResource(3,910);backend.RemoveResource(3,911);backend.RemoveResource(0,910);

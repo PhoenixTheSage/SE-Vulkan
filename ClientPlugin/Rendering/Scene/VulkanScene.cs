@@ -25,17 +25,27 @@ namespace ClientPlugin.Rendering.Scene
     /// </summary>
     public sealed partial class VulkanScene : MyScene, IDisposable
     {
+        public Func<uint,bool> HasEntityDecals {get;set;}
         private sealed class ActorData
         {
             public MyActor Actor;
             public VulkanModel Model;
+            public StockOldModelIdentity OldModel;
+            public bool TrackOldIdentity=true;
+            public StockOldModelIdentity OldVariantModel;
+            public uint OldVariantRevision;
+            public StockOldModelIdentity OldLayoutModel;
+            public uint OldLayoutInstance;
+            public int OldLayoutStream;
+            public int[] OldLodLayouts;
             public GroupVisibility OcclusionGroup;
             public VulkanModel RenderModel;
+            public uint RenderLod;
             public StockActorLodState Lod=new();
             public float LodAlpha;
             public VulkanModel LodShadowModel,LodShadowNext;
             public float LodShadowAlpha;
-            public readonly Dictionary<VulkanModel,ActorRepresentation> Representations=new();
+            public readonly Dictionary<(VulkanModel,uint),ActorRepresentation> Representations=new();
             public Color Color = Color.White;
             public Vector3 Hsv;
             public float Dithering;
@@ -59,7 +69,7 @@ namespace ClientPlugin.Rendering.Scene
             public Color SubmissionColor;
             public Vector3 SubmissionHsv;
             public float SubmissionDither;
-            public bool SubmissionMetal,SubmissionOpaque,SubmissionDepthGeometry;
+            public bool SubmissionMetal,SubmissionOpaque,SubmissionDepthGeometry,SubmissionDistanceFade;
             public PackedInstances Packed;
             public int Proxy=-1;
             public BoundingBoxD Bounds;
@@ -110,6 +120,8 @@ namespace ClientPlugin.Rendering.Scene
             public bool EnabledSkinning;
             public uint Parent;
             public uint Revision;
+            public int OldLayout;
+            public bool OldCube;
         }
         private sealed class PackedInstances
         {
@@ -123,6 +135,8 @@ namespace ClientPlugin.Rendering.Scene
 
         private readonly NativeBackend backend;
         private readonly VulkanModelCache models;
+        internal readonly StockOldResourceIdentities OldResources=new();
+        public void InitializeStockOldIdentities(bool geometryArrays)=>OldResources.Initialize(geometryArrays);
         private readonly Dictionary<uint, ActorData> actors = new Dictionary<uint, ActorData>();
         private readonly Dictionary<uint, InstanceBuffer> instances = new Dictionary<uint, InstanceBuffer>();
         private readonly HashSet<uint> visible = new HashSet<uint>();
@@ -134,6 +148,7 @@ namespace ClientPlugin.Rendering.Scene
         private Vector3 colorizeHsv = new Vector3(MyTextureDebugMultipliers.Defaults.ColorizeHSV);
         private float bloomEmissiveness = 1;
         public MyRenderSettings RenderSettings;
+        public MyShadowsSettings.Struct ShadowSettings=MyShadowsSettings.Struct.Default;
         public float BloomEmissiveness => bloomEmissiveness;
         public float ProbeDrawDistance,ShadowDrawDistance;
         internal System.Func<BoundingBoxD, Vector3D, uint> CascadeMaskFor;
@@ -216,13 +231,15 @@ namespace ClientPlugin.Rendering.Scene
                 case MyRenderMessageEnum.CreateRenderEntity:
                     var create = (MyRenderMessageCreateRenderEntity)message;
                     var entity = Create(create.ID, create.DebugName, create.WorldMatrix, create.Flags);
+                    if(OldResources.Initialized&&create.ForceReload&&(create.Flags&RenderFlags.ForceOldPipeline)!=0)OldResources.Remove(create.Model);
                     SetModel(entity, models.Get(create.Model, create.Rescale));
                     return true;
                 case MyRenderMessageEnum.CreateRenderCharacter:
                     var character = (MyRenderMessageCreateRenderCharacter)message;
                     var ch = Create(character.ID, character.DebugName, character.WorldMatrix, character.Flags);ch.Character=true;
                     SetModel(ch, models.Get(character.Model));
-                    ch.Color = character.DiffuseColor ?? Color.White;
+                    // Stock MyRender11 consumes character HSV, but ignores
+                    // the legacy entity DiffuseColor field.
                     ch.Hsv = character.ColorMaskHSV ?? Vector3.Zero;
                     return true;
                 case MyRenderMessageEnum.CreateManualCullObject:
@@ -233,7 +250,7 @@ namespace ClientPlugin.Rendering.Scene
                 case MyRenderMessageEnum.CreateStaticGroup:
                     var group = (MyRenderMessageCreateStaticGroup)message;
                     var stat = Create(group.ID, group.Model, MatrixD.CreateTranslation(group.Translation), RenderFlags.Visible | RenderFlags.CastShadows);
-                    SetModel(stat, models.Get(group.Model));
+                    SetModel(stat, models.Get(group.Model),false);
                     stat.StaticInstances = group.LocalMatrices == null ? new Matrix[0] : (Matrix[])group.LocalMatrices.Clone();
                     return true;
                 case MyRenderMessageEnum.UpdateRenderObject:
@@ -256,7 +273,9 @@ namespace ClientPlugin.Rendering.Scene
                     if (actors.TryGetValue(appearance.ID, out colored))
                     {
                         DirtyNativePass(colored);
-                        if (appearance.DiffuseColor.HasValue) colored.Color = appearance.DiffuseColor.Value;
+                        // MyRenderProxy also sends this message during entity
+                        // creation. Stock ignores DiffuseColor here; actual
+                        // material tint comes from the material update messages.
                         if (appearance.ColorMaskHSV.HasValue) colored.Hsv = appearance.ColorMaskHSV.Value;
                         if (appearance.Dithering.HasValue) colored.Dithering = appearance.Dithering.Value;
                         if (appearance.Dithering.HasValue) MarkGeometry(colored);
@@ -294,15 +313,17 @@ namespace ClientPlugin.Rendering.Scene
                 case MyRenderMessageEnum.SetRenderEntityData:
                     var entityData = (MyRenderMessageSetRenderEntityData)message;
                     ActorData dynamicActor;
-                    if (actors.TryGetValue(entityData.ID, out dynamicActor)) SetModel(dynamicActor, models.PutRuntime("vulkan-actor-" + entityData.ID, entityData.ModelData));
+                    if (actors.TryGetValue(entityData.ID, out dynamicActor)) SetModel(dynamicActor, models.PutRuntime("vulkan-actor-" + entityData.ID, entityData.ModelData),false);
                     return true;
                 case MyRenderMessageEnum.AddRuntimeModel:
                     var runtime = (MyRenderMessageAddRuntimeModel)message;
+                    if(OldResources.Initialized&&OldResources.Exists(runtime.Name))return true;
+                    if(OldResources.Initialized){var identity=OldResources.Transient.CreateRuntime(runtime.Name,runtime.ModelData.Sections.Count,false);OldResources.Transient.UpdateRuntime(identity,runtime.ModelData.Sections.ConvertAll(section=>section.MaterialName));}
                     models.PutRuntime(runtime.Name, runtime.ModelData);
                     return true;
                 case MyRenderMessageEnum.CreateRenderInstanceBuffer:
                     var createBuffer = (MyRenderMessageCreateRenderInstanceBuffer)message;
-                    instances[createBuffer.ID] = new InstanceBuffer { Parent = createBuffer.ParentID };
+                    instances[createBuffer.ID] = new InstanceBuffer { Parent = createBuffer.ParentID,OldCube=createBuffer.Type==MyRenderInstanceBufferType.Cube,OldLayout=OldResources.Initialized?OldResources.InstanceLayout(createBuffer.Type==MyRenderInstanceBufferType.Cube):0 };
                     return true;
                 case MyRenderMessageEnum.UpdateRenderCubeInstanceBuffer:
                     var cubeUpdate = (MyRenderMessageUpdateRenderCubeInstanceBuffer)message;
@@ -332,6 +353,7 @@ namespace ClientPlugin.Rendering.Scene
                     if (actors.TryGetValue(set.ID, out instanceActor))
                     {
                         instanceActor.InstanceBuffer = set.InstanceBufferId;
+                        EnsureOldModelIdentity(instanceActor);
                         instanceActor.InstanceStart = set.InstanceStart;
                         instanceActor.InstanceCount = set.InstanceCount;
                         instanceActor.ModelBoundsOwned=false;
@@ -389,6 +411,7 @@ namespace ClientPlugin.Rendering.Scene
                         // value. Keep that ownership independent of later resets.
                         if(properties.FlagsChange.HasValue&&!KnownStockOldPipeline(propertiesActor)&&models.IsStockMaterialUsed(propertiesActor.Model,properties.MaterialName.String)){
                             propertiesActor.ConvertedOldMaterial=properties.MaterialName.String??string.Empty;
+                            EnsureOldModelIdentity(propertiesActor);
                             propertiesActor.Lod=new StockActorLodState();MarkGeometry(propertiesActor);
                         }
                         var material = Material(propertiesActor, properties.MaterialName.String);
@@ -401,7 +424,7 @@ namespace ClientPlugin.Rendering.Scene
                     var replacement = (MyRenderMessageChangeMaterialTexture)message;
                     ActorData replacementActor;
                     if (actors.TryGetValue(replacement.RenderObjectID, out replacementActor) && replacement.Changes != null)
-                        foreach (var item in replacement.Changes){var material=Material(replacementActor,item.Key.String);var old=material.Textures;var value=item.Value;if(old.ColorMetalFileName==value.ColorMetalFileName && old.NormalGlossFileName==value.NormalGlossFileName && old.ExtensionsFileName==value.ExtensionsFileName && old.AlphamaskFileName==value.AlphamaskFileName)continue;DirtyNativePass(replacementActor,true);replacementActor.MaterialRevision++;material.Textures=value;if(old.AlphamaskFileName!=value.AlphamaskFileName)MarkGeometry(replacementActor);}
+                        foreach (var item in replacement.Changes){var material=Material(replacementActor,item.Key.String);var old=material.Textures;var value=item.Value;if(old.ColorMetalFileName==value.ColorMetalFileName && old.NormalGlossFileName==value.NormalGlossFileName && old.ExtensionsFileName==value.ExtensionsFileName && old.AlphamaskFileName==value.AlphamaskFileName)continue;DirtyNativePass(replacementActor,true);replacementActor.MaterialRevision++;material.Textures=value;Updater.AddToNextUpdate(replacementActor.Actor);if(old.AlphamaskFileName!=value.AlphamaskFileName)MarkGeometry(replacementActor);}
                     return true;
                 case MyRenderMessageEnum.CreateRenderLight:
                     var light = (MyRenderMessageCreateRenderLight)message;
@@ -418,11 +441,16 @@ namespace ClientPlugin.Rendering.Scene
                     }
                     return true;
                 case MyRenderMessageEnum.PreloadModel:
-                    var preload = (MyRenderMessagePreloadModel)message; models.Get(preload.Name, preload.Rescale); return true;
+                    var preload = (MyRenderMessagePreloadModel)message;if(OldResources.Initialized&&preload.ForceOldPipeline)OldResources.Get(preload.Name);models.Get(preload.Name, preload.Rescale); return true;
+                case MyRenderMessageEnum.CreateRenderVoxelDebris:
+                    // This existing pending visual path still consumes OLD
+                    // file identities in stock. Preserve its source clock even
+                    // while the outer dispatcher reports missing debris draw.
+                    var debris=(MyRenderMessageCreateRenderVoxelDebris)message;if(OldResources.Initialized&&debris.Model!=null)OldResources.Get(debris.Model);return false;
                 case MyRenderMessageEnum.PreloadModels:
-                    foreach (string name in ((MyRenderMessagePreloadModels)message).Models) models.Get(name); return true;
+                    var preloadMany=(MyRenderMessagePreloadModels)message;foreach (string name in preloadMany.Models){if(OldResources.Initialized&&!preloadMany.ForInstancedComponent)OldResources.Get(name);models.Get(name);} return true;
                 case MyRenderMessageEnum.PreloadMaterials:
-                    models.Get(((MyRenderMessagePreloadMaterials)message).Name); return true;
+                    string materialModel=((MyRenderMessagePreloadMaterials)message).Name;if(OldResources.Initialized)OldResources.Get(materialModel);models.Get(materialModel); return true;
                 case MyRenderMessageEnum.PreloadTextures:
                     var files = ((MyRenderMessagePreloadTextures)message).Files;
                     if (files != null) foreach (string file in files) TextureCache.GetTexture(file); return true;
@@ -432,7 +460,7 @@ namespace ClientPlugin.Rendering.Scene
                     actorLodSettings.CopyFrom(((MyRenderMessageUpdateNewLoddingSettings)message).Settings);return false;
                 case MyRenderMessageEnum.SetCameraViewMatrix:
                     var camera = (MyRenderMessageSetCameraViewMatrix)message;
-                    frustum = new BoundingFrustumD(camera.ViewMatrix * camera.ProjectionMatrix);
+                    frustum = new BoundingFrustumD(camera.ViewMatrix * camera.ProjectionMatrix);lightFarFrustum=new BoundingFrustumD(camera.ViewMatrix*camera.ProjectionFarMatrix);
                     Environment.CameraPosition = camera.CameraPosition;
                     lodFov=camera.FOV;
                     sizeFallbackProjection=camera.ProjectionMatrix;sizeFov=camera.FOV;sizeNear=camera.NearPlane;sizeOffsetX=camera.ProjectionOffsetX;sizeOffsetY=camera.ProjectionOffsetY;haveSizeProjection=true;
@@ -468,13 +496,14 @@ namespace ClientPlugin.Rendering.Scene
             return data;
         }
 
-        private void SetModel(ActorData actor, VulkanModel model)
+        private void SetModel(ActorData actor, VulkanModel model,bool trackOldIdentity=true)
         {
             RemoveNativePassActor(actor,false);
             ReleaseDynamicMeshes(actor);
             actor.Model = model;
+            actor.TrackOldIdentity=trackOldIdentity;actor.OldModel=null;if(trackOldIdentity)EnsureOldModelIdentity(actor);
             groupMembershipDirty=true;
-            actor.RenderModel=model;actor.Lod=new StockActorLodState();actor.NewLod.Reset();actor.HaveNewViewCamera=false;actor.LastNewSpotLod=-1;actor.Representations.Clear();
+            actor.RenderModel=model;actor.RenderLod=0;actor.Lod=new StockActorLodState();actor.NewLod.Reset();actor.HaveNewViewCamera=false;actor.LastNewSpotLod=-1;actor.Representations.Clear();
             actor.LodShadowModel=actor.LodShadowNext=null;actor.LodShadowAlpha=0;
             actor.PartFrames = null;
             actor.Submission = null;
@@ -485,6 +514,11 @@ namespace ClientPlugin.Rendering.Scene
             actor.SkinDirty = true;
             MarkGeometry(actor);
         }
+
+        // Stock instanced streams pass key color/dither through vertices, but
+        // leave pixel color_mul at one. Rigid batching selects a generic shader
+        // only after packing its original rigid tint, so keep that tint here.
+        private static Vector3 MaterialTint(uint sourceType, Color color) => sourceType >= 2 ? Vector3.One : color.ToVector3();
 
         private MaterialOverride Material(ActorData actor, string name)
         {
@@ -526,6 +560,7 @@ namespace ClientPlugin.Rendering.Scene
             IEnumerable<ActorData> drawCandidates;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CandidateQuery))drawCandidates=DrawCandidates(target.WorldReady);
             foreach (var data in drawCandidates)
             {
+                if(data.Model!=null&&IsVisible(data.Actor)&&(data.Flags&RenderFlags.SkipInMainView)==0)target.DeclareMainOwner(data.Actor.ID,MainGroupKey(data,true));
                 if(data.GpuOwned){if((data.Flags&RenderFlags.SkipInMainView)==0&&(frustum==null||frustum.Contains(data.Bounds)!=ContainmentType.Disjoint))visible.Add(data.Actor.ID);continue;}if(data.PassOwned)continue;
                 long actorStarted = Stopwatch.GetTimestamp();
                 bool actorVisible;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorAncestorVisibility,false))actorVisible=data.Model!=null&&IsVisible(data.Actor)&&((data.Flags&RenderFlags.SkipInMainView)==0 || NewActorViewsEnabled);
@@ -601,6 +636,7 @@ namespace ClientPlugin.Rendering.Scene
         private void DrawWorld(NativeBackend target, ActorData actor, MatrixD world,bool probeOnly,bool occluded,bool outsideProbe,BoundingBoxD bounds,uint? selectedCascades=null)
         {
             using var logicalOwner=target.WithLogicalOwner(actor.Actor.ID);
+            using var mainGroup=target.WithMainGroup(MainGroupKey(actor));
             long packedAt = Stopwatch.GetTimestamp();
             bool casts=(actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))==RenderFlags.CastShadows;
             Vector3 origin=(Vector3)(bounds.Center-Environment.CameraPosition);float radius=(float)bounds.HalfExtents.Length();
@@ -613,6 +649,7 @@ namespace ClientPlugin.Rendering.Scene
             if(count==0)return;
             long materialsAt = Stopwatch.GetTimestamp();
             world.Translation-=Environment.CameraPosition;
+            float? oldDecalDistance=null;bool glassDepthPolicyReady=false,oldGlassSource=false;
             if(target.RetainedSubmissionEnabled && type!=1 && actor.SubmissionOpaque && !HasHighlight(actor.Actor.ID) && !frameExcludedActors.Contains(actor.Actor.ID))
             {
                 using var actorProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PreparedActors,false);
@@ -622,17 +659,21 @@ namespace ClientPlugin.Rendering.Scene
             }
             using var legacyProfile=RendererCpuProfiler.Measure(type==1?RendererCpuProfiler.Phase.SkinnedActors:type==0?RendererCpuProfiler.Phase.LegacyRigidActors:RendererCpuProfiler.Phase.LegacyInstancedActors,false);
             int partIndex=0;
-            foreach(var part in actor.RenderModel.Parts)
+            foreach(var part in MaterialParts(actor))
             {
-                int cachedIndex=partIndex++;
+                int cachedIndex=partIndex++;target.MainPart=(uint)cachedIndex;
+                using var oldOrderScope=target.WithOldOrder(OldPartOrder(actor,actor.RenderModel,part,(int)actor.RenderLod));
                 bool glass=(part.Flags&4)!=0;uint transparentType=type+((part.Flags&8)!=0?5u:0u);
                 using var partProfile=RendererCpuProfiler.Measure(glass?RendererCpuProfiler.Phase.GlassParts:RendererCpuProfiler.Phase.LegacyOpaqueParts,false);
                 if(probeOnly && glass)continue; // Installed RenderForward captures atmosphere, not glass.
                 MyTransparentMaterial glassMaterial=null;if(glass && !MyTransparentMaterials.TryGetMaterial(VRage.Utils.MyStringId.GetOrCompute(part.MaterialName??string.Empty),out glassMaterial)){UnsupportedMaterialDraws++;continue;}
+                if(glass&&!glassDepthPolicyReady){oldGlassSource=KnownStockOldPipeline(actor)||actor.StaticInstances!=null||actor.SkinMatrices!=null||!models.IsStockNewModel(actor.Model);oldDecalDistance=oldGlassSource?(HasEntityDecals?.Invoke(actor.Actor.ID)==true?((Vector3)world.Translation).LengthSquared():float.PositiveInfinity):(float?)null;glassDepthPolicyReady=true;}
+                if(glass&&!(oldGlassSource?RenderSettings.DrawTransparentModels:RenderSettings.DrawTransparentModelsInstanced))continue;
                 MaterialOverride material=null;if(actor.Materials.Count!=0)actor.Materials.TryGetValue(part.MaterialName??string.Empty,out material);
                 if(material!=null && ((material.Flags.Add&RenderFlags.SkipInMainView)!=0 || (material.Flags.Remove&RenderFlags.Visible)!=0))continue;
-                uint pipeline=WorldShaderVariants.Pipeline(part.Technique,type,(part.Flags&1)!=0,(actor.Flags&RenderFlags.MetalnessColorable)!=0);
-                uint flags=((actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))!=RenderFlags.CastShadows?512u:0u)|actor.ExtraViewFlags;
+                uint pipeline=MaterialPipeline(actor,part,type);
+                uint flags=((actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))!=RenderFlags.CastShadows?512u:0u)|actor.ExtraViewFlags|MaterialRasterFlags(actor,part,material);
+                if(UsesOldDecalShaders(actor))flags|=NativeBackend.OldGeometryOrder;
                 if(target.SharedModelGeometryEnabled && !DepthGeometrySegments.DrawsDepth(part.Technique))flags|=512u;
                 if(actor.SizeCulled)flags|=8192u; // Preserve separate stock highlight rendering, exclude normal views.
                 if(probeOnly || occluded)flags|=4096u;
@@ -640,9 +681,9 @@ namespace ClientPlugin.Rendering.Scene
                 if(actor.DynamicShadow || actor.LodAlpha!=0)flags|=0x1000000u;
                 if(actor.LodAlpha==0 && type!=1 && !glass && SubmitCachedPart(target,actor,cachedIndex,part,pipeline,flags,cascades,origin,radius,stream,count,world,material)){if(dithered)DitheredDraws++;continue;}
                 ulong color=TextureCache.GetTexture(material?.Textures.ColorMetalFileName??part.ColorTexture),normal=TextureCache.GetWorldNormal(material?.Textures.NormalGlossFileName??part.NormalTexture),
-                    extensions=TextureCache.GetWorldExtensions(material?.Textures.ExtensionsFileName??part.ExtensionTexture),alpha=TextureCache.GetTexture(material?.Textures.AlphamaskFileName??part.AlphaTexture,false);
-                Vector3 tint=(material?.Color??actor.Color).ToVector3();Vector3 hsv=actor.Hsv+colorizeHsv;
-                byte[] Constants(float[] bones=null)=>WorldConstants.Object(glass?target.GlassLayouts[transparentType]:target.WorldLayouts[pipeline],world,tint,hsv,material?.Emissivity??1,actor.LodAlpha,bones,actor.Dithering,!glass);
+                    extensions=TextureCache.GetWorldExtensions(material?.Textures.ExtensionsFileName??part.ExtensionTexture),alpha=TextureCache.GetWorldAlpha(material?.Textures.AlphamaskFileName??part.AlphaTexture);
+                Vector3 tint=glass?(material?.Color??actor.Color).ToVector3():MaterialTint(type,material?.Color??actor.Color);Vector3 hsv=actor.Hsv+colorizeHsv;
+                byte[] Constants(float[] bones=null)=>WorldConstants.Object(glass?target.GlassLayouts[transparentType]:target.WorldLayouts[pipeline],world,tint,hsv,material?.Emissivity??1,actor.LodAlpha,bones,actor.Dithering,!glass,actor.RenderLod);
                 if(type==1)
                 {
                     target.NotePreparedPart(false,true);
@@ -650,44 +691,44 @@ namespace ClientPlugin.Rendering.Scene
                     foreach(var skin in part.SkinParts)
                     {
                         var bones=new float[60*16];for(int i=0;i<60;++i){Matrix bone=i<skin.Bones.Length && skin.Bones[i]<actor.SkinMatrices.Length?actor.SkinMatrices[skin.Bones[i]]:Matrix.Identity;Array.Copy(NativeBackend.MatrixValues(bone),0,bones,i*16,16);}
-                        if(glass)target.AddGlassPacket(transparentType,skin.Mesh,TextureCache.GetTexture(material?.Textures.ColorMetalFileName??glassMaterial.Texture),TextureCache.GetTexture(material?.Textures.NormalGlossFileName??glassMaterial.GlossTexture,false),Constants(bones),NativeBackend.GlassMaterial(glassMaterial,actor.RenderModel.Bounds.HalfExtents.X,RenderSettings));else {uint draw=target.AddWorldPacket(pipeline,skin.Mesh,color,normal,extensions,alpha,Constants(bones),null,1,flags,cascades,origin,radius);SubmitHighlight(draw,actor,part,skin.StartIndex,skin.IndexCount,1);}if(glass && !actor.SuppressViewHighlight && HasHighlight(actor.Actor.ID)){uint draw=target.AddWorldPacket(type,skin.Mesh,color,normal,extensions,alpha,Constants(bones),null,1,8192);SubmitHighlight(draw,actor,part,skin.StartIndex,skin.IndexCount,1);}DrawnMeshes++;
+                        if(glass)target.AddGlassPacket(transparentType,skin.Mesh,TextureCache.GetTexture(material?.Textures.ColorMetalFileName??glassMaterial.Texture),TextureCache.GetTexture(material?.Textures.NormalGlossFileName??glassMaterial.GlossTexture,false),Constants(bones),NativeBackend.GlassMaterial(glassMaterial,actor.RenderModel.Bounds.HalfExtents.X,RenderSettings),triangleFaceCulling:glassMaterial.TriangleFaceCulling,oldDecalDistanceSquared:oldDecalDistance);else {uint draw=target.AddWorldPacket(pipeline,skin.Mesh,color,normal,extensions,alpha,Constants(bones),null,1,flags,cascades,origin,radius);SubmitHighlight(draw,actor,part,skin.StartIndex,skin.IndexCount,1);}if(glass && !actor.SuppressViewHighlight && HasHighlight(actor.Actor.ID)){uint draw=target.AddWorldPacket(type,skin.Mesh,color,normal,extensions,alpha,Constants(bones),null,1,8192);SubmitHighlight(draw,actor,part,skin.StartIndex,skin.IndexCount,1);}DrawnMeshes++;
                     }
                     actor.SkinDirty=false;
                 }
-                else {if(glass)target.AddGlassPacket(transparentType,part.Mesh,TextureCache.GetTexture(material?.Textures.ColorMetalFileName??glassMaterial.Texture),TextureCache.GetTexture(material?.Textures.NormalGlossFileName??glassMaterial.GlossTexture,false),Constants(),NativeBackend.GlassMaterial(glassMaterial,actor.RenderModel.Bounds.HalfExtents.X,RenderSettings),stream,count);else {uint draw=target.AddWorldPacket(pipeline,part.Mesh,color,normal,extensions,alpha,Constants(),stream,count,flags,cascades,origin,radius);SubmitHighlight(draw,actor,part,0,(uint)part.Indices.Length,count);}if(glass && !actor.SuppressViewHighlight && HasHighlight(actor.Actor.ID)){uint draw=target.AddWorldPacket(type,part.Mesh,color,normal,extensions,alpha,Constants(),stream,count,8192);SubmitHighlight(draw,actor,part,0,(uint)part.Indices.Length,count);}DrawnMeshes++;}
+                else {if(glass)target.AddGlassPacket(transparentType,part.Mesh,TextureCache.GetTexture(material?.Textures.ColorMetalFileName??glassMaterial.Texture),TextureCache.GetTexture(material?.Textures.NormalGlossFileName??glassMaterial.GlossTexture,false),Constants(),NativeBackend.GlassMaterial(glassMaterial,actor.RenderModel.Bounds.HalfExtents.X,RenderSettings),stream,count,glassMaterial.TriangleFaceCulling,oldDecalDistance);else {uint draw=target.AddWorldPacket(pipeline,part.Mesh,color,normal,extensions,alpha,Constants(),stream,count,flags,cascades,origin,radius);SubmitHighlight(draw,actor,part,0,(uint)part.Indices.Length,count);}if(glass && !actor.SuppressViewHighlight && HasHighlight(actor.Actor.ID)){uint draw=target.AddWorldPacket(type,part.Mesh,color,normal,extensions,alpha,Constants(),stream,count,8192);SubmitHighlight(draw,actor,part,0,(uint)part.Indices.Length,count);}DrawnMeshes++;}
                 if(dithered)DitheredDraws++;
             }
             profileMaterialTicks += Stopwatch.GetTimestamp() - materialsAt;
         }
         private void SubmitPreparedActor(NativeBackend target,ActorData actor,MatrixD world,uint type,byte[] stream,uint count,bool casts,bool probeOnly,bool occluded,bool outsideProbe,uint cascades,Vector3 origin,float radius,bool dithered)
         {
-            Vector3 hsv=actor.Hsv+colorizeHsv;bool metal=(actor.Flags&RenderFlags.MetalnessColorable)!=0;
+            Vector3 hsv=actor.Hsv+colorizeHsv;bool metal=(actor.Flags&RenderFlags.MetalnessColorable)!=0;bool distanceFade=type>=2 && UsesOldDecalShaders(actor) && (actor.Flags&RenderFlags.DistanceFade)!=0;
             bool depthGeometry=target.SharedModelGeometryEnabled && casts && type==0 && actor.RenderModel.SharedMesh!=0 && models.IsStockNewModel(actor.RenderModel);
-            if(actor.Submission==null || actor.SubmissionDepthGeometry!=depthGeometry || actor.SubmissionRevision!=actor.MaterialRevision || actor.SubmissionType!=type || actor.SubmissionColor!=actor.Color || actor.SubmissionHsv!=hsv || actor.SubmissionDither!=actor.Dithering || actor.SubmissionMetal!=metal)
+            if(actor.Submission==null || actor.SubmissionDepthGeometry!=depthGeometry || actor.SubmissionRevision!=actor.MaterialRevision || actor.SubmissionType!=type || actor.SubmissionColor!=actor.Color || actor.SubmissionHsv!=hsv || actor.SubmissionDither!=actor.Dithering || actor.SubmissionMetal!=metal || actor.SubmissionDistanceFade!=distanceFade)
             {
                 using var rebuildProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PreparedRebuild);
                 var parts=new List<NativeBackend.PreparedPart>(actor.RenderModel.Parts.Count);
-                foreach(var part in actor.RenderModel.Parts)
+                foreach(var part in MaterialParts(actor))
                 {
                     MaterialOverride material=null;if(actor.Materials.Count!=0)actor.Materials.TryGetValue(part.MaterialName??string.Empty,out material);
                     if(material!=null && ((material.Flags.Add&RenderFlags.SkipInMainView)!=0 || (material.Flags.Remove&RenderFlags.Visible)!=0))continue;
-                    uint pipeline=WorldShaderVariants.Pipeline(part.Technique,type,(part.Flags&1)!=0,metal);
+                    uint pipeline=MaterialPipeline(actor,part,type);
                     parts.Add(new NativeBackend.PreparedPart(pipeline,part.Mesh,
                         TextureCache.GetTexture(material?.Textures.ColorMetalFileName??part.ColorTexture),
                         TextureCache.GetWorldNormal(material?.Textures.NormalGlossFileName??part.NormalTexture),
                         TextureCache.GetWorldExtensions(material?.Textures.ExtensionsFileName??part.ExtensionTexture),
-                        TextureCache.GetTexture(material?.Textures.AlphamaskFileName??part.AlphaTexture,false),
-                        (material?.Color??actor.Color).ToVector3(),hsv,material?.Emissivity??1,actor.Dithering,target.WorldLayouts[pipeline],depthGeometry?512u:0u));
+                        TextureCache.GetWorldAlpha(material?.Textures.AlphamaskFileName??part.AlphaTexture),
+                        MaterialTint(type,material?.Color??actor.Color),hsv,material?.Emissivity??1,actor.Dithering,target.WorldLayouts[pipeline],MaterialRasterFlags(actor,part,material)|(depthGeometry?512u:0u)|(UsesOldDecalShaders(actor)?NativeBackend.OldGeometryOrder:0u),actor.RenderLod,OldPartOrder(actor,actor.RenderModel,part,(int)actor.RenderLod)));
                 }
                 if(depthGeometry){
                     var sourceParts=new DepthGeometryPart[actor.RenderModel.Parts.Count];
                     for(int i=0;i<sourceParts.Length;i++){var p=actor.RenderModel.Parts[i];actor.Materials.TryGetValue(p.MaterialName??string.Empty,out var m);bool visible=m==null || ((m.Flags.Add&RenderFlags.SkipInMainView)==0 && (m.Flags.Remove&RenderFlags.Visible)==0);sourceParts[i]=new DepthGeometryPart(p.IndexStart,(uint)p.Indices.Length,p.Technique,visible);}
                     foreach(var segment in DepthGeometrySegments.Build(sourceParts)){
                         var p=actor.RenderModel.Parts[segment.MaterialPart];actor.Materials.TryGetValue(p.MaterialName??string.Empty,out var m);uint pipeline=segment.Alpha?5u:0u;
-                        parts.Add(new NativeBackend.PreparedPart(pipeline,models.GetDepthRange(actor.RenderModel,segment.First,segment.Count),0,TextureCache.GetWorldNormal(null),TextureCache.GetWorldExtensions(null),segment.Alpha?TextureCache.GetTexture(m?.Textures.AlphamaskFileName??p.AlphaTexture,false):0,Vector3.One,hsv,1,0,target.WorldLayouts[pipeline],4096u|16384u));
+                        parts.Add(new NativeBackend.PreparedPart(pipeline,models.GetDepthRange(actor.RenderModel,segment.First,segment.Count),0,TextureCache.GetWorldNormal(null),TextureCache.GetWorldExtensions(null),segment.Alpha?TextureCache.GetWorldAlpha(m?.Textures.AlphamaskFileName??p.AlphaTexture):0,Vector3.One,hsv,1,0,target.WorldLayouts[pipeline],4096u|16384u|MaterialRasterFlags(actor,p,m),actor.RenderLod));
                     }
                 }
-                actor.Submission=new NativeBackend.PreparedActor(parts.ToArray());actor.SubmissionRevision=actor.MaterialRevision;actor.SubmissionType=type;actor.SubmissionColor=actor.Color;actor.SubmissionHsv=hsv;actor.SubmissionDither=actor.Dithering;actor.SubmissionMetal=metal;
+                actor.Submission=new NativeBackend.PreparedActor(parts.ToArray());actor.SubmissionRevision=actor.MaterialRevision;actor.SubmissionType=type;actor.SubmissionColor=actor.Color;actor.SubmissionHsv=hsv;actor.SubmissionDither=actor.Dithering;actor.SubmissionMetal=metal;actor.SubmissionDistanceFade=distanceFade;
                 actor.SubmissionDepthGeometry=depthGeometry;
                 target.NoteSubmissionRebuild();
             }
@@ -733,7 +774,7 @@ namespace ClientPlugin.Rendering.Scene
             if (actor.PartFrames == null || actor.PartFrames.Length != actor.RenderModel.Parts.Count) actor.PartFrames = new PartFrame[actor.RenderModel.Parts.Count];
             PartFrame frame = actor.PartFrames[partIndex];
             if (frame == null) actor.PartFrames[partIndex] = frame = new PartFrame();
-            Vector3 tint = (material?.Color ?? actor.Color).ToVector3();
+            Vector3 tint = MaterialTint(WorldShaderVariants.BasePipeline(pipeline)%5,material?.Color ?? actor.Color);
             Vector3 hsv = actor.Hsv + colorizeHsv;
             float emissive = material?.Emissivity ?? 1;
             bool identityDraw=HasHighlight(actor.Actor.ID) || frameExcludedActors.Contains(actor.Actor.ID);
@@ -744,7 +785,7 @@ namespace ClientPlugin.Rendering.Scene
                 target.NotePreparedPart(true);
                 if(!batchRigid)WorldConstants.WriteMatrix(frame.Constants, new WorldConstants.MatrixRows(frame.Row0, frame.Row1, frame.Row2), world);
                 if(!batchRigid && target.WorldRecipesEnabled)target.EnsureWorldRecipe(ref frame.Recipe,pipeline,part.Mesh,frame.Color,frame.Normal,frame.Extensions,frame.Alpha,frame.Constants.Length);
-                uint kept = batchRigid?target.AddRigidWorldPacket(pipeline,part.Mesh,frame.Color,frame.Normal,frame.Extensions,frame.Alpha,world,tint,hsv,emissive,actor.Dithering,flags,cascades,origin,radius,frame.BatchHint):target.AddWorldPacket(pipeline, part.Mesh, frame.Color, frame.Normal, frame.Extensions, frame.Alpha, frame.Constants, stream, count, flags, cascades, origin, radius, false,frame.Recipe);
+                uint kept = batchRigid?target.AddRigidWorldPacket(pipeline,part.Mesh,frame.Color,frame.Normal,frame.Extensions,frame.Alpha,world,tint,hsv,emissive,actor.Dithering,flags,cascades,origin,radius,frame.BatchHint,actor.RenderLod):target.AddWorldPacket(pipeline, part.Mesh, frame.Color, frame.Normal, frame.Extensions, frame.Alpha, frame.Constants, stream, count, flags, cascades, origin, radius, false,frame.Recipe);
                 if (identityDraw) SubmitHighlight(kept, actor, part, 0, (uint)part.Indices.Length, count);
                 DrawnMeshes++;
                 return true;
@@ -758,20 +799,20 @@ namespace ClientPlugin.Rendering.Scene
             if (!same)
             {
                 ShaderMetadata layout = target.WorldLayouts[pipeline];
-                frame.Constants = WorldConstants.Object(layout, world, tint, hsv, emissive, 0, null, actor.Dithering, false);
+                frame.Constants = WorldConstants.Object(layout, world, tint, hsv, emissive, 0, null, actor.Dithering, false,actor.RenderLod);
                 WorldConstants.MatrixRows rows = WorldConstants.ObjectRows(layout);
                 frame.Row0 = rows.Row0; frame.Row1 = rows.Row1; frame.Row2 = rows.Row2;
                 frame.Color = TextureCache.GetTexture(colorName);
                 frame.Normal = TextureCache.GetWorldNormal(normalName);
                 frame.Extensions = TextureCache.GetWorldExtensions(extensionName);
-                frame.Alpha = TextureCache.GetTexture(alphaName, false);
+                frame.Alpha = TextureCache.GetWorldAlpha(alphaName);
                 frame.Pipeline = pipeline; frame.ColorName = colorName; frame.NormalName = normalName; frame.ExtensionName = extensionName; frame.AlphaName = alphaName;
                 frame.Tint = tint; frame.Hsv = hsv; frame.Emissive = emissive; frame.Dither = actor.Dithering; frame.Live = true;
             }
             else WorldConstants.WriteMatrix(frame.Constants, new WorldConstants.MatrixRows(frame.Row0, frame.Row1, frame.Row2), world);
             frame.MaterialRevision = actor.MaterialRevision;
             if(!batchRigid && target.WorldRecipesEnabled)target.EnsureWorldRecipe(ref frame.Recipe,pipeline,part.Mesh,frame.Color,frame.Normal,frame.Extensions,frame.Alpha,frame.Constants.Length);
-            uint draw = batchRigid?target.AddRigidWorldPacket(pipeline,part.Mesh,frame.Color,frame.Normal,frame.Extensions,frame.Alpha,world,tint,hsv,emissive,actor.Dithering,flags,cascades,origin,radius,frame.BatchHint):target.AddWorldPacket(pipeline, part.Mesh, frame.Color, frame.Normal, frame.Extensions, frame.Alpha, frame.Constants, stream, count, flags, cascades, origin, radius, false,frame.Recipe);
+            uint draw = batchRigid?target.AddRigidWorldPacket(pipeline,part.Mesh,frame.Color,frame.Normal,frame.Extensions,frame.Alpha,world,tint,hsv,emissive,actor.Dithering,flags,cascades,origin,radius,frame.BatchHint,actor.RenderLod):target.AddWorldPacket(pipeline, part.Mesh, frame.Color, frame.Normal, frame.Extensions, frame.Alpha, frame.Constants, stream, count, flags, cascades, origin, radius, false,frame.Recipe);
             if (identityDraw) SubmitHighlight(draw, actor, part, 0, (uint)part.Indices.Length, count);
             DrawnMeshes++;
             return true;
@@ -816,7 +857,7 @@ namespace ClientPlugin.Rendering.Scene
             SpotMemory previous;
             bool known = spotByOwner.TryGetValue(ownerId, out previous);
             Vector3D shift = previous.Position - position;
-            bool changed = dirtyShadowOwners.Remove(ownerId) || spotOwnerAt[index]!=(ulong)ownerId+1 || !known || !previous.Valid || shift.LengthSquared() > 0.0001 || Vector3.Dot(previous.Direction, direction) < 0.9999f || Vector3D.DistanceSquared(previous.Up,up)>0.0001 || Math.Abs(previous.Range - range) > 0.01f || Math.Abs(previous.Aperture - aperture) > 0.0001f;
+            bool changed = dirtyShadowOwners.Remove(ownerId) || spotOwnerAt[index]!=(ulong)ownerId+1 || !known || !previous.Valid || shift.LengthSquared() > 0.0001 || Vector3.Dot(previous.Direction, direction) < 0.9999f || Vector3D.DistanceSquared(previous.Up,up)>0.0001 || previous.Range != range || Math.Abs(previous.Aperture - aperture) > 0.0001f;
             spotOwnerAt[index]=(ulong)ownerId+1;
             spotByOwner[ownerId] = new SpotMemory { Position = position, Direction = direction, Up=up,Range = range, Aperture = aperture, Valid = true };
             return changed;
@@ -853,7 +894,7 @@ namespace ClientPlugin.Rendering.Scene
                 ulong texture = TextureCache.GetTexture(color);
                 ulong normal = TextureCache.GetTexture(material?.Textures.NormalGlossFileName ?? part.NormalTexture, false);
                 ulong extensions = TextureCache.GetTexture(material?.Textures.ExtensionsFileName ?? part.ExtensionTexture, false);
-                ulong alpha = TextureCache.GetTexture(material?.Textures.AlphamaskFileName ?? part.AlphaTexture, false);
+                ulong alpha = TextureCache.GetWorldAlpha(material?.Textures.AlphamaskFileName ?? part.AlphaTexture);
                 uint flags = part.Flags & 3;
                 if ((actor.Flags & RenderFlags.MetalnessColorable) != 0) flags |= 16;
                 if ((actor.Flags & (RenderFlags.CastShadows | RenderFlags.SkipInDepth)) != RenderFlags.CastShadows) flags |= 512;
@@ -986,13 +1027,14 @@ namespace ClientPlugin.Rendering.Scene
             skybox.Dispose();
             ClearNativePassScene();
             models.Clear(); TextureCache.Clear();
+            OldResources.SessionEnd();
             base.Clear(); ManualCullTree.Clear();
             ClearShadowGroupOcclusion();
             occlusionGroups.Clear();dirtyOcclusionGroups.Clear();groupQueryOwners.Clear();groupMembershipDirty=true;
             actorIndex.Clear();dirtyTransforms.Clear();spatialDirty.Clear();shadowDirty.Clear();skinnedActors.Clear();staticGroups.Clear();removedShadowRegions.Clear();candidates.Clear();shadowWork.Clear();
             while(transformNotifications.TryDequeue(out _)){}
             while(actorStateNotifications.TryDequeue(out _)){}
-            frustum = null;
+            frustum = null;lightFarFrustum=null;lightQuery.Clear();ambientLightQuery.Clear();lightPointGroups.Clear();lightQueryGroups.Clear();lightGroupContained.Clear();
             haveSizeProjection=false;
             colorizeHsv = new Vector3(MyTextureDebugMultipliers.Defaults.ColorizeHSV);
             CalculateGravityInPoint = position => Vector3.Zero;
@@ -1057,42 +1099,54 @@ namespace ClientPlugin.Rendering.Scene
             frameSpotActors.Clear();
             liveSpots.Clear();
             frameSpotStatic = frameSpotDynamic = 0;
-            var active = new List<VulkanLightComponent>();
-            foreach (var light in lights) if (light.Owner != null && IsVisible(light.Owner) && (light.Data.PointLightOn || light.Data.SpotLightOn)) active.Add(light);
+            var selected=SelectLights();
             Vector3D camera = Environment.CameraPosition;
-            active.Sort((a, b) => Vector3D.DistanceSquared(a.Position, camera).CompareTo(Vector3D.DistanceSquared(b.Position, camera)));
             var packets = new List<NativeLight>();var spotPackets=new List<NativeSpot>();int shadowed=0;
-            foreach (var light in active)
+            foreach (var light in selected.Spots)
             {
                 UpdateRenderLightData data = light.Data;
                 Vector3D position = light.Position - camera;
-                if (data.PointLightOn && packets.Count < 64 && data.PointLight.Range > 0 && data.PointIntensity >= .001f)
-                {
-                    Vector3 color = data.PointLight.Color;
-                    Vector3D pointPosition = position + data.PointOffset * light.Owner.WorldMatrix.Forward;
-                    // MyLight already multiplies the linear layout color by PointIntensity.
-                    var packet = new NativeLight { PositionRange = new[] { (float)pointPosition.X, (float)pointPosition.Y, (float)pointPosition.Z, data.PointLight.Range }, ColorIntensity = new[] { color.X, color.Y, color.Z, 1f }, DirectionCone = new float[4] };
-                    SetLightMaterial(ref packet, data.PointLight);
-                    packets.Add(packet);
-                }
-                if (data.SpotLightOn && packets.Count < 64 && data.SpotLight.Light.Range > 0 && data.SpotIntensity >= .001f)
+                if (data.SpotLightOn && spotPackets.Count < 32 && data.SpotLight.Light.Range > 0)
                 {
                     Vector3 color = data.SpotLight.Light.Color;
                     Vector3 direction = light.Owner.WorldMatrix.Forward;
                     if (direction.LengthSquared() > .00001f) direction.Normalize();
                     var packet = new NativeLight { PositionRange = new[] { (float)position.X, (float)position.Y, (float)position.Z, data.SpotLight.Light.Range }, ColorIntensity = new[] { color.X, color.Y, color.Z, 1f }, DirectionCone = new[] { direction.X, direction.Y, direction.Z, data.SpotLight.ApertureCos }, Flags = 1 };
                     SetLightMaterial(ref packet, data.SpotLight.Light);
-                    float near=Math.Max(.001f,Math.Min(.5f,data.SpotLight.Light.Range*.1f));float angle=2*(float)Math.Acos(MathHelper.Clamp(data.SpotLight.ApertureCos,.001f,.99999f));
+                    float shadowScale=RenderSettings.User.ShadowQuality switch{
+                        MyShadowsQuality.LOW=>ShadowSettings.ReflectorShadowDistanceLow,
+                        MyShadowsQuality.MEDIUM=>ShadowSettings.ReflectorShadowDistanceMedium,
+                        MyShadowsQuality.HIGH=>ShadowSettings.ReflectorShadowDistanceHigh,
+                        MyShadowsQuality.EXTREME=>ShadowSettings.ReflectorShadowDistanceExtreme,
+                        _=>0};
+                    float shadowRange=shadowScale*data.SpotLight.Light.Range;
+                    float far=Math.Max(shadowRange,1.5f);float angle=(float)(2*Math.Acos(MathHelper.Clamp(data.SpotLight.ApertureCos,.001f,.99999f)));
                     Vector3D up=light.Owner.WorldMatrix.Up;if(Math.Abs(Vector3D.Dot(up,direction))>.99)up=Math.Abs(direction.Y)>.99?Vector3D.Right:Vector3D.Up;
-                    MatrixD projection=MatrixD.CreateLookAt(position,position+direction,up)*MatrixD.CreatePerspectiveFieldOfView(angle,1,near,data.SpotLight.Light.Range);
-                    bool casts=data.CastShadows && RenderSettings.User.ShadowQuality!=MyShadowsQuality.DISABLED && shadowed<16;if(casts)shadowed++;
+                    MatrixD projection=MatrixD.CreateLookAt(position,position+direction,up)*(MatrixD)Matrix.CreatePerspectiveFieldOfView(angle,1,.5f,far);
+                    bool casts=data.CastShadows && shadowRange>0 && shadowed<16;if(casts)shadowed++;
                     int lightIndex=packets.Count;
-                    if(casts){liveSpots.Add(new LiveSpot{Position=light.Position,Range=data.SpotLight.Light.Range,Cone=data.SpotLight.ApertureCos,Direction=direction,Index=lightIndex,WorldProjection=MatrixD.CreateTranslation(-camera)*projection});if(SpotChanged(light.Owner.ID,lightIndex,light.Position,direction,up,data.SpotLight.Light.Range,data.SpotLight.ApertureCos))frameSpotStatic|=1UL<<(lightIndex);}
+                    if(casts){liveSpots.Add(new LiveSpot{Position=light.Position,Range=far,Cone=data.SpotLight.ApertureCos,Direction=direction,Index=lightIndex,WorldProjection=MatrixD.CreateTranslation(-camera)*projection});if(SpotChanged(light.Owner.ID,lightIndex,light.Position,direction,up,far,data.SpotLight.ApertureCos))frameSpotStatic|=1UL<<(lightIndex);}
                     frameSpotActors[(uint)packets.Count]=light.Owner.ID;
-                    spotPackets.Add(new NativeSpot{Light=(uint)packets.Count,Flags=casts?1u:0u,Cookie=TextureCache.GetTexture(data.ReflectorTexture,false),Projection=NativeBackend.MatrixValues(projection)});
+                    spotPackets.Add(new NativeSpot{Light=(uint)packets.Count,Flags=casts?1u:0u,Cookie=TextureCache.GetTexture(data.ReflectorTexture,true),Projection=NativeBackend.MatrixValues(projection)});
                     packets.Add(packet);
                 }
-                if (packets.Count >= 64) break;
+                if (spotPackets.Count >= 32) break;
+            }
+            // Independent stock budgets. Spots precede points so their identities
+            // remain in the existing 64-slot shadow redraw/exclusion mask.
+            uint pointBudget=WorldConstants.PointLightCapacity(RenderSettings.User.LightsQuality);int pointCount=0;
+            foreach(var light in selected.Points){
+                var data=light.Data;Vector3D position=light.Position-camera;
+                if (data.PointLightOn && pointCount < pointBudget && data.PointLight.Range > 0)
+                {
+                    Vector3 color = data.PointLight.Color;
+                    Vector3D pointPosition = position + data.PointOffset * light.Owner.WorldMatrix.Forward;
+                    // MyLight already multiplies the linear layout color by PointIntensity.
+                    var packet = new NativeLight { PositionRange = new[] { (float)pointPosition.X, (float)pointPosition.Y, (float)pointPosition.Z, data.PointLight.Range }, ColorIntensity = new[] { color.X, color.Y, color.Z, 1f }, DirectionCone = new float[4] };
+                    SetLightMaterial(ref packet, data.PointLight);
+                    packets.Add(packet);pointCount++;
+                }
+                if(pointCount>=pointBudget)break;
             }
             ulong activeShadowSlots=0;foreach(var spot in liveSpots)activeShadowSlots|=1UL<<spot.Index;
             for(int i=0;i<spotOwnerAt.Length;i++)if((activeShadowSlots&(1UL<<i))==0)spotOwnerAt[i]=0;
@@ -1115,7 +1169,7 @@ namespace ClientPlugin.Rendering.Scene
             packet.Reserved2 = new FloatEncoding { Value = layout.GlossFactor }.Bits;
         }
 
-        private sealed class VulkanLightComponent : MyLightComponent
+        private sealed partial class VulkanLightComponent : MyLightComponent
         {
             private readonly VulkanScene scene;
             public VulkanLightComponent(VulkanScene scene) { this.scene = scene;FlareId=++scene.nextFlareId; }
@@ -1130,6 +1184,7 @@ namespace ClientPlugin.Rendering.Scene
                     for(int i=0;i<m_originalData.Glare.Glares.Length;++i)if(m_originalData.Glare.Glares[i].OcclusionToIntensityCurve!=null)m_originalData.Glare.Glares[i].OcclusionToIntensityCurve=(MySubGlare.KeyPoint[])m_originalData.Glare.Glares[i].OcclusionToIntensityCurve.Clone();
                     m_data.Glare.Glares = m_originalData.Glare.Glares;
                 }
+                UpdateLightBounds();
                 // Light positions are parent-local when attached to a grid or RenderDirect actor.
                 Vector3 forward = data.SpotLight.Direction, up = data.SpotLight.Up;
                 if (forward.LengthSquared() < .00001f) forward = Vector3.Forward;
@@ -1146,11 +1201,17 @@ namespace ClientPlugin.Rendering.Scene
                     MatrixD world = MatrixD.CreateWorld(data.Position, forward, up);
                     Owner.SetMatrix(ref world);
                 }
+                UpdateLightCullData();Owner.SetVisibility(PointOn||SpotOn||m_data.Glare.Enabled);
             }
             public override void OnRemove(MyActor owner) { scene.lights.Remove(this); base.OnRemove(owner); }
         }
 
-        private sealed class CullResults : MyCullResultsBase { }
+        private sealed class CullResults : MyCullResultsBase
+        {
+            public readonly List<VulkanLightComponent> Points=new List<VulkanLightComponent>(),Spots=new List<VulkanLightComponent>();
+            public void Clear(){Points.Clear();Spots.Clear();}
+            public void Append(CullResults other){Points.AddRange(other.Points);Spots.AddRange(other.Spots);}
+        }
         public override MyManualCullTreeData AllocateGroupData()
         {
             var data = new MyManualCullTreeData { All = new CullResults(), RenderCullData = new CullData[19] };

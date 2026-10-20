@@ -9,9 +9,18 @@ namespace ClientPlugin.Rendering.Interop;
 
 public sealed partial class NativeBackend
 {
+    // Stock consumes all OLD geometry, including decals, before NEW work.
+    public const uint OldGeometryOrder=0x04000000u;
+    public const uint OldMeshDecalOrder=OldGeometryOrder;
+    public const uint OldBlendedDecalOrder=OldMeshDecalOrder;
+    public const uint StockBackCull=0x08000000u, StockNoCull=0x10000000u;
+    public const uint OldDepthNoCull=0x20000000u;
     private WorldFunctions worldApi;
     private WorldFunctions WorldApi => worldApi ?? (worldApi = new WorldFunctions(GetSymbol));
     public bool WorldReady { get; private set; }
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]private delegate int HdrQualityFn(IntPtr ctx,uint highQuality);
+    private HdrQualityFn hdrQuality;
+    public void SetHdrQuality(bool highQuality){hdrQuality??=(HdrQualityFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_set_hdr_quality"),typeof(HdrQualityFn));Check(hdrQuality(context,highQuality?1u:0u),context);}
     private readonly HashSet<uint> tintedGenericPipelines=new();
     public readonly Dictionary<uint, ShaderMetadata> WorldLayouts = new Dictionary<uint, ShaderMetadata>();
     private readonly List<WorldPacket> worldPackets = new List<WorldPacket>();
@@ -187,7 +196,20 @@ public sealed partial class NativeBackend
             ClientPlugin.Diagnostics.VulkanDiagnostics.Set("Object motion", ClientPlugin.Diagnostics.SubsystemState.Failed, error.Message);
         }
     }
-    byte[][] attachmentVs;
+    byte[][] attachmentVs,indexedAttachmentVs;
+    void ConfigureIndexedMotion()
+    {
+        string assets=ClientPlugin.Bootstrap.BootstrapAssets.FindDirectory(Path.Combine("Shaders","indexed_attachment.hlsl"));
+        if(assets==null)throw new FileNotFoundException("Indexed motion vertex shader is required for GPU-owned geometry.");
+        var initialize=(WorldFunctions.MotionFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_init_indexed_motion"),typeof(WorldFunctions.MotionFn));
+        using(var compiler=VulkanShaderCompiler.CreateBundled(Path.Combine(Path.GetTempPath(),"sevk-indexed-motion"))){
+            byte[] pixel=CompileMotion(compiler,Path.Combine(assets,"Shaders","object_motion.hlsl"),"__pixel_shader","ps_5_0",null);
+            for(int kind=0;kind<5;kind++){
+                var compiled=compiler.Compile(new VulkanShaderRequest{SourcePath=Path.Combine(assets,"Shaders","indexed_attachment.hlsl"),ContentDirectory=Path.Combine(assets,"Shaders"),EntryPoint="__vertex_shader",Profile="vs_5_0",NativeAbiVersion=1,Defines=new Dictionary<string,string>{{"INDEXED_KIND",kind.ToString(System.Globalization.CultureInfo.InvariantCulture)},{"INDEXED_MOTION","1"}}});
+                byte[] vertex=SpirvRuntimeModule.Prepare(File.ReadAllBytes(compiled.SpirvPath));Check(initialize(context,(uint)kind,vertex,(ulong)vertex.Length,pixel,(ulong)pixel.Length),context);
+            }
+        }
+    }
     public bool InitGBufferAttachment(uint slot, uint format, byte[] pixel)
     {
         try
@@ -197,12 +219,31 @@ public sealed partial class NativeBackend
             var vertex = AttachmentVertex();
             for (uint kind = 0; kind < 4; kind++)
                 Check(WorldApi.InitAttach(context, slot, format, kind, vertex[kind], (ulong)vertex[kind].Length, pixel, (ulong)pixel.Length), context);
+            if(GpuSceneReady){
+                var indexed=(WorldFunctions.AttachFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_init_indexed_attachment"),typeof(WorldFunctions.AttachFn));
+                var gpuVertex=IndexedAttachmentVertex();
+                for(uint kind=0;kind<5;kind++)Check(indexed(context,slot,format,kind,gpuVertex[kind],(ulong)gpuVertex[kind].Length,pixel,(ulong)pixel.Length),context);
+            }
             return true;
         }
         catch (Exception error)
         {
             ClientPlugin.Diagnostics.VulkanDiagnostics.Set("GBuffer attachment", ClientPlugin.Diagnostics.SubsystemState.Failed, error.Message);
             return false;
+        }
+    }
+    byte[][] IndexedAttachmentVertex()
+    {
+        if(indexedAttachmentVs!=null)return indexedAttachmentVs;
+        string assets=ClientPlugin.Bootstrap.BootstrapAssets.FindDirectory(Path.Combine("Shaders","indexed_attachment.hlsl"));
+        if(assets==null)throw new FileNotFoundException("Indexed attachment vertex shader is required for GPU-owned geometry.");
+        using(var compiler=VulkanShaderCompiler.CreateBundled(Path.Combine(Path.GetTempPath(),"sevk-indexed-attachment"))){
+            var result=new byte[5][];
+            for(int kind=0;kind<result.Length;kind++){
+                var compiled=compiler.Compile(new VulkanShaderRequest{SourcePath=Path.Combine(assets,"Shaders","indexed_attachment.hlsl"),ContentDirectory=Path.Combine(assets,"Shaders"),EntryPoint="__vertex_shader",Profile="vs_5_0",NativeAbiVersion=1,Defines=new Dictionary<string,string>{{"INDEXED_KIND",kind.ToString(System.Globalization.CultureInfo.InvariantCulture)}}});
+                result[kind]=SpirvRuntimeModule.Prepare(File.ReadAllBytes(compiled.SpirvPath));
+            }
+            return indexedAttachmentVs=result;
         }
     }
     byte[][] AttachmentVertex()
@@ -240,17 +281,18 @@ public sealed partial class NativeBackend
     }
     public uint AddWorldPacket(uint pipeline,ulong mesh,ulong color,ulong normal,ulong extensions,ulong alpha,byte[] constants,byte[] instances=null,uint instanceCount=1,uint flags=0,uint cascadeMask=0xFF,Vector3 origin=default,float radius=-1,bool recycleConstants=true,WorldRecipe recipe=null,bool recordLogical=true)
     {
-        if(WorldShaderVariants.IsCutout(pipeline))flags|=512u|16384u; // Stock mesh decals do not enter depth/forward passes.
+        if(WorldShaderVariants.IsMeshDecal(pipeline))flags|=512u|16384u; // Stock mesh decals do not enter depth/forward passes.
         if(!WorldReady || !WorldLayouts.ContainsKey(pipeline))throw new InvalidOperationException("The stock world pipeline is not ready.");
         if(worldPackets.Count>=65536)throw new InvalidOperationException("World packet batch exceeds 65536 draws.");
         if(recordLogical)NoteLogicalDraw(pipeline,mesh,instanceCount,flags,cascadeMask);
-        worldPackets.Add(new WorldPacket{Order=++modelSubmissionOrder,Recipe=recipe,Pipeline=pipeline,Mesh=mesh,Color=color,Normal=normal,Extensions=extensions,Alpha=alpha,Constants=constants,Instances=instances,Count=instanceCount,Flags=flags,CascadeMask=cascadeMask,Origin=origin,Radius=radius,RecycleConstants=recycleConstants});return (uint)worldPackets.Count-1;
+        uint order=++modelSubmissionOrder;NoteMainGroupOrder(flags,order);
+        worldPackets.Add(new WorldPacket{Order=order,MainGroup=mainGroup,MainPart=MainPart,OldOrder=(flags&OldGeometryOrder)!=0?oldPartOrder:default,Recipe=recipe,Pipeline=pipeline,Mesh=mesh,Color=color,Normal=normal,Extensions=extensions,Alpha=alpha,Constants=constants,Instances=instances,Count=instanceCount,Flags=flags,CascadeMask=cascadeMask,Origin=origin,Radius=radius,RecycleConstants=recycleConstants});return (uint)worldPackets.Count-1;
     }
     public void QueueWorld(byte[] frame,float[] projection,float[] inverse)
     {
         if(frame==null || frame.Length!=1280 || projection==null || projection.Length!=16 || inverse==null || inverse.Length!=16)throw new ArgumentException("Invalid stock frame matrices/constants.");
         FinalizeModelBatches();
-        if(worldPackets.Count==0){Check(WorldApi.Queue(context,frame,(uint)frame.Length,projection,inverse,null,0),context);QueueNativeModels();QueueTransparency();QueueDecals();QueueHighlights();QueueShadowExclusions();return;}
+        if(worldPackets.Count==0){Check(WorldApi.Queue(context,frame,(uint)frame.Length,projection,inverse,null,0),context);QueueMainOrder();QueueNativeModels();QueueTransparency();QueueDecals();QueueHighlights();QueueShadowExclusions();return;}
         if(RetainedSubmissionEnabled && !ObjectRetentionEnabled){QueueWorldBlob(frame,projection,inverse);return;}
         long packedAt=PacketProfilingEnabled?System.Diagnostics.Stopwatch.GetTimestamp():0;
         if(drawScratch.Length<worldPackets.Count)drawScratch=new NativeWorldDraw[worldPackets.Count];
@@ -292,7 +334,7 @@ public sealed partial class NativeBackend
                 Check(retainedQueue(context,frame,(uint)frame.Length,projection,inverse,drawScratch,(uint)worldPackets.Count,objectIdentityScratch),context);
             }else Check(WorldApi.Queue(context,frame,(uint)frame.Length,projection,inverse,drawScratch,(uint)worldPackets.Count),context);
             if(PacketProfilingEnabled){long now=System.Diagnostics.Stopwatch.GetTimestamp();nativeQueueTicks+=now-packedAt;packedAt=now;}
-            QueueTransparency();QueueDecals();QueueHighlights();QueueShadowExclusions();
+            QueueMainOrder();QueueTransparency();QueueDecals();QueueHighlights();QueueShadowExclusions();
             if(PacketProfilingEnabled)auxiliaryQueueTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-packedAt;
         }
         finally{constantPin.Free();if(instancePin.IsAllocated)instancePin.Free();}
@@ -300,7 +342,22 @@ public sealed partial class NativeBackend
     private void ClearWorldPackets(){ShadowExclusions=Array.Empty<NativeShadowExclusion>();if(WorldReady)QueueShadowExclusions();foreach(var packet in worldPackets)if(packet.RecycleConstants)ReflectedConstantBuffer.Recycle(packet.Constants);worldPackets.Clear();if(WorldReady)QueueOcclusion(0,Array.Empty<NativeOcclusionDraw>());highlightPackets.Clear();if(WorldReady)Check(HighlightApi.Queue(context,null,0),context);if(WorldReady)Check(WorldApi.Queue(context,null,0,null,null,null,0),context);}
     public void UploadWorldCube(ulong id,int width,int height,int format,byte[] bytes,bool srgb)
         => Check(WorldApi.Cube(context,id,(uint)width,(uint)height,TextureFormat(format),srgb?1u:0u,bytes,(ulong)bytes.Length),context);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]private delegate int CubeMipsFn(IntPtr ctx,ulong id,uint width,uint height,uint format,uint srgb,byte[] data,ulong bytes,uint mips);
+    private CubeMipsFn cubeMips;
+    public void UploadWorldCubeMips(ulong id,int width,int height,int format,byte[][][] faces,bool srgb)
+    {
+        if(faces==null || faces.Length!=6 || faces[0]==null || faces[0].Length==0)throw new ArgumentException("Cubemaps require six complete face mip chains.");
+        int mips=faces[0].Length,total=0;
+        foreach(var face in faces){if(face==null || face.Length!=mips)throw new ArgumentException("Cubemap faces require matching mip counts.");foreach(var mip in face){if(mip==null)throw new ArgumentException("Cubemap mip bytes are missing.");total=checked(total+mip.Length);}}
+        var bytes=new byte[total];int offset=0;foreach(var face in faces)foreach(var mip in face){Buffer.BlockCopy(mip,0,bytes,offset,mip.Length);offset+=mip.Length;}
+        if(mips==1){UploadWorldCube(id,width,height,format,bytes,srgb);return;}
+        if(cubeMips==null)cubeMips=(CubeMipsFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_upload_world_cube_mips"),typeof(CubeMipsFn));
+        Check(cubeMips(context,id,(uint)width,(uint)height,TextureFormat(format),srgb?1u:0u,bytes,(ulong)bytes.Length,(uint)mips),context);
+    }
     public void SetWorldSkybox(ulong id)=>Check(WorldApi.Skybox(context,id),context);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]private delegate int SkyboxesFn(IntPtr context,ulong visible,ulong indirect);
+    private SkyboxesFn skyboxes;
+    public void SetWorldSkybox(ulong visible,ulong indirect){if(indirect==0 || indirect==visible){SetWorldSkybox(visible);return;}skyboxes??=(SkyboxesFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_set_world_skyboxes"),typeof(SkyboxesFn));Check(skyboxes(context,visible,indirect),context);}
 }
 [StructLayout(LayoutKind.Sequential,Pack=4)]
 public struct NativeIndirectStats
@@ -325,6 +382,8 @@ public struct NativeQueueValidationStats
 }
 public struct WorldPacket
 {
+    internal NativeBackend.MainGroupState MainGroup;internal uint MainPart;
+    internal NativeOldPartOrder OldOrder;
     public NativeBackend.WorldRecipe Recipe;
     public uint Pipeline,Count,Flags,CascadeMask,Order;
     public ulong Mesh,Color,Normal,Extensions,Alpha;

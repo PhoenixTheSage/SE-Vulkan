@@ -10,7 +10,7 @@ namespace ClientPlugin.Rendering.Shaders;
 // preprocessed snapshot. The material, depth and lighting programs stay stock.
 public static class GpuOpaqueShaderAdapter
 {
-    public const string Contract="GpuOpaqueIndexedStock-1";
+    public const string Contract="GpuOpaqueIndexedStock-3";
     private const string Varying="nointerpolation uint sevk_draw : SEVK_DRAW;";
     private static string Once(string source,string pattern,Func<Match,string> replacement)
     {
@@ -85,7 +85,9 @@ void sevk_object(uint draw_index){
             source=Once(source,@"void\s+__vertex_shader\s*\(([^)]*)\)\s*\{",m=>"void __vertex_shader("+m.Groups[1].Value+",uint sevk_instance:SV_InstanceID,[[vk::builtin(\"DrawIndex\")]] uint sevk_draw_index:SEVK_DRAW_INDEX){\nuint sevk_index=sevk_push.draw_base+sevk_draw_index;sevk_object(sevk_index);output.sevk_draw=sevk_index;"+inputs+"\n");
         }else{
             source=Once(source,@"void\s+__pixel_shader\s*\(([^)]*)\)\s*\{",m=>m.Value+"\nsevk_object(input.sevk_draw);\n");
-            if(generic)source=source.Replace("pix.color_mul = 1;","pix.color_mul = object_.color_mul;");
+            // GPU generic variants represent genuine source instances. Keep
+            // stock color_mul initialization; rigid batching's derived tint
+            // shader is a separate fallback optimization.
         }
         return source;
     }

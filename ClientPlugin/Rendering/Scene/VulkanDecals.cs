@@ -14,9 +14,12 @@ internal sealed class VulkanDecals
     private readonly Dictionary<uint,Decal> decals=new Dictionary<uint,Decal>();private readonly Dictionary<string,MyDecalMaterialDesc[]> materials=new Dictionary<string,MyDecalMaterialDesc[]>(StringComparer.Ordinal);
     private readonly NativeBackend backend;private readonly VulkanScene scene;private MyDecalGlobals globals;private double time;
     public int Count=>decals.Count;public long Submitted {get;private set;}
+    private readonly HashSet<uint> owners=new HashSet<uint>();private bool ownersDirty=true;
+    public bool HasEntityDecals(uint owner){if(ownersDirty){owners.Clear();foreach(var d in decals.Values)foreach(uint parent in d.Parents)owners.Add(parent);ownersDirty=false;}return owners.Contains(owner);}
     public VulkanDecals(NativeBackend backend,VulkanScene scene){this.backend=backend;this.scene=scene;}
     public bool Process(MyRenderMessageBase message)
     {
+        ownersDirty=true;
         if(message is MyRenderMessageRegisterScreenDecalsMaterials m){foreach(var p in m.MaterialDescriptions)materials[p.Key]=p.Value.ToArray();return true;}
         if(message is MyRenderMessageSetDecalGlobals g){globals=g.Globals;globals.DecalQueueSize=(int[])g.Globals.DecalQueueSize?.Clone();globals.DecalTrailsQueueSize=(int[])g.Globals.DecalTrailsQueueSize?.Clone();return true;}
         if(message is MyRenderMessageCreateScreenDecal c){if(c.ParentIDs==null||c.ParentIDs.Length==0)return true;if(decals.Count>=32768&&!decals.ContainsKey(c.ID))throw new InvalidOperationException("Copied decal residency exceeds its 32768-entry budget.");decals[c.ID]=new Decal{Id=c.ID,Parents=(uint[])c.ParentIDs.Clone(),Topo=c.TopoData,Flags=c.Flags,Material=c.Material,Index=c.MaterialIndex,Expiry=c.TimeUntilLive<0?int.MaxValue:c.TimeUntilLive,Trail=c.IsTrail,Distance=c.RenderSqDistance>0?c.RenderSqDistance:10000,LastSeen=time};return true;}
@@ -26,6 +29,7 @@ internal sealed class VulkanDecals
     }
     public void Observe(MyRenderMessageBase message)
     {
+        ownersDirty=true;
         if(message is MyRenderMessageRemoveRenderObject r){foreach(uint id in decals.Values.Where(d=>d.Parents.Contains(r.ID)).Select(d=>d.Id).ToArray())decals.Remove(id);}
         if(message is MyRenderMessageSetCharacterTransforms t){foreach(var b in t.BoneDecalUpdates)if(decals.TryGetValue(b.DecalID,out var d)){Matrix skin=default;for(int i=0;i<4;++i){float w=d.Topo.BoneWeights[i];if(w==0)break;skin+=scene.GetDecalBone(t.CharacterID,d.Topo.BoneIndices[i],t.BoneAbsoluteTransforms)*w;}d.Topo.MatrixCurrent=d.Topo.MatrixBinding*skin;}}
         if(message is MyRenderMessageUpdateRenderCubeInstanceBuffer c){foreach(var update in c.DecalsData)if(update.InstanceIndex>=0&&update.InstanceIndex<c.InstanceData.Count&&decals.TryGetValue(update.DecalId,out var d)){var cube=c.InstanceData[update.InstanceIndex];if(!cube.EnableSkinning)continue;Matrix deform=cube.ConstructDeformedCubeInstanceMatrix(ref d.Topo.BoneIndices,ref d.Topo.BoneWeights,out Matrix local);d.Topo.MatrixCurrent=d.Topo.MatrixBinding*Matrix.Invert(local)*deform;}}
@@ -44,8 +48,9 @@ internal sealed class VulkanDecals
             world.Translation-=camera;var data=new byte[128];void F(int offset,float[] values)=>Buffer.BlockCopy(values,0,data,offset,values.Length*4);
             F(0,new[]{(float)world.M11,(float)world.M21,(float)world.M31,(float)world.M41,(float)world.M12,(float)world.M22,(float)world.M32,(float)world.M42,(float)world.M13,(float)world.M23,(float)world.M33,(float)world.M43});
             float fade=(float)Math.Min(1,(d.Fade-time)/6)*(1-MathHelper.Clamp((float)(distance/(d.Distance*factor*.9)),0,1));F(48,new[]{fade});F(64,NativeBackend.MatrixValues(MatrixD.Invert(world)));
-            backend.DecalPackets.Add(new NativeDecalDraw{Size=176,Role=role,Constants=data,Alpha=scene.TextureCache.GetTexture(material.AlphamaskTexture,false),Color=scene.TextureCache.GetTexture(material.ColorMetalTexture),Normal=scene.TextureCache.GetTexture(material.NormalmapTexture,false),Extensions=scene.TextureCache.GetTexture(material.ExtensionsTexture,false)});Submitted++;
+            backend.DecalPackets.Add(new NativeDecalDraw{Size=176,Role=role,Constants=data,Alpha=scene.TextureCache.GetTexture(material.AlphamaskTexture,false),Color=scene.TextureCache.GetTexture(material.ColorMetalTexture),Normal=scene.TextureCache.GetTexture(material.NormalmapTexture,false),Extensions=scene.TextureCache.GetTexture(material.ExtensionsTexture,true)});Submitted++;
         }
+        ownersDirty=true;
     }
-    public void Clear(){decals.Clear();backend.DecalPackets.Clear();}
+    public void Clear(){decals.Clear();owners.Clear();ownersDirty=false;backend.DecalPackets.Clear();}
 }

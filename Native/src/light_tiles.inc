@@ -22,7 +22,7 @@ void init_light_tiles(const void* spirv,uint64_t bytes){
 }
 void prepare_light_tile_storage(WorldSlot& slot,uint32_t tiles,uint32_t points){
     if(!light_tiles.pipeline)throw std::runtime_error("light tile pipeline unavailable");
-    uint64_t bytes=uint64_t(tiles)*65*4;
+    uint64_t bytes=uint64_t(tiles)*(point_tile_capacity()+1)*4;
     if(!slot.light_tile_gpu.handle||slot.light_tile_gpu.bytes<bytes){destroy_buffer(slot.light_tile_gpu);slot.light_tile_gpu=make_buffer(bytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT,false);}
     world_buffer(slot.light_tile_constants,16,VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);std::memset(slot.light_tile_constants.mapped,0,16);std::memcpy(slot.light_tile_constants.mapped,&points,4);check(vmaFlushAllocation(allocator,slot.light_tile_constants.memory,0,16),"flush light tile constants");
     uint64_t read_bytes=uint64_t(tiles)*4;

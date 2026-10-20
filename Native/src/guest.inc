@@ -1,7 +1,7 @@
 struct GuestPipeline {
     VkPipeline pipeline{}; VkPipelineLayout layout{}; VkDescriptorSetLayout set{};
     VkShaderModule vertex{}, pixel{};
-    VkPipeline draw[5][6]{};
+    VkPipeline draw[6][6]{};
     std::vector<std::pair<uint32_t, VkDescriptorType>> bindings;
     uint32_t descriptors{}, owned_bytes{}, extras_bytes{}, uniform_bytes{};
     uint32_t group_x{8}, group_y{8};
@@ -244,9 +244,9 @@ uint64_t guest_create_pipeline(const void* vs, uint64_t vs_bytes, const char* vs
                 VkFormat formats[]{VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT};
                 stored.pipeline = world_graphics(vertex, vs_entry, pixel, ps_entry, layout, {}, {}, formats, 2, false);
             } else {
-                VkFormat formats[]{ VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R32G32B32A32_SFLOAT };
-                for (int format = 0; format < 5; ++format)
-                    for (int mode = 0; mode < (format < 2 ? 5 : 1); ++mode) {
+                VkFormat formats[]{ VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_B10G11R11_UFLOAT_PACK32 };
+                for (int format = 0; format < 6; ++format)
+                    for (int mode = 0; mode < (format < 2 || format==5 ? 5 : 1); ++mode) {
                         bool depth = mode == 4, additive = mode == 1;
                         uint32_t blend = mode == 2 ? 1u : mode == 3 ? 6u : 0u;
                         stored.draw[format][mode] = world_graphics(vertex, vs_entry, pixel, ps_entry, layout, {}, {}, &formats[format], 1, depth, false, additive, false, blend, depth);
@@ -600,8 +600,13 @@ VkImageView guest_copy_hdr(VkCommandBuffer cmd, VkImageLayout layout) {
         source, access, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     barrier(cmd, snapshot.image.handle, fresh?VK_IMAGE_LAYOUT_UNDEFINED:VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
         fresh?VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT:(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT), fresh?0:VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkImageCopy copy{}; copy.srcSubresource = copy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }; copy.extent = { world.width, world.height, 1 };
-    vkCmdCopyImage(cmd, world.hdr.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snapshot.image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    if(world.hdr_format==VK_FORMAT_R16G16B16A16_SFLOAT){
+        VkImageCopy copy{}; copy.srcSubresource = copy.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }; copy.extent = { world.width, world.height, 1 };
+        vkCmdCopyImage(cmd, world.hdr.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snapshot.image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    }else{
+        VkImageBlit copy{};copy.srcSubresource=copy.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.srcOffsets[1]=copy.dstOffsets[1]={int(world.width),int(world.height),1};
+        vkCmdBlitImage(cmd,world.hdr.handle,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,snapshot.image.handle,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&copy,VK_FILTER_NEAREST);
+    }
     barrier(cmd, snapshot.image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     barrier(cmd, world.hdr.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, layout, VK_IMAGE_ASPECT_COLOR_BIT,
@@ -939,7 +944,7 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
         color = display_state.upscale_view; tw = display_state.upscale_w; th = display_state.upscale_h; hdr_target = false;
     }
     if (!color) return false;
-    int format = draw_tone ? 0 : draw_dlss ? 1 : target && target->format == VK_FORMAT_R32G32B32A32_SFLOAT ? 4 : hdr_target || (target && target->format == VK_FORMAT_R16G16B16A16_SFLOAT) ? 1 : target && target->format == VK_FORMAT_R32_SFLOAT ? 2 : target && target->format == VK_FORMAT_R16G16_SFLOAT ? 3 : 0;
+    int format = hdr_target && world.hdr_format==VK_FORMAT_B10G11R11_UFLOAT_PACK32 ? 5 : draw_tone ? 0 : draw_dlss ? 1 : target && target->format == VK_FORMAT_R32G32B32A32_SFLOAT ? 4 : hdr_target || (target && target->format == VK_FORMAT_R16G16B16A16_SFLOAT) ? 1 : target && target->format == VK_FORMAT_R32_SFLOAT ? 2 : target && target->format == VK_FORMAT_R16G16_SFLOAT ? 3 : 0;
     VkPipeline pipe = pipeline.contract == 2 ? pipeline.pipeline : pipeline.draw[format][mode];
     if (!pipe) return false;
     GuestImage* second = nullptr;
@@ -1129,13 +1134,14 @@ void guest_readback(uint64_t id, void* rgba, uint64_t bytes) {
     GuestImage borrowed{};GuestImage* selected=nullptr;
     if(id==kGuestHdr){
         if(recording || !world.initialized || !world.hdr.view)throw std::runtime_error("HDR readback requires a completed world frame");
-        borrowed.image=world.hdr;borrowed.width=world.width;borrowed.height=world.height;borrowed.bpp=8;
-        borrowed.format=VK_FORMAT_R16G16B16A16_SFLOAT;borrowed.layout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;selected=&borrowed;
+        borrowed.image=world.hdr;borrowed.width=world.width;borrowed.height=world.height;borrowed.bpp=world.hdr_format==VK_FORMAT_B10G11R11_UFLOAT_PACK32?4:8;
+        borrowed.format=world.hdr_format;borrowed.layout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;selected=&borrowed;
     }else {auto found=guest.images.find(id);if(found!=guest.images.end())selected=&found->second;}
     if(!selected || !rgba || selected->is_buffer)throw std::runtime_error("guest readback missing");
     auto& image=*selected;
     uint64_t expect = uint64_t(image.width) * image.height * image.depth * image.layers * image.bpp;
-    if (bytes < expect) throw std::runtime_error("guest readback short");
+    bool packed=image.format==VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+    if (bytes < expect*(packed?2:1)) throw std::runtime_error("guest readback short");
     Buffer staging = make_buffer(expect, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, true);
     try {
         immediate([&](VkCommandBuffer cmd) {
@@ -1150,7 +1156,8 @@ void guest_readback(uint64_t id, void* rgba, uint64_t bytes) {
         });
         image.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         check(vmaInvalidateAllocation(allocator, staging.memory, 0, expect), "invalidate guest readback");
-        std::memcpy(rgba, staging.mapped, static_cast<size_t>(expect));
+        if(packed){for(uint64_t i=0;i<expect/4;++i){uint32_t value;std::memcpy(&value,static_cast<const uint8_t*>(staging.mapped)+i*4,4);uint16_t pixel[]{uint16_t((value&0x7ffu)<<4),uint16_t(((value>>11)&0x7ffu)<<4),uint16_t(((value>>22)&0x3ffu)<<5),0x3c00u};std::memcpy(static_cast<uint8_t*>(rgba)+i*8,pixel,8);}}
+        else std::memcpy(rgba, staging.mapped, static_cast<size_t>(expect));
     } catch (...) { destroy_buffer(staging); throw; }
     destroy_buffer(staging);
 }

@@ -9,6 +9,7 @@ string content=Path.GetFullPath(args[0]),root=Path.GetFullPath(args[1]),output=P
 string Hash(string path)=>Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();
 using var compiler=VulkanShaderCompiler.CreateBundled(Path.GetFullPath("TestResults/WorldShaderPackage/Cache"));using var batch=compiler.CreateBatch(content);
 var specs=WorldShaderVariants.Extra.Concat(TransparencyShaderVariants.Extra).Concat(ProbeShaderVariants.Extra).Concat(HighlightShaderVariants.Extra).ToArray();
+if(specs.GroupBy(spec=>spec.Id).Any(group=>group.Count()!=1))throw new InvalidDataException("Supplemental shader IDs overlap across material families.");
 var manifest=new XElement("WorldShaders",new XAttribute("Schema","1"),new XAttribute("Count",specs.Length*2));
 foreach(var spec in specs)foreach(string stage in new[]{"Vertex","Pixel"})
 {

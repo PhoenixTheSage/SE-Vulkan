@@ -81,6 +81,12 @@ public sealed class VulkanShaderLibrary
             Defines=new Dictionary<string,string>(variant.Defines,StringComparer.Ordinal),GpuOpaque=true,GpuOpaqueBaseModule=original.Layout.SpirvSha256,
             GpuOpaqueBaseDependencies=sourceHashes.Select(p=>new ShaderDependency{Path=p.Key,Sha256=p.Value}).ToList()};
     }
+    public VulkanShaderRequest HbaoBorderRequest(string variantId){
+        var original=Load(variantId);var variant=variants[variantId];
+        return new VulkanShaderRequest{SourcePath=ResolveInside(contentDirectory,variant.Source),ContentDirectory=contentDirectory,Profile=variant.Profile,EntryPoint=variant.Entry,
+            Defines=new Dictionary<string,string>(variant.Defines,StringComparer.Ordinal),HbaoNegativeBorder=true,HbaoBaseModule=original.Layout.SpirvSha256,
+            HbaoBaseDependencies=sourceHashes.Select(p=>new ShaderDependency{Path=p.Key,Sha256=p.Value}).ToList()};
+    }
     public VulkanShaderRequest GpuOpaqueExtraRequest(uint id,string material,string stage,Dictionary<string,string> defines) {
         var original=LoadExtra(id,material,stage,defines);
         return new VulkanShaderRequest{SourcePath=Path.Combine(contentDirectory,"Geometry","Materials",material,stage+".hlsl"),ContentDirectory=contentDirectory,Profile=stage=="Vertex"?"vs_5_0":"ps_5_0",EntryPoint=stage=="Vertex"?"__vertex_shader":"__pixel_shader",Defines=new Dictionary<string,string>(defines,StringComparer.Ordinal),GpuOpaque=true,GpuOpaqueBaseModule=original.Layout.SpirvSha256,GpuOpaqueBaseDependencies=sourceHashes.Select(p=>new ShaderDependency{Path=p.Key,Sha256=p.Value}).ToList()};
@@ -98,7 +104,7 @@ public sealed class VulkanShaderLibrary
             coverage.MoveToContent();string expected=coverage.GetAttribute("WorldExtrasSha256");
             if(expected==null || FileHash(Path.Combine(addon,"manifest.xml"))!=HashId(expected))throw new InvalidDataException("World shader supplement is missing or changed.");
         }
-        using(var reader=XmlReader.Create(Path.Combine(addon,"manifest.xml"),SafeXml(65536)))
+        using(var reader=XmlReader.Create(Path.Combine(addon,"manifest.xml"),SafeXml(524288)))
         {
             int stages=2*(WorldShaderVariants.Extra.Length+TransparencyShaderVariants.Extra.Length+ProbeShaderVariants.Extra.Length+HighlightShaderVariants.Extra.Length);
             reader.MoveToContent();if(reader.Name!="WorldShaders" || reader.GetAttribute("Schema")!="1" || reader.GetAttribute("Count")!=stages.ToString(CultureInfo.InvariantCulture))throw new InvalidDataException("Incompatible world shader supplement.");

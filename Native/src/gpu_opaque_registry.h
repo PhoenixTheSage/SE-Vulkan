@@ -3,6 +3,7 @@
 #include "se_vulkan.h"
 #include "se_gpu_opaque_reference.h"
 #include "gpu_appearance_arena.h"
+#include "old_part_order.h"
 #include <set>
 
 // Committed source data only. This registry never selects a view/LOD, generates
@@ -18,7 +19,7 @@ struct Material {
     uint32_t identity{},colour_pipeline{},depth_pipeline{},forward_pipeline{},flags{};
     std::array<uint64_t,4> textures{};
 };
-struct Part {Geometry geometry;Material material;bool colour=true,depth=true,forward=true,masked{};};
+struct Part {Geometry geometry;Material material;bool colour=true,depth=true,forward=true,masked{};SevkOldPartOrder old_order{};};
 struct DepthPiece {uint32_t first,count,material;};
 struct DepthSegment {Part range;std::vector<DepthPiece> pieces;};
 struct Model {std::vector<Part> parts;bool old{};std::vector<DepthSegment> depth;};
@@ -30,7 +31,7 @@ inline bool compatible_bindings(const Family& a,const Family& b){
     if(a.old!=b.old||a.thresholds!=b.thresholds||a.levels.size()!=b.levels.size())return false;
     for(size_t lod=0;lod<a.levels.size();lod++){auto& x=*a.levels[lod];auto& y=*b.levels[lod];if(x.old!=y.old||x.parts.size()!=y.parts.size())return false;
         for(size_t p=0;p<x.parts.size();p++){auto& m=x.parts[p];auto& n=y.parts[p];auto& s=m.material;auto& t=n.material;
-            if(m.geometry!=n.geometry||m.colour!=n.colour||m.depth!=n.depth||m.forward!=n.forward||m.masked!=n.masked||s.identity!=t.identity||s.colour_pipeline!=t.colour_pipeline||s.depth_pipeline!=t.depth_pipeline||s.forward_pipeline!=t.forward_pipeline||s.flags!=t.flags)return false;}}
+            if(m.geometry!=n.geometry||m.colour!=n.colour||m.depth!=n.depth||m.forward!=n.forward||m.masked!=n.masked||!old_order_equal(m.old_order,n.old_order)||s.identity!=t.identity||s.colour_pipeline!=t.colour_pipeline||s.depth_pipeline!=t.depth_pipeline||s.forward_pipeline!=t.forward_pipeline||s.flags!=t.flags)return false;}}
     return true;
 }
 inline std::vector<std::array<uint64_t,4>> binding_textures(const Family& family){
@@ -54,8 +55,11 @@ struct ResidentActor {
 };
 struct BatchKey {
     uint64_t vertices{},indices{};uint32_t colour{},depth{},forward{},flags{};bool old{};
-    auto operator<=>(const BatchKey&)const=default;
+    uint32_t group{},part{};
+    SevkOldPartOrder old_order{};
+    auto operator<=>(const BatchKey& b)const{return std::tuple_cat(std::tie(group,part,vertices,indices,colour,depth,forward,flags,old),old_order_tuple(old_order))<=>std::tuple_cat(std::tie(b.group,b.part,b.vertices,b.indices,b.colour,b.depth,b.forward,b.flags,b.old),old_order_tuple(b.old_order));}
 };
+inline BatchKey batch_key(const Part& p,bool old,uint32_t family,uint32_t part){return {p.geometry.vertex_page,p.geometry.index_page,p.material.colour_pipeline,p.material.depth_pipeline,p.material.forward_pipeline,p.material.flags,old,old?0u:family+1,old?0u:part,old?p.old_order:SevkOldPartOrder{}};}
 struct Snapshot {
     uint64_t topology{},revision{};
     std::vector<ResidentActor> actors;
@@ -101,6 +105,7 @@ public:
     const std::array<uint64_t,5>& topology_counts()const{return topology_counts_;}
     uint64_t register_model(Model model){
         if(model.parts.empty())throw std::runtime_error("resident model has no geometry");
+        for(auto& p:model.parts){validate_old_order(p.old_order);if(!model.old&&p.old_order.valid)throw std::runtime_error("NEW model supplied OLD identity");}
         for(auto& p:model.parts)if(!p.geometry.mesh||!p.geometry.generation||!p.geometry.vertex_page||!p.geometry.index_page||!p.geometry.count||p.geometry.count%3||p.geometry.first%3||uint64_t(p.geometry.first)+p.geometry.count>UINT32_MAX||p.geometry.vertex_offset<0||(!p.colour&&!p.depth&&!p.forward))
             throw std::runtime_error("resident model has invalid shared geometry");
         model.depth.clear();bool merge=false;
@@ -142,8 +147,8 @@ public:
     void retire_source(uint64_t handle){sources.remove(handle);}
     Snapshot snapshot(){
         Snapshot output;output.topology=topology_;output.revision=revision_;std::set<std::shared_ptr<const Family>> fs;std::set<std::shared_ptr<const Source>> ss;std::set<BatchKey> batches;
-        actors.each([&](uint64_t,ResidentActor& actor){output.actors.push_back(actor);fs.insert(actor.family);if(actor.source)ss.insert(actor.source);});
-        for(auto& f:fs){output.families.push_back(f);for(auto& model:f->levels)for(auto& p:model->parts)batches.insert({p.geometry.vertex_page,p.geometry.index_page,p.material.colour_pipeline,p.material.depth_pipeline,p.material.forward_pipeline,p.material.flags,model->old});}
+        actors.each([&](uint64_t,ResidentActor& actor){output.actors.push_back(actor);if(fs.insert(actor.family).second)output.families.push_back(actor.family);if(actor.source)ss.insert(actor.source);});
+        for(uint32_t f=0;f<output.families.size();++f){uint32_t ordinal=0;for(auto& model:output.families[f]->levels)for(auto& p:model->parts)batches.insert(batch_key(p,model->old,f,ordinal++));}
         output.sources.assign(ss.begin(),ss.end());output.batches.assign(batches.begin(),batches.end());return output;
     }
     Upload upload(){
@@ -152,17 +157,18 @@ public:
         std::map<std::shared_ptr<const Source>,uint32_t> source_indices;std::map<BatchKey,uint32_t> batch_indices;
         for(uint32_t i=0;i<output.source.batches.size();i++){auto& b=output.source.batches[i];batch_indices[b]=i;output.batches.push_back({0,b.old?1u:0u,b.colour,b.depth,b.forward,b.flags,0});}
         auto texture=[&](uint64_t id){auto [it,added]=textures.emplace(id,uint32_t(output.textures.size()));if(added)output.textures.push_back(id);return it->second;};
-        auto append=[&](const Part& part,uint32_t family,uint32_t lod,bool old,uint32_t flags,std::span<const DepthPiece> coverage){
-            BatchKey key{part.geometry.vertex_page,part.geometry.index_page,part.material.colour_pipeline,part.material.depth_pipeline,part.material.forward_pipeline,part.material.flags,old};uint32_t batch=batch_indices.at(key);if(!output.batches[batch].mesh)output.batches[batch].mesh=part.geometry.mesh;
+        auto append=[&](const Part& part,uint32_t family,uint32_t lod,bool old,uint32_t flags,std::span<const DepthPiece> coverage,uint32_t ordinal){
+            auto key=batch_key(part,old,family,ordinal);uint32_t batch=batch_indices.at(key);if(!output.batches[batch].mesh)output.batches[batch].mesh=part.geometry.mesh;
             SevkOpaquePart p{};p.family=family;p.lod=lod;p.first_index=part.geometry.first;p.index_count=part.geometry.count;p.material=part.material.identity;p.flags=flags;p.generation=1;p.reserved=batch;
             for(uint32_t t=0;t<4;t++)p.textures[t]=texture(part.material.textures[t]);p.coverage_count=uint32_t(coverage.size());for(uint32_t t=0;t<coverage.size();t++)p.coverage_materials[t]=coverage[t].material;
             output.parts.push_back(p);output.part_meshes.push_back(part.geometry.mesh);
         };
         for(uint32_t f=0;f<output.source.families.size();f++){auto& family=output.source.families[f];family_indices[family]=f;SevkOpaqueFamily input{};input.generation=1;input.first_part=uint32_t(output.parts.size());input.threshold_count=uint32_t(family->thresholds.size());std::copy(family->thresholds.begin(),family->thresholds.end(),input.thresholds);
-            for(uint32_t lod=0;lod<family->levels.size();lod++){auto& model=*family->levels[lod];for(auto& part:model.parts)if(part.colour||part.forward)append(part,f,lod,model.old,2|(part.forward?0u:16u)|(part.colour?0u:32u),{});
+            uint32_t ordinal=0;for(uint32_t lod=0;lod<family->levels.size();lod++){auto& model=*family->levels[lod];uint32_t first_ordinal=ordinal;for(auto& part:model.parts){if(part.colour||part.forward)append(part,f,lod,model.old,2|(part.forward?0u:16u)|(part.colour?0u:32u),{},ordinal);++ordinal;}
                 for(auto& segment:model.depth)for(size_t first=0;first<segment.pieces.size();first+=32){auto pieces=std::span(segment.pieces).subspan(first,std::min(size_t(32),segment.pieces.size()-first));Part range=segment.range;range.geometry.first=pieces.front().first;range.geometry.count=pieces.back().first+pieces.back().count-range.geometry.first;
-                    append(range,f,lod,model.old,1|(pieces.size()>1?4u:0u),pieces.size()>1?pieces:std::span<const DepthPiece>{});
-                    if(pieces.size()>1)for(auto& piece:pieces){Part split=range;split.geometry.first=piece.first;split.geometry.count=piece.count;split.material.identity=piece.material;append(split,f,lod,model.old,1|8,pieces);}
+                    auto source=std::find_if(model.parts.begin(),model.parts.end(),[&](const Part& p){return p.geometry.mesh==segment.range.geometry.mesh&&p.geometry.first==segment.range.geometry.first;});if(source==model.parts.end())throw std::runtime_error("depth segment lost its source part");uint32_t depth_ordinal=first_ordinal+uint32_t(source-model.parts.begin());
+                    append(range,f,lod,model.old,1|(pieces.size()>1?4u:0u),pieces.size()>1?pieces:std::span<const DepthPiece>{},depth_ordinal);
+                    if(pieces.size()>1)for(auto& piece:pieces){Part split=range;split.geometry.first=piece.first;split.geometry.count=piece.count;split.material.identity=piece.material;append(split,f,lod,model.old,1|8,pieces,depth_ordinal);}
                 }
             }input.part_count=uint32_t(output.parts.size())-input.first_part;output.families.push_back(input);
         }

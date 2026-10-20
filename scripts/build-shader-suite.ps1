@@ -20,4 +20,6 @@ if ($Package) {
     if ($LASTEXITCODE -ne 0) { throw 'Shader catalog packaging failed.' }
     & dotnet run --project (Join-Path $projectRoot 'Tests/WorldShaderPackage') -c Release -p:RunPostBuildEvent=Never -- $shaderRoot (Join-Path $projectRoot 'Assets/Shaders/Vanilla')
     if ($LASTEXITCODE -ne 0) { throw 'World shader supplement packaging failed.' }
+    & dotnet run --project (Join-Path $projectRoot 'Tests/LightTileShaderPackage') -c Release -p:RunPostBuildEvent=Never -- $shaderRoot (Join-Path $projectRoot 'Assets/Shaders/Vanilla') (Join-Path $GameBin 'VRage.Render11.dll')
+    if ($LASTEXITCODE -ne 0) { throw 'Stock light tile supplement packaging failed.' }
 }

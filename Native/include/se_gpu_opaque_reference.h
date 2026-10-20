@@ -1,4 +1,5 @@
 #pragma once
+#include "se_old_order.h"
 /* Shared GPU preparation schema. The reference entry points are verification
  * only; gpu_scene entry points register committed resident inputs against shared
  * world geometry. Readback waits are verification/handoff operations. */
@@ -67,6 +68,7 @@ typedef struct SevkGpuSceneActor {
 /* appearance_count == UINT32_MAX preserves the resident table on pose updates.
  * Registration and family replacement require an explicit complete table. */
 SEVK_API int32_t SEVK_CALL sevk_gpu_scene_model(void* ctx,const SevkPassPart* parts,uint32_t count,uint32_t old,uint64_t* handle);
+SEVK_API int32_t SEVK_CALL sevk_gpu_scene_model_ordered(void* ctx,const SevkPassPart* parts,const SevkOldPartOrder* orders,uint32_t count,uint32_t old,uint64_t* handle);
 SEVK_API int32_t SEVK_CALL sevk_gpu_scene_family(void* ctx,const float* distances,uint32_t count,const uint64_t* levels,uint64_t* handle);
 SEVK_API int32_t SEVK_CALL sevk_gpu_scene_source(void* ctx,const void* bytes,uint32_t count,uint32_t cube,uint64_t* handle);
 SEVK_API int32_t SEVK_CALL sevk_gpu_scene_actor(void* ctx,const SevkGpuSceneActor* actor,const SevkOpaqueAppearance* appearances,uint32_t count,uint64_t* handle);

@@ -164,6 +164,13 @@ namespace ClientPlugin.Rendering.Scene
             Corners(origin, -leftVector, upVector, radiusX, radiusY, out a, out b, out c, out d);
             Enqueue(new MyBillboard { Material = material, Color = ApplyMaterial(color, material, origin), Position0 = a, Position1 = b, Position2 = c, Position3 = d, BlendType = blendType, ColorIntensity = 1,SoftParticleDistanceScale=softParticleDistanceScale, CustomViewProjection = customViewProjection, UVSize = Vector2.One });
         }
+        public void AddBillboardRotated(MyStringId material,Vector4 color,Vector3D origin,Vector3D camera,float radiusX,float radiusY,MyBillboard.BlendTypeEnum blendType)
+        {
+            // Stock rotated flares use the world-up basis, independently of
+            // camera roll, including its pole and near-origin handling.
+            if(!MyUtils.GetBillboardQuadAdvancedRotated(out var quad,origin,radiusX,radiusY,0,camera))return;
+            Enqueue(new MyBillboard{Material=material,Color=ApplyMaterial(color,material,origin),Position0=quad.Point0,Position1=quad.Point1,Position2=quad.Point2,Position3=quad.Point3,BlendType=blendType,ColorIntensity=1,SoftParticleDistanceScale=1,CustomViewProjection=-1,UVSize=Vector2.One});
+        }
         private void Enqueue(MyBillboard billboard) { lock (generated) generated.Add(billboard); }
         private Vector4 ApplyMaterial(Vector4 color, MyStringId id, Vector3D origin)
         {

@@ -41,7 +41,7 @@ public sealed partial class NativeBackend
             Check(blobQueue(context,frame,(uint)frame.Length,projection,inverse,(IntPtr)draws,(uint)worldPackets.Count,(IntPtr)objects,(uint)objectUsed,(IntPtr)instances,(uint)instanceUsed),context);}
         }
         if(PacketProfilingEnabled){long now=System.Diagnostics.Stopwatch.GetTimestamp();nativeQueueTicks+=now-started;started=now;}
-        QueueNativeModels();
+        QueueMainOrder();QueueNativeModels();
         QueueTransparency();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.DecalQueue))QueueDecals();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HighlightQueue))QueueHighlights();

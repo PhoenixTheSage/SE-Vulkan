@@ -27,6 +27,7 @@ struct Model {std::vector<Part> parts;bool valid=true;std::vector<DepthSegment> 
 struct Family {std::vector<float> distances;std::vector<uint64_t> levels;};
 struct Appearance {uint32_t material{};uint16_t colour[4]{0x3c00,0x3c00,0x3c00,0x3c00};bool visible=true;};
 struct Actor {
+    uint64_t history_identity{};
     uint32_t owner{};uint64_t family{},group{};
     scene_actor::Actor selection;LodState lod;Vec3 last_camera;bool have_camera{},supported=true,dynamic{};
     // Camera-independent transform: three basis rows plus double translation.
@@ -56,10 +57,10 @@ struct GroupKey {
     auto operator<=>(const GroupKey&)const=default;
 };
 struct InstanceStream {
-    uint32_t index{};std::vector<uint8_t> instances;std::vector<uint32_t> owners;
+    uint32_t index{};std::vector<uint8_t> instances;std::vector<uint32_t> owners;std::vector<uint64_t> identities;
 };
 struct Group {
-    GroupKey key;Kind kind{};std::shared_ptr<InstanceStream> stream;
+    GroupKey key;Kind kind{};std::shared_ptr<InstanceStream> stream;uint32_t main_part{};
     uint32_t stride()const{return kind==Kind::Depth?48:64;}
     uint32_t count()const{return uint32_t(stream->owners.size());}
 };
@@ -90,6 +91,9 @@ class Scene {
     std::map<BatchKey,RetainedBatch> retained_batches;
     std::map<std::pair<uint32_t,uint32_t>,std::pair<uint64_t,uint64_t>> spot_signature;
     uint64_t spot_updates{};
+    // Retained streams and spotlight signatures outlive individual actors.
+    // Never reuse a commit epoch when an owner ID is removed and recreated.
+    uint64_t actor_epoch{};
     std::vector<TransparentRequest> transparent;
     bool model_ready(uint64_t handle){return models.valid(handle)&&models.get(handle).valid;}
     static uint16_t half(float f){
@@ -128,8 +132,8 @@ public:
     }
     uint64_t register_family(std::vector<float> distances){idle();if(distances.size()>1024||!std::is_sorted(distances.begin(),distances.end()))throw std::runtime_error("invalid pass family");for(auto distance:distances)if(!std::isfinite(distance)||distance<0)throw std::runtime_error("invalid authored LOD distance");Family family{std::move(distances),{}};family.levels.resize(family.distances.size()+1);return families.add(std::move(family));}
     void bind_level(uint64_t family,uint32_t lod,uint64_t model){models.get(model);auto& f=families.get(family);if(lod>=f.levels.size())throw std::runtime_error("invalid pass model LOD");f.levels[lod]=model;}
-    uint64_t register_actor(Actor actor){idle();families.get(actor.family);if(!actor.replace_appearance)throw std::runtime_error("registration requires complete resident appearance");return actors.add(std::move(actor));}
-    void update_actor(uint64_t handle,Actor actor){idle();families.get(actor.family);if(!actor.replace_appearance&&!actor.appearance.empty())throw std::runtime_error("preserved appearance commit contains replacement data");auto& current=actors.get(handle);actor.lod=current.lod;actor.last_camera=current.last_camera;actor.have_camera=current.have_camera;actor.depth_epoch=current.depth_epoch+1;if(!actor.replace_appearance)actor.appearance=std::move(current.appearance);actor.replace_appearance=true;current=std::move(actor);}
+    uint64_t register_actor(Actor actor){idle();families.get(actor.family);if(!actor.replace_appearance)throw std::runtime_error("registration requires complete resident appearance");actor.depth_epoch=++actor_epoch;uint64_t handle=actors.add(std::move(actor));actors.get(handle).history_identity=handle;return handle;}
+    void update_actor(uint64_t handle,Actor actor){idle();families.get(actor.family);if(!actor.replace_appearance&&!actor.appearance.empty())throw std::runtime_error("preserved appearance commit contains replacement data");auto& current=actors.get(handle);actor.history_identity=handle;actor.lod=current.lod;actor.last_camera=current.last_camera;actor.have_camera=current.have_camera;actor.depth_epoch=++actor_epoch;if(!actor.replace_appearance)actor.appearance=std::move(current.appearance);actor.replace_appearance=true;current=std::move(actor);}
     void update_actors(std::vector<std::pair<uint64_t,Actor>> updates){idle();std::map<uint64_t,bool> unique;for(auto& [handle,actor]:updates){actors.get(handle);families.get(actor.family);if(!actor.replace_appearance&&!actor.appearance.empty())throw std::runtime_error("preserved appearance commit contains replacement data");if(!unique.emplace(handle,true).second)throw std::runtime_error("duplicate resident actor commit");}for(auto& [handle,actor]:updates)update_actor(handle,std::move(actor));}
     void remove_actor(uint64_t handle){idle();actors.remove(handle);}
     void remove_family(uint64_t handle){idle();families.remove(handle);}
@@ -183,6 +187,7 @@ public:
         // Stock groups by model/LOD, view and render state. Hidden material
         // boundaries need distinct coverage; appearance values stay in streams.
         std::map<BatchKey,Batch> batches;
+        std::vector<BatchKey> batch_order;
         auto select_batch=[&](const Actor& actor,uint64_t model_handle,const View& view,float state,bool transition){
             CpuScope emission(profiling,profile.emit_us);
             auto& model=models.get(model_handle);std::vector<uint32_t> hidden_materials;
@@ -191,7 +196,7 @@ public:
                 for(auto& part:model.parts){auto material=appearance(actor,part.material);if(material&&!material->visible)hidden_materials.push_back(part.material);}
                 std::sort(hidden_materials.begin(),hidden_materials.end());hidden_materials.erase(std::unique(hidden_materials.begin(),hidden_materials.end()),hidden_materials.end());
             }
-            auto [it,added]=batches.try_emplace({view.id,model_handle,transition,std::move(hidden_materials)});if(added){it->second.model=&model;it->second.view=&view;}it->second.rows.push_back({&actor,state});
+            auto [it,added]=batches.try_emplace({view.id,model_handle,transition,std::move(hidden_materials)});if(added){it->second.model=&model;it->second.view=&view;batch_order.push_back(it->first);}it->second.rows.push_back({&actor,state});
         };
         for(auto& selection:selected){auto& actor=actors.get(selection.handle);auto& family=families.get(actor.family);uint64_t view_mask=selection.views & ~(actor.group?hidden[actor.group]:0);bool main=false;for(auto& view:frame.views)if(view.kind==Kind::Colour&&(view_mask&(uint64_t(1)<<view.id)))main=true;
             bool missing_model=false;for(auto& view:frame.views)if(view_mask&(uint64_t(1)<<view.id)){int lod=lod_for(family,view,selection,main);if(!model_ready(family.levels[lod]))missing_model=true;if(view.kind==Kind::Colour&&selection.next.previous>=0){int old=std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift)));if(!model_ready(family.levels[old]))missing_model=true;}}
@@ -211,7 +216,7 @@ public:
         std::map<BatchKey,RetainedBatch> next_retained;
         {
             CpuScope emission(profiling,profile.emit_us);
-            for(auto& [batch_key,batch]:batches){
+            for(auto& batch_key:batch_order){auto& batch=batches.at(batch_key);
                 auto& view=*batch.view;auto& rows=batch.rows;auto& hidden_materials=std::get<3>(batch_key);
                 uint32_t stride=view.kind==Kind::Depth?48u:64u;
                 auto pack_row=[&](uint8_t* destination,size_t i,uint32_t material){
@@ -252,12 +257,12 @@ public:
                     stored.base=make_stream(UINT32_MAX);for(uint32_t material:activated)stored.materials.emplace(material,make_stream(material));
                     stored.owners=std::move(owners);stored.activated=std::move(activated);stored.epochs=std::move(epochs);stored.states=std::move(states);stored.camera=frame.selection.camera;
                 }
-                auto publish_stream=[&](const std::shared_ptr<InstanceStream>& stream){stream->index=uint32_t(streams.size());streams.push_back(stream);};
+                auto publish_stream=[&](const std::shared_ptr<InstanceStream>& stream){stream->index=uint32_t(streams.size());stream->identities.clear();stream->identities.reserve(rows.size());for(const auto& row:rows)stream->identities.push_back(row.actor->history_identity);streams.push_back(stream);};
                 publish_stream(stored.base);for(auto& item:stored.materials)publish_stream(item.second);
                 auto stream_for=[&](uint32_t material){if(view.kind==Kind::Depth)return stored.base;auto it=stored.materials.find(material);return it==stored.materials.end()?stored.base:it->second;};
                 auto append=[&](const Part& part){GroupKey key{view.id,part.shader,part.first,part.count,part.mesh,part.colour,part.normal,part.extensions,part.alpha,part.masked,part.double_sided};
                     if(view.kind==Kind::Depth){key.colour=key.normal=key.extensions=0;if(!part.masked)key.alpha=0;key.shader=part.masked?1:0;key.double_sided=false;}
-                    groups.push_back({key,view.kind,stream_for(part.material)});
+                    groups.push_back({key,view.kind,stream_for(part.material),view.kind==Kind::Colour?uint32_t(&part-batch.model->parts.data()):0u});
                 };
                 if(view.kind!=Kind::Depth){
                     for(auto& part:batch.model->parts)if(!std::binary_search(hidden_materials.begin(),hidden_materials.end(),part.material)&&(view.kind!=Kind::Forward||part.forward))append(part);

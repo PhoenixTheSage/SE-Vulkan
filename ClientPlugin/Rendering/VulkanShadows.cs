@@ -17,8 +17,8 @@ internal sealed class VulkanShadows
     private readonly MatrixD[] worldMatrices=new MatrixD[8];private readonly bool[] fitted=new bool[8];
     private readonly BoundingFrustumD[] casterFrusta=new BoundingFrustumD[8];
     private int activeCascades=-1;
-    public bool StockSchedulingEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_STOCK_SHADOW_SCHEDULE")=="1";
-    public bool StockFittingEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_STOCK_SHADOW_FIT")=="1";
+    public bool StockSchedulingEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_STOCK_SHADOW_SCHEDULE")!="0";
+    public bool StockFittingEnabled {get;set;}=(System.Environment.GetEnvironmentVariable("SE_VULKAN_STOCK_SHADOW_FIT")??System.Environment.GetEnvironmentVariable("SE_VULKAN_STOCK_SHADOW_SCHEDULE"))!="0";
     public uint UpdateMask{get;private set;}
     public uint ValidMask{get;private set;}
     public NativeShadowFeedback UsageFeedback{get;private set;}
@@ -79,6 +79,10 @@ internal sealed class VulkanShadows
         if(StockSchedulingEnabled){
             schedule.BeginFrame();
             UsageFeedback=backend.GetShadowFeedback();
+            // Menu/preview rendering may have overwritten the shared images.
+            // Invalidate before view selection, including frozen cascades, so
+            // accelerated owners publish the depth work needed to restore them.
+            uint cached=backend.GetShadowCacheMask();for(int c=0;c<count;c++)if((cached&(1u<<c))==0)fitted[c]=false;
             if(!render.ShadowCameraFrozen || !frozenCameraInitialized){frozenView=cameraView;frozenProjection=cameraProjection;frozenCamera=camera;frozenCameraInitialized=true;}
             cameraView=frozenView;cameraProjection=frozenProjection;inverseView=StockFittingEnabled?(MatrixD)Matrix.Invert((Matrix)cameraView):MatrixD.Invert(cameraView);
             for(int c=0;c<count;c++){++framesSinceLightUpdate[c];if(!fitted[c] || framesSinceLightUpdate[c]>c*Settings.Data.LightDirectionChangeDelayMultiplier || direction.Dot(lightDirections[c])<1-Settings.Data.LightDirectionDifferenceThreshold){lightDirections[c]=direction;framesSinceLightUpdate[c]=0;}}
@@ -117,7 +121,10 @@ internal sealed class VulkanShadows
             Vector3D eye=sphere.Center+cascadeDirection*(radius+1);
             MatrixD view=MatrixD.CreateLookAt(eye,eye-cascadeDirection,up);
             double back=2*radius+1+(StockFittingEnabled?(int)Settings.Data.ShadowCascadeZOffset:System.Math.Max(0,Settings.Data.ShadowCascadeZOffset));
-            MatrixD projection=StockFittingEnabled?MatrixD.CreateOrthographicOffCenter(-radius,radius,-radius,radius,back,1):MatrixD.CreateOrthographicOffCenter(-radius,radius,-radius,radius,1,back);
+            // The view points against the sun's travel direction. Stock puts
+            // the far plane first so depth decreases toward the sun; the CSM
+            // sampler's less-or-equal comparison then selects the sunward caster.
+            MatrixD projection=MatrixD.CreateOrthographicOffCenter(-radius,radius,-radius,radius,back,1);
             MatrixD extruded=view*MatrixD.CreateOrthographicOffCenter(-radius,radius,-radius,radius,back,-10000);
             ViewOrigins[cascade]=eye-cascadeDirection*back+(StockSchedulingEnabled?frozenCamera:camera);
             MatrixD fittedProjection=view*projection;

@@ -174,9 +174,14 @@ public sealed partial class NativeBackend : IDisposable
         if (splits.Length > 8 || matrices.Length != splits.Length * 16) throw new ArgumentException("Shadow cascades require one matrix per split, at most eight.");
         Check(api.SetShadows(context, matrices, (uint)splits.Length, splits), context);
     }
-    public void RenderTexture(ulong id, int width, int height, Color clear, NativeSprite[] sprites, Vector2? aspectRatio = null)
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]private delegate int RenderTextureMipsFn(IntPtr ctx,ulong id,uint width,uint height,float[] clear,[In] NativeSprite[] sprites,uint count,float logicalWidth,float logicalHeight,uint generateMips);
+    private RenderTextureMipsFn renderTextureMips;
+    public void RenderTexture(ulong id, int width, int height, Color clear, NativeSprite[] sprites, Vector2? aspectRatio = null,bool generateMips=false)
     {
-        if (aspectRatio.HasValue)
+        if(generateMips){
+            if(renderTextureMips==null)renderTextureMips=(RenderTextureMipsFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_render_texture_mips"),typeof(RenderTextureMipsFn));
+            Check(renderTextureMips(context,id,(uint)width,(uint)height,ColorValues(clear),sprites,(uint)sprites.Length,width*(aspectRatio?.X??1),height*(aspectRatio?.Y??1),1),context);
+        }else if (aspectRatio.HasValue)
             Check(api.RenderTextureAspect(context, id, (uint)width, (uint)height, ColorValues(clear), sprites, (uint)sprites.Length, width * aspectRatio.Value.X, height * aspectRatio.Value.Y), context);
         else Check(api.RenderTexture(context, id, (uint)width, (uint)height, ColorValues(clear), sprites, (uint)sprites.Length), context);
     }
@@ -316,6 +321,7 @@ public sealed partial class NativeBackend : IDisposable
             "sevk_queue_decals",
             "sevk_queue_environment",
             "sevk_queue_flares",
+            "sevk_queue_flare_raster",
             "sevk_queue_foliage",
             "sevk_queue_particles",
             "sevk_queue_transparency",

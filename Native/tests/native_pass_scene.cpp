@@ -108,6 +108,15 @@ int main(){
     require(retained.profile.emitted_rows==before_join+2&&retained.render_groups()[0].count()==2,"membership change rebuilds the grouped stream once");
     auto stable=retained.profile.emitted_rows;retained.prepare(retained_frame);retained.publish({});
     require(retained.profile.emitted_rows==stable,"stable membership does not fill the grouped stream again");
+    Scene recycled;auto recycled_family=recycled.register_family({});auto recycled_model=recycled.register_model(retained_model);recycled.bind_level(recycled_family,0,recycled_model);
+    Actor recycled_actor{};recycled_actor.owner=77;recycled_actor.family=recycled_family;recycled_actor.selection.translation={0,0,-5};recycled_actor.selection.bounds={{-1,-1,-6},{1,1,-4}};
+    auto retired_actor=recycled.register_actor(recycled_actor);Frame recycled_frame{};View recycled_spot;recycled_spot.id=15;recycled_spot.kind=Kind::Depth;recycled_spot.only_static=true;recycled_frame.views={{0,Kind::Colour},recycled_spot};
+    recycled.prepare(recycled_frame);recycled.publish({});require(recycled.static_spot_updates()==(uint64_t(1)<<15),"recycled-owner control establishes static spotlight content");
+    recycled.clear_frame();recycled.remove_actor(retired_actor);recycled_actor.selection.translation.x=2;recycled_actor.selection.bounds.minimum.x=1;recycled_actor.selection.bounds.maximum.x=3;recycled_actor.key_colour[0]=0x3800;
+    auto replacement_actor=recycled.register_actor(recycled_actor);require(replacement_actor!=retired_actor,"replacement actor has a distinct generation-checked handle");
+    recycled.prepare(recycled_frame);recycled.publish({});ColourInstance replacement_row{};std::memcpy(&replacement_row,recycled.instance_streams()[0]->instances.data(),64);
+    require(replacement_row.transform.rows[3]==2&&replacement_row.key[0]==0x3800,"recreated owner replaces retained pose and appearance rather than reusing retired bytes");
+    require(recycled.static_spot_updates()==(uint64_t(1)<<15),"recreated owner invalidates the prior static spotlight pose");
     std::cout<<"Native resident per-view producer checks passed\n";
     }catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';return 1;}
 }

@@ -18,6 +18,7 @@ public sealed partial class VulkanScene
     {
         private readonly VulkanScene scene;
         public ResidentActorObserver(VulkanScene scene){this.scene=scene;}
+        public override void OnUpdateBeforeDraw(){if(Owner is MyActor actor && scene.actors.TryGetValue(actor.ID,out var data))scene.RegisterOldDecalShaders(data);}
         public override void OnVisibilityChange(){if(Owner is MyActor actor)scene.actorStateNotifications.Enqueue((actor,false));}
         public override void OnParentSet(){if(Owner is MyActor actor)scene.actorStateNotifications.Enqueue((actor,true));}
         public override void OnParentRemoved(){if(Owner is MyActor actor)scene.actorStateNotifications.Enqueue((actor,true));}
@@ -58,6 +59,7 @@ public sealed partial class VulkanScene
         InvalidateOcclusion("Geometry");
         DirtyGroup(data);
         data.GeometryDirty=true;shadowDirty.Add(data);spatialDirty.Add(data);
+        Updater.AddToNextUpdate(data.Actor);
     }
     private void MarkVisibility(MyActor actor)
     {

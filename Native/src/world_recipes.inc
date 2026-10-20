@@ -22,6 +22,7 @@ void invalidate_world_recipes(uint32_t kind,uint64_t id,bool retire=false){
 void validate_world_recipe(WorldRecipe& r){
     if(r.valid)return;
     auto packet=r.packet;packet.object_constants=reinterpret_cast<void*>(uintptr_t(1));packet.instances=reinterpret_cast<void*>(uintptr_t(1));packet.instance_count=1;
+    if(world_blended_decal(packet.pipeline))packet.flags|=512u|16384u; // Recipes validate resources independently of per-frame view flags.
     SevkQueueValidationStats stats{sizeof(SevkQueueValidationStats),SEVK_ABI_VERSION};WorldTextureValidationCache<> cache;validate_world_packet(packet,stats,cache);
     r.geometry=&world.meshes.at(packet.mesh);
     if(world_voxel(packet.pipeline)){const auto& m=world.voxel_materials.at(packet.color);for(uint32_t i=0;i<3;i++)r.arrays[i]=m.arrays[i];r.random=m.random;}
@@ -55,6 +56,7 @@ void queue_world_recipes(const void* frame,uint32_t frame_bytes,const float* pro
         if(index>=world.recipes.size() || !generation || d.reserved || !d.instance_count || d.instance_count>1000000)throw std::runtime_error("invalid world recipe handle/count");
         auto& recipe=world.recipes[index];if(!recipe.alive || recipe.generation!=generation)throw std::runtime_error("stale world recipe generation");
         validate_world_recipe(recipe);const auto& packet=recipe.packet;bool instanced=world.pipelines[packet.pipeline].type>=2;
+        if(world_blended_decal(packet.pipeline) && (d.flags&(512u|16384u))!=(512u|16384u))throw std::runtime_error("mesh decal recipe must exclude depth and forward passes");
         if(!instanced && d.instance_count!=1)throw std::runtime_error("rigid/skinned recipe instance count");
         if(d.object_offset!=object_cursor || d.object_offset%world.alignment || uint64_t(d.object_offset)+packet.object_bytes>object_bytes)throw std::runtime_error("invalid recipe object span");
         object_cursor+=world_align(packet.object_bytes);

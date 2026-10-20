@@ -17,6 +17,7 @@ namespace ClientPlugin.Rendering.Content
         public uint[] Indices;
         public uint Flags;
         public uint IndexStart;public MyMeshDrawTechnique Technique;
+        public int SourceIndex;
         public readonly List<VulkanSkinPart> SkinParts = new List<VulkanSkinPart>();
     }
     internal sealed class VulkanSkinPart { public ulong Mesh; public int[] Bones;public uint StartIndex,IndexCount; }
@@ -40,6 +41,7 @@ namespace ClientPlugin.Rendering.Content
         public long ExpandedVertexBytes,UploadedVertexBytes,IndexBytes,SkinVertexBytes,SkinIndexBytes;
         public BoundingBox Bounds;
         public readonly List<VulkanModelPart> Parts = new List<VulkanModelPart>();
+        public List<VulkanModelPart> NewParts;
         public ulong SharedMesh;public readonly Dictionary<ulong,ulong> DepthRanges=new();
     }
 
@@ -102,13 +104,19 @@ namespace ClientPlugin.Rendering.Content
                     Vector3 p = VF_Packer.UnpackPosition(positions[i]) * scale;
                     Vector3 n = normals != null && i < normals.Length ? VF_Packer.UnpackNormal(normals[i]) : Vector3.Up;
                     Vector2 t = uv != null && i < uv.Length ? uv[i].ToVector2() / patternScale : Vector2.Zero;
+                    // Both stock mesh pipelines store the scaled coordinates
+                    // back into their half stream before vertex fetch.
+                    if(patternScale!=1) t=new HalfVector2(t).ToVector2();
                     WriteVertex(model.Vertices, i, p, n, t);
                 }
-                foreach (var source in (List<MyMeshPartInfo>)tags["MeshParts"])
+                var authoredParts=(List<MyMeshPartInfo>)tags["MeshParts"];
+                var importedParts=new Dictionary<MyMeshPartInfo,VulkanModelPart>();
+                int authoredPartIndex=0;foreach (var source in authoredParts)
                 {
+                    int sourceIndex=authoredPartIndex++;
                     model.StockMaterialNames.Add(source.GetMaterialName()??string.Empty);
                     if (source.m_indices.Count == 0) continue;
-                    var part = new VulkanModelPart { Mesh = AllocateMesh(), MaterialName = source.GetMaterialName(),Technique=source.Technique, Indices = new uint[source.m_indices.Count] };
+                    var part = new VulkanModelPart { SourceIndex=sourceIndex,Mesh = AllocateMesh(), MaterialName = source.GetMaterialName(),Technique=source.Technique, Indices = new uint[source.m_indices.Count] };
                     for (int i = 0; i < part.Indices.Length; ++i)
                     {
                         int index = source.m_indices[i];
@@ -129,10 +137,18 @@ namespace ClientPlugin.Rendering.Content
                         if (source.Technique == MyMeshDrawTechnique.HOLO) part.Flags |= 8;
                     }
                     model.Parts.Add(part);
+                    importedParts.Add(source,part);
                 }
+                // MyMwmData sorts the complete source list by technique before
+                // building NEW preprocessed parts. Keep the authored list for
+                // OLD proxy/cache registration, including its first-use roles.
+                var newSourceParts=new List<MyMeshPartInfo>(authoredParts);
+                newSourceParts.Sort((a,b)=>((int)a.Technique).CompareTo((int)b.Technique));
+                model.NewParts=new List<VulkanModelPart>();
+                foreach(var source in newSourceParts)if(importedParts.TryGetValue(source,out var part))model.NewParts.Add(part);
                 if (backend.WorldReady)
                 {
-                    BuildWorldVertices(model, tangents, bitangents);
+                    BuildWorldVertices(model, tangents, bitangents, normals);
                     UploadWorldParts(model);
                 }
                 else foreach (var part in model.Parts) backend.UploadMesh(part.Mesh, model.Vertices, part.Indices);
@@ -207,7 +223,7 @@ namespace ClientPlugin.Rendering.Content
         private void AddRuntimePart(VulkanModel model, MyModelData data, int start, int count, string material)
         {
             if (start < 0 || count < 0 || start > data.Indices.Count - count) throw new InvalidDataException("Runtime model section outside index array.");
-            var part = new VulkanModelPart { Mesh = AllocateMesh(), MaterialName = material, Indices = new uint[count] };
+            var part = new VulkanModelPart { SourceIndex=model.Parts.Count,Mesh = AllocateMesh(), MaterialName = material, Indices = new uint[count] };
             for (int i = 0; i < count; ++i)
             {
                 int index = data.Indices[start + i];
@@ -218,7 +234,7 @@ namespace ClientPlugin.Rendering.Content
             model.Parts.Add(part);
         }
 
-        private static void BuildWorldVertices(VulkanModel model, Byte4[] tangents, Byte4[] bitangents)
+        private static void BuildWorldVertices(VulkanModel model, Byte4[] tangents, Byte4[] bitangents, Byte4[] normals = null)
         {
             int count = model.Vertices.Length / 8;
             var generated = new Vector3[count]; var generatedB = new Vector3[count];
@@ -246,7 +262,9 @@ namespace ClientPlugin.Rendering.Content
                     if(tangent.LengthSquared()<1e-10f)tangent=Vector3.Cross(normal,Math.Abs(normal.Y)<.9f?Vector3.Up:Vector3.Right);
                     tangent.Normalize();}
                 Vector4 sign=new Vector4(tangent,Vector3.Dot(Vector3.Cross(tangent,normal),bitangent)<0?-1:1);
-                uint n=VF_Packer.PackNormal(normal),packed=VF_Packer.PackTangentSign(ref sign);
+                // Stock mesh streams retain authored normal bytes. A float
+                // unpack/repack can truncate a component by one packed unit.
+                uint n=normals!=null && i<normals.Length?normals[i].PackedValue:VF_Packer.PackNormal(normal),packed=VF_Packer.PackTangentSign(ref sign);
                 var vertex=new NativeWorldVertex{Material=new NativeGBufferVertex{X=model.Vertices[o],Y=model.Vertices[o+1],Z=model.Vertices[o+2],Scale=1,NormalX=n&65535,NormalY=n>>16,
                     TangentX=(packed&255)/255f,TangentY=((packed>>8)&255)/255f,TangentZ=((packed>>16)&255)/255f,TangentW=(packed>>24)/255f,U=model.Vertices[o+6],V=model.Vertices[o+7]}};
                 if(model.BlendWeights!=null && model.BlendIndices!=null && i<model.BlendWeights.Length && i<model.BlendIndices.Length)

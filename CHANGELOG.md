@@ -1,5 +1,18 @@
 # SE-Vulkan changelog
 
+## 1.2.0 — 2026-10-20
+
+Heavy DX11 visual parity is in place, but lower performance than previous builds is expected until further optimization passes. Full scene/material parity acceptance remains open; scoped fixture matches do not establish complete renderer equivalence.
+
+- Correct stock material texture color spaces, neutral normal/gloss fallbacks, authored mesh precision, LCD alpha/material inputs, cube LOD filtering and sampler roles.
+- Align directional/local lighting, independent light budgets, spatial selection and tile capacity, spotlight projection/cookies/cache behavior, HBAO jitter/borders, HDR targets, bloom and postprocess inputs with stock contracts.
+- Recover stock environment-probe mip/precision, sky/indirect sources, staged publication, timed cadence, filtering retention and blend behavior; remove the camera-motion restart that discarded completed work.
+- Preserve OLD/NEW opaque and glass material/resource identities, ordering, LOD, ownership and retained actor lifetime across native/grouped/resident submission; extend indexed auxiliary attachments, shadows and motion.
+- Implement blended mesh-decal rendering and stock transparent/glass routes, independent settings, depth/culling/OIT order and published material controls.
+- Repair flare query coverage/normalization, rotated geometry, cadence and solar ownership, plus additive-top billboard depth behavior.
+- Expand generated stock world variants, shader metadata/adapters, native ABI helpers and native policy tests; add material/light/identity, GPU submission/probe/postprocess and matched DX11/Vulkan fixture coverage.
+- Document detailed parity checkpoints, corrected quality-pinning comparisons, remaining appearance/order/lifecycle gates and optimization work.
+
 ## 1.1.0 — 2026-10-17
 
 - Extend ABI-1 guest capabilities with feature-gated compute/geometry packets, atomic batches, extended constants/resources, mip generation, occupancy, copied point-shadow geometry and independent scene-depth views.
