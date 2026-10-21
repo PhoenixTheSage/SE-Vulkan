@@ -22,6 +22,17 @@ public sealed partial class NativeBackend
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int GuestResourceFn(IntPtr ctx, IntPtr command);
     static GuestResourceFn guestResource;
     static GuestResourceFn guestExecution;
+    static GuestResourceFn guestEnvironment;
+    internal bool GuestFrameEnvironment(byte[] packet)
+    {
+        if (context == IntPtr.Zero || packet == null || packet.Length != 96) return false;
+        if ((GuestFeatures() & 32768) == 0)
+            throw new NotSupportedException("Update SE-Vulkan native library: shared frame environment requires guest feature bit15.");
+        if (guestEnvironment == null) guestEnvironment = Marshal.GetDelegateForFunctionPointer<GuestResourceFn>(GetSymbol("sevk_guest_frame_environment"));
+        var pin = GCHandle.Alloc(packet, GCHandleType.Pinned);
+        try { Check(guestEnvironment(context, pin.AddrOfPinnedObject()), context); return true; }
+        finally { pin.Free(); }
+    }
     internal byte[] GuestExecutionStatus(ulong pipeline)
     {
         if ((GuestFeatures() & 16384) == 0) return null;

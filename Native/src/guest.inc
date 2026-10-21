@@ -68,6 +68,7 @@ struct GuestState {
     float prev_vp[16]{}, prev_camera[3]{};
     bool have_prev{};
     SevkGuestFrame frame{};
+    float skip_floor{.38f},skip_mul{6.f};
 } guest;
 
 void guest_destroy_pipeline(GuestPipeline& pipeline) {
@@ -511,7 +512,9 @@ void guest_refresh_frame() {
     }
     std::memcpy(extras.sun_color, submitted_frame.sunlight_color, 12);
     extras.sun_diffuse = submitted_frame.sunlight_color[3] > 0.f ? submitted_frame.sunlight_color[3] : 1.f;
-    std::memcpy(extras.sun_toward, submitted_frame.sunlight_direction, 12);
+    float sun_length=0;for(uint32_t i=0;i<3;i++)sun_length+=submitted_frame.sunlight_direction[i]*submitted_frame.sunlight_direction[i];
+    if(!std::isfinite(sun_length) || sun_length<1e-8f)extras.sun_toward[1]=1.f;
+    else for(uint32_t i=0;i<3;i++)extras.sun_toward[i]=-submitted_frame.sunlight_direction[i]/std::sqrt(sun_length);
     std::memcpy(extras.sky_ambient, submitted_frame.ambient_color, 12);
     extras.sky_luma = extras.sky_ambient[0] * 0.2126f + extras.sky_ambient[1] * 0.7152f + extras.sky_ambient[2] * 0.0722f;
     SevkGuestFrame frame{}; frame.size = sizeof(frame); frame.abi_version = SEVK_ABI_VERSION;
@@ -542,6 +545,23 @@ void guest_refresh_frame() {
     guest.frame = frame;
     std::memcpy(guest.prev_vp, current, 64); std::memcpy(guest.prev_camera, submitted_frame.camera_position, 12); guest.have_prev = true; guest.frame_stamp = stamp;
     guest.frame.pad0 = std::bit_cast<float>(extras.frame_index);
+}
+
+void guest_frame_environment(const SevkGuestEnvironment& input) {
+    if(!recording || !guest.resources_open)throw std::runtime_error("guest environment requires the open frame callback");
+    guest_refresh_frame();
+    if(input.frame_index!=guest.frame.frame_index)throw std::runtime_error("guest environment frame index mismatch");
+    float values[20];std::memcpy(values,input.sun_color,sizeof(values));
+    for(float value:values)if(!std::isfinite(value))throw std::runtime_error("nonfinite guest environment");
+    if(input.safety_scale<0 || input.safety_scale>1 || input.sun_diffuse<0 || input.planet_air_top<0 || input.visual_atmo_ceil<0)
+        throw std::runtime_error("invalid guest environment range");
+    std::memcpy(guest.frame.sun_color,input.sun_color,12);guest.frame.sun_diffuse=input.sun_diffuse;
+    std::memcpy(guest.frame.sun_toward,input.sun_toward,12);guest.frame.sky_luma=input.sky_luma;
+    std::memcpy(guest.frame.sky_ambient,input.sky_ambient,12);guest.frame.safety_scale=input.safety_scale;
+    guest.frame.air_top=input.planet_air_top;guest.frame.visual_ceil=input.visual_atmo_ceil;
+    guest.frame.skip_floor=input.skip_floor;guest.frame.skip_mul=input.skip_mul;
+    std::memcpy(guest.frame.camera_delta,input.camera_delta,12);
+    guest.skip_floor=input.skip_floor;guest.skip_mul=input.skip_mul;
 }
 
 int guest_pool_index() { return recording ? int(slot_index % 2) : 2; }
@@ -850,7 +870,8 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
     extras.render[0] = width; extras.render[1] = height; extras.scene[0] = scene_w; extras.scene[1] = scene_h;
     extras.inv_render[0] = 1.f / width; extras.inv_render[1] = 1.f / height; extras.inv_scene[0] = 1.f / scene_w; extras.inv_scene[1] = 1.f / scene_h;
     extras.camera_pad[0] = guest.frame.far_plane > 1.f ? guest.frame.far_plane : 1000000.f;
-    extras.history_valid = guest.frame.history_valid; extras.has_velocity = extras.history_valid; extras.frame_index = guest.frame.frame_index; extras.safety = guest.frame.safety_scale > 0 ? guest.frame.safety_scale : 1.f;
+    extras.history_valid = guest.frame.history_valid; extras.has_velocity = extras.history_valid; extras.frame_index = guest.frame.frame_index; extras.safety = guest.frame.safety_scale;
+    extras.air_top=guest.frame.air_top;extras.visual_ceil=guest.frame.visual_ceil;extras.skip_floor=guest.skip_floor;extras.skip_mul=guest.skip_mul;
     std::memcpy(extras.unjittered, guest.frame.view_proj, 64); std::memcpy(extras.prev, guest.frame.prev_view_proj, 64);
     std::memcpy(extras.camera, guest.frame.camera_to_world, 48);
     extras.camera[3] = guest.frame.camera_to_world[12]; extras.camera[7] = guest.frame.camera_to_world[13]; extras.camera[11] = guest.frame.camera_to_world[14];

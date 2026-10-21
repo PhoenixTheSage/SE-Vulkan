@@ -84,6 +84,7 @@ partial class Program
             backend.BeginPacketCollection();scene.Draw(backend);typeof(VulkanScene).GetMethod("CollectGuestSceneDepth",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(scene,new object[]{voxels});
             backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,projection,size.X,size.Y,light),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(projection)));
             Check(backend.BeginFrame(projection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black),"recreated world frame begins");
+            Check(Call("Backend.GuestFrame","Capture") is true,"recreated core captures current renderer frame");
             var grid=core.GetType("ClientPlugin.ShaderFramework.VolumetricInteriorSnapshot+Grid",true);var snap=core.GetType("ClientPlugin.ShaderFramework.VolumetricInteriorSnapshot+Snapshot",true);
             core.GetType("ClientPlugin.ShaderFramework.VolumetricInteriorSnapshot",true).GetField("current",BindingFlags.Static|BindingFlags.NonPublic).SetValue(null,Activator.CreateInstance(snap,BindingFlags.Instance|BindingFlags.NonPublic,null,new object[]{Array.CreateInstance(grid,0),true,"Controlled empty world",Environment.TickCount},null));
             Call("Backend.GuestBridgeClient","Submit",Call("Backend.GuestPassList","Snapshot"));bool active=Property("Backend.GuestVolumes","Active") is true;backend.EndFrame();return active;

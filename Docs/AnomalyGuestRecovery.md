@@ -68,3 +68,12 @@ passes 274 checks with validation enabled and zero reported errors.
 Prepare allocations/retirement before queuing passes. A release of a resource
 already referenced by an open-frame packet is refused. General immutable
 shader-generation activation and full matched live parity remain pending.
+
+Feature bit15 carries the shared environment snapshot in a checked96-byte
+packet. It is accepted only during the current open allocation window with a
+matching frame index. The Anomaly adapter computes raw light, safety and planet
+radii; stock Vulkan lighting remains unchanged. Native fallback direction is
+negated and normalized. b6 includes zero safety, planet and skip values. The
+actual-core fixture explicitly captures each frame, matching the production
+callback;302 depth/volume/recreation checks pass with validation enabled and
+zero reported errors. Full Windows adapter acceptance remains open.

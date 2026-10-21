@@ -491,6 +491,17 @@ typedef struct SevkGuestExecutionStatus {
     uint32_t last_frame, active;
 } SevkGuestExecutionStatus;
 SEVK_API int32_t SEVK_CALL sevk_guest_execution_status(void* ctx, SevkGuestExecutionStatus* status);
+/* Feature bit15: Anomaly's shared CPU environment calculation, matched to a
+ * single immutable renderer frame. Changes only guest data, never stock light. */
+typedef struct SevkGuestEnvironment {
+    uint32_t size, abi_version, frame_index, reserved;
+    float sun_color[3], sun_diffuse;
+    float sun_toward[3], sky_luma;
+    float sky_ambient[3], safety_scale;
+    float planet_air_top, visual_atmo_ceil, skip_floor, skip_mul;
+    float camera_delta[3], pad;
+} SevkGuestEnvironment;
+SEVK_API int32_t SEVK_CALL sevk_guest_frame_environment(void* ctx, const SevkGuestEnvironment* environment);
 /* Feature bit12: extended flags 1024/2048 run before/after ordinary passes
  * within their mark. Catalog mask bits0/1/2 report current recorded velocity,
  * volumeReactive/reactiveMask. Reset and BeginFrame revoke older products.

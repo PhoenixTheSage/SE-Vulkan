@@ -82,6 +82,7 @@ int main(int argc, char** argv) {
         require(sizeof(SevkGuestPass)==416 && sizeof(SevkGuestPass2)==568 && sizeof(SevkGuestFrame)==344,
             "existing guest packet layouts remain compatible");
         require(sizeof(SevkGuestResourceCommand)==48 && sizeof(SevkGuestExecutionStatus)==48,"additive guest packet packing");
+        require(sizeof(SevkGuestEnvironment)==96,"shared frame environment packing");
         SevkGuestResourceCommand bad_guest{};
         require(sevk_guest_resource_command(nullptr,&bad_guest)<0,"invalid guest command header refused");
         SevkGuestExecutionStatus bad_status{};

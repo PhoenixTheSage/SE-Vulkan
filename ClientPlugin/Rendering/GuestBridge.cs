@@ -11,6 +11,15 @@ public static class GuestBridge
 {
     static NativeBackend current;
     static Scene.VulkanScene scene;
+    static object[] frameInputs;
+    internal static void SetFrameInputs(VRageMath.Vector3D camera, VRageMath.Vector3 color, VRageMath.Vector3 direction, float diffuse, float ambient)
+    {
+        frameInputs = new object[] { new double[] { camera.X, camera.Y, camera.Z },
+            new float[] { color.X, color.Y, color.Z, diffuse, direction.X, direction.Y, direction.Z, ambient } };
+    }
+    public static object[] CaptureFrameInputs() => frameInputs == null ? null : new object[] {
+        ((double[])frameInputs[0]).Clone(), ((float[])frameInputs[1]).Clone() };
+    public static bool SetFrameEnvironment(byte[] packet) => current != null && current.GuestFrameEnvironment(packet);
 
     /// <summary>True keeps stock solar glare. A celestial draw that owns glare sets this false.</summary>
     public static bool NativeSunGlare { get; private set; } = true;

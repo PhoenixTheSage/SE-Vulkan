@@ -309,6 +309,7 @@ public sealed class MyVulkanRender : IMyRender
             backend.SetHdrQuality(renderConfiguration.User.HqTarget);
             FrameProfiler.Lap(FrameProfiler.Section.Queue);
             MatrixD reversedFrame=viewProjection;reversedFrame.M13=reversedFrame.M14-reversedFrame.M13;reversedFrame.M23=reversedFrame.M24-reversedFrame.M23;reversedFrame.M33=reversedFrame.M34-reversedFrame.M33;reversedFrame.M43=reversedFrame.M44-reversedFrame.M43;
+            GuestBridge.SetFrameInputs(camera, light.SunColorRaw, light.SunLightDirection, light.SunDiffuseFactor, light.AmbientDiffuseFactor);
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.FrameSlot))frameOpen = backend.BeginFrame(reversedFrame, light.SunLightDirection, light.SunColorRaw * light.SunDiffuseFactor,
                 new Vector3(0.06f * Math.Max(0.1f, light.AmbientDiffuseFactor)), new Color(3, 5, 12));
             FrameProfiler.Lap(FrameProfiler.Section.FrameSlot);

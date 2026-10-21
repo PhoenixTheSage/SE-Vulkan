@@ -58,6 +58,7 @@ partial class Program
             backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,guestView,projection,64,64,light),NativeBackend.MatrixValues(viewProjection),NativeBackend.MatrixValues(MatrixD.Invert(viewProjection)));
             Check(backend.BeginFrame(viewProjection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black),"transaction real world frame begins");
             GuestBridge.TryGetFrame(lastGuestFrame);
+            Check(Call("Backend.GuestFrame","Capture") is true,"actual core captures one immutable renderer frame");
             if(submit){FreshRooms();Call("Backend.GuestBridgeClient","Submit",programs);}
             afterSubmit?.Invoke();
             bool active=Property("Backend.GuestVolumes","Active") is true;
