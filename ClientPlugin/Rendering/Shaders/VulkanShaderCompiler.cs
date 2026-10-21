@@ -105,6 +105,7 @@ public sealed class VulkanShaderCompiler : IDisposable
     {
         if (disposed) throw new ObjectDisposedException(nameof(VulkanShaderCompiler));
         if (request == null) throw new ArgumentNullException(nameof(request));
+        request=request.Snapshot();
         string profile = NormalizeProfile(request.Profile);
         if (!Identifier.IsMatch(request.EntryPoint ?? "")) throw new ArgumentException("A valid HLSL entry point is required.");
         if (request.NativeAbiVersion == 0) throw new ArgumentException("A native ABI version is required.");
@@ -123,7 +124,7 @@ public sealed class VulkanShaderCompiler : IDisposable
         Directory.CreateDirectory(job);
         try
         {
-            if (batchMirror != null && (Path.GetFullPath(request.ContentDirectory) != batchContentDirectory || request.IncludeDirectories.Count != 0))
+            if (batchMirror != null && (Path.GetFullPath(request.ContentDirectory) != batchContentDirectory || request.IncludeDirectories.Count != 0 || request.SourceGeneration!=null))
                 throw new ArgumentException("Batch requests must use the snapshotted content directory without extra include roots.");
             var mirror = batchMirror == null ? new IncludeMirror(request, job) : batchMirror.ForSource(request.SourcePath);
             string workingDirectory = batchDirectory ?? job;
@@ -151,8 +152,9 @@ public sealed class VulkanShaderCompiler : IDisposable
                 if (match.Groups[3].Success) spaces.Add(uint.Parse(match.Groups[3].Value, CultureInfo.InvariantCulture));
             }
             if (preprocessed.Contains("vk::counter_binding")) throw new InvalidDataException("Explicit counter bindings conflict with the renderer's counter range.");
-            preprocessed=GpuOpaqueShaderAdapter.Apply(preprocessed,request,dependencies);
-            preprocessed=HbaoBorderShaderAdapter.Apply(preprocessed,request,dependencies);
+            var authenticatedDependencies=request.SourceGeneration==null?dependencies:mirror.StockDependencies(dependencies);
+            preprocessed=GpuOpaqueShaderAdapter.Apply(preprocessed,request,authenticatedDependencies);
+            preprocessed=HbaoBorderShaderAdapter.Apply(preprocessed,request,authenticatedDependencies);
             // DXC gives append/consume UAV counters separate descriptors. Their
             // default bindings do not follow -fvk-u-shift. Reserve one explicit
             // counter slot per source UAV, retaining the source descriptor set.
@@ -165,6 +167,7 @@ public sealed class VulkanShaderCompiler : IDisposable
                 .Append(request.EntryPoint).Append('\n').Append(request.Debug).Append('\n').Append(preprocessed);
             if(request.GpuOpaque)keyContent.Append('\n').Append(GpuOpaqueShaderAdapter.Contract).Append('\n').Append(request.GpuOpaqueBaseModule);
             if(request.HbaoNegativeBorder)keyContent.Append('\n').Append(HbaoBorderShaderAdapter.Contract).Append('\n').Append(request.HbaoBaseModule);
+            if(request.SourceGeneration!=null)keyContent.Append('\n').Append(ShaderSourceGeneration.Contract).Append('\n').Append(request.SourceGeneration.Fingerprint);
             foreach (var define in definitions) keyContent.Append('\n').Append(define.Key).Append('=').Append(define.Value ?? "1");
             foreach (ShaderDependency dependency in dependencies) keyContent.Append('\n').Append(dependency.Path).Append('=').Append(dependency.Sha256);
             string key = Hash(Encoding.UTF8.GetBytes(keyContent.ToString()));
@@ -332,6 +335,7 @@ public sealed class VulkanShaderCompiler : IDisposable
             public string Staged;
             public string Content;
             public string Hash;
+            public string StockHash;
             public string CompatibilityFixup;
         }
         private readonly Dictionary<string, FileCopy> originals = new Dictionary<string, FileCopy>(StringComparer.OrdinalIgnoreCase);
@@ -379,8 +383,25 @@ public sealed class VulkanShaderCompiler : IDisposable
                         continue;
                     }
                     byte[] bytes = File.ReadAllBytes(path);
-                    var copy = new FileCopy { Original = path, Staged = relativeRoot + "/" + path.Substring(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Length + 1).Replace('\\', '/'), Content = Decode(bytes), Hash = Hash(bytes) };
+                    var copy = new FileCopy { Original = path, Staged = relativeRoot + "/" + path.Substring(root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Length + 1).Replace('\\', '/'), Content = Decode(bytes), Hash = Hash(bytes), StockHash=Hash(bytes) };
                     originals.Add(path, copy); staged.Add(copy.Staged, copy);
+                }
+            }
+            if(request.SourceGeneration!=null)
+            {
+                if(originalRoots.Count!=1)throw new ArgumentException("Source generations must capture extra includes as virtual source bytes instead of mutable include roots.");
+                // Authenticate pristine inputs before any pack replaces them. The
+                // adapters still receive those original dependency hashes.
+                foreach(var copy in originals.Values)request.SourceGeneration.Authenticate(copy.Staged.Substring(6),copy.StockHash);
+                foreach(var entry in request.SourceGeneration.Files)
+                {
+                    string path=Path.GetFullPath(Path.Combine(originalRoots[0],entry.Key.Replace('/',Path.DirectorySeparatorChar)));
+                    FileCopy copy;
+                    if(!originals.TryGetValue(path,out copy))
+                    {
+                        copy=new FileCopy{Original=path,Staged="root0/"+entry.Key};originals.Add(path,copy);staged.Add(copy.Staged,copy);
+                    }
+                    copy.Content=Decode(entry.Value);copy.Hash=Hash(entry.Value);
                 }
             }
             FileCopy main;
@@ -441,6 +462,9 @@ public sealed class VulkanShaderCompiler : IDisposable
             }
             return dependencies.Select(d => new ShaderDependency { Path = d.Key, Sha256 = d.Value.Hash, CompatibilityFixup = d.Value.CompatibilityFixup }).ToList();
         }
+
+        public List<ShaderDependency> StockDependencies(List<ShaderDependency> dependencies)
+            =>dependencies.Where(d=>staged[d.Path].StockHash!=null).Select(d=>new ShaderDependency{Path=d.Path,Sha256=staged[d.Path].StockHash,CompatibilityFixup=d.CompatibilityFixup}).ToList();
 
         private FileCopy Resolve(string include, string directory)
         {

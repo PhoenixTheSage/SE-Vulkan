@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace ClientPlugin.Rendering.Shaders;
 
@@ -19,6 +20,63 @@ public sealed class VulkanShaderRequest
     public bool HbaoNegativeBorder { get; set; }
     public string HbaoBaseModule { get; set; }
     public List<ShaderDependency> HbaoBaseDependencies { get; set; }
+    public ShaderSourceGeneration SourceGeneration { get; set; }
+    internal VulkanShaderRequest Snapshot()
+    {
+        var copy=(VulkanShaderRequest)MemberwiseClone();
+        copy.Defines=Defines==null?null:new Dictionary<string,string>(Defines,StringComparer.Ordinal);
+        copy.IncludeDirectories=IncludeDirectories==null?new List<string>():new List<string>(IncludeDirectories);
+        List<ShaderDependency> Dependencies(List<ShaderDependency> values)=>values?.Select(d=>new ShaderDependency{Path=d.Path,Sha256=d.Sha256,CompatibilityFixup=d.CompatibilityFixup}).ToList();
+        copy.GpuOpaqueBaseDependencies=Dependencies(GpuOpaqueBaseDependencies);copy.HbaoBaseDependencies=Dependencies(HbaoBaseDependencies);return copy;
+    }
+}
+
+/// <summary>A copied pack generation applied inside the compiler's immutable include mirror.</summary>
+public sealed class ShaderSourceGeneration
+{
+    public const string Contract="AnomalySourceGeneration-1";
+    readonly SortedDictionary<string,byte[]> files=new SortedDictionary<string,byte[]>(StringComparer.Ordinal);
+    readonly Dictionary<string,string> stock=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+    public string Fingerprint { get; }
+    public ShaderSourceGeneration(string packIdentity,IDictionary<string,byte[]> sources,IDictionary<string,string> stockHashes)
+    {
+        if(string.IsNullOrWhiteSpace(packIdentity)||sources==null||stockHashes==null||stockHashes.Count==0)
+            throw new ArgumentException("A source generation requires pack identity, copied sources and authenticated stock hashes.");
+        foreach(var entry in stockHashes)
+        {
+            string key=Key(entry.Key);
+            if(!System.Text.RegularExpressions.Regex.IsMatch(entry.Value??"","^[0-9a-fA-F]{64}$")||stock.ContainsKey(key))throw new ArgumentException("Invalid or duplicate stock source hash: "+key);
+            stock.Add(key,entry.Value.ToLowerInvariant());
+        }
+        var names=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach(var entry in sources)
+        {
+            string key=Key(entry.Key);string extension=System.IO.Path.GetExtension(key);
+            if(entry.Value==null||!names.Add(key)||!new[]{".hlsl",".hlsli",".inl",".inc"}.Contains(extension.ToLowerInvariant()))
+                throw new ArgumentException("Invalid or duplicate generated shader source: "+key);
+            files.Add(key,(byte[])entry.Value.Clone());
+        }
+        using(var stream=new System.IO.MemoryStream())
+        using(var writer=new System.IO.BinaryWriter(stream,System.Text.Encoding.UTF8,true))
+        {
+            writer.Write(Contract);writer.Write(packIdentity);
+            foreach(var entry in stock.OrderBy(p=>p.Key,StringComparer.Ordinal)){writer.Write(entry.Key);writer.Write(entry.Value);}
+            foreach(var entry in files){writer.Write(entry.Key);writer.Write(entry.Value.Length);writer.Write(entry.Value);}
+            writer.Flush();using(var sha=System.Security.Cryptography.SHA256.Create())Fingerprint=BitConverter.ToString(sha.ComputeHash(stream.ToArray())).Replace("-","").ToLowerInvariant();
+        }
+    }
+    internal IEnumerable<KeyValuePair<string,byte[]>> Files=>files;
+    internal void Authenticate(string key,string hash)
+    {
+        if(!stock.TryGetValue(key,out string expected)||expected!=hash)
+            throw new System.IO.InvalidDataException("Stock shader source differs from the authenticated generation: "+key+". Rebuild for the current game content.");
+    }
+    static string Key(string path)
+    {
+        string key=(path??"").Replace('\\','/');
+        if(key.Length==0||key.StartsWith("/")||key.IndexOf(':')>=0||key.Split('/').Any(p=>p==""||p=="."||p==".."))throw new ArgumentException("Generation shader path must be relative and contained: "+path);
+        return key;
+    }
 }
 
 public sealed class VulkanShaderResult

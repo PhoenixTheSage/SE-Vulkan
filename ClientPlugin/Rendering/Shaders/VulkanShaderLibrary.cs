@@ -24,6 +24,19 @@ public sealed class VulkanShaderLibrary
     public int VariantCount => variants.Count;
     public int ModuleCount => modules.Count;
     public IEnumerable<string> VariantIds => variants.Keys;
+    public ShaderSourceGeneration CaptureSourceGeneration(string packIdentity,IDictionary<string,byte[]> sources)
+        =>new ShaderSourceGeneration(packIdentity,sources,sourceHashes.ToDictionary(p=>p.Key.Substring(6),p=>p.Value,StringComparer.OrdinalIgnoreCase));
+
+    public VulkanShaderRequest DerivedRequest(string variantId,ShaderSourceGeneration generation,IDictionary<string,string> packDefines=null)
+    {
+        if(generation==null)throw new ArgumentNullException(nameof(generation));
+        Load(variantId); // Authenticate the selected stock module before deriving it.
+        foreach(var dependency in sourceHashes)generation.Authenticate(dependency.Key.Substring(6),dependency.Value);
+        var variant=variants[variantId];var defines=new Dictionary<string,string>(variant.Defines,StringComparer.Ordinal);
+        if(packDefines!=null)foreach(var define in packDefines)defines[define.Key]=define.Value;
+        return new VulkanShaderRequest{SourcePath=ResolveInside(contentDirectory,variant.Source),ContentDirectory=contentDirectory,
+            Profile=variant.Profile,EntryPoint=variant.Entry,Defines=defines,SourceGeneration=generation};
+    }
 
     public VulkanShaderLibrary(string directory, string contentDirectory, string gameAssemblyPath = null, string catalogSha256 = null)
     {

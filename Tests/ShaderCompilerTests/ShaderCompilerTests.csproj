@@ -2,7 +2,12 @@
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><LangVersion>14</LangVersion><EnableDefaultCompileItems>false</EnableDefaultCompileItems><RunPostBuildEvent>Never</RunPostBuildEvent></PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
-    <Compile Include="../../ClientPlugin/Rendering/Shaders/*.cs" Link="%(Filename)%(Extension)" />
+    <Compile Include="../../ClientPlugin/Rendering/Shaders/VulkanShaderCompiler.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Shaders/ShaderMetadata.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Shaders/SpirvMetadataReader.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Shaders/VanillaHlslCompatibility.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Shaders/GpuOpaqueShaderAdapter.cs" />
+    <Compile Include="../../ClientPlugin/Rendering/Shaders/HbaoBorderShaderAdapter.cs" />
     <Compile Include="../../ClientPlugin/Bootstrap/BootstrapAssets.cs" Link="BootstrapAssets.cs" />
   </ItemGroup>
 </Project>

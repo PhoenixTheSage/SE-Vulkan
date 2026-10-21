@@ -104,3 +104,18 @@ evidence with synchronization validation enabled and zero errors. The current
 actual-core scene/recreation suite passes329 checks; the native17-test suite
 passes without skips when the private validation layer is configured. This
 does not close loaded-world adapter/vendor or performance acceptance.
+
+Stage6 compiler foundation (activation still pending): ShaderSourceGeneration
+copies virtual source bytes and authenticated stock hashes. IncludeMirror
+authenticates pristine stock inputs before replacing source, resolves relative
+includes against captured overlays, and retains original dependency hashes for
+GPU-owned/HBAO adapter authentication. Cache identity includes every captured
+pack source and pack identity as well as dependencies/compiler/tool hashes.
+Library DerivedRequest authenticates the selected stock module and generation.
+The compiler copies request collections before work and refuses mixing a stock
+batch with a different source generation. The36-check compiler gate covers
+relative include precedence, copied bytes, stock tampering/cache hits, traversal,
+complete generation identity and preserved GPU-owned authentication. The full
+managed Release build passes for net48/net10. Native owner activation, named
+stage execution evidence and same-invocation attachments remain open; this
+foundation does not change active stock shaders by itself.

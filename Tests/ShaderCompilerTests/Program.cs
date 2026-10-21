@@ -97,6 +97,29 @@ try
         File.Delete(Path.Combine(toolCopy, "batch-tool-change.dll"));
     }
     Check(!Directory.EnumerateFileSystemEntries(Path.Combine(testDirectory, "Cache", "Snapshots")).Any(), "disposing a batch removes only its owned source snapshot");
+    var stockHashes=Directory.GetFiles(content,"*",SearchOption.AllDirectories).ToDictionary(
+        p=>Path.GetRelativePath(content,p).Replace('\\','/'),p=>Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(p))).ToLowerInvariant());
+    byte[] replacement=System.Text.Encoding.UTF8.GetBytes("#include <Generated/pack.hlsli>\n#define SCALE PACK_SCALE\n");
+    var replacements=new System.Collections.Generic.Dictionary<string,byte[]>{["Inc/deep/shared.hlsli"]=replacement,["Generated/pack.hlsli"]=System.Text.Encoding.UTF8.GetBytes("#define PACK_SCALE 8.0\n")};
+    request.SourceGeneration=new ShaderSourceGeneration("pack-order-A;priority=1",replacements,stockHashes);
+    string fingerprint=request.SourceGeneration.Fingerprint;replacement[0]=0;replacements.Clear();
+    var generated=compiler.Compile(request);
+    Check(generated.Metadata.Dependencies.Any(d=>d.Path=="root0/Generated/pack.hlsli"),"virtual pack includes resolve inside the same mirror as relative stock includes");
+    Check(generated.Metadata.Dependencies.Single(d=>d.Path=="root0/Inc/deep/shared.hlsli").Sha256!=stockHashes["Inc/deep/shared.hlsli"],"relative stock includes use captured overlay bytes instead of disk source");
+    Check(compiler.Compile(request).CacheHit && request.SourceGeneration.Fingerprint==fingerprint,"source generation copies caller bytes and keeps stable cache identity");
+    request.GpuOpaque=true;request.GpuOpaqueBaseModule=new string('0',64);request.GpuOpaqueBaseDependencies=new System.Collections.Generic.List<ShaderDependency>();
+    Reject(()=>compiler.Compile(request),"authenticated catalog snapshot","pack generations preserve GPU-owned stock authentication rather than bypassing the adapter");
+    request.GpuOpaque=false;
+    byte[] pristine=File.ReadAllBytes(deepIncludePath);File.AppendAllText(deepIncludePath,"// tampered pristine input\n");
+    Reject(()=>compiler.Compile(request),"authenticated generation","overrides cannot hide mutated pristine stock inputs or bypass authentication on a cache hit");
+    File.WriteAllBytes(deepIncludePath,pristine);
+    using(var batch=compiler.CreateBatch(content))Reject(()=>batch.Compile(request),"Batch requests","a stock batch cannot silently discard a requested source generation");
+    Reject(()=>new ShaderSourceGeneration("escape",new System.Collections.Generic.Dictionary<string,byte[]>{["../escape.hlsl"]=new byte[0]},stockHashes),"contained","virtual source paths cannot escape the captured content root");
+    request.SourceGeneration=new ShaderSourceGeneration("pack-order-B;priority=2",new System.Collections.Generic.Dictionary<string,byte[]>{["Unused.hlsli"]=new byte[0]},stockHashes);
+    var differentGeneration=compiler.Compile(request);
+    request.SourceGeneration=new ShaderSourceGeneration("pack-order-C;priority=3",new System.Collections.Generic.Dictionary<string,byte[]>{["Unused.hlsli"]=new byte[0]},stockHashes);
+    Check(compiler.Compile(request).Metadata.CacheKey!=differentGeneration.Metadata.CacheKey,"complete pack identity participates in the derived cache key even for unchanged active HLSL");
+    request.SourceGeneration=null;
     string aliases = Path.Combine(content, "InactiveAliases.hlsl");
     File.WriteAllText(aliases, "cbuffer Dead : register(b1) { float4 unused; }; cbuffer Live : register(b1) { float4 color; }; Texture2D<float4> Image : register(t0); SamplerState Filter; float4 main(float2 uv : TEXCOORD0) : SV_Target { return color * Image.Sample(Filter, uv); }");
     var activeAliases = compiler.Compile(new VulkanShaderRequest { SourcePath = aliases, ContentDirectory = content, EntryPoint = "main", Profile = "ps_5_0" });
