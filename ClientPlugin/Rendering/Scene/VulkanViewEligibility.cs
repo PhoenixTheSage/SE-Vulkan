@@ -15,9 +15,10 @@ public sealed partial class VulkanScene
         if(!(radius>=0))return true;
         float distance2=delta.X*delta.X+delta.Y*delta.Y+delta.Z*delta.Z;
         float reach=range+radius;if(distance2>reach*reach)return false;
+        // Stock spotlight shadow near plane (MyLightComponent.UpdateViewProjection).
+        float along=delta.X*direction.X+delta.Y*direction.Y+delta.Z*direction.Z;
+        if(along < .5f-radius)return false;
         if(cosine>.05f && cosine<.999f){
-            float along=delta.X*direction.X+delta.Y*direction.Y+delta.Z*direction.Z;
-            if(along < -radius)return false;
             float side2=Math.Max(0,distance2-along*along);
             float sine=(float)Math.Sqrt(Math.Max(0,1-cosine*cosine));
             float limit=(along*sine+radius)/cosine;

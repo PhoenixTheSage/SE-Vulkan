@@ -559,12 +559,18 @@ namespace ClientPlugin.Rendering.Scene
             profileCullTicks += Stopwatch.GetTimestamp() - cullStarted;
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorTraversal)){
             IEnumerable<ActorData> drawCandidates;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CandidateQuery))drawCandidates=DrawCandidates(target.WorldReady);
+            var candidateList=drawCandidates as List<ActorData>;bool planned=candidateList!=null&&ParallelTraversalEnabled&&candidateList.Count>=256;
+            if(planned)using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CandidatePlan,false))PlanCandidates(candidateList);
+            int candidateIndex=0;
             foreach (var data in drawCandidates)
             {
-                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.MainOwnerDeclare,false))if(data.Model!=null&&IsVisible(data.Actor)&&(data.Flags&RenderFlags.SkipInMainView)==0)target.DeclareMainOwner(data.Actor.ID,MainGroupKey(data,true));
+                bool ancestorsVisible;object ownerKey;
+                if(planned){var plan=candidatePlans[candidateIndex++];ancestorsVisible=plan.Visible;ownerKey=plan.Key;}
+                else{ancestorsVisible=data.Model!=null&&IsVisible(data.Actor);ownerKey=ancestorsVisible&&(data.Flags&RenderFlags.SkipInMainView)==0?MainGroupKey(data,true):null;}
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.MainOwnerDeclare,false))if(ownerKey!=null)target.DeclareMainOwner(data.Actor.ID,ownerKey);
                 if(data.GpuOwned){if((data.Flags&RenderFlags.SkipInMainView)==0&&(frustum==null||frustum.Contains(data.Bounds)!=ContainmentType.Disjoint))visible.Add(data.Actor.ID);continue;}if(data.PassOwned)continue;
                 long actorStarted = Stopwatch.GetTimestamp();
-                bool actorVisible;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorAncestorVisibility,false))actorVisible=data.Model!=null&&IsVisible(data.Actor)&&((data.Flags&RenderFlags.SkipInMainView)==0 || NewActorViewsEnabled);
+                bool actorVisible;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorAncestorVisibility,false))actorVisible=ancestorsVisible&&((data.Flags&RenderFlags.SkipInMainView)==0 || NewActorViewsEnabled);
                 if (!actorVisible) { profileCullTicks += Stopwatch.GetTimestamp() - actorStarted; continue; }
                 var viewProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorViewGate,false);
                 MatrixD world = data.Actor.WorldMatrix;

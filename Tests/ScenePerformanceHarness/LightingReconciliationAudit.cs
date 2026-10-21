@@ -13,7 +13,7 @@ namespace ScenePerformanceHarness;
 public sealed partial class Plugin {
     static bool lightingReconciliation;
     static bool lightingRetainedSpots;
-    static bool lightingGpuScene;
+    static bool lightingGpuScene,lightingNativePass;static uint lightingSpotResolution;static string lightingProperty;
     static volatile int lightingRequested=-1,lightingActive=-1,lightingCaptured=-1;
     static int lightingFrames;static bool lightingReadRequested;static ulong lightingBeforePresent;
     static double lightingStarted;
@@ -33,12 +33,16 @@ public sealed partial class Plugin {
         lightingReconciliation=Environment.GetEnvironmentVariable("SE_VULKAN_LIGHTING_RECONCILIATION")=="1";
         lightingRetainedSpots=Environment.GetEnvironmentVariable("SE_VULKAN_LIGHTING_RETAINED_SPOTS")=="1";
         lightingGpuScene=Environment.GetEnvironmentVariable("SE_VULKAN_LIGHTING_GPU_SCENE")=="1";
+        lightingNativePass=Environment.GetEnvironmentVariable("SE_VULKAN_LIGHTING_NATIVE_PASS")=="1";
+        // Any boolean scene policy can be the OFF/ON/OFF treatment.
+        lightingProperty=Environment.GetEnvironmentVariable("SE_VULKAN_LIGHTING_PROPERTY") is {Length:>0} name?name:null;
         if(!lightingReconciliation)return;if(!selectionAudit||expected!="Vulkan")throw new Exception("Lighting reconciliation requires private paused Vulkan selection capture.");
         lightingReports=reports;
         lightingRequested=lightingActive=lightingCaptured=-1;lightingFrozenLights=null;lightingFrozenSpots=null;lightingFrozenFrame=null;lightingHaveFrozenProbe=lightingHaveFrozenPost=false;
         harmony.Patch(AccessTools.Method(typeof(NativeBackend),nameof(NativeBackend.SetLights)),prefix:new HarmonyMethod(typeof(Plugin),nameof(LightingSetLights)));
         harmony.Patch(AccessTools.Method(typeof(NativeBackend),nameof(NativeBackend.SetSpots)),prefix:new HarmonyMethod(typeof(Plugin),nameof(LightingSetSpots)));
-        harmony.Patch(AccessTools.Method(typeof(NativeBackend),nameof(NativeBackend.SetProbes)),prefix:new HarmonyMethod(typeof(Plugin),nameof(LightingSetProbes)));
+        // The one-argument SetProbes forwards here; patch the complete overload.
+        harmony.Patch(AccessTools.Method(typeof(NativeBackend),nameof(NativeBackend.SetProbes),new[]{typeof(NativeProbeConfig),typeof(uint)}),prefix:new HarmonyMethod(typeof(Plugin),nameof(LightingSetProbes)));
         harmony.Patch(AccessTools.Method(typeof(NativeBackend),nameof(NativeBackend.SetPostprocess)),prefix:new HarmonyMethod(typeof(Plugin),nameof(LightingSetPostprocess)));
         harmony.Patch(AccessTools.Method(typeof(NativeBackend),nameof(NativeBackend.QueueWorld)),prefix:new HarmonyMethod(typeof(Plugin),nameof(LightingQueueWorld)));
         harmony.Patch(AccessTools.Method(typeof(MyVulkanRender),nameof(MyVulkanRender.Present)),prefix:new HarmonyMethod(typeof(Plugin),nameof(LightingPresent)));
@@ -46,14 +50,14 @@ public sealed partial class Plugin {
     }
     static void LightingConfigureProbe(VulkanProbes __instance){if(lightingActive>=0)__instance.Settings.TimeOut=0;}
     static void LightingSetLights(ref NativeLight[] lights){if(lightingActive<0)return;if(lightingFrozenLights!=null)lights=CloneLights(lightingFrozenLights);lightingLights=CloneLights(lights);}
-    static void LightingSetSpots(ref NativeSpot[] spots){if(lightingActive<0)return;if(lightingFrozenSpots!=null)spots=CloneSpots(lightingFrozenSpots);lightingSpots=CloneSpots(spots);}
+    static void LightingSetSpots(uint resolution,ref NativeSpot[] spots){lightingSpotResolution=resolution;if(lightingActive<0)return;if(lightingFrozenSpots!=null)spots=CloneSpots(lightingFrozenSpots);lightingSpots=CloneSpots(spots);}
     static void LightingSetProbes(ref NativeProbeConfig config){if(lightingActive<0)return;if(lightingHaveFrozenProbe){config.Frames=(byte[])lightingFrozenProbe.Frames.Clone();config.Projections=(float[])lightingFrozenProbe.Projections.Clone();config.Brdf=lightingFrozenProbe.Brdf;}lightingProbe=config;lightingProbe.Frames=(byte[])config.Frames.Clone();lightingProbe.Projections=(float[])config.Projections.Clone();}
     static void LightingSetPostprocess(ref NativePostprocessConfig config){if(lightingActive<0)return;if(lightingHaveFrozenPost)config=lightingFrozenPost;lightingPost=config;}
     static void LightingQueueWorld(NativeBackend __instance,ref byte[] frame){if(lightingActive<0)return;if(lightingFrozenFrame!=null)frame=(byte[])lightingFrozenFrame.Clone();lightingFrame=(byte[])frame.Clone();if(!lightingRetainedSpots)__instance.SetSpotRedraw(ulong.MaxValue,ulong.MaxValue);}
     static void LightingPresent(object __instance){if(!lightingReadRequested)return;var backend=(NativeBackend)BackendField.GetValue(__instance);lightingBeforePresent=backend.GetStats().SubmittedFrames;backend.RequestReadback();}
     static void LightingBeginDraw(object renderer){
         if(!lightingReconciliation||lightingRequested<0||renderer is not MyVulkanRender)return;
-        var scene=SceneField.GetValue(renderer);var property=AccessTools.Property(scene.GetType(),lightingGpuScene?"GpuOpaqueOwnershipEnabled":"ResidentProxiesEnabled");if(property==null)throw new Exception("Pinned diagnostic plugin lacks the requested ownership switch.");
+        var scene=SceneField.GetValue(renderer);var property=AccessTools.Property(scene.GetType(),lightingProperty??(lightingGpuScene?"GpuOpaqueOwnershipEnabled":lightingNativePass?"NativePassSceneEnabled":"ResidentProxiesEnabled"));if(property==null)throw new Exception("Pinned diagnostic plugin lacks the requested ownership switch.");
         if(lightingActive!=lightingRequested){lightingActive=lightingRequested;lightingFrames=0;lightingStarted=Stopwatch.GetTimestamp()/(double)Stopwatch.Frequency;property.SetValue(scene,lightingActive==1);}
         var shadows=Member(renderer,"shadows");((MyShadowsSettings)Member(shadows,"Settings")).Data.UpdateCascadesEveryFrame=true;
         lightingReadRequested=lightingFrames>=40&&Stopwatch.GetTimestamp()/(double)Stopwatch.Frequency-lightingStarted>=2&&lightingCaptured!=lightingActive;
@@ -67,6 +71,9 @@ public sealed partial class Plugin {
         var hashes=new Dictionary<string,string>();for(uint kind=0;kind<6;kind++)for(uint face=0;face<6;face++){byte[] bytes=backend.ReadbackProbe(kind,face,0,(int)lightingProbe.Resolution);string name=$"probe-{kind}-{face}.f16";File.WriteAllBytes(Path.Combine(path,name),bytes);hashes[name]=LightingHash(bytes);}
         var shadows=Member(renderer,"shadows");int resolution=Convert.ToInt32(Member(shadows,"lastResolution"));uint count=(uint)((MyShadowsSettings)Member(shadows,"Settings")).Data.CascadesCount;
         for(uint cascade=0;cascade<count;cascade++){float[] values=backend.ReadbackShadow(cascade,resolution);byte[] bytes=new byte[values.Length*4];Buffer.BlockCopy(values,0,bytes,0,bytes.Length);string name=$"cascade-{cascade}.f32";File.WriteAllBytes(Path.Combine(path,name),bytes);hashes[name]=LightingHash(bytes);}
+        // Spotlight shadow maps of the replayed spot set: a missing or extra
+        // caster under one ownership shows up here as a depth difference.
+        if(lightingSpots!=null&&lightingSpotResolution!=0)foreach(var spot in lightingSpots){if((spot.Flags&1)==0)continue;float[] values=backend.ReadbackSpot(spot.Light,(int)lightingSpotResolution);byte[] bytes=new byte[values.Length*4];Buffer.BlockCopy(values,0,bytes,0,bytes.Length);string name=$"spot-{spot.Light}.f32";File.WriteAllBytes(Path.Combine(path,name),bytes);hashes[name]=LightingHash(bytes);}
         File.WriteAllBytes(Path.Combine(path,"main-frame.bin"),lightingFrame);File.WriteAllBytes(Path.Combine(path,"probe-frames.bin"),lightingProbe.Frames);
         var scene=SceneField.GetValue(renderer);var lightOwners=Items(Member(scene,"lights")).Select(component=>new{Owner=Member(Member(component,"Owner"),"ID"),Name=Member(Member(component,"Owner"),"DebugName"),Position=AuditValue(Member(component,"Position")),Data=AuditValue(Member(component,"Data"))}).ToArray();
         object audit=new{Phase=lightingNames[lightingActive],SameProcess=true,GpuScenePolicy=lightingGpuScene,RetainedSpotPolicy=lightingRetainedSpots,Paused=MySandboxGame.IsPaused,Frames=lightingFrames,Width=1920,Height=1080,MainFrameHash=LightingHash(lightingFrame),Lights=lightingLights,LightHash=LightingHash(LightingJson(lightingLights)),Spots=lightingSpots,SpotHash=LightingHash(LightingJson(lightingSpots)),Postprocess=lightingPost,PostprocessHash=LightingHash(LightingJson(lightingPost)),ProbeFrameHash=LightingHash(lightingProbe.Frames),ProbeProjectionHash=LightingHash(LightingJson(lightingProbe.Projections)),Probe=backend.GetProbeStats(),Schedule=schedule,ProbeResolution=lightingProbe.Resolution,CascadeResolution=resolution,CascadeMatrices=AuditValue(Member(shadows,"worldMatrices")),LightOwners=lightOwners,ImageHashes=hashes,Scope="Diagnostic OFF/ON/OFF in one paused private loaded world. After control capture, actual local lights, spot projections, main/probe constants and postprocess config are replayed. Probe timeout zero and all cascades refreshed identically; retained spotlight policy is identified separately. No ordinary performance or production quality-setting claim."};

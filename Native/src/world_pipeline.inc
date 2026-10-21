@@ -259,6 +259,7 @@ void cleanup_world() noexcept {
     light_tiles={};
     for(auto& slot:world.cascade_descriptor_pools)for(auto pool:slot)if(pool)vkDestroyDescriptorPool(device,pool,nullptr);
     for(auto& slot:world.cascade_pools)for(auto pool:slot)if(pool)vkDestroyCommandPool(device,pool,nullptr);
+    for(uint32_t s=0;s<2;++s)for(uint32_t k=0;k<8;++k){if(world.spot_pools[s][k])vkDestroyCommandPool(device,world.spot_pools[s][k],nullptr);world.spot_pools[s][k]=VK_NULL_HANDLE;world.spot_commands[s][k].clear();world.spot_used[s][k]=0;}
     for(auto& p:world.pipelines){if(p.handle)vkDestroyPipeline(device,p.handle,nullptr);if(p.stock_cascade)vkDestroyPipeline(device,p.stock_cascade,nullptr);if(p.stock_spot)vkDestroyPipeline(device,p.stock_spot,nullptr);}
     for(auto p:world.other_hdr_lights)if(p)vkDestroyPipeline(device,p,nullptr);for(auto p:world.lights)if(p)vkDestroyPipeline(device,p,nullptr);if(world.compose)vkDestroyPipeline(device,world.compose,nullptr);if(world.resolve)vkDestroyPipeline(device,world.resolve,nullptr);if(world.fullscreen)vkDestroyShaderModule(device,world.fullscreen,nullptr);
     for(auto& b:world.indirect_buffers)destroy_buffer(b);

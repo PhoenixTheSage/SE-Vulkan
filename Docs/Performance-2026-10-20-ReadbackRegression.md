@@ -137,6 +137,111 @@ about 8300 parts), MainOwnerDeclare 1.2, NewViewPlan 0.85 and DrawWorldSetup
 exceeds about 1.7 ms. Further managed gains need fewer per-actor operations,
 not cheaper ones.
 
+## Parallel spotlight recording
+
+`render_spot_shadows` now records like cascades when parallel spots are on
+(`SE_VULKAN_PARALLEL_SPOTS`; default on with at least four hardware threads,
+`0` forces serial).
+
+1. The owner thread first plans each light, using the serial path's
+   fresh/rebuild/dynamic decisions and image (re)creation.
+2. Up to four workers then cull casters per light (`prepare_casters` writes
+   only that light's lists) and record each depth scope's draws into
+   per-worker, per-slot secondary command buffers. Each secondary sets its own
+   viewport/scissor.
+3. The owner records the unchanged sequence of barriers, depth copies and
+   rendering scopes, with `vkCmdExecuteCommands` where the inline draws were.
+   Draw counts are merged into `spots.stats.draws` and
+   `performance.spot_commands`.
+4. Cascade workers use critical-profile lanes 0-7; spot workers use lanes
+   8-11.
+
+Two paths stay serial:
+
+- GPU-opaque reference views use conditional rendering inside the scope.
+- Native pass spot views allocate from the shared slot descriptor pool.
+
+Both are opt-in, and the existing serial recorder is the fallback for them.
+
+Validation: canonical native build 16/16 CTests. Each of these suites ran
+serial, parallel, then serial again under the private Khronos layer with
+synchronization validation:
+
+- WorldPassGpuTests 538/538
+- ShadowOcclusionGpuTests
+- LightingParityGpuTests
+- ProbeGpuTests
+- PostprocessGpuTests: spotlight PCF, depth replay, quality resize, cookie
+  and cone-edge casters
+
+All runs pass with zero core/synchronization errors. All 106 written binary
+outputs are byte-identical between serial and parallel, and between the two
+serial runs (the determinism control). WorldGpuSmoke, which holds the frozen
+static/dynamic overlay checks, does not build at HEAD: `VulkanShadows.cs`
+references the internal `ShadowCascadeSchedule` from linked sources. That
+failure predates this work.
+
+Pertam, same binaries with the policy toggled
+(`Optimization-2026-10-20-ParallelSpots.json`, order F, S, S, F):
+
+| Policy | Mean ms | Median | P95 | Native spot phase ms |
+|---|---|---|---|---|
+| Parallel F (`Vulkan-fa05d412…`, `Vulkan-a9c79297…`) | 20.96 / 19.82 | 18.65 / 18.30 | 28.34 / 26.41 | 0.61 / 0.51 |
+| Serial S (`Vulkan-e155387f…`, `Vulkan-2856b8e7…`) | 26.46 / 24.61 | 24.28 / 22.98 | 41.61 / 35.54 | 1.04 / 1.16 |
+
+The serial runs were also 20-70% slower in managed sections this policy
+cannot affect (messages, particles, materials), so most of the whole-frame gap
+is host noise. The attributable gain is the spot phase, roughly halved: about
+0.3-0.5 ms after normalizing for that noise.
+
+## WorldPrepare upload overlap and main recording
+
+Instrumented profile before this step (`Vulkan-324aa9ec…`): WorldPrepare
+2.03 ms (sort 0.91, upload 0.77, geometry 0.22, descriptors 0.18) and
+MainGeometry 1.87 ms.
+
+**Retained: upload overlap.** The object/instance copies to mapped memory and
+their host mirrors do not depend on material lookup or the draw sort. With
+`SE_VULKAN_PARALLEL_UPLOAD` (default on with at least four hardware threads,
+`0` keeps them inline), a worker performs those copies while the owner
+continues. The owner joins after the sort, before spot-fade hashing (the first
+mirror reader), then flushes the object/instance allocations. Retained object
+records (opt-in) keep their versioned inline copy.
+`performance.upload_us` no longer includes these copies.
+
+**Rejected: parallel main recording.** I also prototyped recording the whole
+main GBuffer geometry (OLD phases, NEW groups) into a worker secondary that
+overlapped spot and cascade recording, with foliage in an owner secondary. It
+required no GPU checkpoints/profile labels and no native-pass or GPU-opaque
+views. It was byte-identical (139 outputs across six suites, zero
+core/synchronization errors), but showed no gain: the owner Main phase was
+1.48/1.47 ms parallel against 1.41/1.52 ms serial. The instrumented 1.87 ms
+overstates uninstrumented recording, and the handoff cost the remainder. It
+was removed.
+
+Upload overlap validation:
+
+- 16/16 CTests.
+- WorldPass 538/538, ShadowOcclusion, Probe and DepthGeometry each ran serial,
+  parallel, then serial again under the private Khronos layer with
+  synchronization validation. All 110 binary outputs are byte-identical across
+  modes and repeats.
+- The same A/B was repeated on the final binary (parallel main removed),
+  adding PostprocessGpuTests and LightingParityGpuTests. All 18 runs passed
+  with zero errors, and all 139 outputs are byte-identical.
+
+Pertam paired run, same binaries with the policies toggled
+(`Optimization-2026-10-20-ParallelMainUpload.json`, order N, O, O, N; N had
+both the upload overlap and the since-removed parallel main):
+
+| Policy | Mean ms | Median | Owner Prepare ms | Upload µs | Sort µs |
+|---|---|---|---|---|---|
+| N (`Vulkan-73c19b98…`, `Vulkan-1784be0a…`) | 20.65 / 19.56 | 18.67 / 17.71 | 1.87 / 1.82 | 192 / 194 | 1080 / 1038 |
+| O (`Vulkan-e43b480f…`, `Vulkan-5fbc0487…`) | 20.58 / 22.19 | 18.55 / 20.61 | 2.12 / 2.41 | 716 / 801 | 890 / 1053 |
+
+Prepare drops by about 0.4 ms. The sort slows slightly while the copy shares
+memory bandwidth. The whole-frame difference is within host noise.
+
 ## Remaining profile and next work
 
 Before the traversal pass, the instrumented frame (`Vulkan-f95b1c0f…`, about

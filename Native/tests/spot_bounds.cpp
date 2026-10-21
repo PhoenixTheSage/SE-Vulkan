@@ -16,6 +16,12 @@ int main(){
     require(!spot_sphere_visible(behind,axis,40,.5f,1),"behind apex was retained");
     require(!spot_sphere_visible(far,axis,40,.5f,1),"outside light range was retained");
     require(spot_sphere_visible(far,axis,40,.5f,-1),"unknown bound was culled");
+    // A lamp housing wholly inside the stock .5 near plane is outside the
+    // stock frustum; one crossing the plane still casts.
+    float housing[]{0,.05f,.1f},crossing[]{0,0,.3f};
+    require(!spot_sphere_visible(housing,axis,40,.5f,.3f),"housing inside the near plane was retained");
+    require(spot_sphere_visible(crossing,axis,40,.5f,.3f),"caster crossing the near plane was culled");
+    require(!spot_sphere_visible(housing,axis,40,.9995f,.3f),"narrow-cone housing inside the near plane was retained");
     std::mt19937 random(0x5E2026);std::uniform_real_distribution<float> unit(0,1);
     for(int i=0;i<100000;++i){
         float cosine=.06f+.93f*unit(random),sine=std::sqrt(1-cosine*cosine);

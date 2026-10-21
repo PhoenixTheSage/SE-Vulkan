@@ -26,6 +26,8 @@ param(
     [switch]$LightingReconciliation,
     [switch]$LightingRetainedSpots,
     [switch]$LightingGpuScene,
+    [switch]$LightingNativePass,
+    [string]$LightingProperty,
     [string]$MatchFrame,
     [string]$BenchmarkFrame,
     [switch]$ExpandedGeometry,
@@ -345,6 +347,8 @@ $changes.SE_VULKAN_STOCK_SHADOW_OCCLUSION=if($StockShadowOcclusion){if(!$StockSh
 $changes.SE_VULKAN_SHADOW_DEPTH_AUDIT=if($ShadowDepthAudit){if(!$SelectionAudit){throw 'ShadowDepthAudit requires paused SelectionAudit'};'1'}else{'0'}
 $changes.SE_VULKAN_LIGHTING_RETAINED_SPOTS=if($LightingRetainedSpots){if(!$LightingReconciliation){throw 'LightingRetainedSpots requires LightingReconciliation'};'1'}else{'0'}
 $changes.SE_VULKAN_LIGHTING_GPU_SCENE=if($LightingGpuScene){if(!$LightingReconciliation -or !$GpuOpaqueScene){throw 'LightingGpuScene requires lighting reconciliation and GPU scene'};'1'}else{'0'}
+$changes.SE_VULKAN_LIGHTING_NATIVE_PASS=if($LightingNativePass){if(!$LightingReconciliation -or $LightingGpuScene){throw 'LightingNativePass requires lighting reconciliation, without LightingGpuScene'};'1'}else{'0'}
+$changes.SE_VULKAN_LIGHTING_PROPERTY=if($LightingProperty){if(!$LightingReconciliation -or $LightingGpuScene -or $LightingNativePass){throw 'LightingProperty requires lighting reconciliation without another ownership treatment'};$LightingProperty}else{''}
 $changes.SE_VULKAN_CRITICAL_PROFILE=if($NativeCritical){if(!$CpuDetail -or $Backend -ne 'Vulkan'){throw 'NativeCritical requires Vulkan CpuDetail'};'1'}else{'0'}
 $changes.SE_VULKAN_LIGHTING_RECONCILIATION=if($LightingReconciliation){if(!$SelectionAudit -or $Backend -ne 'Vulkan'){throw 'LightingReconciliation requires private paused Vulkan capture'};'1'}else{'0'}
 $changes.SE_VULKAN_PROBE_COVERAGE_AUDIT=if($ProbeCoverageAudit){if(!$SelectionAudit){throw 'ProbeCoverageAudit requires paused SelectionAudit'};'1'}else{'0'}

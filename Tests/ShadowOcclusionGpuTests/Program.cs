@@ -63,7 +63,9 @@ class Program {
         Check(states[0].Accept(states[0].Epoch,2,2,bounds.GetInflated(bounds.Size*.5),bounds,false)&&states[0].Observe(3,bounds,Vector3D.Zero,.1f)&&!states[1].Observe(3,bounds,Vector3D.Zero,.1f),"one cascade's accepted group result cannot hide another cascade");
         var epoch=states[0].Epoch;Check(!states[0].Observe(5,bounds,Vector3D.Zero,.1f)&&!states[0].Accept(epoch,2,5,bounds,bounds,false),"stock global-frame reentry rejects an old pending hidden result");
         ParallelTasks.Parallel.Scheduler=new ParallelTasks.FakeTaskScheduler();mainToken=0;
-        using var scene=new VulkanScene(backend){StockShadowOcclusionEnabled=true,GroupOcclusionEnabled=true};scene.ContentFailed+=(path,error)=>throw new Exception(path,error);
+        // These checks cover the managed group bridge; native pass ownership (the
+        // product default) would route its actors around it.
+        using var scene=new VulkanScene(backend){StockShadowOcclusionEnabled=true,GroupOcclusionEnabled=true,NativePassSceneEnabled=false};scene.ContentFailed+=(path,error)=>throw new Exception(path,error);
         var shadowType=typeof(VulkanScene).Assembly.GetType("ClientPlugin.Rendering.VulkanShadows",true)!;object shadows=Activator.CreateInstance(shadowType,true)!;
         shadowType.GetProperty("StockSchedulingEnabled")!.SetValue(shadows,true);shadowType.GetProperty("StockFittingEnabled")!.SetValue(shadows,true);shadowType.GetProperty("UpdateMask")!.SetValue(shadows,3u);
         ((Vector3D[])shadowType.GetField("ViewOrigins")!.GetValue(shadows)!)[0]=new Vector3D(0,0,10);((Vector3D[])shadowType.GetField("ViewOrigins")!.GetValue(shadows)!)[1]=new Vector3D(0,0,-20);

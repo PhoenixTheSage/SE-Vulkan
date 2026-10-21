@@ -447,11 +447,18 @@ void render_world(){
             std::memcpy(slot.host_objects.data()+record.offset,world.object_records.data.data()+record.offset,record.bytes);
             version=record.revision;first=std::min(first,uint64_t(record.offset));last=std::max(last,uint64_t(record.offset)+record.bytes);world.object_uploaded_bytes+=record.bytes;}
         if(last)check(vmaFlushAllocation(allocator,slot.objects.memory,first,last-first),"flush changed retained objects");
-    }else{slot.host_objects.assign(world.current().draw_objects.data(),world.current().draw_objects.data()+object_bytes);if(object_bytes){std::memcpy(slot.objects.mapped,world.current().draw_objects.data(),size_t(object_bytes));world.object_uploaded_bytes=object_bytes;}}
-    slot.host_instances.assign(world.current().instances.data.data(),world.current().instances.data.data()+instance_bytes);
-    if(instance_bytes)std::memcpy(slot.instances.mapped,world.current().instances.data.data(),instance_bytes);slot.instance_bytes_used=instance_bytes;
+    }else if(object_bytes)world.object_uploaded_bytes=object_bytes;
+    // Object/instance bytes and their host mirrors are independent of material
+    // lookup and the draw sort; copy them on a worker and join after sorting.
+    // Flushes follow the join. Retained records keep their versioned copy.
+    auto copy_draw_data=[&slot,object_bytes,instance_bytes,retained=world.retained_objects,&current=world.current()]{
+        if(!retained){slot.host_objects.assign(current.draw_objects.data(),current.draw_objects.data()+object_bytes);if(object_bytes)std::memcpy(slot.objects.mapped,current.draw_objects.data(),size_t(object_bytes));}
+        slot.host_instances.assign(current.instances.data.data(),current.instances.data.data()+instance_bytes);
+        if(instance_bytes)std::memcpy(slot.instances.mapped,current.instances.data.data(),instance_bytes);};
+    std::future<void> upload_job;if(world.parallel_upload)upload_job=std::async(std::launch::async,copy_draw_data);else copy_draw_data();
+    slot.instance_bytes_used=instance_bytes;
     struct Glue{float inverse[16],matrices[64],splits[4];uint32_t count,width,height,reserved;};static_assert(sizeof(Glue)==352);Glue glue{};std::memcpy(glue.inverse,world.current().inverse.data(),64);std::memcpy(glue.matrices,shadow_matrices,sizeof(glue.matrices));std::memcpy(glue.splits,shadow_splits,sizeof(glue.splits));glue.count=std::min(4u,shadow_count);glue.width=extent.width;glue.height=extent.height;std::memcpy(slot.glue.mapped,&glue,sizeof(glue));
-    for(auto* b:{&slot.frame,&slot.projections,&slot.instances,&slot.glue})check(vmaFlushAllocation(allocator,b->memory,0,VK_WHOLE_SIZE),"flush batched world uniforms/instances");if(!world.retained_objects)check(vmaFlushAllocation(allocator,slot.objects.memory,0,VK_WHOLE_SIZE),"flush legacy world objects");world_light_data(slot);
+    for(auto* b:{&slot.frame,&slot.projections,&slot.glue})check(vmaFlushAllocation(allocator,b->memory,0,VK_WHOLE_SIZE),"flush batched world uniforms/instances");world_light_data(slot);
     performance.upload_us=perf_prepare_take();
     auto& materials=world.current().materials;materials.clear();materials.reserve(world.current().draws.size());for(auto& draw:world.current().draws){draw.material=draw.recipe?world_recipe_material(slot,draw):world_material(slot,draw);materials.push_back(draw.material);}
     prepare_pass_gpu(slot);
@@ -477,6 +484,8 @@ void render_world(){
         }
         if(A.pipeline!=B.pipeline)return A.pipeline<B.pipeline;if(A.mesh!=B.mesh)return A.mesh<B.mesh;return A.material<B.material;
     });
+    if(upload_job.valid())upload_job.get();
+    check(vmaFlushAllocation(allocator,slot.instances.memory,0,VK_WHOLE_SIZE),"flush batched world uniforms/instances");if(!world.retained_objects)check(vmaFlushAllocation(allocator,slot.objects.memory,0,VK_WHOLE_SIZE),"flush legacy world objects");
     for(auto& casters:world.current().cascade_casters)casters.clear();
     if(scheduled_shadows)shadow_update_mask|=((1u<<shadow_count)-1)&~shadow_image_mask;
     for(uint32_t i:order){const auto& packet=world.current().draws[i].packet;if(packet.flags&(512|8192))continue;for(uint32_t c=0;c<shadow_count;c++)if((packet.reserved&(1u<<c)) && (!scheduled_shadows || (shadow_update_mask&(1u<<c))))world.current().cascade_casters[c].push_back(i);}

@@ -180,7 +180,7 @@ public sealed partial class NativeBackend
             if(i==1)WorldFrameLayout=artifact.Layout;
         }
         ConfigureVoxels(library);ConfigureEnvironment(library);ConfigureTransparency(library);ConfigureParticles(library);ConfigureDecals(library);ConfigurePostprocess(library);ConfigureProbes(library);ConfigureHighlights(library);ConfigureSpots(library);ConfigureOcclusion(library);ConfigureLightTiles(library);ConfigureObjectMotion();WorldReady=true;
-        if(System.Environment.GetEnvironmentVariable("SE_VULKAN_NATIVE_PASS_SCENE")=="1")ConfigureNativePasses(library);
+        if(ClientPlugin.Rendering.Scene.NativePassPolicy.Enabled)ConfigureNativePasses(library);
         ConfigureGpuScene(library,shaderContent);
     }
     void ConfigureObjectMotion()

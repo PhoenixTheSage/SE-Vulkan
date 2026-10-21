@@ -1,5 +1,6 @@
 #pragma once
 #include "scene_actor_plan.h"
+#include "native_pass_view_jobs.h"
 #include <map>
 #include <vector>
 #include <tuple>
@@ -73,6 +74,8 @@ public:
     bool valid(uint64_t handle)const{uint32_t i=uint32_t(handle);return i&&i<=entries.size()&&entries[i-1].alive&&entries[i-1].generation==uint32_t(handle>>32);}
     void remove(uint64_t handle){get(handle);uint32_t i=uint32_t(handle)-1;entries[i].alive=false;entries[i].value={};free.push_back(i);}
     template<class F>void each(F&& fn){for(uint32_t i=0;i<entries.size();++i)if(entries[i].alive)fn((uint64_t(entries[i].generation)<<32)|(i+1),entries[i].value);}
+    uint32_t slots()const{return uint32_t(entries.size());}
+    template<class F>void each_range(uint32_t begin,uint32_t end,F&& fn){for(uint32_t i=begin;i<end&&i<entries.size();++i)if(entries[i].alive)fn((uint64_t(entries[i].generation)<<32)|(i+1),entries[i].value);}
 };
 class Scene {
     Handles<Model> models;Handles<Family> families;Handles<Actor> actors;
@@ -89,6 +92,8 @@ class Scene {
         scene_actor::Vec3 camera{};std::shared_ptr<InstanceStream> base;std::map<uint32_t,std::shared_ptr<InstanceStream>> materials;
     };
     std::map<BatchKey,RetainedBatch> retained_batches;
+    // Optional lanes for per-batch publication; output is identical either way.
+    std::unique_ptr<ViewJobs> jobs;
     std::map<std::pair<uint32_t,uint32_t>,std::pair<uint64_t,uint64_t>> spot_signature;
     uint64_t spot_updates{};
     // Retained streams and spotlight signatures outlive individual actors.
@@ -143,13 +148,18 @@ public:
     void clear_frame(){idle();selected.clear();queries.clear();missing.clear();fallbacks.clear();groups.clear();streams.clear();visible_owners.clear();transparent.clear();spot_updates=0;}
     uint64_t static_spot_updates()const{return spot_updates;}
     const auto& main_visible_owners()const{return visible_owners;}
+    void set_parallel(bool enabled){if(enabled&&!jobs)jobs=std::make_unique<ViewJobs>();else if(!enabled)jobs.reset();}
+    bool parallel()const{return jobs!=nullptr;}
     void prepare(Frame current){
         CpuScope total(profiling,profile.prepare_us);if(profiling)++profile.prepares;
         idle();if(current.views.size()>64)throw std::runtime_error("pass view budget");uint64_t ids=0;for(auto& view:current.views){if(view.id>=64||(ids&(uint64_t(1)<<view.id)))throw std::runtime_error("duplicate pass view");ids|=uint64_t(1)<<view.id;}
         frame=std::move(current);selected.clear();queries.clear();missing.clear();fallbacks.clear();groups.clear();streams.clear();transparent.clear();
-        std::map<uint64_t,uint32_t> query_indices;
-        actors.each([&](uint64_t handle,Actor& actor){
-            if(!actor.supported||!families.valid(actor.family)){fallbacks.push_back({handle,actor.owner,actor.lod});return;}if(!actor.selection.visible)return;
+        // Actor ranges select views and LODs into range-local outputs; merging
+        // them in range order reproduces the serial selection, query, request
+        // and fallback order exactly.
+        struct Chunk {std::vector<Selection> selected;std::vector<Fallback> fallbacks;std::vector<QueryOwner> queries;std::vector<Missing> requests;uint64_t selected_count{};double requests_us{};};
+        auto prepare_actor=[&](Chunk& out,uint64_t handle,Actor& actor){
+            if(!actor.supported||!families.valid(actor.family)){out.fallbacks.push_back({handle,actor.owner,actor.lod});return;}if(!actor.selection.visible)return;
             auto& family=families.get(actor.family);Selection selection{handle,0,actor.lod,frame.selection.camera,false};
             double dx=actor.last_camera.x-frame.selection.camera.x,dy=actor.last_camera.y-frame.selection.camera.y,dz=actor.last_camera.z-frame.selection.camera.z;
             bool immediate=!actor.have_camera||std::sqrt(dx*dx+dy*dy+dz*dz)>frame.selection.global.smooth_camera_distance;
@@ -162,17 +172,27 @@ public:
                 selection.views|=uint64_t(1)<<view.id;if(view.kind==Kind::Colour)selection.main_candidate=true;
             }
             if(!selection.views)return;selection.next.update(distance,family.distances,frame.selection.global,frame.selection.delta,immediate);
-            selected.push_back(selection);
-            if(profiling)++profile.selected_actors;
-            if(actor.group){auto [it,added]=query_indices.emplace(actor.group,uint32_t(queries.size()));if(added)queries.push_back({actor.group,selection.views,actor.owner});else queries[it->second].views|=selection.views;}
+            out.selected.push_back(selection);++out.selected_count;
+            if(actor.group)out.queries.push_back({actor.group,selection.views,actor.owner});
             // Query results can change the per-view visible LOD shift. Resolve both
             // choices now; publication reuses this selector without advancing it.
-            CpuScope resources(profiling,profile.requests_us);
+            CpuScope resources(profiling,out.requests_us);
             for(auto& view:frame.views)if(selection.views&(uint64_t(1)<<view.id))for(bool main:{false,true}){
-                int lod=lod_for(family,view,selection,main);if(!model_ready(family.levels[lod]))request(actor.family,uint32_t(lod));
-                if(view.kind==Kind::Colour&&selection.next.previous>=0){int old=std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift)));if(!model_ready(family.levels[old]))request(actor.family,uint32_t(old));}
+                int lod=lod_for(family,view,selection,main);if(!model_ready(family.levels[lod]))out.requests.push_back({actor.family,uint32_t(lod)});
+                if(view.kind==Kind::Colour&&selection.next.previous>=0){int old=std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift)));if(!model_ready(family.levels[old]))out.requests.push_back({actor.family,uint32_t(old)});}
             }
-        });pending=true;
+        };
+        uint32_t slots=actors.slots(),count=jobs&&slots>=2?std::min(16u,std::max(2u,(slots+255)/256)):1u;std::vector<Chunk> chunks(count);
+        auto run_chunk=[&](uint32_t c){actors.each_range(uint32_t(uint64_t(slots)*c/count),uint32_t(uint64_t(slots)*(c+1)/count),[&](uint64_t handle,Actor& actor){prepare_actor(chunks[c],handle,actor);});};
+        if(count>1)jobs->run(count,run_chunk);else run_chunk(0);
+        std::map<uint64_t,uint32_t> query_indices;
+        for(auto& chunk:chunks){
+            selected.insert(selected.end(),chunk.selected.begin(),chunk.selected.end());fallbacks.insert(fallbacks.end(),chunk.fallbacks.begin(),chunk.fallbacks.end());
+            for(auto& query:chunk.queries){auto [it,added]=query_indices.emplace(query.group,uint32_t(queries.size()));if(added)queries.push_back(query);else queries[it->second].views|=query.views;}
+            for(auto& item:chunk.requests)request(item.family,item.lod);
+            if(profiling){profile.selected_actors+=chunk.selected_count;profile.requests_us+=chunk.requests_us;}
+        }
+        pending=true;
     }
     const auto& query_owners()const{return queries;}const auto& missing_levels()const{return missing;}const auto& explicit_fallbacks()const{return fallbacks;}const auto& render_groups()const{return groups;}const auto& instance_streams()const{return streams;}
     const auto& transparent_requests()const{return transparent;}
@@ -216,7 +236,13 @@ public:
         std::map<BatchKey,RetainedBatch> next_retained;
         {
             CpuScope emission(profiling,profile.emit_us);
-            for(auto& batch_key:batch_order){auto& batch=batches.at(batch_key);
+            // Row bookkeeping and packing touch only one batch and its own
+            // retained entry, so batches prepare in parallel. Stream indices,
+            // groups and the next retained map are assembled in batch order.
+            struct Packed {RetainedBatch stored;uint64_t rows{},bytes{};};
+            std::vector<Batch*> ordered;ordered.reserve(batch_order.size());for(auto& batch_key:batch_order)ordered.push_back(&batches.at(batch_key));
+            std::vector<Packed> prepared(batch_order.size());
+            auto prepare_batch=[&](uint32_t index){auto& batch_key=batch_order[index];auto& batch=*ordered[index];
                 auto& view=*batch.view;auto& rows=batch.rows;auto& hidden_materials=std::get<3>(batch_key);
                 uint32_t stride=view.kind==Kind::Depth?48u:64u;
                 auto pack_row=[&](uint8_t* destination,size_t i,uint32_t material){
@@ -232,7 +258,7 @@ public:
                 auto found=retained_batches.find(batch_key);
                 bool same_layout=found!=retained_batches.end()&&found->second.owners==owners&&found->second.activated==activated&&found->second.base&&found->second.base->instances.size()==rows.size()*stride&&found->second.materials.size()==activated.size();
                 if(same_layout)for(uint32_t material:activated){auto it=found->second.materials.find(material);if(it==found->second.materials.end()||!it->second||it->second->instances.size()!=rows.size()*stride)same_layout=false;}
-                RetainedBatch stored;
+                auto& stored=prepared[index].stored;
                 if(same_layout){
                     bool same_rows=found->second.epochs==epochs&&found->second.states==states;
                     bool same_camera=found->second.camera.x==frame.selection.camera.x&&found->second.camera.y==frame.selection.camera.y&&found->second.camera.z==frame.selection.camera.z;
@@ -241,7 +267,7 @@ public:
                         auto rewrite=[&](InstanceStream& stream,uint32_t material){
                             for(size_t i=0;i<rows.size();++i){
                                 bool dirty=epochs[i]!=stored.epochs[i]||(view.kind!=Kind::Depth&&states[i]!=stored.states[i]);
-                                if(dirty){pack_row(stream.instances.data()+i*stride,i,material);if(profiling){++profile.emitted_rows;profile.stream_bytes+=stride;}}
+                                if(dirty){pack_row(stream.instances.data()+i*stride,i,material);++prepared[index].rows;prepared[index].bytes+=stride;}
                                 else if(!same_camera){auto relative=transform(*rows[i].actor,frame.selection.camera);std::memcpy(stream.instances.data()+i*stride,&relative,sizeof(Transform));}
                             }
                         };
@@ -252,11 +278,16 @@ public:
                     auto make_stream=[&](uint32_t material){
                         auto stream=std::make_shared<InstanceStream>();stream->instances.resize(rows.size()*stride);stream->owners=owners;
                         for(size_t i=0;i<rows.size();++i)pack_row(stream->instances.data()+i*stride,i,material);
-                        if(profiling){profile.emitted_rows+=rows.size();profile.stream_bytes+=stream->instances.size();}return stream;
+                        prepared[index].rows+=rows.size();prepared[index].bytes+=stream->instances.size();return stream;
                     };
                     stored.base=make_stream(UINT32_MAX);for(uint32_t material:activated)stored.materials.emplace(material,make_stream(material));
                     stored.owners=std::move(owners);stored.activated=std::move(activated);stored.epochs=std::move(epochs);stored.states=std::move(states);stored.camera=frame.selection.camera;
                 }
+            };
+            if(jobs&&batch_order.size()>1)jobs->run(uint32_t(batch_order.size()),prepare_batch);else for(uint32_t index=0;index<batch_order.size();++index)prepare_batch(index);
+            for(uint32_t index=0;index<batch_order.size();++index){auto& batch_key=batch_order[index];auto& batch=*ordered[index];auto& stored=prepared[index].stored;
+                auto& view=*batch.view;auto& rows=batch.rows;auto& hidden_materials=std::get<3>(batch_key);
+                if(profiling){profile.emitted_rows+=prepared[index].rows;profile.stream_bytes+=prepared[index].bytes;}
                 auto publish_stream=[&](const std::shared_ptr<InstanceStream>& stream){stream->index=uint32_t(streams.size());stream->identities.clear();stream->identities.reserve(rows.size());for(const auto& row:rows)stream->identities.push_back(row.actor->history_identity);streams.push_back(stream);};
                 publish_stream(stored.base);for(auto& item:stored.materials)publish_stream(item.second);
                 auto stream_for=[&](uint32_t material){if(view.kind==Kind::Depth)return stored.base;auto it=stored.materials.find(material);return it==stored.materials.end()?stored.base:it->second;};

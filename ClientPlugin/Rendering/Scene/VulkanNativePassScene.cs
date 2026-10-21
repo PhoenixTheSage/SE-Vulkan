@@ -14,11 +14,25 @@ using VRageRender.Messages;
 
 namespace ClientPlugin.Rendering.Scene;
 
+// The native pass scene is the default when every policy it depends on is on.
+// An explicit SE_VULKAN_NATIVE_PASS_SCENE=1 keeps the strict prerequisite
+// check; =0, or any disabled prerequisite, selects the managed scene path.
+internal static class NativePassPolicy
+{
+    static bool On(string name)=>Environment.GetEnvironmentVariable(name)!="0";
+    public static readonly bool Explicit=Environment.GetEnvironmentVariable("SE_VULKAN_NATIVE_PASS_SCENE")=="1";
+    public static readonly bool Enabled=Environment.GetEnvironmentVariable("SE_VULKAN_NATIVE_PASS_SCENE") switch{
+        "1"=>true,"0"=>false,
+        _=>On("SE_VULKAN_NEW_ACTOR_VIEWS")&&On("SE_VULKAN_GROUP_OCCLUSION")&&On("SE_VULKAN_STOCK_DEPTH_GEOMETRY")&&On("SE_VULKAN_STOCK_SHADOW_SCHEDULE")
+            &&(Environment.GetEnvironmentVariable("SE_VULKAN_STOCK_SHADOW_FIT")??Environment.GetEnvironmentVariable("SE_VULKAN_STOCK_SHADOW_SCHEDULE"))!="0"
+            &&Environment.GetEnvironmentVariable("SE_VULKAN_GPU_OPAQUE")!="1"&&Environment.GetEnvironmentVariable("SE_VULKAN_GPU_OPAQUE_SCENE")!="1"};
+}
+
 public sealed partial class VulkanScene
 {
     // Full resident preparation AND native group recording. This switch never
     // re-enters the prepared color packet producer for supported actors.
-    public bool NativePassSceneEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_NATIVE_PASS_SCENE")=="1";
+    public bool NativePassSceneEnabled {get;set;}=NativePassPolicy.Enabled;
     public bool NativeMixedOpaqueEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_NATIVE_MIXED_OPAQUE")=="1";
     public bool GpuHybridPassEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_GPU_OPAQUE_HYBRID")=="1";
     private sealed class PassFamily
@@ -118,7 +132,10 @@ public sealed partial class VulkanScene
     {
         using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassCommits);
         CommitGpuActors();bool enabled=NativePassSceneEnabled&&backend.NativePassReady&&(!gpuActive||GpuHybridPassEnabled);
-        if(enabled&&(!NewActorViewsEnabled||!GroupOcclusionEnabled||!backend.SharedModelGeometryEnabled||ShadowSystem==null||!ShadowSystem.StockSchedulingEnabled||!ShadowSystem.StockFittingEnabled))throw new InvalidOperationException("Native pass scene requires stock new views, group occlusion, shared depth geometry and stock shadow fitting/scheduling.");
+        bool prerequisites=NewActorViewsEnabled&&GroupOcclusionEnabled&&backend.SharedModelGeometryEnabled&&ShadowSystem!=null&&ShadowSystem.StockSchedulingEnabled&&ShadowSystem.StockFittingEnabled;
+        // Default ownership yields to the managed path whenever a prerequisite
+        // policy is off; only an explicitly requested native scene is strict.
+        if(enabled&&!prerequisites){if(NativePassPolicy.Explicit)throw new InvalidOperationException("Native pass scene requires stock new views, group occlusion, shared depth geometry and stock shadow fitting/scheduling.");enabled=false;}
         if(enabled!=nativePassActive){nativePassActive=enabled;if(enabled){RefreshGroupBounds();nativePassDirty.UnionWith(actors.Values);}else{foreach(var data in actors.Values)RemoveNativePassActor(data,gpu:false);backend.ClearPassFrame();}}
         if(!enabled)return;
         if(nativePassMixedActive!=NativeMixedOpaqueEnabled){nativePassMixedActive=NativeMixedOpaqueEnabled;foreach(var actor in actors.Values){actor.PassBindingDirty=true;DirtyNativePass(actor);}}

@@ -1,5 +1,13 @@
 # SE-Vulkan changelog
 
+## 1.2.2 — 2026-10-21
+
+- Enable native pass scenes, group occlusion and shared stock depth geometry by default when prerequisite policies permit; retain managed fallback and strict checks for an explicitly forced native path.
+- Parallelize native pass preparation, managed candidate planning, spotlight secondary-command recording and independent upload copies while preserving publication/submission order and joining before flush or consumption.
+- Reject spotlight caster spheres wholly before the stock 0.5 m near plane in both managed and native paths; retain crossing casters and extend bounds regressions.
+- Cache group identity resolution and eligibility work, add candidate-planning CPU profiling, and refine frozen-light OFF/ON/OFF reconciliation and isolated policy switches.
+- Document retained-path comparisons and serial/parallel parity evidence. Historical private Pertam runs measured roughly 15-17 ms versus 21-22 ms before this step; host noise, remaining CPU costs, deferred paths and the gap to DX11 remain explicit.
+
 ## 1.2.1 — 2026-10-20
 
 - Keep CPU mirrors of uploaded frame/projection/object/instance data and use them for motion, attachment and spotlight dependency reads instead of reading uncached GPU mappings.

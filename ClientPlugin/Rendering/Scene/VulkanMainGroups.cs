@@ -38,7 +38,26 @@ public sealed partial class VulkanScene
     // Equal identities share one string instance, so native group lookups for
     // actors of the same skinned model compare references, not long paths.
     readonly Dictionary<string,string> mainGroupIdentities=new(StringComparer.Ordinal);
-    string InternIdentity(string identity){if(!mainGroupIdentities.TryGetValue(identity,out var shared))mainGroupIdentities.Add(identity,shared=identity);return shared;}
+    string InternIdentity(string identity){lock(mainGroupIdentities){if(!mainGroupIdentities.TryGetValue(identity,out var shared))mainGroupIdentities.Add(identity,shared=identity);return shared;}}
+
+    // Candidate decisions that do not depend on traversal order: ancestor
+    // visibility and the root main-group key. They are computed in parallel
+    // before the ordered traversal, which declares owners and emits serially.
+    // An actor appears once per candidate list and only its own processing
+    // changes its key inputs, so the planned key equals the in-loop result.
+    struct CandidatePlan {public bool Visible;public object Key;}
+    CandidatePlan[] candidatePlans=Array.Empty<CandidatePlan>();
+    public bool ParallelTraversalEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_PARALLEL_TRAVERSAL") switch{"1"=>true,"0"=>false,_=>System.Environment.ProcessorCount>=4};
+    void PlanCandidates(List<ActorData> list){
+        if(candidatePlans.Length<list.Count)candidatePlans=new CandidatePlan[list.Count];
+        // Model classification is cached lazily on first use; settle it here.
+        foreach(var data in list)if(data.Model!=null&&!data.Model.NewPipelineEligible.HasValue)models.IsStockNewModel(data.Model);
+        var plans=candidatePlans;const int chunk=128;
+        System.Threading.Tasks.Parallel.For(0,(list.Count+chunk-1)/chunk,c=>{
+            for(int i=c*chunk,end=Math.Min(list.Count,i+chunk);i<end;i++){var data=list[i];bool visible=data.Model!=null&&IsVisible(data.Actor);
+                plans[i]=new CandidatePlan{Visible=visible,Key=visible&&(data.Flags&RenderFlags.SkipInMainView)==0?MainGroupKey(data,true):null};}
+        });
+    }
     static string MaterialIdentity(ActorData actor){
         if(actor.Materials.Count==0)return string.Empty;
         var identity=new StringBuilder();

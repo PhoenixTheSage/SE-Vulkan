@@ -298,6 +298,11 @@ struct WorldState {ModelState models;
     bool parallel_queue{};
     VkCommandPool cascade_pools[2][8]{};VkCommandBuffer cascade_commands[2][8]{};
     VkDescriptorPool cascade_descriptor_pools[2][8]{};
+    // Spot-shadow scope contents recorded by worker k into its own pool.
+    bool parallel_spots{};uint32_t spot_tasks{};
+    VkCommandPool spot_pools[2][8]{};std::vector<VkCommandBuffer> spot_commands[2][8];uint32_t spot_used[2][8]{};
+    // Object/instance upload copies overlap material lookup and the draw sort.
+    bool parallel_upload{};
     uint32_t active_submission{};
     std::array<WorldSubmission,2> submissions{};
     WorldSubmission& current(){return submissions[active_submission];}
@@ -674,6 +679,9 @@ struct Renderer {uint32_t recipe_generation=1;
         anisotropy_samples = info.reserved==4||info.reserved==8||info.reserved==16 ? info.reserved : 1u;
         const char* tile_env=std::getenv("SE_VULKAN_LIGHT_TILES");light_tiles.requested=tile_env && std::strcmp(tile_env,"1")==0;
         const char* parallel_env=std::getenv("SE_VULKAN_PARALLEL_CASCADES");world.parallel_cascades=parallel_env?std::strcmp(parallel_env,"1")==0:std::thread::hardware_concurrency()>=4;
+        const char* spots_env=std::getenv("SE_VULKAN_PARALLEL_SPOTS");world.parallel_spots=spots_env?std::strcmp(spots_env,"1")==0:std::thread::hardware_concurrency()>=4;
+        const char* pass_env=std::getenv("SE_VULKAN_PARALLEL_PASS");pass_scene.scene.set_parallel(pass_env?std::strcmp(pass_env,"1")==0:std::thread::hardware_concurrency()>=4);
+        const char* upload_env=std::getenv("SE_VULKAN_PARALLEL_UPLOAD");world.parallel_upload=upload_env?std::strcmp(upload_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* queue_env=std::getenv("SE_VULKAN_PARALLEL_QUEUE");world.parallel_queue=queue_env?std::strcmp(queue_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* arena_env=std::getenv("SE_VULKAN_GEOMETRY_ARENA");world.geometry_arena_requested=arena_env && std::strcmp(arena_env,"1")==0;
         if (info.platform > 2 || (info.platform == 1 && !info.window) || (info.platform == 2 && (!info.create_surface || !info.get_instance_proc_addr)))

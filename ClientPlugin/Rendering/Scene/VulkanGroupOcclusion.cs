@@ -8,7 +8,7 @@ using VRageMath;
 namespace ClientPlugin.Rendering.Scene;
 public sealed partial class VulkanScene
 {
-    public bool GroupOcclusionEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_GROUP_OCCLUSION")=="1";
+    public bool GroupOcclusionEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_GROUP_OCCLUSION")!="0";
     private sealed class GroupVisibility
     {
         public MyActor Root;
