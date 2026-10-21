@@ -19,6 +19,33 @@ public sealed partial class NativeBackend
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int GuestOwnerFn(IntPtr ctx, IntPtr id);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int GuestDropFn(IntPtr ctx);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate uint GuestFeaturesFn();
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int GuestResourceFn(IntPtr ctx, IntPtr command);
+    static GuestResourceFn guestResource;
+    static GuestResourceFn guestExecution;
+    internal byte[] GuestExecutionStatus(ulong pipeline)
+    {
+        if ((GuestFeatures() & 16384) == 0) return null;
+        if (guestExecution == null) guestExecution = Marshal.GetDelegateForFunctionPointer<GuestResourceFn>(GetSymbol("sevk_guest_execution_status"));
+        var packet = new byte[48];
+        Buffer.BlockCopy(new[] { 48, 1 }, 0, packet, 0, 8);
+        Buffer.BlockCopy(BitConverter.GetBytes(pipeline), 0, packet, 8, 8);
+        var pin = GCHandle.Alloc(packet, GCHandleType.Pinned);
+        try { Check(guestExecution(context, pin.AddrOfPinnedObject()), context); return packet; }
+        finally { pin.Free(); }
+    }
+
+    internal bool GuestResourceCommand(byte[] command)
+    {
+        if (context == IntPtr.Zero || command == null || command.Length != 48) return false;
+        EnsureGuest();
+        if ((GuestFeatures() & 8192) == 0)
+            throw new NotSupportedException("Update SE-Vulkan native library: guest target clears and resource retirement require feature bit13.");
+        if (guestResource == null) guestResource = Marshal.GetDelegateForFunctionPointer<GuestResourceFn>(GetSymbol("sevk_guest_resource_command"));
+        // Pin only for the call: the native queue copies the complete command.
+        var pin = GCHandle.Alloc(command, GCHandleType.Pinned);
+        try { Check(guestResource(context, pin.AddrOfPinnedObject()), context); return true; }
+        finally { pin.Free(); }
+    }
 
     static GuestResetFn guestReset;
     static GuestPipelineFn guestPipeline;

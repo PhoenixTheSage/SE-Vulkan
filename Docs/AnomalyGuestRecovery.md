@@ -44,3 +44,27 @@ ResourceEpoch is zero after context disposal and changes for every creation. Ano
 The snapshot follow-up separates HDR and tone/upscale images, retires replaced snapshots with the existing frame-slot fences (or synchronous replay completion), and uses world render dimensions for HDR at AfterUpscale. The actual-core lane now passes 268 checks, including simultaneous distinct HDR/tone inputs and fractions 1, .5, .75, 1 through real stock tone mapping. Full volume-owner DRS/history, vendor upscale, loaded-world recovery and real multi-pack/topology remain separate gates. Native Release passes 15 tests with one optional reference skip; no validation-layer coverage is claimed.
 Stage/provider follow-up: the lane now passes 268 checks. Shared volume binds remain unavailable through AfterAtmosphere fullscreen work, matching DX11 publication; the actual BeforeTonemap observer sees merged volume motion. Production FinalFrontier Fog and VolumetricClouds sources run with controlled mipmapped noise and 64x64x2 weather: every froxel passes extinction composition, both intervals commit/revoke/recover, and weather updates remove clouds while preserving fog. Texture, mip-volume and structured uploads reuse IDs rather than abandoning allocations. This does not exercise game plugin adapters, live gas topology, full volume-owner DRS/history or loaded-world performance.
 The current lane passes 268 checks with validation_enabled=1 and zero Khronos validation errors. The runner automatically discovers Native/build/validation/Bin when VK_LAYER_PATH is unset and enables synchronization validation when VK_LAYER_ENABLES is also unset; caller choices remain authoritative and no global settings change. Volume-owner tests vary fractions .5/.75/1 and output 95x73, check partial grid dimensions and render-sized playerDepth/litMips, verify automatic history rejection/recovery, and restore the original output. Native guest frame dimensions now use the planned world extent before EndFrame; fresh sampled images clear and transition across all mips/layers, without claiming a produced catalog entry. Postprocess images now support transfer-source snapshot copies. All 16 canonical native tests pass with the private layer enabled. Earlier validation-disabled evidence is historical. Loaded-world/plugin-adapter/vendor-upscale, actual device-loss fault and performance coverage remain separate.
+## Resource and execution transport — 2026-10-21 candidate
+
+Native guest feature bit13 adds a size/version-checked 48-byte resource command:
+image/pipeline release and queued float clear. Existing ABI-1 pass/frame layouts
+remain unchanged. Matching target creation preserves content; resizing retains
+the public image ID and retires the replaced allocation on timeline completion.
+Partial pipeline creation destroys its already-created variants on failure.
+
+Feature bit14 adds a separate checked execution-status query: pipeline creation
+reports zero executions; successful draw/dispatch recording advances a count
+and frame index, and timeline values report submission completion. This does
+not turn registration or compilation into execution evidence. DX11 exposes
+corresponding recording status through Anomaly without claiming completion.
+
+The native suite passes all 17 tests with the validation layer enabled. Its
+previously skipped opaque-reference GPU test required a bounded dependency fix:
+only derived OLD fade-dependent depth casters read stock DistanceFade. Those
+casters retain the strict reflected-layout check; the independent reference
+geometry has no stock frame dependency. The actual-core repaired baseline
+passes 274 checks with validation enabled and zero reported errors.
+
+Prepare allocations/retirement before queuing passes. A release of a resource
+already referenced by an open-frame packet is refused. General immutable
+shader-generation activation and full matched live parity remain pending.

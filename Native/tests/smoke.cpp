@@ -79,6 +79,13 @@ int main(int argc, char** argv) {
     try {
         require(sevk_api_version() == SEVK_ABI_VERSION, "ABI version");
         require(sizeof(SevkCreateInfo) == 96 && sizeof(SevkProbe) == 1312 && sizeof(SevkStats) == 872 && sizeof(SevkPerformanceStats) == 84, "ABI packing");
+        require(sizeof(SevkGuestPass)==416 && sizeof(SevkGuestPass2)==568 && sizeof(SevkGuestFrame)==344,
+            "existing guest packet layouts remain compatible");
+        require(sizeof(SevkGuestResourceCommand)==48 && sizeof(SevkGuestExecutionStatus)==48,"additive guest packet packing");
+        SevkGuestResourceCommand bad_guest{};
+        require(sevk_guest_resource_command(nullptr,&bad_guest)<0,"invalid guest command header refused");
+        SevkGuestExecutionStatus bad_status{};
+        require(sevk_guest_execution_status(nullptr,&bad_status)<0,"invalid guest status header refused");
         SevkCreateInfo bad{}; require(sevk_create(&bad, &context) < 0 && !context, "invalid ABI must fail");
         require(sevk_begin_frame(nullptr, nullptr) < 0, "null context must fail");
         SevkCreateInfo old{};old.size=sizeof(old);old.abi_version=SEVK_ABI_VERSION;old.shader_directory="unused";old.get_instance_proc_addr=reinterpret_cast<void*>(old_loader_proc);

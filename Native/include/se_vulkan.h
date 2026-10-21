@@ -474,6 +474,23 @@ SEVK_API int32_t SEVK_CALL sevk_guest_create_pipeline2(void* ctx, const void* vs
 SEVK_API int32_t SEVK_CALL sevk_guest_submit2(void* ctx, const SevkGuestPass2* passes, uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_guest_reset(void* ctx);
 SEVK_API uint32_t SEVK_CALL sevk_guest_features(void);
+/* Feature bit13: idempotent target creation, timeline retirement and queued
+ * floating-point clears. No ABI-1 pass layout changes. Operations: 1 release
+ * image, 2 release pipeline, 3 clear image at mark (1..6). Commands are copied. */
+typedef struct SevkGuestResourceCommand {
+    uint32_t size, abi_version, operation, mark;
+    uint64_t image, source;
+    float value[4];
+} SevkGuestResourceCommand;
+SEVK_API int32_t SEVK_CALL sevk_guest_resource_command(void* ctx, const SevkGuestResourceCommand* command);
+/* Feature bit14. Recording a pass and completing its submission are distinct
+ * from pipeline creation. last_frame is UINT32_MAX until a draw/dispatch records. */
+typedef struct SevkGuestExecutionStatus {
+    uint32_t size, abi_version;
+    uint64_t pipeline, executions, last_completion, completed_timeline;
+    uint32_t last_frame, active;
+} SevkGuestExecutionStatus;
+SEVK_API int32_t SEVK_CALL sevk_guest_execution_status(void* ctx, SevkGuestExecutionStatus* status);
 /* Feature bit12: extended flags 1024/2048 run before/after ordinary passes
  * within their mark. Catalog mask bits0/1/2 report current recorded velocity,
  * volumeReactive/reactiveMask. Reset and BeginFrame revoke older products.

@@ -237,7 +237,15 @@ void opaque_reference_dependency(VkCommandBuffer cmd,VkPipelineStageFlags2 sourc
     VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};barrier.srcStageMask=source;barrier.srcAccessMask=src;barrier.dstStageMask=destination;barrier.dstAccessMask=dst;
     VkDependencyInfo info{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};info.memoryBarrierCount=1;info.pMemoryBarriers=&barrier;vkCmdPipelineBarrier2(cmd,&info);
 }
-OpaqueReferenceControl opaque_reference_control(){auto& s=opaque_reference;return {s.frame,uint32_t(s.actors.size()),uint32_t(s.family_inputs.size()),s.part_count,s.view_count,s.reference_capacity,s.draw_capacity,0,s.batch_count,world_distance_fade_bits(),0};}
+OpaqueReferenceControl opaque_reference_control(){
+    auto& s=opaque_reference;
+    // The standalone reference has no stock Frame.hlsli. Only derived OLD
+    // depth-fade casters consume this signature; keep their layout check strict.
+    bool needs_distance_fade=std::any_of(s.gpu_part_inputs.begin(),s.gpu_part_inputs.end(),
+        [](const auto& part){return (part.flags&1u) && part.padding;});
+    uint32_t distance_fade=needs_distance_fade?world_distance_fade_bits():0u;
+    return {s.frame,uint32_t(s.actors.size()),uint32_t(s.family_inputs.size()),s.part_count,s.view_count,s.reference_capacity,s.draw_capacity,0,s.batch_count,distance_fade,0};
+}
 void prepare_opaque_reference(VkCommandBuffer cmd){
     auto& s=opaque_reference;if(!s.initialized||!s.frame_ready)return;auto& slot=s.slots[slot_index];
     // begin_frame has waited THIS slot. Descriptors never change while in use.

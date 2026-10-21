@@ -1,4 +1,6 @@
 struct GuestPipeline {
+    uint64_t executions{}, last_completion{};
+    uint32_t last_frame{UINT32_MAX};
     VkPipeline pipeline{}; VkPipelineLayout layout{}; VkDescriptorSetLayout set{};
     VkShaderModule vertex{}, pixel{};
     VkPipeline draw[6][6]{};
@@ -11,6 +13,7 @@ struct GuestPipeline {
     bool bus{}, compute{}, geometry{};
 };
 struct GuestImage {
+    uint32_t specification{};
     Image image{}; uint32_t width{}, height{}, depth{1}, mips{1}, bpp{4}, layers{1};
     std::array<Buffer,3> storage{};
     std::vector<uint8_t> pending;
@@ -20,6 +23,9 @@ struct GuestImage {
     VkFormat format{VK_FORMAT_R8G8B8A8_UNORM}; VkImageLayout layout{VK_IMAGE_LAYOUT_UNDEFINED};
 };
 struct GuestPass {
+    uint32_t operation{};
+    uint64_t source{};
+    float value[4]{};
     uint32_t mark{}, compose{}, width{}, height{}, uniform_bytes{}, flags{};
     uint64_t pipeline{}, storage{}; uint8_t uniforms[256]{}; uint64_t sampled[48]{};
     uint32_t depth{1}; bool extended{};
@@ -48,6 +54,8 @@ struct GuestState {
     std::vector<GuestPass> passes;
     std::unordered_map<uint64_t, GuestPipeline> pipelines;
     std::unordered_map<uint64_t, GuestImage> images;
+    std::vector<std::pair<uint64_t, GuestImage>> retired_images;
+    std::vector<std::pair<uint64_t, GuestPipeline>> retired_pipelines;
     uint64_t next_pipeline{1}, replay_count{}, frame_stamp{}, catalog_epoch{1};
     VkDescriptorPool pools[3]{};
     uint64_t pool_stamp[3]{};
@@ -61,6 +69,44 @@ struct GuestState {
     bool have_prev{};
     SevkGuestFrame frame{};
 } guest;
+
+void guest_destroy_pipeline(GuestPipeline& pipeline) {
+    bool separate = pipeline.pipeline && (!(pipeline.bus && !pipeline.compute) || pipeline.contract == 2);
+    if (separate) vkDestroyPipeline(device, pipeline.pipeline, nullptr);
+    for (auto& row : pipeline.draw) for (auto pipe : row) if (pipe) vkDestroyPipeline(device, pipe, nullptr);
+    if (pipeline.layout) vkDestroyPipelineLayout(device, pipeline.layout, nullptr);
+    if (pipeline.set) vkDestroyDescriptorSetLayout(device, pipeline.set, nullptr);
+    if (pipeline.vertex) vkDestroyShaderModule(device, pipeline.vertex, nullptr);
+    if (pipeline.pixel) vkDestroyShaderModule(device, pipeline.pixel, nullptr);
+}
+void guest_destroy_image(GuestImage& image) {
+    if (image.is_buffer) { for (auto& buffer : image.storage) destroy_buffer(buffer); }
+    else destroy_image(image.image);
+}
+void guest_collect(uint64_t complete) {
+    for (auto it=guest.retired_images.begin();it!=guest.retired_images.end();)
+        if(it->first<=complete){guest_destroy_image(it->second);it=guest.retired_images.erase(it);}else ++it;
+    for (auto it=guest.retired_pipelines.begin();it!=guest.retired_pipelines.end();)
+        if(it->first<=complete){guest_destroy_pipeline(it->second);it=guest.retired_pipelines.erase(it);}else ++it;
+}
+void guest_resource_command(const SevkGuestResourceCommand& command) {
+    if (recording && !guest.resources_open) throw std::runtime_error("guest resource command outside allocation window");
+    if(recording && (command.operation==1 || command.operation==2))
+        for(const auto& pass:guest.passes) {
+            bool used=command.operation==2?pass.pipeline==command.image:pass.storage==command.image;
+            if(command.operation==1){for(auto id:pass.sampled)used|=id==command.image;for(auto id:pass.outputs)used|=id==command.image;}
+            if(used)throw std::runtime_error("retire guest resources before queuing frame commands");
+        }
+    uint64_t completion=next_completion+(recording?1:0);
+    if(command.operation==1){auto it=guest.images.find(command.image);if(it!=guest.images.end()){guest.retired_images.emplace_back(completion,std::move(it->second));guest.images.erase(it);}return;}
+    if(command.operation==2){auto it=guest.pipelines.find(command.image);if(it!=guest.pipelines.end()){guest.retired_pipelines.emplace_back(completion,std::move(it->second));guest.pipelines.erase(it);}return;}
+    if(command.operation!=3 || command.mark<1 || command.mark>6) throw std::runtime_error("unsupported guest resource command");
+    auto it=guest.images.find(command.image);
+    if(it==guest.images.end() || it->second.is_buffer || it->second.aspect!=VK_IMAGE_ASPECT_COLOR_BIT) throw std::runtime_error("guest clear requires a color image");
+    for(float value:command.value)if(!std::isfinite(value))throw std::runtime_error("nonfinite guest clear");
+    GuestPass pass{};pass.operation=3;pass.mark=command.mark;pass.storage=command.image;
+    std::memcpy(pass.value,command.value,16);guest.passes.push_back(std::move(pass));
+}
 
 void guest_depth_views(const uint64_t* images,const float* matrices,uint32_t count) {
     if(recording || count>3 || (count && (!images || !matrices))) throw std::runtime_error("invalid guest scene-depth view batch");
@@ -76,6 +122,8 @@ void guest_depth_views(const uint64_t* images,const float* matrices,uint32_t cou
 }
 
 void cleanup_guest() {
+    for(auto& retired:guest.retired_images)guest_destroy_image(retired.second);
+    for(auto& retired:guest.retired_pipelines)guest_destroy_pipeline(retired.second);
     for (auto& item : guest.pipelines) {
         bool separate = item.second.pipeline && (!(item.second.bus && !item.second.compute) || item.second.contract == 2);
         if (separate) vkDestroyPipeline(device, item.second.pipeline, nullptr);
@@ -179,11 +227,12 @@ uint64_t guest_create_pipeline(const void* vs, uint64_t vs_bytes, const char* vs
     bool compute = std::strcmp(vs_entry, "compute") == 0;
     if (contract > 2 || (compute && contract == 2)) throw std::runtime_error("invalid extended guest pipeline contract");
     SpvReflectShaderModule vr{}, pr{}; VkShaderModule vertex{}, pixel{}; VkPipelineLayout layout{}; VkDescriptorSetLayout set{};
+    GuestPipeline stored{};
     try {
         if (!compute) vertex = guest_shader(vs, vs_bytes, VK_SHADER_STAGE_VERTEX_BIT, vr);
         pixel = guest_shader(ps, ps_bytes, compute ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, pr);
         uint32_t descriptors = (compute ? 0 : vr.descriptor_binding_count) + pr.descriptor_binding_count;
-        GuestPipeline stored{}; stored.vertex = vertex; stored.pixel = pixel; stored.descriptors = descriptors; stored.compute = compute;
+        stored.vertex = vertex; stored.pixel = pixel; stored.descriptors = descriptors; stored.compute = compute;
         stored.contract = contract;
         stored.geometry = !compute && std::strcmp(vs_entry, "geometry_vertex") == 0;
         if (compute) {
@@ -263,6 +312,9 @@ uint64_t guest_create_pipeline(const void* vs, uint64_t vs_bytes, const char* vs
         return id;
     } catch (...) {
         spvReflectDestroyShaderModule(&vr); spvReflectDestroyShaderModule(&pr);
+        bool separate = stored.pipeline && (!(stored.bus && !stored.compute) || stored.contract == 2);
+        if (separate) vkDestroyPipeline(device, stored.pipeline, nullptr);
+        for (auto& row : stored.draw) for (auto pipe : row) if (pipe) vkDestroyPipeline(device, pipe, nullptr);
         if (layout) vkDestroyPipelineLayout(device, layout, nullptr);
         if (set) vkDestroyDescriptorSetLayout(device, set, nullptr);
         if (vertex) vkDestroyShaderModule(device, vertex, nullptr);
@@ -278,21 +330,20 @@ void guest_create_image(uint64_t id, uint32_t width, uint32_t height, uint32_t d
     width = std::max(1u, width); height = std::max(1u, height); depth = std::max(1u, depth);
     auto found = guest.images.find(id);
     if (found != guest.images.end()) {
-        // Resolution changes can arrive while earlier frames still sample this
-        // id. Reuse the id only after those submissions release the old image.
-        check(vkDeviceWaitIdle(device), "wait before resizing guest image");
-        if (found->second.is_buffer) { for (auto& buffer : found->second.storage) destroy_buffer(buffer); }
-        else destroy_image(found->second.image);
-        guest.images.erase(found);
+        const auto& old=found->second;
+        if(old.width==(kind==4?std::max(16u,width):width) && old.height==height &&
+            (kind==5?old.layers:old.depth)==depth && old.specification==format)return;
     }
     GuestImage image{};
+    image.specification=format;
     image.width = width; image.height = height; image.depth = depth; image.mips = mips;
     if (kind == 4) {
         image.is_buffer = true; image.width = std::max(16u, width); image.bpp = 1; image.layers = 1;
         try { for (auto& buffer : image.storage) buffer = make_buffer(image.width, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true); }
         catch (...) { for (auto& buffer : image.storage) destroy_buffer(buffer); throw; }
         image.pending.resize(image.width); image.revision = 1;
-        guest.images.emplace(id, image); return;
+        if(found!=guest.images.end()){guest.retired_images.emplace_back(next_completion+(recording?1:0),std::move(found->second));guest.images.erase(found);}
+        guest.images.emplace(id, std::move(image)); return;
     }
     image.layers = kind == 5 ? depth : 1;
     if (kind == 5) { image.depth = 1; depth = 1; }
@@ -318,7 +369,8 @@ void guest_create_image(uint64_t id, uint32_t width, uint32_t height, uint32_t d
         catch (...) { vmaDestroyImage(allocator, result.handle, result.memory); throw; }
         image.image = result;
     }
-    guest.images.emplace(id, image);
+    if(found!=guest.images.end()){guest.retired_images.emplace_back(next_completion+(recording?1:0),std::move(found->second));guest.images.erase(found);}
+    guest.images.emplace(id, std::move(image));
 }
 
 void guest_update_image(uint64_t id, const void* data, uint64_t bytes) {
@@ -1094,7 +1146,22 @@ void guest_replay(VkCommandBuffer cmd, uint32_t mark) {
     for(uint32_t phase=0;phase<3;phase++)for (const auto& pass : guest.passes) {
         uint32_t selected=pass.extended && (pass.flags&1024u)?0u:pass.extended && (pass.flags&2048u)?2u:1u;
         if(selected!=phase)continue;
-        if (pass.mark != mark || !pass.pipeline) continue;
+        if (pass.mark != mark) continue;
+        if(pass.operation==3){
+            auto found=guest.images.find(pass.storage);if(found==guest.images.end())continue;
+            auto& image=found->second;
+            barrier(cmd,image.image.handle,image.layout,VK_IMAGE_LAYOUT_GENERAL,image.aspect,
+                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_MEMORY_READ_BIT|VK_ACCESS_2_MEMORY_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,image.mips,image.layers);
+            VkClearColorValue value{};std::memcpy(value.float32,pass.value,16);
+            VkImageSubresourceRange range{image.aspect,0,image.mips,0,image.layers};
+            vkCmdClearColorImage(cmd,image.image.handle,VK_IMAGE_LAYOUT_GENERAL,&value,1,&range);
+            barrier(cmd,image.image.handle,VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,image.aspect,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_MEMORY_READ_BIT,image.mips,image.layers);
+            image.layout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;image.produced_epoch=guest.catalog_epoch;continue;
+        }
+        if(!pass.pipeline)continue;
         const char* trace=std::getenv("SE_VULKAN_GUEST_TRACE");
         if(trace && std::strcmp(trace,"1")==0){std::fprintf(stderr,"guest mark=%u phase=%u pipe=%llu target=%llu %ux%ux%u\n",mark,phase,(unsigned long long)pass.pipeline,(unsigned long long)pass.storage,pass.width,pass.height,pass.depth);std::fflush(stderr);}
         if (pass.flags & 8) { guest_generate_mips(cmd, pass, mark); continue; }
@@ -1103,6 +1170,7 @@ void guest_replay(VkCommandBuffer cmd, uint32_t mark) {
         if (pipeline->second.bus) {
             bool recorded = guest_draw_bus(cmd, pass, pipeline->second, mark);
             if (pass.extended && !recorded) throw std::runtime_error("extended guest replay prerequisites changed");
+            if(recorded){++pipeline->second.executions;pipeline->second.last_frame=guest.frame.frame_index;pipeline->second.last_completion=next_completion+1;}
             continue;
         }
         auto image = guest.images.find(pass.storage);
@@ -1127,6 +1195,7 @@ void guest_replay(VkCommandBuffer cmd, uint32_t mark) {
         barrier(cmd, target.image.handle, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         target.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        ++pipeline->second.executions;pipeline->second.last_frame=guest.frame.frame_index;pipeline->second.last_completion=next_completion+1;
     }
 }
 

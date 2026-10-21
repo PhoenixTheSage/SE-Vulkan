@@ -645,6 +645,7 @@ struct Renderer {uint32_t recipe_generation=1;
     void collect() {
         uint64_t complete = 0; check_gpu(vkGetSemaphoreCounterValue(device, timeline, &complete), "query GPU timeline");
         ray_collect(complete);
+        guest_collect(complete);
         stats.completed_timeline = complete;
         for(uint32_t i=0;i<2;++i)if(slots[i].completion<=complete){sample_timing(i);sample_occlusion(i);sample_shadow_usage(i);if(world.slots[i].material_stale)release_cached_materials(world.slots[i]);else release_dirty_materials(world.slots[i]);}
         for(auto it=retired_views.begin();it!=retired_views.end();){if(it->first<=complete){vkDestroyImageView(device,it->second,nullptr);it=retired_views.erase(it);}else ++it;}
@@ -2130,7 +2131,22 @@ int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32
     });
 }
 int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.resolution;return 0;},[&](Renderer& r){r.collect();*stats=r.resolution_stats;return 0;});}
-uint32_t SEVK_CALL sevk_guest_features(void){return 8191u;}
+uint32_t SEVK_CALL sevk_guest_features(void){return 32767u;}
+int32_t SEVK_CALL sevk_guest_execution_status(void* ctx,SevkGuestExecutionStatus* status){
+    if(!status || status->size!=sizeof(*status) || status->abi_version!=SEVK_ABI_VERSION)return -1;
+    return call(ctx,[&](Renderer& r){
+        auto found=r.guest.pipelines.find(status->pipeline);
+        status->active=found!=r.guest.pipelines.end();status->executions=0;status->last_frame=UINT32_MAX;status->last_completion=0;
+        check(vkGetSemaphoreCounterValue(r.device,r.timeline,&status->completed_timeline),"query guest execution completion");
+        if(found!=r.guest.pipelines.end()){status->executions=found->second.executions;status->last_frame=found->second.last_frame;status->last_completion=found->second.last_completion;}
+        return 0;
+    });
+}
+int32_t SEVK_CALL sevk_guest_resource_command(void* ctx,const SevkGuestResourceCommand* command){
+    if(!command || command->size!=sizeof(*command) || command->abi_version!=SEVK_ABI_VERSION)return -1;
+    const auto copied=*command;
+    return call(ctx,[&](Renderer& r){r.guest_resource_command(copied);return 0;});
+}
 int32_t SEVK_CALL sevk_guest_depth_views(void* ctx,const uint64_t* images,const float* matrices,uint32_t count){
     return call_deferrable(ctx,[images_copy=copy_in(images,count),matrices_copy=copy_in(matrices,uint64_t(count)*16),count](Renderer& r){auto* images=images_copy.get();auto* matrices=matrices_copy.get();r.guest_depth_views(images,matrices,count);return 0;});
 }

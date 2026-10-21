@@ -57,6 +57,8 @@ public static class GuestBridge
         current?.GuestCreateImage(id, width, height, depth, format);
 
     public static void UpdateImage(ulong id, byte[] data) => current?.GuestUpdateImage(id, data);
+    public static bool ResourceCommand(byte[] command) => current != null && current.GuestResourceCommand(command);
+    public static byte[] ExecutionStatus(ulong pipeline) => current?.GuestExecutionStatus(pipeline);
 
     public static void Submit(int mark, int compose, int width, int height, ulong pipeline, ulong storage, byte[] uniforms, ulong[] sampled, int flags = 0) =>
         current?.GuestSubmit(mark, compose, width, height, pipeline, storage, uniforms, sampled, flags);
