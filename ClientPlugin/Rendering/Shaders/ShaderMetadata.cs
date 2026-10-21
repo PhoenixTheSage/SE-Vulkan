@@ -52,7 +52,7 @@ public sealed class ShaderSourceGeneration
         foreach(var entry in sources)
         {
             string key=Key(entry.Key);string extension=System.IO.Path.GetExtension(key);
-            if(entry.Value==null||!names.Add(key)||!new[]{".hlsl",".hlsli",".inl",".inc"}.Contains(extension.ToLowerInvariant()))
+            if(entry.Value==null||!names.Add(key)||!new[]{".hlsl",".hlsli",".h",".inl",".inc"}.Contains(extension.ToLowerInvariant()))
                 throw new ArgumentException("Invalid or duplicate generated shader source: "+key);
             files.Add(key,(byte[])entry.Value.Clone());
         }
@@ -100,6 +100,7 @@ public sealed class ShaderMetadata
     public string ToolchainSha256 { get; set; }
     public string SourceTransform { get; set; }
     public string BaseSpirvSha256 { get; set; }
+    public string SourceGenerationSha256 { get; set; }
     public string SourcePath { get; set; }
     public string Profile { get; set; }
     public string EntryPoint { get; set; }

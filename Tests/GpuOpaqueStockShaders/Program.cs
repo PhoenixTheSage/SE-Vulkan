@@ -17,6 +17,20 @@ foreach(var item in work){
     var descriptors=result.Metadata.Descriptors;
     if(descriptors.Any(d=>d.Set>1))throw new Exception("Indexed stock descriptor set exceeded contract");
     if(item.Stage=="Vertex"&&result.Metadata.Interface.Any(i=>i.Direction=="Input"&&new[]{"TEXCOORD1","TEXCOORD2","TEXCOORD3","TEXCOORD4","TEXCOORD5","TEXCOORD6","TEXCOORD7","TEXCOORD8","TEXCOORD9","TEXCOORD10"}.Contains(i.Name.Split('.').Last())))throw new Exception("Indexed stock variant still consumes CPU instance attributes: "+item+" "+string.Join(",",result.Metadata.Interface.Where(i=>i.Direction=="Input").Select(i=>i.Name+":"+i.Type)));
+    if(args.Contains("--generation"))
+    {
+        string relative=Path.GetRelativePath(content,request.SourcePath).Replace('\\','/');
+        byte[] bytes=System.Text.Encoding.UTF8.GetBytes(File.ReadAllText(request.SourcePath)+"\n// captured pack source generation fixture\n");
+        var generation=library.CaptureSourceGeneration("gpu-owned-generation-fixture",new Dictionary<string,byte[]>{{relative,bytes}});
+        var derivedRequest=library.DerivedRequest(item.Variant,generation);
+        derivedRequest.GpuOpaque=true;derivedRequest.GpuOpaqueBaseModule=request.GpuOpaqueBaseModule;derivedRequest.GpuOpaqueBaseDependencies=request.GpuOpaqueBaseDependencies;
+        var derived=compiler.Compile(derivedRequest);
+        if(derived.Metadata.SourceTransform!=GpuOpaqueShaderAdapter.Contract || derived.Metadata.BaseSpirvSha256!=request.GpuOpaqueBaseModule || derived.Metadata.SourceGenerationSha256!=generation.Fingerprint ||
+            JsonSerializer.Serialize(derived.Metadata.Descriptors)!=JsonSerializer.Serialize(result.Metadata.Descriptors) || JsonSerializer.Serialize(derived.Metadata.Interface)!=JsonSerializer.Serialize(result.Metadata.Interface))
+            throw new Exception("Captured source generation changed the GPU-owned resource/interface contract or lost stock provenance");
+        if(derived.Metadata.CacheKey==result.Metadata.CacheKey)throw new Exception("Captured source generation reused the stock generation cache identity");
+        Console.WriteLine($"PASS {item.Kind} {item.Id} {item.Stage} captured active-source generation retains stock provenance and indexed interfaces; same SPIR-V={derived.Metadata.SpirvSha256==result.Metadata.SpirvSha256}");
+    }
     results.Add(new{item.Kind,item.Id,item.Stage,item.Variant,result.SpirvPath,result.MetadataPath,result.Metadata.SpirvSha256,result.Metadata.BaseSpirvSha256,result.Metadata.SourceTransform,result.Metadata.Capabilities,Descriptors=descriptors,Interface=result.Metadata.Interface});
     Console.WriteLine($"PASS {item.Kind} {item.Id} {item.Stage} authenticated indexed stock inputs");
 }

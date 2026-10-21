@@ -119,3 +119,20 @@ complete generation identity and preserved GPU-owned authentication. The full
 managed Release build passes for net48/net10. Native owner activation, named
 stage execution evidence and same-invocation attachments remain open; this
 foundation does not change active stock shaders by itself.
+
+The follow-up gate now passes39 compiler checks, including .h headers, recorded
+generation provenance and refusal of active includes outside the immutable
+snapshot. Captured GPU-owned stock vertex/pixel variants preserve authenticated
+base provenance and indexed interfaces; comment-only overrides produce identical
+SPIR-V. These are compiler/interface checks, not complete stage raster evidence.
+
+A captured-pack GPU fixture exposed a separate format bug in the legacy
+resource-free fullscreen path: it built only RGBA8 while drawing FP16 targets.
+All resource-free programs now use the format-aware bus pipeline variants. The
+private isolated build passes17 native tests, captured HDR/negative-alpha pixel
+execution, the current full pack pipeline fixture and329 actual-core checks,
+with synchronization validation enabled and zero errors. Fixture environment
+ANOMALY_TEST_NATIVE_DLL selects that binary without replacing the normal build
+or deploying to the game profile. Full named-stage activation and same-draw
+attachments remain unimplemented and are reported as unsupported by Anomaly's
+capability query.

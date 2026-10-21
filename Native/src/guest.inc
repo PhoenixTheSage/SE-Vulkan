@@ -243,13 +243,9 @@ uint64_t guest_create_pipeline(const void* vs, uint64_t vs_bytes, const char* vs
             stored.group_x = entry->local_size.x; stored.group_y = entry->local_size.y;
             stored.group_z = entry->local_size.z;
         }
-        if (descriptors == 0 && !compute && !contract) {
-            VkPipelineLayoutCreateInfo layout_info{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-            check(vkCreatePipelineLayout(device, &layout_info, nullptr, &layout), "create guest pipeline layout");
-            stored.layout = layout;
-            VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
-            stored.pipeline = world_graphics(vertex, vs_entry, pixel, ps_entry, stored.layout, {}, {}, &format, 1, false);
-        } else {
+        {
+            // Resource-free pixel programs still need target-format and compose
+            // variants. An empty descriptor layout uses the same validated bus.
             guest_ensure_samplers();
             std::vector<VkDescriptorSetLayoutBinding> bindings;
             auto take = [&](SpvReflectShaderModule& module, VkShaderStageFlags stage) {

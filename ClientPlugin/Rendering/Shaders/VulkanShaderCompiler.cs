@@ -201,7 +201,8 @@ public sealed class VulkanShaderCompiler : IDisposable
                     NativeAbiVersion = request.NativeAbiVersion, CacheKey = key, SpirvSha256 = Hash(spirv), ToolchainSha256 = toolchain,
                     SourcePath = Path.GetFullPath(request.SourcePath), EntryPoint = request.EntryPoint, Profile = profile, Dependencies = dependencies,
                     SourceTransform=request.GpuOpaque?GpuOpaqueShaderAdapter.Contract:request.HbaoNegativeBorder?HbaoBorderShaderAdapter.Contract:null,
-                    BaseSpirvSha256=request.GpuOpaque?request.GpuOpaqueBaseModule:request.HbaoBaseModule
+                    BaseSpirvSha256=request.GpuOpaque?request.GpuOpaqueBaseModule:request.HbaoBaseModule,
+                    SourceGenerationSha256=request.SourceGeneration?.Fingerprint
                 };
                 SpirvMetadataReader.Reflect(spirv, metadata);
                 WriteAtomic(spirvPath, stream => stream.Write(spirv, 0, spirv.Length));
@@ -229,6 +230,7 @@ public sealed class VulkanShaderCompiler : IDisposable
                 metadata.ToolchainSha256 != toolchain || metadata.Profile != profile || metadata.EntryPoint != request.EntryPoint || metadata.SpirvSha256 != Hash(bytes)) return null;
             if(request.GpuOpaque&&(metadata.SourceTransform!=GpuOpaqueShaderAdapter.Contract||metadata.BaseSpirvSha256!=request.GpuOpaqueBaseModule))return null;
             if(request.HbaoNegativeBorder&&(metadata.SourceTransform!=HbaoBorderShaderAdapter.Contract||metadata.BaseSpirvSha256!=request.HbaoBaseModule))return null;
+            if(metadata.SourceGenerationSha256!=request.SourceGeneration?.Fingerprint)return null;
             diagnostics += Validate(spirvPath, job);
             SpirvMetadataReader.Reflect(bytes, metadata);
             return new VulkanShaderResult { SpirvPath = spirvPath, MetadataPath = metadataPath, Metadata = metadata, Diagnostics = diagnostics, CacheHit = true };
@@ -375,7 +377,7 @@ public sealed class VulkanShaderCompiler : IDisposable
                 {
                     string extension = Path.GetExtension(path);
                     bool hlsl = extension.Equals(".hlsl", StringComparison.OrdinalIgnoreCase) || extension.Equals(".hlsli", StringComparison.OrdinalIgnoreCase) ||
-                        extension.Equals(".inl", StringComparison.OrdinalIgnoreCase) || extension.Equals(".inc", StringComparison.OrdinalIgnoreCase);
+                        extension.Equals(".h", StringComparison.OrdinalIgnoreCase) || extension.Equals(".inl", StringComparison.OrdinalIgnoreCase) || extension.Equals(".inc", StringComparison.OrdinalIgnoreCase);
                     if (!hlsl && !path.Equals(source, StringComparison.OrdinalIgnoreCase)) continue;
                     if (originals.ContainsKey(path))
                     {
@@ -459,6 +461,8 @@ public sealed class VulkanShaderCompiler : IDisposable
                 while (path.StartsWith("./", StringComparison.Ordinal)) path = path.Substring(2);
                 FileCopy copy;
                 if (staged.TryGetValue(path, out copy)) dependencies[copy.Staged] = copy;
+                else if(File.Exists(Path.GetFullPath(Path.Combine(job,path))))
+                    throw new InvalidDataException("Active shader include escaped the immutable source snapshot: "+rawPath+". Capture it in an include directory or virtual source generation.");
             }
             return dependencies.Select(d => new ShaderDependency { Path = d.Key, Sha256 = d.Value.Hash, CompatibilityFixup = d.Value.CompatibilityFixup }).ToList();
         }

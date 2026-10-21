@@ -38,7 +38,8 @@ partial class Program
         string stage=Path.Combine(output,"Assets");
         Directory.CreateDirectory(Path.Combine(stage,"Native/win-x64"));
         Directory.CreateDirectory(Path.Combine(stage,"Shaders/Compiled"));
-        File.Copy(Path.Combine(root,"Native/build/Release/se_vulkan_native.dll"),Path.Combine(stage,"Native/win-x64/se_vulkan_native.dll"),true);
+        string isolatedNative=Environment.GetEnvironmentVariable("ANOMALY_TEST_NATIVE_DLL");
+        File.Copy(string.IsNullOrWhiteSpace(isolatedNative)?Path.Combine(root,"Native/build/Release/se_vulkan_native.dll"):Path.GetFullPath(isolatedNative),Path.Combine(stage,"Native/win-x64/se_vulkan_native.dll"),true);
         foreach(string file in Directory.GetFiles(Path.Combine(root,"Assets/Shaders/Compiled")))
             File.Copy(file,Path.Combine(stage,"Shaders/Compiled",Path.GetFileName(file)),true);
         Environment.SetEnvironmentVariable("SE_VULKAN_ASSET_DIR",stage);

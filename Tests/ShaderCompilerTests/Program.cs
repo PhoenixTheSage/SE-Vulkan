@@ -99,12 +99,13 @@ try
     Check(!Directory.EnumerateFileSystemEntries(Path.Combine(testDirectory, "Cache", "Snapshots")).Any(), "disposing a batch removes only its owned source snapshot");
     var stockHashes=Directory.GetFiles(content,"*",SearchOption.AllDirectories).ToDictionary(
         p=>Path.GetRelativePath(content,p).Replace('\\','/'),p=>Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(p))).ToLowerInvariant());
-    byte[] replacement=System.Text.Encoding.UTF8.GetBytes("#include <Generated/pack.hlsli>\n#define SCALE PACK_SCALE\n");
-    var replacements=new System.Collections.Generic.Dictionary<string,byte[]>{["Inc/deep/shared.hlsli"]=replacement,["Generated/pack.hlsli"]=System.Text.Encoding.UTF8.GetBytes("#define PACK_SCALE 8.0\n")};
+    byte[] replacement=System.Text.Encoding.UTF8.GetBytes("#include <Generated/pack.h>\n#define SCALE PACK_SCALE\n");
+    var replacements=new System.Collections.Generic.Dictionary<string,byte[]>{["Inc/deep/shared.hlsli"]=replacement,["Generated/pack.h"]=System.Text.Encoding.UTF8.GetBytes("#define PACK_SCALE 8.0\n")};
     request.SourceGeneration=new ShaderSourceGeneration("pack-order-A;priority=1",replacements,stockHashes);
     string fingerprint=request.SourceGeneration.Fingerprint;replacement[0]=0;replacements.Clear();
     var generated=compiler.Compile(request);
-    Check(generated.Metadata.Dependencies.Any(d=>d.Path=="root0/Generated/pack.hlsli"),"virtual pack includes resolve inside the same mirror as relative stock includes");
+    Check(generated.Metadata.SourceGenerationSha256==fingerprint,"derived metadata records its immutable pack generation provenance");
+    Check(generated.Metadata.Dependencies.Any(d=>d.Path=="root0/Generated/pack.h"),"virtual pack .h includes resolve inside the same mirror as relative stock includes");
     Check(generated.Metadata.Dependencies.Single(d=>d.Path=="root0/Inc/deep/shared.hlsli").Sha256!=stockHashes["Inc/deep/shared.hlsli"],"relative stock includes use captured overlay bytes instead of disk source");
     Check(compiler.Compile(request).CacheHit && request.SourceGeneration.Fingerprint==fingerprint,"source generation copies caller bytes and keeps stable cache identity");
     request.GpuOpaque=true;request.GpuOpaqueBaseModule=new string('0',64);request.GpuOpaqueBaseDependencies=new System.Collections.Generic.List<ShaderDependency>();
@@ -120,6 +121,13 @@ try
     request.SourceGeneration=new ShaderSourceGeneration("pack-order-C;priority=3",new System.Collections.Generic.Dictionary<string,byte[]>{["Unused.hlsli"]=new byte[0]},stockHashes);
     Check(compiler.Compile(request).Metadata.CacheKey!=differentGeneration.Metadata.CacheKey,"complete pack identity participates in the derived cache key even for unchanged active HLSL");
     request.SourceGeneration=null;
+    string outside=Path.Combine(testDirectory,"Outside");Directory.CreateDirectory(outside);
+    string externalHeader=Path.Combine(outside,"external.h");File.WriteAllText(externalHeader,"#define EXTERNAL_SNAPSHOT 1\n");
+    File.AppendAllText(source,"\n#include \""+externalHeader.Replace('\\','/')+"\"\n");
+    Reject(()=>compiler.Compile(request),"escaped the immutable source snapshot","active absolute includes cannot read uncaptured files or bypass dependency authentication");
+    request.IncludeDirectories.Add(outside);
+    Check(compiler.Compile(request).Metadata.Dependencies.Any(d=>d.Path=="root1/external.h"),"explicit additional include directories are copied and authenticated as normal dependencies");
+    request.IncludeDirectories.Clear();File.WriteAllText(source,originalSource);
     string aliases = Path.Combine(content, "InactiveAliases.hlsl");
     File.WriteAllText(aliases, "cbuffer Dead : register(b1) { float4 unused; }; cbuffer Live : register(b1) { float4 color; }; Texture2D<float4> Image : register(t0); SamplerState Filter; float4 main(float2 uv : TEXCOORD0) : SV_Target { return color * Image.Sample(Filter, uv); }");
     var activeAliases = compiler.Compile(new VulkanShaderRequest { SourcePath = aliases, ContentDirectory = content, EntryPoint = "main", Profile = "ps_5_0" });
