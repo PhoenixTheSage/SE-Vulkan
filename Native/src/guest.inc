@@ -3,7 +3,7 @@ struct GuestPipeline {
     uint32_t last_frame{UINT32_MAX};
     VkPipeline pipeline{}; VkPipelineLayout layout{}; VkDescriptorSetLayout set{};
     VkShaderModule vertex{}, pixel{};
-    VkPipeline draw[6][6]{};
+    VkPipeline draw[7][6]{};
     std::vector<std::pair<uint32_t, VkDescriptorType>> bindings;
     uint32_t descriptors{}, owned_bytes{}, extras_bytes{}, uniform_bytes{};
     uint32_t group_x{8}, group_y{8};
@@ -294,8 +294,8 @@ uint64_t guest_create_pipeline(const void* vs, uint64_t vs_bytes, const char* vs
                 VkFormat formats[]{VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT};
                 stored.pipeline = world_graphics(vertex, vs_entry, pixel, ps_entry, layout, {}, {}, formats, 2, false);
             } else {
-                VkFormat formats[]{ VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_B10G11R11_UFLOAT_PACK32 };
-                for (int format = 0; format < 6; ++format)
+                VkFormat formats[]{ VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R32_SFLOAT, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_B10G11R11_UFLOAT_PACK32, VK_FORMAT_R16_SFLOAT };
+                for (int format = 0; format < 7; ++format)
                     for (int mode = 0; mode < (format < 2 || format==5 ? 5 : 1); ++mode) {
                         bool depth = mode == 4, additive = mode == 1;
                         uint32_t blend = mode == 2 ? 1u : mode == 3 ? 6u : 0u;
@@ -1019,7 +1019,7 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
         color = display_state.upscale_view; tw = display_state.upscale_w; th = display_state.upscale_h; hdr_target = false;
     }
     if (!color) return false;
-    int format = hdr_target && world.hdr_format==VK_FORMAT_B10G11R11_UFLOAT_PACK32 ? 5 : draw_tone ? 0 : draw_dlss ? 1 : target && target->format == VK_FORMAT_R32G32B32A32_SFLOAT ? 4 : hdr_target || (target && target->format == VK_FORMAT_R16G16B16A16_SFLOAT) ? 1 : target && target->format == VK_FORMAT_R32_SFLOAT ? 2 : target && target->format == VK_FORMAT_R16G16_SFLOAT ? 3 : 0;
+    int format = hdr_target && world.hdr_format==VK_FORMAT_B10G11R11_UFLOAT_PACK32 ? 5 : draw_tone ? 0 : draw_dlss ? 1 : target && target->format == VK_FORMAT_R16_SFLOAT ? 6 : target && target->format == VK_FORMAT_R32G32B32A32_SFLOAT ? 4 : hdr_target || (target && target->format == VK_FORMAT_R16G16B16A16_SFLOAT) ? 1 : target && target->format == VK_FORMAT_R32_SFLOAT ? 2 : target && target->format == VK_FORMAT_R16G16_SFLOAT ? 3 : 0;
     VkPipeline pipe = pipeline.contract == 2 ? pipeline.pipeline : pipeline.draw[format][mode];
     if (!pipe) return false;
     GuestImage* second = nullptr;

@@ -93,3 +93,14 @@ final Chain color at50/75/100% in synchronous and pipelined native recording,
 with validation enabled and zero reported errors. The native17-test suite also
 passes with validation. Broader Windows live visual/performance acceptance is
 still open.
+
+Feature bit17 advertises portable render-target commands, including R16_FLOAT
+graphics pipelines. The existing ABI-1 pass packet is unchanged. Anomaly queues
+portable clear/copy/fullscreen/velocity commands before native recording and
+uses the same native resource ownership/retirement rules. Ordinary reactive and
+velocity participation use Anomaly's DX11 helper shaders. Portable HDR values,
+negative alpha, odd-sized FP16/R16 targets and masked velocity have GPU readback
+evidence with synchronization validation enabled and zero errors. The current
+actual-core scene/recreation suite passes329 checks; the native17-test suite
+passes without skips when the private validation layer is configured. This
+does not close loaded-world adapter/vendor or performance acceptance.
