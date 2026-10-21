@@ -109,7 +109,7 @@ Image display_target(Image image, uint32_t width, uint32_t height) {
     if (image.view && display_state.width == width && display_state.height == height) return image;
     if (image.handle) retire_image(image);
     return make_image(width, height, VK_FORMAT_R16G16B16A16_SFLOAT,
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
@@ -498,7 +498,12 @@ VkImageView prepare_display(VkCommandBuffer cmd) {
     bool generated = (display_flags & 2) != 0;
     bool ngx_on = ngx_active();
     bool fsr_on = fsr_active();
-    if (!upscale && !generated && !ngx_on && !fsr_on) return {};
+    bool guest_output=std::any_of(guest.passes.begin(),guest.passes.end(),[](const auto& pass){
+        if(pass.mark!=6 || !pass.pipeline)return false;
+        if(pass.storage==kGuestHdr)return true;
+        return std::any_of(std::begin(pass.sampled),std::end(pass.sampled),[](auto image){return image==kGuestUpscale;});
+    });
+    if (!upscale && !generated && !ngx_on && !fsr_on && !guest_output) return {};
     VkImageView source_view = post.output && post.output->image.view ? post.output->image.view : world.hdr.view;
     VkImage source = post.output && post.output->image.view ? post.output->image.handle : world.hdr.handle;
     if (!source_view || !source) {
@@ -528,13 +533,33 @@ VkImageView prepare_display(VkCommandBuffer cmd) {
     VkImageView motion = motion_ok ? world.motion.view : display_state.zero.view;
     bool ngx = display_state.upscale_ready;
     bool fsr_ok = !ngx && fsr_on && fsr_evaluate(cmd, write, in_w, in_h, out_w, out_h);
-    if (!ngx && !fsr_ok) display_dispatch(cmd, display_state.upscale, display_state.color[write], int(write), source_view, source,
+    if (!ngx && !fsr_ok && !upscale && guest_output) {
+        // Ordinary AfterUpscale packs get the same bilinear output that the
+        // stock compose samples. Do not enable a temporal/filtering algorithm.
+        auto& target=display_state.color[write];
+        bool fresh=!display_state.visited[write];
+        barrier(cmd,source,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_MEMORY_READ_BIT|VK_ACCESS_2_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_READ_BIT);
+        barrier(cmd,target.handle,fresh?VK_IMAGE_LAYOUT_UNDEFINED:VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,fresh?0:VK_ACCESS_2_MEMORY_READ_BIT|VK_ACCESS_2_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkImageBlit blit{};blit.srcSubresource=blit.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
+        blit.srcOffsets[1]={int(in_w),int(in_h),1};blit.dstOffsets[1]={int(out_w),int(out_h),1};
+        vkCmdBlitImage(cmd,source,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,target.handle,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&blit,VK_FILTER_LINEAR);
+        barrier(cmd,source,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_READ_BIT,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_MEMORY_READ_BIT);
+        barrier(cmd,target.handle,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_MEMORY_READ_BIT);
+        display_state.visited[write]=1;
+    }
+    else if (!ngx && !fsr_ok) display_dispatch(cmd, display_state.upscale, display_state.color[write], int(write), source_view, source,
         display_state.ready ? display_state.color[write ^ 1].view : display_state.zero.view, motion,
         upscale && display_state.ready ? 0.9f : 0.f, display_state.constants[0], in_w, in_h, out_w, out_h);
     if (generated) display_try_warp(cmd, write, motion_ok ? motion : display_state.zero.view, in_w, in_h, out_w, out_h);
     display_state.index ^= 1;
     display_state.ready = true;
-    display_state.compose = (upscale || ngx || fsr_ok) ? display_state.color[write].view : VkImageView{};
+    display_state.compose = (upscale || ngx || fsr_ok || guest_output) ? display_state.color[write].view : VkImageView{};
+    if(display_state.compose){display_state.upscale_ready=true;display_state.upscale_view=display_state.color[write].view;
+        display_state.upscale_handle=display_state.color[write].handle;display_state.upscale_w=out_w;display_state.upscale_h=out_h;}
     return display_state.compose;
 }
 

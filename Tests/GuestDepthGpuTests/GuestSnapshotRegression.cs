@@ -53,6 +53,34 @@ partial class Program
             Check(Math.Abs(combined[0]-h[0])<.006 && Math.Abs(combined[1]-u[1])<.006 && Math.Abs(combined[2]-h[2])<.006,"one pass reads distinct HDR and tone snapshots at fraction "+fraction);
             Check(Enumerable.Range(0,4).All(i=>Math.Abs(h[i]-late[i])<.001) && Math.Abs(late[3]-fraction)<.001,"AfterUpscale HDR snapshot keeps render dimensions and pixels at fraction "+fraction);
         }
-        backend.SetRenderFraction(1);return checks;
+        backend.SetRenderFraction(1);
+        // Exercise Anomaly's actual Chain construction into the native final
+        // output while every vendor/display service is disabled.
+        object chain=Program("fixture.snapshot.chain","cbuffer Values:register(b7){float4 Color;}float4 main(float4 p:SV_Position):SV_Target{return Color;}",0);
+        chain.GetType().GetField("Enabled").SetValue(chain,true);
+        chain.GetType().GetField("Mark").SetValue(chain,6);
+        chain.GetType().GetField("Slot").SetValue(chain,"AfterUpscale");
+        chain.GetType().GetField("Compose").SetValue(chain,"Chain");
+        chain.GetType().GetField("Priority").SetValue(chain,9999);
+        chain.GetType().GetField("Uniforms").SetValue(chain,new[]{.1f,.2f,.3f,1});
+        Call("Backend.GuestCompiler","CompilePending",assets);
+        foreach(bool pipelined in new[]{false,true})
+        foreach(float fraction in new[]{.5f,.75f,1f})
+        {
+            backend.SetRenderFraction(fraction);backend.BeginPacketCollection();var size=backend.ResolveRenderResolution(64,64);
+            post.Configure(backend,size.X,size.Y,false,view:MatrixD.Identity,projection:projection);
+            backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,projection,size.X,size.Y,light,postprocess:post.Settings),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(projection)));
+            Check(backend.BeginFrame(projection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black),"Chain output frame begins");
+            Call("Backend.GuestFrame","Capture");
+            Call("Backend.SceneView","Set",size.X,size.Y,0d,0d,0d,0f,0f,-1f);
+            Call("Backend.GuestBridgeClient","Submit",Call("Backend.GuestPassList","Snapshot"));
+            if(pipelined)backend.EndFrameAsync();else backend.EndFrame();
+            var pixels=new byte[64*64*8];read.Invoke(backend,new object[]{upscale,pixels});
+            var expected=new[]{.1f,.2f,.3f,1f};
+            Check(Enumerable.Range(0,4).All(i=>Math.Abs((float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(pixels,i*2))-expected[i])<.001f),
+                "final AfterUpscale Chain actually writes output pixels without an upscaler at fraction "+fraction+" pipelined="+pipelined);
+            Check((int)chain.GetType().GetField("ImageWidth").GetValue(chain)==64,"AfterUpscale isolated output uses output dimensions");
+        }
+        chain.GetType().GetField("Enabled").SetValue(chain,false);backend.SetRenderFraction(1);return checks;
     }
 }

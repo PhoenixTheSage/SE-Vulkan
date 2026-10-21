@@ -729,6 +729,7 @@ struct Renderer {uint32_t recipe_generation=1;
         const char* parallel_env=std::getenv("SE_VULKAN_PARALLEL_CASCADES");world.parallel_cascades=parallel_env?std::strcmp(parallel_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* spots_env=std::getenv("SE_VULKAN_PARALLEL_SPOTS");world.parallel_spots=spots_env?std::strcmp(spots_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* pass_env=std::getenv("SE_VULKAN_PARALLEL_PASS");pass_scene.scene.set_parallel(pass_env?std::strcmp(pass_env,"1")==0:std::thread::hardware_concurrency()>=4);
+        const char* packing_env=std::getenv("SE_VULKAN_ASYNC_PASS_PACKING");pass_scene.scene.set_async_packing(packing_env?std::strcmp(packing_env,"0")!=0:std::thread::hardware_concurrency()>=4);
         const char* upload_env=std::getenv("SE_VULKAN_PARALLEL_UPLOAD");world.parallel_upload=upload_env?std::strcmp(upload_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* queue_env=std::getenv("SE_VULKAN_PARALLEL_QUEUE");world.parallel_queue=queue_env?std::strcmp(queue_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* arena_env=std::getenv("SE_VULKAN_GEOMETRY_ARENA");world.geometry_arena_requested=arena_env && std::strcmp(arena_env,"1")==0;
@@ -2131,7 +2132,7 @@ int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32
     });
 }
 int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.resolution;return 0;},[&](Renderer& r){r.collect();*stats=r.resolution_stats;return 0;});}
-uint32_t SEVK_CALL sevk_guest_features(void){return 65535u;}
+uint32_t SEVK_CALL sevk_guest_features(void){return 131071u;}
 int32_t SEVK_CALL sevk_guest_frame_environment(void* ctx,const SevkGuestEnvironment* environment){
     if(!environment || environment->size!=sizeof(*environment) || environment->abi_version!=SEVK_ABI_VERSION || environment->reserved || environment->pad)return -1;
     const auto copied=*environment;

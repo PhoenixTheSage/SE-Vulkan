@@ -898,13 +898,15 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
     bool draw_tone = to_hdr && mark == 5 && post.after_tonemap && post.after_tonemap->image.view;
     bool draw_dlss = to_hdr && mark >= 6 && display_state.upscale_ready && display_state.upscale_view;
     bool sample_upscale = false;
-    if (draw_tone || draw_dlss)
-        for (auto binding : pipeline.bindings)
+    for (auto binding : pipeline.bindings)
             if (binding.second == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE && binding.first >= 128 && binding.first < 176 && pass.sampled[binding.first - 128] == kGuestUpscale)
                 sample_upscale = true;
     VkImageView upscale_snapshot=VK_NULL_HANDLE;
-    if (sample_upscale && draw_dlss) upscale_snapshot=guest_copy_source(cmd, display_state.upscale_handle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, display_state.upscale_w, display_state.upscale_h);
-    else if (sample_upscale) upscale_snapshot=guest_copy_source(cmd, post.after_tonemap->image.handle, post.after_tonemap->layout ? post.after_tonemap->layout : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, post.after_tonemap->width, post.after_tonemap->height);
+    if (sample_upscale && mark>=6 && display_state.upscale_ready && display_state.upscale_view)
+        upscale_snapshot=guest_copy_source(cmd, display_state.upscale_handle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, display_state.upscale_w, display_state.upscale_h);
+    else if (sample_upscale && post.after_tonemap && post.after_tonemap->image.view)
+        upscale_snapshot=guest_copy_source(cmd, post.after_tonemap->image.handle, post.after_tonemap->layout ? post.after_tonemap->layout : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, post.after_tonemap->width, post.after_tonemap->height);
+    else if(sample_upscale)upscale_snapshot=guest_copy_hdr(cmd,hdr_layout);
     std::vector<VkDescriptorBufferInfo> buffers;
     std::vector<VkDescriptorImageInfo> images;
     struct GuestWrite { uint32_t binding; VkDescriptorType type; int buffer{-1}, image{-1}; };
@@ -1226,6 +1228,11 @@ void guest_readback(uint64_t id, void* rgba, uint64_t bytes) {
         if(recording || !world.initialized || !world.hdr.view)throw std::runtime_error("HDR readback requires a completed world frame");
         borrowed.image=world.hdr;borrowed.width=world.width;borrowed.height=world.height;borrowed.bpp=world.hdr_format==VK_FORMAT_B10G11R11_UFLOAT_PACK32?4:8;
         borrowed.format=world.hdr_format;borrowed.layout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;selected=&borrowed;
+    }else if(id==kGuestUpscale){
+        if(recording || !display_state.upscale_ready || !display_state.upscale_view)throw std::runtime_error("upscale readback requires a completed output frame");
+        borrowed.image.handle=display_state.upscale_handle;borrowed.image.view=display_state.upscale_view;
+        borrowed.width=display_state.upscale_w;borrowed.height=display_state.upscale_h;borrowed.bpp=8;
+        borrowed.format=VK_FORMAT_R16G16B16A16_SFLOAT;borrowed.layout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;selected=&borrowed;
     }else {auto found=guest.images.find(id);if(found!=guest.images.end())selected=&found->second;}
     if(!selected || !rgba || selected->is_buffer)throw std::runtime_error("guest readback missing");
     auto& image=*selected;

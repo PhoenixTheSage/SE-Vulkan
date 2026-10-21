@@ -522,7 +522,9 @@ SEVK_API int32_t SEVK_CALL sevk_guest_create_pipeline(void* ctx, const void* vs,
 SEVK_API int32_t SEVK_CALL sevk_guest_create_image(void* ctx, uint64_t id, uint32_t width, uint32_t height, uint32_t depth, uint32_t format);
 SEVK_API int32_t SEVK_CALL sevk_guest_update_image(void* ctx, uint64_t id, const void* data, uint64_t bytes);
 SEVK_API int32_t SEVK_CALL sevk_guest_submit(void* ctx, const SevkGuestPass* passes, uint32_t count);
-/* HDR sentinel readback requires a completed world frame and returns RGBA16F. */
+/* HDR sentinel readback requires a completed world frame and returns RGBA16F.
+ * Feature bit16: renderable AfterUpscale output without vendor services,
+ * output snapshot sampling for offscreen consumers, Upscale RGBA16F readback. */
 SEVK_API int32_t SEVK_CALL sevk_guest_readback(void* ctx, uint64_t id, void* rgba, uint64_t bytes);
 SEVK_API int32_t SEVK_CALL sevk_guest_replay_now(void* ctx, uint32_t mark);
 SEVK_API uint64_t SEVK_CALL sevk_guest_replay_count(void* ctx);

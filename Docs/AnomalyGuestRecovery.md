@@ -77,3 +77,19 @@ negated and normalized. b6 includes zero safety, planet and skip values. The
 actual-core fixture explicitly captures each frame, matching the production
 callback;302 depth/volume/recreation checks pass with validation enabled and
 zero reported errors. Full Windows adapter acceptance remains open.
+
+Feature bit16 closes the output-size fullscreen path: offscreen consumers
+snapshot tone/upscale sources, and actual AfterUpscale work receives a renderable
+output even when vendor services are off. The default path uses bilinear
+scaling and is allocated only for requested output consumers/writers. The
+owned HDR history producer does not trigger it. Display targets now include
+color-attachment usage. Upscale sentinel readback exposes the completed FP16
+output for deterministic checks.
+
+Anomaly isolates pass output, freezes previous-frame aliases, composes using
+the DX11 equations, and finishes Chain per slot. The independent GPU equation
+gate passes2,800 pixels. The actual-core324-check lane verifies output size and
+final Chain color at50/75/100% in synchronous and pipelined native recording,
+with validation enabled and zero reported errors. The native17-test suite also
+passes with validation. Broader Windows live visual/performance acceptance is
+still open.
