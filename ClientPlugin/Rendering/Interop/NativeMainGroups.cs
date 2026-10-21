@@ -14,7 +14,7 @@ public sealed partial class NativeBackend
     internal uint MainPart {get;set;}
     uint MainGroupToken=>mainGroup?.Token??0;
     readonly Dictionary<uint,uint> mainOwnerOrders=new();
-    void BeginMainGroups(){mainGroups.Clear();mainGroupEpoch++;mainOwnerOrders.Clear();mainGroup=null;MainPart=0;oldPartOrder=default;}
+    void BeginMainGroups(){mainGroups.Clear();mainGroupEpoch++;mainOwnerOrders.Clear();mainGroup=null;MainPart=0;oldPartOrder=default;packetOwner=0;}
     MainGroupState ResolveMainGroup(object key){
         var cached=key as MainGroupKeyBase;if(cached!=null&&cached.Epoch==mainGroupEpoch&&ReferenceEquals(cached.Owner,this))return cached.Group;
         if(!mainGroups.TryGetValue(key,out var group)){group=new MainGroupState{Token=(uint)mainGroups.Count+1};mainGroups.Add(key,group);}

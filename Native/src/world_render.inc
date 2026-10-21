@@ -80,6 +80,11 @@ void set_world_main_order(const SevkMainDrawOrder* orders,uint32_t count){
     for(uint32_t i=0;i<count;++i)if(!orders[i].group)throw std::runtime_error("main group order must be nonzero");
     for(uint32_t i=0;i<count;++i){world.current().draws[i].main_order=orders[i].group;world.current().draws[i].main_part=orders[i].part;}
 }
+// Optional logical owners of the queued draws; they break equal stock OLD keys.
+void set_world_draw_owners(const uint32_t* owners,uint32_t count){
+    if(recording||!world.current().queued||count!=world.current().draws.size()||(count&&!owners))throw std::runtime_error("draw owners must match queued draws");
+    for(uint32_t i=0;i<count;i++)world.current().draws[i].owner=owners[i];
+}
 void set_world_old_order(const SevkOldPartOrder* orders,uint32_t count){
     if(recording||count!=world.current().draws.size()||(count&&!orders))throw std::runtime_error("OLD metadata must match queued draws");
     for(uint32_t i=0;i<count;i++){validate_old_order(orders[i]);if(orders[i].valid&&!(world.current().draws[i].packet.flags&0x04000000u))throw std::runtime_error("OLD metadata requires source OLD provenance");}
@@ -467,13 +472,15 @@ void render_world(){
     // Compact per-draw copies of every comparator input. The comparator is the
     // same function of them, so std::sort yields the same order without
     // touching the large WorldDraw records on each comparison.
-    struct SortKey{uint64_t old_key,mesh;VkDescriptorSet material;uint32_t phase,main_order,main_part,pipeline,technique,old_valid;bool mesh_decal,old_flag;};
+    struct SortKey{uint64_t old_key,mesh;VkDescriptorSet material;uint32_t phase,main_order,main_part,pipeline,technique,old_valid,owner;bool mesh_decal,old_flag;};
     static thread_local std::vector<SortKey> keys;keys.resize(order.size());
-    for(uint32_t n=0;n<order.size();++n){const auto& d=world.current().draws[n];const auto& p=d.packet;keys[n]={d.old_order.key,p.mesh,materials[n],world_main_phase(p.pipeline,p.flags),d.main_order?d.main_order:n+1,d.main_part,p.pipeline,world_decal_technique_order(p.pipeline),d.old_order.valid,world_mesh_decal(p.pipeline),(p.flags&0x04000000u)!=0};}
+    for(uint32_t n=0;n<order.size();++n){const auto& d=world.current().draws[n];const auto& p=d.packet;keys[n]={d.old_order.key,p.mesh,materials[n],world_main_phase(p.pipeline,p.flags),d.main_order?d.main_order:n+1,d.main_part,p.pipeline,world_decal_technique_order(p.pipeline),d.old_order.valid,d.owner,world_mesh_decal(p.pipeline),(p.flags&0x04000000u)!=0};}
     std::sort(order.begin(),order.end(),[&](uint32_t a,uint32_t b){
         const auto& A=keys[a];const auto& B=keys[b];
         if(A.phase!=B.phase)return A.phase<B.phase;
-        if(A.phase<4){if(A.old_valid!=B.old_valid)return A.old_valid<B.old_valid;if(A.old_valid)return A.old_key!=B.old_key?A.old_key<B.old_key:a<b;}
+        if(A.phase<4){if(A.old_valid!=B.old_valid)return A.old_valid<B.old_valid;
+            // Equal stock keys order by owner, then submission; owner 0 keeps submission order.
+            if(A.old_valid){if(A.old_key!=B.old_key)return A.old_key<B.old_key;if(A.owner!=B.owner)return A.owner<B.owner;return a<b;}}
         // NEW groups are emitted with their preprocessed parts together.
         // A global shader/mesh/decal sort breaks read-only decal ownership.
         if(A.phase==4){if(A.main_order!=B.main_order)return A.main_order<B.main_order;if(A.main_part!=B.main_part)return A.main_part<B.main_part;return a<b;}
@@ -482,7 +489,7 @@ void render_world(){
             if(A.old_flag){if(A.technique!=B.technique)return A.technique<B.technique;}
             return a<b;
         }
-        if(A.pipeline!=B.pipeline)return A.pipeline<B.pipeline;if(A.mesh!=B.mesh)return A.mesh<B.mesh;return A.material<B.material;
+        if(A.pipeline!=B.pipeline)return A.pipeline<B.pipeline;if(A.mesh!=B.mesh)return A.mesh<B.mesh;if(A.material!=B.material)return A.material<B.material;return a<b;
     });
     if(upload_job.valid())upload_job.get();
     check(vmaFlushAllocation(allocator,slot.instances.memory,0,VK_WHOLE_SIZE),"flush batched world uniforms/instances");if(!world.retained_objects)check(vmaFlushAllocation(allocator,slot.objects.memory,0,VK_WHOLE_SIZE),"flush legacy world objects");

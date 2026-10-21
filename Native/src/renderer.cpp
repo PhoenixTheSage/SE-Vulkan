@@ -11,6 +11,7 @@
 #include "world_texture_validation_cache.h"
 #include "spot_bounds.h"
 #include "native_pass_scene.h"
+#include "old_cells.h"
 #include "gpu_opaque_registry.h"
 #include "gpu_appearance_arena.h"
 #include "gpu_scene_costs.h"
@@ -39,6 +40,8 @@
 #include <unordered_map>
 #include <vector>
 #include <future>
+#include <functional>
+#include <condition_variable>
 #include <thread>
 #include <memory>
 #include <optional>
@@ -213,7 +216,7 @@ struct GpuResidentState {uint64_t publications{},frames{};gpu_scene::Registry re
 };
 struct VoxelMaterial { Buffer constants; uint64_t arrays[3]{},random{}; };
 struct WorldRecipe;
-struct WorldDraw {WorldRecipe* recipe{};uint32_t recipe_generation{}; SevkWorldDraw packet{}; uint32_t object_at{}, object_n{}, instance_at{}, instance_n{}, gpu_object_at{},main_order{},main_part{};SevkOldPartOrder old_order{}; Mesh* geometry{}; VkDescriptorSet material{}; };
+struct WorldDraw {WorldRecipe* recipe{};uint32_t recipe_generation{}; SevkWorldDraw packet{}; uint32_t object_at{}, object_n{}, instance_at{}, instance_n{}, gpu_object_at{},main_order{},main_part{},owner{};SevkOldPartOrder old_order{}; Mesh* geometry{}; VkDescriptorSet material{}; };
 struct WorldSetKey {
     uint64_t a,b,c,d,e,f; uint32_t bytes, kind;
     bool operator==(const WorldSetKey& other) const { return a==other.a && b==other.b && c==other.c && d==other.d && e==other.e && f==other.f && bytes==other.bytes && kind==other.kind; }
@@ -441,6 +444,14 @@ struct Renderer {uint32_t recipe_generation=1;
     VkInstance instance{}; VkDebugUtilsMessengerEXT debug{}; VkPhysicalDevice physical{}; VkDevice device{};
     VkQueue queue{}; uint32_t queue_family{}; VmaAllocator allocator{};
     std::mutex api_mutex;
+    // Pipelined recording: end_frame(N) runs on a worker holding api_mutex
+    // while managed frame N+1 continues. Ordinary calls wait for it and then
+    // replay deferred calls in issue order; whitelisted void calls queue with
+    // copied arguments; a few reads answer from the launch snapshot.
+    std::condition_variable_any record_cv;bool record_pending{},record_running{},record_failed{};std::string record_error;std::future<void> record_job;
+    std::mutex deferred_mutex;bool record_in_flight{};std::vector<std::function<int32_t(Renderer&)>> deferred;
+    struct ReadSnapshot {SevkWorkStats work{};SevkResolutionStats resolution{};SevkShadowFeedback shadow{};uint32_t cache_mask{},cache_count{};bool cache_valid{};std::vector<SevkOcclusionResult> occlusion;uint64_t occlusion_token{};std::vector<SevkFlareResult> flares;float render_fraction=1;};
+    std::mutex snapshot_mutex;ReadSnapshot snapshot;uint64_t pipelined_frames{},pipelined_mask_mismatches{},pipelined_waits{},pipelined_wait_us{};
     VkSurfaceKHR surface{}; VkSwapchainKHR swapchain{};
     VkPresentModeKHR actual_present_mode=VK_PRESENT_MODE_FIFO_KHR;uint32_t swapchain_generation{};
     bool exclusive_extension{}, exclusive_requested{}, exclusive_swapchain{}, exclusive_held{}, exclusive_denied{}; void* exclusive_monitor{};
@@ -508,6 +519,7 @@ struct Renderer {uint32_t recipe_generation=1;
     WorldState world;
     LightTileState light_tiles;
     PassGpuState pass_scene;
+    struct CellState {old_cells::Scene scene;std::unique_ptr<native_pass::ViewJobs> jobs;SevkCellStats stats{sizeof(SevkCellStats)};} cells;
     EnvironmentState environment;
     std::array<UploadSlot,2> upload_slots{}; uint32_t upload_index{};
     bool batching_uploads{}; VkCommandBuffer batch_command{}; uint64_t upload_fence{};
@@ -594,6 +606,41 @@ struct Renderer {uint32_t recipe_generation=1;
         if (!value) return;
         VkSemaphoreWaitInfo w{ VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO }; w.semaphoreCount = 1; w.pSemaphores = &timeline; w.pValues = &value;
         check_gpu(vkWaitSemaphores(device, &w, UINT64_MAX), "wait GPU timeline");
+    }
+    // Shadow masks end_frame leaves for the next frame: a pending resolution
+    // change clears the cache, then render_world adds this frame's updates.
+    // Unscheduled shadows depend on the frame's casters and are not predicted.
+    bool predict_shadow_masks(uint32_t& cache,uint32_t& update)const{
+        uint32_t mask=shadow_resolution==requested_shadow_resolution?shadow_image_mask:0u,all=(1u<<shadow_count)-1;
+        update=shadow_update_mask;if(!scheduled_shadows)return false;update|=all&~mask;cache=(mask|update)&all;return true;
+    }
+    SevkShadowFeedback shadow_feedback(){
+        SevkShadowFeedback out{sizeof(SevkShadowFeedback),SEVK_ABI_VERSION};uint64_t complete=0;check_gpu(vkGetSemaphoreCounterValue(device,timeline,&complete),"shadow feedback completion");
+        for(uint32_t i=0;i<2;++i)if(slots[i].completion<=complete)sample_shadow_usage(i);out.completion=shadow_usage.latest;for(auto& view:shadow_usage.pixels)for(uint32_t c=0;c<8;++c)out.pixels[c]+=view[c];
+        out.update_mask=shadow_update_mask;out.valid_mask=shadow_valid_mask;return out;
+    }
+    void publish_launch_snapshot(){
+        collect();std::lock_guard lock(snapshot_mutex);auto& s=snapshot;s.resolution=resolution_stats;uint32_t cache=0,update=0;s.cache_valid=predict_shadow_masks(cache,update);
+        s.shadow=shadow_feedback();s.shadow.update_mask=update;s.cache_mask=cache;s.cache_count=shadow_count;
+        s.occlusion=occlusion.completed;s.occlusion_token=occlusion.completed_token;s.flares=flares.completed;s.render_fraction=render_fraction;
+    }
+    static bool upscaler_requested(){{auto& n=ngx_request();std::lock_guard l(n.mu);if(n.enabled&&!n.directory.empty())return true;}{auto& f=fsr_request();std::lock_guard l(f.mu);if(f.enabled&&!f.directory.empty())return true;}return false;}
+    // Ordinary calls: recording finished, then deferred calls in issue order.
+    void await_recording(std::unique_lock<std::mutex>& lock){record_cv.wait(lock,[&]{return !record_pending&&!record_running;});if(record_failed){record_failed=false;throw std::runtime_error(record_error);}}
+    void flush_deferred(){std::vector<std::function<int32_t(Renderer&)>> work;{std::lock_guard q(deferred_mutex);work.swap(deferred);}for(auto& fn:work)if(fn(*this))throw std::runtime_error("deferred native call failed");}
+    // Starts end_frame on a worker; the caller holds api_mutex, so the worker
+    // runs only after this call returns, and before any later ordinary call.
+    int end_frame_async(){
+        if(!recording||!world.current().queued)return end_frame();
+        publish_launch_snapshot();uint32_t predicted=snapshot.cache_mask;bool checked=snapshot.cache_valid;
+        {std::lock_guard q(deferred_mutex);record_in_flight=true;}record_pending=true;
+        record_job=std::async(std::launch::async,[this,predicted,checked]{
+            std::unique_lock lock(api_mutex);record_pending=false;record_running=true;
+            try{end_frame();++pipelined_frames;if(checked&&(shadow_image_mask&((1u<<shadow_count)-1))!=predicted)++pipelined_mask_mismatches;}
+            catch(const std::exception& e){record_error=e.what();record_failed=true;}catch(...){record_error="unknown native Vulkan error";record_failed=true;}
+            {std::lock_guard s(snapshot_mutex);snapshot.work=work;}
+            {std::lock_guard q(deferred_mutex);record_in_flight=false;}record_running=false;lock.unlock();record_cv.notify_all();});
+        return 0;
     }
     void collect() {
         uint64_t complete = 0; check_gpu(vkGetSemaphoreCounterValue(device, timeline, &complete), "query GPU timeline");
@@ -1725,6 +1772,7 @@ struct Renderer {uint32_t recipe_generation=1;
 #include "indexed_motion.inc"
 #include "world_render.inc"
 #include "world_recipes.inc"
+#include "old_cells.inc"
 #include "world_models.inc"
 #include "light_tiles.inc"
 #include "postprocess.inc"
@@ -1815,12 +1863,33 @@ template<class Fn> int32_t call(void* context, Fn&& fn) {
     auto* renderer = static_cast<Renderer*>(context);
     // Guest publications can arrive on the game thread while the render thread
     // records/submits. Timeline allocation, pools and queue access share one owner.
-    std::lock_guard lock(renderer->api_mutex);
-    try { return fn(*renderer); }
+    // A pipelined end_frame completes, and deferred calls replay, before any call.
+    std::unique_lock lock(renderer->api_mutex);
+    try { if(renderer->record_pending||renderer->record_running){auto start=std::chrono::steady_clock::now();renderer->await_recording(lock);renderer->pipelined_wait_us+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count());++renderer->pipelined_waits;} renderer->await_recording(lock); renderer->flush_deferred(); return fn(*renderer); }
     catch (const std::exception& e) { renderer->error = e.what(); global_error = renderer->error; return -1; }
     catch (...) { renderer->error = "unknown native Vulkan error"; global_error = renderer->error; return -1; }
 }
 }
+
+// Void calls whose arguments are copied: queued in issue order while a
+// pipelined end_frame records, otherwise executed as ordinary calls.
+template<class Fn> int32_t call_deferrable(void* context, Fn fn) {
+    if (!context) { global_error = "null Vulkan context"; return -1; }
+    auto* renderer = static_cast<Renderer*>(context);
+    {std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){renderer->deferred.emplace_back(std::move(fn));return 0;}}
+    return call(context,fn);
+}
+// Reads answered from the launch snapshot while recording; a snapshot
+// function returning nullopt falls back to the ordinary (waiting) call.
+template<class Snapshot,class Fn> int32_t call_snapshot(void* context,Snapshot&& snapshot,Fn&& fn){
+    if (!context) { global_error = "null Vulkan context"; return -1; }
+    auto* renderer = static_cast<Renderer*>(context);
+    {std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){std::lock_guard read(renderer->snapshot_mutex);std::optional<int32_t> result=snapshot(*renderer);if(result)return *result;}}
+    return call(context,fn);
+}
+template<class T> struct Copied {std::vector<T> values;bool null=true;const T* get()const{return null?nullptr:values.data();}};
+template<class T> Copied<T> copy_in(const T* data,uint64_t count){Copied<T> copy;copy.null=!data;if(data&&count)copy.values.assign(data,data+count);return copy;}
+inline Copied<uint8_t> copy_bytes(const void* data,uint64_t bytes){return copy_in(static_cast<const uint8_t*>(data),bytes);}
 
 uint32_t SEVK_CALL sevk_api_version() { return SEVK_ABI_VERSION; }
 int32_t SEVK_CALL sevk_probe(SevkProbe* probe) {
@@ -1889,20 +1958,20 @@ int32_t SEVK_CALL sevk_upload_texture_mips(void* context, uint64_t id, uint32_t 
     return call(context, [&](Renderer& r) { r.upload_texture(id,width,height,format,srgb!=0,data,bytes,false,mip_count); return 0; });
 }
 int32_t SEVK_CALL sevk_set_lights(void* context, const SevkLight* lights, uint32_t count) {
-    return call(context,[&](Renderer& r) { if (r.recording || count>r.lights.size() || (!lights && count)) throw std::runtime_error("invalid local light batch");
+    return call_deferrable(context,[lights_copy=copy_in(lights,count),count](Renderer& r){auto* lights=lights_copy.get(); if (r.recording || count>r.lights.size() || (!lights && count)) throw std::runtime_error("invalid local light batch");
         if(count>64 && (!r.world.lights[0]||!r.world.lights[1]||!r.world.lights[2]))throw std::runtime_error("large local light batches require stock world lighting");
         uint32_t points=0;for(uint32_t i=0;i<count;++i){if(lights[i].flags&1){if(i>=64)throw std::runtime_error("spotlight identity exceeds the 64-slot shadow mask");}else if(++points>4096)throw std::runtime_error("stock point-light capacity exceeded");}
         if (count) std::memcpy(r.lights.data(),lights,count*sizeof(SevkLight)); r.light_count=count; return 0; });
 }
 int32_t SEVK_CALL sevk_set_shadow_cascades(void* context,const float* matrices,uint32_t count,const float* splits) {
-    return call(context,[&](Renderer& r) {if(r.recording || count>8 || (count && (!matrices || !splits))) throw std::runtime_error("invalid shadow cascade batch");
+    return call_deferrable(context,[matrices_copy=copy_in(matrices,uint64_t(count)*16),splits_copy=copy_in(splits,count),count](Renderer& r){auto* matrices=matrices_copy.get();auto* splits=splits_copy.get();if(r.recording || count>8 || (count && (!matrices || !splits))) throw std::runtime_error("invalid shadow cascade batch");
         for(uint32_t i=0;i<count;++i) if(!std::isfinite(splits[i]) || splits[i]<=0 || (i && splits[i]<=splits[i-1])) throw std::runtime_error("shadow splits must be positive and increasing");
         for(uint32_t i=0;i<count*16;++i)if(!std::isfinite(matrices[i]))throw std::runtime_error("nonfinite shadow matrix");
         if(count) {std::memcpy(r.shadow_matrices,matrices,count*16*sizeof(float));std::memcpy(r.shadow_splits,splits,count*sizeof(float));}else r.shadow_pass_constants_provided=false;r.shadow_count=count;return 0;});
 }
-int32_t SEVK_CALL sevk_set_shadow_pass_constants(void* ctx,const void* data,uint32_t bytes){return call(ctx,[&](Renderer& r){if(r.recording || (bytes!=0 && bytes!=1200) || (!data&&bytes))throw std::runtime_error("invalid stock shadow constant buffer");if(bytes){uint32_t count;std::memcpy(&count,static_cast<const uint8_t*>(data)+1192,4);if(count!=r.shadow_count)throw std::runtime_error("shadow constant count mismatch");std::memcpy(r.shadow_pass_constants.data(),data,bytes);}r.shadow_pass_constants_provided=bytes!=0;return 0;});}
+int32_t SEVK_CALL sevk_set_shadow_pass_constants(void* ctx,const void* data,uint32_t bytes){return call_deferrable(ctx,[data_copy=copy_bytes(data,bytes),bytes](Renderer& r){const void* data=data_copy.get();if(r.recording || (bytes!=0 && bytes!=1200) || (!data&&bytes))throw std::runtime_error("invalid stock shadow constant buffer");if(bytes){uint32_t count;std::memcpy(&count,static_cast<const uint8_t*>(data)+1192,4);if(count!=r.shadow_count)throw std::runtime_error("shadow constant count mismatch");std::memcpy(r.shadow_pass_constants.data(),data,bytes);}r.shadow_pass_constants_provided=bytes!=0;return 0;});}
 int32_t SEVK_CALL sevk_set_shadow_schedule(void* context,uint32_t enabled,uint32_t update_mask,uint32_t valid_mask){
-    return call(context,[&](Renderer& r){uint32_t active=(1u<<r.shadow_count)-1;if(r.recording || enabled>3 || ((update_mask|valid_mask)&~active))throw std::runtime_error("invalid shadow scheduling mask");r.scheduled_shadows=(enabled&1)!=0;r.shadow_usage.enabled=(enabled&2)!=0;r.shadow_update_mask=update_mask;r.shadow_valid_mask=valid_mask;return 0;});
+    return call_deferrable(context,[enabled,update_mask,valid_mask](Renderer& r){uint32_t active=(1u<<r.shadow_count)-1;if(r.recording || enabled>3 || ((update_mask|valid_mask)&~active))throw std::runtime_error("invalid shadow scheduling mask");r.scheduled_shadows=(enabled&1)!=0;r.shadow_usage.enabled=(enabled&2)!=0;r.shadow_update_mask=update_mask;r.shadow_valid_mask=valid_mask;return 0;});
 }
 int32_t SEVK_CALL sevk_render_texture(void* context, uint64_t id, uint32_t width, uint32_t height, const float* clear, const SevkSprite* sprites, uint32_t count) {
     return call(context,[&](Renderer& r) { r.render_texture(id,width,height,clear,sprites,count,float(width),float(height)); return 0; });
@@ -1915,6 +1984,8 @@ int32_t SEVK_CALL sevk_render_texture_mips(void* context,uint64_t id,uint32_t wi
 int32_t SEVK_CALL sevk_draw_mesh(void* context, const SevkDrawMesh* draw) { return call(context, [&](Renderer& r) { if (!draw) throw std::runtime_error("null draw"); r.draw_mesh(*draw); return 0; }); }
 int32_t SEVK_CALL sevk_draw_sprites(void* context, const SevkSprite* sprites, uint32_t count) { return call(context, [&](Renderer& r) { if ((!sprites && count) || count > 1000000) throw std::runtime_error("invalid sprite batch"); r.draw_sprites(sprites,count); return 0; }); }
 int32_t SEVK_CALL sevk_end_frame(void* context) { return call(context, [&](Renderer& r) { return r.end_frame(); }); }
+// Records frame N on a worker while managed frame N+1 runs; see call_deferrable.
+int32_t SEVK_CALL sevk_end_frame_async(void* context) { return call(context, [&](Renderer& r) { return r.end_frame_async(); }); }
 int32_t SEVK_CALL sevk_remove_resource(void* context, uint32_t kind, uint64_t id) { return call(context, [&](Renderer& r) { r.remove(kind,id); return 0; }); }
 int32_t SEVK_CALL sevk_get_stats(void* context, SevkStats* stats) { return call(context, [&](Renderer& r) {
     if (!stats || stats->size != sizeof(SevkStats)) throw std::runtime_error("stats ABI size mismatch");
@@ -1922,16 +1993,18 @@ int32_t SEVK_CALL sevk_get_stats(void* context, SevkStats* stats) { return call(
 }); }
 int32_t SEVK_CALL sevk_readback(void* context, void* rgba8, uint64_t bytes) { return call(context, [&](Renderer& r) { r.readback(rgba8,bytes); return 0; }); }
 int32_t SEVK_CALL sevk_request_readback(void* context) {return call(context,[&](Renderer& r) {if(!r.readback_supported) throw std::runtime_error("capture unsupported by presentation surface");r.capture_requested=true;return 0;});}
-void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) active_context = nullptr; delete static_cast<Renderer*>(context); }
+void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) active_context = nullptr; if(context){auto* r=static_cast<Renderer*>(context);if(r->record_job.valid())r->record_job.wait();
+    // SE_VULKAN_PIPELINE_REPORT=<file>: pipelined frames, cascade-mask prediction misses and waits.
+    if(const char* path=std::getenv("SE_VULKAN_PIPELINE_REPORT"))if(FILE* f=std::fopen(path,"w")){std::fprintf(f,"{\"PipelinedFrames\":%llu,\"MaskMismatches\":%llu,\"Waits\":%llu,\"WaitUs\":%llu}\n",(unsigned long long)r->pipelined_frames,(unsigned long long)r->pipelined_mask_mismatches,(unsigned long long)r->pipelined_waits,(unsigned long long)r->pipelined_wait_us);std::fclose(f);}} delete static_cast<Renderer*>(context); }
 const char* SEVK_CALL sevk_last_error(void* context) { return context ? static_cast<Renderer*>(context)->error.c_str() : global_error.c_str(); }
 int32_t SEVK_CALL sevk_init_gbuffer(void* ctx,const void* vs,uint64_t vb,const void* ps,uint64_t pb) {return call(ctx,[&](Renderer& r){r.init_stock(vs,vb,ps,pb);return 0;});}
 int32_t SEVK_CALL sevk_upload_gbuffer_mesh(void* ctx,uint64_t id,const SevkGBufferVertex* v,uint32_t vc,const uint32_t* i,uint32_t ic) {return call(ctx,[&](Renderer& r){r.upload_stock(id,v,vc,i,ic);return 0;});}
 int32_t SEVK_CALL sevk_render_gbuffer(void* ctx,uint32_t w,uint32_t h,const void* frame,uint32_t fb,const float* proj,const SevkGBufferDraw* draws,uint32_t count) {return call(ctx,[&](Renderer& r){r.render_stock(w,h,frame,fb,proj,draws,count);return 0;});}
 int32_t SEVK_CALL sevk_readback_gbuffer(void* ctx,uint32_t attachment,void* pixels,uint64_t bytes) {return call(ctx,[&](Renderer& r){r.read_stock(attachment,pixels,bytes);return 0;});}
 int32_t SEVK_CALL sevk_get_gbuffer_stats(void* ctx,SevkGBufferStats* stats) {return call(ctx,[&](Renderer& r){if(!stats || stats->size!=sizeof(SevkGBufferStats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("stock stats ABI mismatch");*stats=r.stock.stats;stats->size=sizeof(*stats);stats->abi_version=SEVK_ABI_VERSION;return 0;});}
-int32_t SEVK_CALL sevk_begin_uploads(void* ctx){return call(ctx,[&](Renderer& r){r.begin_uploads();return 0;});}
+int32_t SEVK_CALL sevk_begin_uploads(void* ctx){return call_deferrable(ctx,[](Renderer& r){r.begin_uploads();return 0;});}
 int32_t SEVK_CALL sevk_end_uploads(void* ctx){return call(ctx,[&](Renderer& r){r.end_uploads();return 0;});}
-int32_t SEVK_CALL sevk_get_work_stats(void* ctx,SevkWorkStats* stats){return call(ctx,[&](Renderer& r){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("work stats ABI mismatch");*stats=r.work;return 0;});}
+int32_t SEVK_CALL sevk_get_work_stats(void* ctx,SevkWorkStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.work;return 0;},[&](Renderer& r){*stats=r.work;return 0;});}
 int32_t SEVK_CALL sevk_get_performance_stats(void* ctx,SevkPerformanceStats* stats){return call(ctx,[&](Renderer& r){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("performance stats ABI mismatch");*stats=r.performance;return 0;});}
 int32_t SEVK_CALL sevk_set_texture_validation_cache(void* ctx,uint32_t enabled){return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("queue policy cannot change during recording");r.world.texture_validation_cache=enabled!=0;return 0;});}
 int32_t SEVK_CALL sevk_set_parallel_world_queue(void* ctx,uint32_t enabled){return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("queue policy cannot change during recording");r.world.parallel_queue=enabled!=0;return 0;});}
@@ -1943,6 +2016,7 @@ int32_t SEVK_CALL sevk_clear_models(void* ctx){return call(ctx,[&](Renderer& r){
 int32_t SEVK_CALL sevk_append_models(void* ctx,const SevkModelInstance* instances,uint32_t count,const uint32_t* order,uint32_t legacy_count,uint32_t* remap){return call(ctx,[&](Renderer& r){r.append_models(instances,count,order,legacy_count,remap);return 0;});}
 int32_t SEVK_CALL sevk_world_main_order(void* ctx,const SevkMainDrawOrder* orders,uint32_t count){return call(ctx,[&](Renderer& r){r.set_world_main_order(orders,count);return 0;});}
 int32_t SEVK_CALL sevk_world_old_order(void* ctx,const SevkOldPartOrder* orders,uint32_t count){return call(ctx,[&](Renderer& r){r.set_world_old_order(orders,count);return 0;});}
+int32_t SEVK_CALL sevk_world_draw_owners(void* ctx,const uint32_t* owners,uint32_t count){return call(ctx,[&](Renderer& r){r.set_world_draw_owners(owners,count);return 0;});}
 int32_t SEVK_CALL sevk_world_main_owners(void* ctx,const SevkMainOwnerOrder* owners,uint32_t count){return call(ctx,[&](Renderer& r){r.set_world_main_owners(owners,count);return 0;});}
 int32_t SEVK_CALL sevk_get_model_group_stats(void* ctx,SevkModelGroupStats* stats){return call(ctx,[&](Renderer& r){if(!stats||stats->size!=sizeof(*stats)||stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("model group stats ABI mismatch");*stats=r.world.models.stats;return 0;});}
 int32_t SEVK_CALL sevk_get_recipe_stats(void* ctx,SevkRecipeStats* stats){return call(ctx,[&](Renderer& r){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("recipe stats ABI mismatch");*stats=r.world.current().recipe_stats;return 0;});}
@@ -1975,7 +2049,11 @@ int32_t SEVK_CALL sevk_register_world_mesh_range(void* ctx,uint64_t id,uint64_t 
 int32_t SEVK_CALL sevk_upload_voxel_mesh(void* ctx,uint64_t id,const void* vertices,uint32_t vc,const uint32_t* indices,uint32_t ic){return call(ctx,[&](Renderer& r){r.upload_world_mesh(id,vertices,vc,indices,ic,24);return 0;});}
 int32_t SEVK_CALL sevk_upload_voxel_array(void* ctx,uint64_t id,uint32_t w,uint32_t h,uint32_t fmt,uint32_t srgb,uint32_t layers,uint32_t mips,const void* data,uint64_t bytes){return call(ctx,[&](Renderer& r){r.upload_voxel_array(id,w,h,fmt,srgb!=0,layers,mips,data,bytes);return 0;});}
 int32_t SEVK_CALL sevk_set_voxel_material(void* ctx,uint64_t id,const void* constants,uint32_t bytes,const uint64_t* arrays,uint64_t random){return call(ctx,[&](Renderer& r){r.set_voxel_material(id,constants,bytes,arrays,random);return 0;});}
-int32_t SEVK_CALL sevk_queue_world(void* ctx,const void* frame,uint32_t fb,const float* projection,const float* inverse,const SevkWorldDraw* draws,uint32_t count){return call(ctx,[&](Renderer& r){r.queue_world(frame,fb,projection,inverse,draws,count);return 0;});}
+int32_t SEVK_CALL sevk_queue_world(void* ctx,const void* frame,uint32_t fb,const float* projection,const float* inverse,const SevkWorldDraw* draws,uint32_t count){
+    // Only the empty submission defers; populated legacy draws carry blob offsets.
+    if(!frame&&!count)return call_deferrable(ctx,[fb,projection,inverse](Renderer& r){r.queue_world(nullptr,fb,projection,inverse,nullptr,0);return 0;});
+    return call(ctx,[&](Renderer& r){r.queue_world(frame,fb,projection,inverse,draws,count);return 0;});
+}
 int32_t SEVK_CALL sevk_queue_world_retained(void* ctx,const void* frame,uint32_t fb,const float* projection,const float* inverse,const SevkWorldDraw* draws,uint32_t count,const uint64_t* ids){return call(ctx,[&](Renderer& r){if(count && !ids)throw std::runtime_error("retained object identities missing");r.queue_world(frame,fb,projection,inverse,draws,count,ids);return 0;});}
 int32_t SEVK_CALL sevk_world_object_alignment(void* ctx,uint32_t* alignment){return call(ctx,[&](Renderer& r){if(!alignment || !r.world.alignment)throw std::runtime_error("world alignment unavailable");*alignment=uint32_t(r.world.alignment);return 0;});}
 int32_t SEVK_CALL sevk_queue_world_blob(void* ctx,const void* frame,uint32_t fb,const float* projection,const float* inverse,const SevkWorldDraw* draws,uint32_t count,const uint8_t* objects,uint32_t object_bytes,const uint8_t* instances,uint32_t instance_bytes){return call(ctx,[&](Renderer& r){if(!count || !objects || !object_bytes)throw std::runtime_error("empty world blob");r.queue_world(frame,fb,projection,inverse,draws,count,nullptr,objects,object_bytes,instances,instance_bytes);return 0;});}
@@ -1984,16 +2062,16 @@ int32_t SEVK_CALL sevk_get_object_record_stats(void* ctx,SevkObjectRecordStats* 
 int32_t SEVK_CALL sevk_upload_world_cube(void* ctx,uint64_t id,uint32_t w,uint32_t h,uint32_t fmt,uint32_t srgb,const void* bytes,uint64_t size){return call(ctx,[&](Renderer& r){r.upload_world_cube(id,w,h,fmt,srgb!=0,bytes,size);return 0;});}
 int32_t SEVK_CALL sevk_upload_world_cube_mips(void* ctx,uint64_t id,uint32_t w,uint32_t h,uint32_t fmt,uint32_t srgb,const void* bytes,uint64_t size,uint32_t mips){return call(ctx,[&](Renderer& r){if(srgb>1)throw std::runtime_error("invalid cube color space");r.upload_world_cube(id,w,h,fmt,srgb!=0,bytes,size,mips);return 0;});}
 int32_t SEVK_CALL sevk_set_world_skybox(void* ctx,uint64_t id){return call(ctx,[&](Renderer& r){if(id && !r.world.cubes.count(id))throw std::runtime_error("missing world cube");r.world.skybox=id;r.world.probe_skybox=0;return 0;});}
-int32_t SEVK_CALL sevk_set_world_skyboxes(void* ctx,uint64_t visible,uint64_t indirect){return call(ctx,[&](Renderer& r){if((visible && !r.world.cubes.count(visible)) || (indirect && !r.world.cubes.count(indirect)))throw std::runtime_error("missing visible/indirect world cube");r.world.skybox=visible;r.world.probe_skybox=indirect;return 0;});}
+int32_t SEVK_CALL sevk_set_world_skyboxes(void* ctx,uint64_t visible,uint64_t indirect){return call_deferrable(ctx,[visible,indirect](Renderer& r){if((visible && !r.world.cubes.count(visible)) || (indirect && !r.world.cubes.count(indirect)))throw std::runtime_error("missing visible/indirect world cube");r.world.skybox=visible;r.world.probe_skybox=indirect;return 0;});}
 
 int32_t SEVK_CALL sevk_get_voxel_stats(void* ctx,SevkVoxelStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){stats->frames=r.world.voxel_frames;stats->draws=r.world.voxel_draws;stats->meshes=0;for(auto& p:r.world.meshes)if(p.second.vertex_stride==24)++stats->meshes;stats->arrays=r.world.arrays.size();stats->materials=r.world.voxel_materials.size();return 0;});}
 
 int32_t SEVK_CALL sevk_build_voxel_array(void* ctx,uint64_t id,uint32_t size,uint32_t srgb,const uint64_t* sources,uint32_t layers){return call(ctx,[&](Renderer& r){r.build_voxel_array(id,size,srgb!=0,sources,layers);return 0;});}
 
 int32_t SEVK_CALL sevk_init_environment(void* ctx,uint32_t stage,const void* data,uint64_t bytes){return call(ctx,[&](Renderer& r){r.init_environment(stage,data,bytes);return 0;});}
-int32_t SEVK_CALL sevk_set_shadow_options(void* ctx,uint32_t flags){return call(ctx,[&](Renderer& r){if(r.recording || flags>1)throw std::runtime_error("invalid shadow options");r.shadow_blur_enabled=flags!=0;return 0;});}
+int32_t SEVK_CALL sevk_set_shadow_options(void* ctx,uint32_t flags){return call_deferrable(ctx,[flags](Renderer& r){if(r.recording || flags>1)throw std::runtime_error("invalid shadow options");r.shadow_blur_enabled=flags!=0;return 0;});}
 int32_t SEVK_CALL sevk_init_postprocess(void* ctx,uint32_t stage,const void* data,uint64_t bytes){return call(ctx,[&](Renderer& r){r.init_postprocess(stage,data,bytes);return 0;});}
-int32_t SEVK_CALL sevk_set_hbao(void* ctx,const SevkHbaoConfig* config){if(!config)return -1;return call(ctx,[&](Renderer& r){r.set_hbao(*config);return 0;});}
+int32_t SEVK_CALL sevk_set_hbao(void* ctx,const SevkHbaoConfig* config){if(!config)return -1;return call_deferrable(ctx,[config_copy=*config](Renderer& r){auto* config=&config_copy;r.set_hbao(*config);return 0;});}
 int32_t SEVK_CALL sevk_set_hbao_jitter(void* ctx,const float* values,uint32_t count){return call(ctx,[&](Renderer& r){r.set_hbao_jitter(values,count);return 0;});}
 int32_t SEVK_CALL sevk_init_probes(void* ctx,uint32_t stage,const void* data,uint64_t bytes){return call(ctx,[&](Renderer& r){r.init_probes(stage,data,bytes);return 0;});}
 int32_t SEVK_CALL sevk_set_probes(void* ctx,const SevkProbeConfig* config){if(!config)return -1;return call(ctx,[&](Renderer& r){r.set_probes(*config);return 0;});}
@@ -2008,24 +2086,30 @@ int32_t SEVK_CALL sevk_readback_lighting_input(void* ctx,uint32_t input,void* da
 int32_t SEVK_CALL sevk_set_lighting_diagnostics(void* ctx,uint32_t enabled){return call(ctx,[&](Renderer& r){r.set_lighting_diagnostics(enabled);return 0;});}
 int32_t SEVK_CALL sevk_set_lighting_diagnostic_sampler(void* ctx,uint32_t mode){return call(ctx,[&](Renderer& r){r.set_lighting_diagnostic_sampler(mode);return 0;});}
 int32_t SEVK_CALL sevk_readback_lighting_stage(void* ctx,uint32_t stage,void* data,uint64_t bytes){return call(ctx,[&](Renderer& r){r.readback_lighting_stage(stage,data,bytes);return 0;});}
-int32_t SEVK_CALL sevk_get_shadow_feedback(void* ctx,SevkShadowFeedback* out){return call(ctx,[&](Renderer& r){if(r.recording || !out || out->size!=sizeof(*out) || out->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("invalid shadow feedback contract");uint64_t complete=0;r.check_gpu(vkGetSemaphoreCounterValue(r.device,r.timeline,&complete),"shadow feedback completion");for(uint32_t i=0;i<2;++i)if(r.slots[i].completion<=complete)r.sample_shadow_usage(i);out->completion=r.shadow_usage.latest;std::fill(std::begin(out->pixels),std::end(out->pixels),0u);for(auto& view:r.shadow_usage.pixels)for(uint32_t c=0;c<8;++c)out->pixels[c]+=view[c];out->update_mask=r.shadow_update_mask;out->valid_mask=r.shadow_valid_mask;return 0;});}
-int32_t SEVK_CALL sevk_get_shadow_cache_mask(void* ctx,uint32_t* mask){return call(ctx,[&](Renderer& r){if(r.recording || !mask)throw std::runtime_error("invalid shadow cache mask query");*mask=r.shadow_image_mask&((1u<<r.shadow_count)-1);return 0;});}
+int32_t SEVK_CALL sevk_get_shadow_feedback(void* ctx,SevkShadowFeedback* out){if(!out || out->size!=sizeof(*out) || out->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*out=r.snapshot.shadow;return 0;},[&](Renderer& r){if(r.recording)throw std::runtime_error("invalid shadow feedback contract");*out=r.shadow_feedback();return 0;});}
+int32_t SEVK_CALL sevk_get_shadow_cache_mask(void* ctx,uint32_t* mask){if(!mask)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{if(!r.snapshot.cache_valid)return std::nullopt;*mask=r.snapshot.cache_mask;return 0;},[&](Renderer& r){if(r.recording)throw std::runtime_error("invalid shadow cache mask query");*mask=r.shadow_image_mask&((1u<<r.shadow_count)-1);return 0;});}
 int32_t SEVK_CALL sevk_init_occlusion(void* ctx,const void* vs,uint64_t vb,const void* ps,uint64_t pb){return call(ctx,[&](Renderer& r){r.init_occlusion(vs,vb,ps,pb);return 0;});}
-int32_t SEVK_CALL sevk_queue_occlusion(void* ctx,uint64_t token,const SevkOcclusionDraw* queries,uint32_t count){return call(ctx,[&](Renderer& r){r.queue_occlusion(token,queries,count);return 0;});}
+int32_t SEVK_CALL sevk_queue_occlusion(void* ctx,uint64_t token,const SevkOcclusionDraw* queries,uint32_t count){return call_deferrable(ctx,[token,queries_copy=copy_in(queries,count),count](Renderer& r){auto* queries=queries_copy.get();r.queue_occlusion(token,queries,count);return 0;});}
 int32_t SEVK_CALL sevk_queue_shadow_occlusion(void* ctx,uint32_t cascade,uint64_t token,const SevkOcclusionDraw* queries,uint32_t count){return call(ctx,[&](Renderer& r){r.queue_shadow_occlusion(cascade,token,queries,count);return 0;});}
 int32_t SEVK_CALL sevk_get_shadow_occlusion(void* ctx,uint32_t cascade,SevkOcclusionResult* results,uint32_t capacity,uint32_t* count,uint64_t* token){return call(ctx,[&](Renderer& r){if(cascade>=8 || r.recording || !count || !token || (!results&&capacity))throw std::runtime_error("invalid cascade query result contract");r.collect();auto& state=r.shadow_occlusion[cascade];*count=uint32_t(state.completed.size());*token=state.completed_token;if(*count>capacity)throw std::runtime_error("cascade query result capacity");if(*count)std::memcpy(results,state.completed.data(),*count*sizeof(*results));return 0;});}
-int32_t SEVK_CALL sevk_get_occlusion(void* ctx,SevkOcclusionResult* results,uint32_t capacity,uint32_t* count,uint64_t* token){return call(ctx,[&](Renderer& r){if(!count || !token || (!results && capacity))throw std::runtime_error("invalid occlusion output");r.collect();*count=uint32_t(r.occlusion.completed.size());*token=r.occlusion.completed_token;if(*count>capacity)throw std::runtime_error("occlusion result capacity too small");if(*count)std::memcpy(results,r.occlusion.completed.data(),*count*sizeof(*results));return 0;});}
+int32_t SEVK_CALL sevk_get_occlusion(void* ctx,SevkOcclusionResult* results,uint32_t capacity,uint32_t* count,uint64_t* token){if(!count || !token || (!results && capacity))return -1;
+    auto copy=[&](const std::vector<SevkOcclusionResult>& completed,uint64_t completed_token){*count=uint32_t(completed.size());*token=completed_token;if(*count>capacity)throw std::runtime_error("occlusion result capacity too small");if(*count)std::memcpy(results,completed.data(),*count*sizeof(*results));};
+    return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{if(r.snapshot.occlusion.size()>capacity)return std::nullopt;copy(r.snapshot.occlusion,r.snapshot.occlusion_token);return 0;},[&](Renderer& r){r.collect();copy(r.occlusion.completed,r.occlusion.completed_token);return 0;});}
 int32_t SEVK_CALL sevk_get_occlusion_stats(void* ctx,SevkOcclusionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){r.collect();*stats=r.occlusion.stats;return 0;});}
-int32_t SEVK_CALL sevk_set_shadow_exclusions(void* ctx,const SevkShadowExclusion* exclusions,uint32_t count){return call(ctx,[&](Renderer& r){if(r.recording || count>8192 || (!exclusions && count))throw std::runtime_error("invalid shadow exclusion batch");std::unordered_set<uint64_t> copied;for(uint32_t i=0;i<count;++i){auto e=exclusions[i];if(e.light>=64 || e.draw>=r.world.current().draws.size())throw std::runtime_error("shadow exclusion outside light/draw range");copied.insert((uint64_t(e.light)<<32)|e.draw);}r.spots.exclusions=std::move(copied);return 0;});}
-int32_t SEVK_CALL sevk_set_spots(void* ctx,uint32_t resolution,const SevkSpot* spots,uint32_t count){return call(ctx,[&](Renderer& r){r.set_spots(resolution,spots,count);return 0;});}
+int32_t SEVK_CALL sevk_set_shadow_exclusions(void* ctx,const SevkShadowExclusion* exclusions,uint32_t count){return call_deferrable(ctx,[exclusions_copy=copy_in(exclusions,count),count](Renderer& r){auto* exclusions=exclusions_copy.get();if(r.recording || count>8192 || (!exclusions && count))throw std::runtime_error("invalid shadow exclusion batch");std::unordered_set<uint64_t> copied;for(uint32_t i=0;i<count;++i){auto e=exclusions[i];if(e.light>=64 || e.draw>=r.world.current().draws.size())throw std::runtime_error("shadow exclusion outside light/draw range");copied.insert((uint64_t(e.light)<<32)|e.draw);}r.spots.exclusions=std::move(copied);return 0;});}
+int32_t SEVK_CALL sevk_set_spots(void* ctx,uint32_t resolution,const SevkSpot* spots,uint32_t count){return call_deferrable(ctx,[resolution,spots_copy=copy_in(spots,count),count](Renderer& r){auto* spots=spots_copy.get();r.set_spots(resolution,spots,count);return 0;});}
 int32_t SEVK_CALL sevk_set_spot_redraw(void* ctx,uint64_t static_mask,uint64_t dynamic_mask){return call(ctx,[&](Renderer& r){r.set_spot_redraw(static_mask,dynamic_mask);return 0;});}
 int32_t SEVK_CALL sevk_get_spot_stats(void* ctx,SevkSpotStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){*stats=r.spots.stats;return 0;});}
-int32_t SEVK_CALL sevk_set_probe_atmosphere(void* ctx,uint64_t id,float intensity,float desaturation,const float* direction){return call(ctx,[&](Renderer& r){if(r.recording || !direction || !std::isfinite(intensity) || intensity<0 || !std::isfinite(desaturation))throw std::runtime_error("invalid probe atmosphere settings");for(uint32_t i=0;i<3;++i)if(!std::isfinite(direction[i]))throw std::runtime_error("nonfinite probe sun direction");r.probes.atmosphere_id=id;r.probes.atmosphere_intensity=intensity;r.probes.atmosphere_desaturation=desaturation;std::memcpy(r.probes.sun_direction,direction,12);return 0;});}
-int32_t SEVK_CALL sevk_set_shadow_quality(void* ctx,uint32_t resolution,float bias){return call(ctx,[&](Renderer& r){if(r.recording || resolution<256 || resolution>4096 || (resolution&(resolution-1)) || !std::isfinite(bias) || bias<0 || bias>1)throw std::runtime_error("invalid shadow quality");r.requested_shadow_resolution=resolution;r.shadow_bias=bias;return 0;});}
-int32_t SEVK_CALL sevk_queue_highlights(void* ctx,const SevkHighlightDraw* draws,uint32_t count){return call(ctx,[&](Renderer& r){r.queue_highlights(draws,count);return 0;});}
+int32_t SEVK_CALL sevk_set_probe_atmosphere(void* ctx,uint64_t id,float intensity,float desaturation,const float* direction){return call_deferrable(ctx,[id,intensity,desaturation,direction_copy=copy_in(direction,3)](Renderer& r){auto* direction=direction_copy.get();if(r.recording || !direction || !std::isfinite(intensity) || intensity<0 || !std::isfinite(desaturation))throw std::runtime_error("invalid probe atmosphere settings");for(uint32_t i=0;i<3;++i)if(!std::isfinite(direction[i]))throw std::runtime_error("nonfinite probe sun direction");r.probes.atmosphere_id=id;r.probes.atmosphere_intensity=intensity;r.probes.atmosphere_desaturation=desaturation;std::memcpy(r.probes.sun_direction,direction,12);return 0;});}
+int32_t SEVK_CALL sevk_set_shadow_quality(void* ctx,uint32_t resolution,float bias){return call_deferrable(ctx,[resolution,bias](Renderer& r){if(r.recording || resolution<256 || resolution>4096 || (resolution&(resolution-1)) || !std::isfinite(bias) || bias<0 || bias>1)throw std::runtime_error("invalid shadow quality");r.requested_shadow_resolution=resolution;r.shadow_bias=bias;return 0;});}
+int32_t SEVK_CALL sevk_queue_highlights(void* ctx,const SevkHighlightDraw* draws,uint32_t count){return call_deferrable(ctx,[draws_copy=copy_in(draws,count),count](Renderer& r){auto* draws=draws_copy.get();r.queue_highlights(draws,count);return 0;});}
 int32_t SEVK_CALL sevk_get_highlight_stats(void* ctx,SevkHighlightStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){*stats=r.highlights.stats;return 0;});}
-int32_t SEVK_CALL sevk_set_render_fraction(void* ctx,float fraction){return call(ctx,[&](Renderer& r){if(r.recording || !std::isfinite(fraction) || fraction<.25f || fraction>1)throw std::runtime_error("invalid world render fraction");r.render_fraction=fraction;return 0;});}
-int32_t SEVK_CALL sevk_set_view_clip(void* ctx,float far_plane){return call(ctx,[&](Renderer& r){if(!std::isfinite(far_plane)||far_plane<1)throw std::runtime_error("invalid view clip");r.view_far=far_plane;return 0;});}
+int32_t SEVK_CALL sevk_set_render_fraction(void* ctx,float fraction){
+    // A deferred fraction is what the next resolution read must observe.
+    if(ctx&&std::isfinite(fraction)&&fraction>=.25f&&fraction<=1){auto* renderer=static_cast<Renderer*>(ctx);std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){std::lock_guard read(renderer->snapshot_mutex);renderer->snapshot.render_fraction=fraction;}}
+    return call_deferrable(ctx,[fraction](Renderer& r){if(r.recording || !std::isfinite(fraction) || fraction<.25f || fraction>1)throw std::runtime_error("invalid world render fraction");r.render_fraction=fraction;return 0;});
+}
+int32_t SEVK_CALL sevk_set_view_clip(void* ctx,float far_plane){return call_deferrable(ctx,[far_plane](Renderer& r){if(!std::isfinite(far_plane)||far_plane<1)throw std::runtime_error("invalid view clip");r.view_far=far_plane;return 0;});}
 int32_t SEVK_CALL sevk_invalidate_guest_history(void* ctx){return call(ctx,[&](Renderer& r){r.guest.have_prev=false;r.guest.frame.history_valid=0;return 0;});}
 int32_t SEVK_CALL sevk_set_display_flags(void* ctx,uint32_t flags){return call(ctx,[&](Renderer& r){uint32_t mask=flags>>16;uint32_t value=flags&0xffffu;if(!mask)r.display_flags=value;else r.display_flags=(r.display_flags&~mask)|(value&mask);return 0;});}
 int32_t SEVK_CALL sevk_set_upscale_owner(void* ctx,const char* id){return call(ctx,[&](Renderer& r){(void)r;return Renderer::ngx_set_owner(id);});}
@@ -2038,18 +2122,17 @@ int32_t SEVK_CALL sevk_fsr_debug(char* text,uint32_t capacity){return Renderer::
 int32_t SEVK_CALL sevk_fg_status(SevkFrameGenStatus* status){return Renderer::fg_copy_status(status);}
 int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32_t height,uint32_t* render_width,uint32_t* render_height,float* fraction){
     if(!width || !height || !render_width || !render_height || !fraction)return -1;
-    return call(ctx,[&](Renderer& r){
+    auto resolve=[&](float value){*render_width=std::max(1u,uint32_t(std::lround(width*value)));*render_height=std::max(1u,uint32_t(std::lround(height*value)));*fraction=value;};
+    // Upscalers rewrite the fraction on the owner thread; those frames wait.
+    return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{if(Renderer::upscaler_requested())return std::nullopt;resolve(r.snapshot.render_fraction);return 0;},[&](Renderer& r){
         if(r.recording)throw std::runtime_error("cannot resolve world resolution during recording");
-        r.ngx_apply_scale();r.fsr_apply_scale();
-        *render_width=std::max(1u,uint32_t(std::lround(width*r.render_fraction)));
-        *render_height=std::max(1u,uint32_t(std::lround(height*r.render_fraction)));
-        *fraction=r.render_fraction;return 0;
+        r.ngx_apply_scale();r.fsr_apply_scale();resolve(r.render_fraction);return 0;
     });
 }
-int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){r.collect();*stats=r.resolution_stats;return 0;});}
+int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.resolution;return 0;},[&](Renderer& r){r.collect();*stats=r.resolution_stats;return 0;});}
 uint32_t SEVK_CALL sevk_guest_features(void){return 8191u;}
 int32_t SEVK_CALL sevk_guest_depth_views(void* ctx,const uint64_t* images,const float* matrices,uint32_t count){
-    return call(ctx,[&](Renderer& r){r.guest_depth_views(images,matrices,count);return 0;});
+    return call_deferrable(ctx,[images_copy=copy_in(images,count),matrices_copy=copy_in(matrices,uint64_t(count)*16),count](Renderer& r){auto* images=images_copy.get();auto* matrices=matrices_copy.get();r.guest_depth_views(images,matrices,count);return 0;});
 }
 uint32_t SEVK_CALL sevk_guest_depth_ready(void* ctx){
     uint32_t ready=0;call(ctx,[&](Renderer& r){ready=r.guest.depth_ready;return 0;});return ready;
@@ -2084,35 +2167,44 @@ uint64_t SEVK_CALL sevk_guest_replay_count(void* ctx){uint64_t count=0;call(ctx,
 int32_t SEVK_CALL sevk_get_guest_frame(void* ctx, SevkGuestFrame* frame){if(!frame || frame->size < sizeof(SevkGuestFrame) || frame->abi_version != SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){r.guest_refresh_frame();*frame=r.guest.frame;frame->size=sizeof(SevkGuestFrame);frame->abi_version=SEVK_ABI_VERSION;return 0;});}
 int32_t SEVK_CALL sevk_get_ray_capabilities(void* ctx, SevkRayCapabilities* caps){if(!caps)return -1;if(!ctx)ctx=active_context;return call(ctx,[&](Renderer& r){return r.get_ray_capabilities(caps);});}
 int32_t SEVK_CALL sevk_set_ray_options(void* ctx, const SevkRayOptions* options){if(!options)return -1;if(!ctx)ctx=active_context;return call(ctx,[&](Renderer& r){return r.set_ray_options(*options);});}
-int32_t SEVK_CALL sevk_set_postprocess(void* ctx,const SevkPostprocessConfig* config){if(!config)return -1;return call(ctx,[&](Renderer& r){r.set_postprocess(*config);return 0;});}
+int32_t SEVK_CALL sevk_set_postprocess(void* ctx,const SevkPostprocessConfig* config){if(!config)return -1;return call_deferrable(ctx,[config_copy=*config](Renderer& r){auto* config=&config_copy;r.set_postprocess(*config);return 0;});}
 int32_t SEVK_CALL sevk_get_postprocess_stats(void* ctx,SevkPostprocessStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){*stats=r.post.stats;return 0;});}
-int32_t SEVK_CALL sevk_queue_environment(void* ctx,const SevkEnvironmentDraw* draws,uint32_t count){return call(ctx,[&](Renderer& r){r.queue_environment(draws,count);return 0;});}
+int32_t SEVK_CALL sevk_queue_environment(void* ctx,const SevkEnvironmentDraw* draws,uint32_t count){return call_deferrable(ctx,[draws_copy=copy_in(draws,count),count](Renderer& r){auto* draws=draws_copy.get();r.queue_environment(draws,count);return 0;});}
 int32_t SEVK_CALL sevk_get_environment_stats(void* ctx,SevkEnvironmentStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){*stats=r.environment.stats;stats->luts=r.environment.luts.size();return 0;});}
 
 int32_t SEVK_CALL sevk_upload_foliage(void* ctx,uint64_t id,const SevkFoliagePoint* points,uint32_t count){return call(ctx,[&](Renderer& r){if(count>4000000)throw std::runtime_error("foliage buffer exceeds point limit");uint32_t indices[3]{};r.upload_world_mesh(id,points,count,indices,3,16);r.world.meshes.at(id).index_count=count;return 0;});}
-int32_t SEVK_CALL sevk_queue_foliage(void* ctx,const SevkFoliageDraw* draws,uint32_t count,const void* table,uint32_t bytes){return call(ctx,[&](Renderer& r){r.queue_foliage(draws,count,table,bytes);return 0;});}
+int32_t SEVK_CALL sevk_queue_foliage(void* ctx,const SevkFoliageDraw* draws,uint32_t count,const void* table,uint32_t bytes){return call_deferrable(ctx,[draws_copy=copy_in(draws,count),count,table_copy=copy_bytes(table,bytes),bytes](Renderer& r){auto* draws=draws_copy.get();const void* table=table_copy.get();r.queue_foliage(draws,count,table,bytes);return 0;});}
 
 int32_t SEVK_CALL sevk_init_transparency(void* ctx,uint32_t id,const void* vs,uint64_t vb,const void* ps,uint64_t pb){return call(ctx,[&](Renderer& r){r.init_transparency(id,vs,vb,ps,pb);return 0;});}
-int32_t SEVK_CALL sevk_queue_transparency(void* ctx,const SevkTransparentDraw* draws,uint32_t count){return call(ctx,[&](Renderer& r){r.queue_transparency(draws,count);return 0;});}
+int32_t SEVK_CALL sevk_queue_transparency(void* ctx,const SevkTransparentDraw* draws,uint32_t count){
+    // Glass geometry carries constant and instance pointers; deferral owns copies.
+    struct Owned {std::vector<SevkTransparentDraw> draws;std::vector<std::vector<uint8_t>> bytes;};auto owned=std::make_shared<Owned>();
+    if(draws&&count<=8192){owned->draws.assign(draws,draws+count);owned->bytes.reserve(size_t(count)*2);for(auto& d:owned->draws){auto& g=d.geometry;
+        if(g.object_constants&&g.object_bytes<=65536){auto* p=static_cast<const uint8_t*>(g.object_constants);g.object_constants=owned->bytes.emplace_back(p,p+g.object_bytes).data();}
+        if(g.pipeline%5>=2&&g.instances&&g.instance_count&&g.instance_count<=1000000){auto* p=static_cast<const uint8_t*>(g.instances);g.instances=owned->bytes.emplace_back(p,p+uint64_t(g.instance_count)*64).data();}}}
+    return call_deferrable(ctx,[owned,count,null=!draws](Renderer& r){r.queue_transparency(null?nullptr:owned->draws.data(),count);return 0;});
+}
 int32_t SEVK_CALL sevk_get_transparency_stats(void* ctx,SevkTransparencyStats* stats){return call(ctx,[&](Renderer& r){if(!stats||stats->size!=sizeof(*stats)||stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("invalid transparency stats");*stats=r.transparency.stats;return 0;});}
 
-int32_t SEVK_CALL sevk_set_billboard_projections(void* ctx,const float* matrices){if(!matrices)return -1;return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("billboard projection during frame");for(uint32_t i=0;i<512;++i)if(!std::isfinite(matrices[i]))throw std::runtime_error("nonfinite billboard projection");std::memcpy(r.transparency.custom_projections,matrices,2048);return 0;});}
-int32_t SEVK_CALL sevk_queue_billboards(void* ctx,const SevkBillboardDraw* draws,uint32_t count){return call(ctx,[&](Renderer& r){if(r.recording||count>32768||(!draws&&count))throw std::runtime_error("invalid billboard batch");for(uint32_t i=0;i<count;++i)if(draws[i].flags>31||draws[i].bucket>4||!r.textures.count(draws[i].texture))throw std::runtime_error("invalid billboard material/bucket");r.transparency.billboard_draws.clear();if(count)r.transparency.billboard_draws.assign(draws,draws+count);return 0;});}
+int32_t SEVK_CALL sevk_set_billboard_projections(void* ctx,const float* matrices){if(!matrices)return -1;return call_deferrable(ctx,[matrices_copy=copy_in(matrices,512)](Renderer& r){auto* matrices=matrices_copy.get();if(r.recording)throw std::runtime_error("billboard projection during frame");for(uint32_t i=0;i<512;++i)if(!std::isfinite(matrices[i]))throw std::runtime_error("nonfinite billboard projection");std::memcpy(r.transparency.custom_projections,matrices,2048);return 0;});}
+int32_t SEVK_CALL sevk_queue_billboards(void* ctx,const SevkBillboardDraw* draws,uint32_t count){return call_deferrable(ctx,[draws_copy=copy_in(draws,count),count](Renderer& r){auto* draws=draws_copy.get();if(r.recording||count>32768||(!draws&&count))throw std::runtime_error("invalid billboard batch");for(uint32_t i=0;i<count;++i)if(draws[i].flags>31||draws[i].bucket>4||!r.textures.count(draws[i].texture))throw std::runtime_error("invalid billboard material/bucket");r.transparency.billboard_draws.clear();if(count)r.transparency.billboard_draws.assign(draws,draws+count);return 0;});}
 
 int32_t SEVK_CALL sevk_init_particles(void* ctx,uint32_t stage,const void* spv,uint64_t bytes){return call(ctx,[&](Renderer& r){r.init_particles(stage,spv,bytes);return 0;});}
-int32_t SEVK_CALL sevk_queue_particles(void* ctx,const void* data,uint32_t count,uint32_t bytes,uint64_t atlas,uint32_t reset){return call(ctx,[&](Renderer& r){if(r.recording||count>1024||bytes!=count*464||(!data&&count)||reset>1||(count&&!r.world.arrays.count(atlas)))throw std::runtime_error("invalid particle emitter batch/atlas");r.particles.packet.clear();if(bytes){auto* p=static_cast<const uint8_t*>(data);r.particles.packet.assign(p,p+bytes);}r.particles.count=count;r.particles.atlas=atlas;r.particles.reset|=reset!=0;r.particles.queued=count!=0||r.particles.initialized&&(atlas!=0||reset!=0);return 0;});}
+int32_t SEVK_CALL sevk_queue_particles(void* ctx,const void* data,uint32_t count,uint32_t bytes,uint64_t atlas,uint32_t reset){return call_deferrable(ctx,[data_copy=copy_bytes(data,bytes),count,bytes,atlas,reset](Renderer& r){const void* data=data_copy.get();if(r.recording||count>1024||bytes!=count*464||(!data&&count)||reset>1||(count&&!r.world.arrays.count(atlas)))throw std::runtime_error("invalid particle emitter batch/atlas");r.particles.packet.clear();if(bytes){auto* p=static_cast<const uint8_t*>(data);r.particles.packet.assign(p,p+bytes);}r.particles.count=count;r.particles.atlas=atlas;r.particles.reset|=reset!=0;r.particles.queued=count!=0||r.particles.initialized&&(atlas!=0||reset!=0);return 0;});}
 int32_t SEVK_CALL sevk_get_particle_stats(void* ctx,SevkParticleStats* stats){return call(ctx,[&](Renderer& r){if(!stats||stats->size!=sizeof(*stats)||stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("invalid particle stats");*stats=r.particles.stats;return 0;});}
 
 int32_t SEVK_CALL sevk_init_decals(void* ctx,uint32_t role,const void* vertex,uint64_t vb,const void* pixel,uint64_t pb){return call(ctx,[&](Renderer& r){r.init_decals(role,vertex,vb,pixel,pb);return 0;});}
-int32_t SEVK_CALL sevk_queue_decals(void* ctx,const SevkDecalDraw* draws,uint32_t count){return call(ctx,[&](Renderer& r){if(r.recording||count>16384||(!draws&&count))throw std::runtime_error("invalid decal batch");for(uint32_t i=0;i<count;++i){auto& d=draws[i];if(d.size!=sizeof(d)||d.role>8||!r.decals.pipelines[d.role])throw std::runtime_error("invalid decal role/layout");for(uint64_t texture:{d.alpha,d.color,d.normal,d.extensions})if(!r.textures.count(texture))throw std::runtime_error("missing decal texture");}r.decals.draws.clear();if(count)r.decals.draws.assign(draws,draws+count);return 0;});}
+int32_t SEVK_CALL sevk_queue_decals(void* ctx,const SevkDecalDraw* draws,uint32_t count){return call_deferrable(ctx,[draws_copy=copy_in(draws,count),count](Renderer& r){auto* draws=draws_copy.get();if(r.recording||count>16384||(!draws&&count))throw std::runtime_error("invalid decal batch");for(uint32_t i=0;i<count;++i){auto& d=draws[i];if(d.size!=sizeof(d)||d.role>8||!r.decals.pipelines[d.role])throw std::runtime_error("invalid decal role/layout");for(uint64_t texture:{d.alpha,d.color,d.normal,d.extensions})if(!r.textures.count(texture))throw std::runtime_error("missing decal texture");}r.decals.draws.clear();if(count)r.decals.draws.assign(draws,draws+count);return 0;});}
 
 int32_t SEVK_CALL sevk_queue_flares(void* ctx,const float* matrix,const SevkFlareQuery* queries,uint32_t count){return call(ctx,[&](Renderer& r){if(r.recording||count>4096||(!queries&&count)||!matrix)throw std::runtime_error("invalid flare query packet");for(uint32_t i=0;i<count;++i)if(!std::isfinite(queries[i].position[0])||!std::isfinite(queries[i].position[1])||!std::isfinite(queries[i].position[2])||!std::isfinite(queries[i].radius)||queries[i].radius<0)throw std::runtime_error("nonfinite flare query");std::memcpy(r.flares.projection,matrix,64);r.flares.raster_packet.clear();r.flares.packet.clear();if(count)r.flares.packet.assign(queries,queries+count);return 0;});}
-int32_t SEVK_CALL sevk_queue_flare_raster(void* ctx,const SevkFlareRasterQuery* queries,uint32_t count){return call(ctx,[&](Renderer& r){
+int32_t SEVK_CALL sevk_queue_flare_raster(void* ctx,const SevkFlareRasterQuery* queries,uint32_t count){return call_deferrable(ctx,[queries_copy=copy_in(queries,count),count](Renderer& r){auto* queries=queries_copy.get();
     if(r.recording||count>4096||(!queries&&count))throw std::runtime_error("invalid raster flare packet");
     for(uint32_t i=0;i<count;++i){const auto& q=queries[i];for(float v:q.center)if(!std::isfinite(v))throw std::runtime_error("nonfinite raster flare center");for(float v:q.half_extent)if(!std::isfinite(v)||v<0)throw std::runtime_error("invalid raster flare extent");if(!std::isfinite(q.area)||q.area<=0)throw std::runtime_error("invalid raster flare normalization");}
     r.flares.packet.clear();r.flares.raster_packet.clear();if(count)r.flares.raster_packet.assign(queries,queries+count);return 0;
 });}
-int32_t SEVK_CALL sevk_get_flare_results(void* ctx,SevkFlareResult* results,uint32_t capacity,uint32_t* count){return call(ctx,[&](Renderer& r){if(!count||(!results&&capacity)||capacity>4096)throw std::runtime_error("invalid flare result output");*count=std::min(capacity,uint32_t(r.flares.completed.size()));if(*count)std::memcpy(results,r.flares.completed.data(),*count*sizeof(*results));return 0;});}
+int32_t SEVK_CALL sevk_get_flare_results(void* ctx,SevkFlareResult* results,uint32_t capacity,uint32_t* count){if(!count||(!results&&capacity)||capacity>4096)return -1;
+    auto copy=[&](const auto& completed){*count=std::min(capacity,uint32_t(completed.size()));if(*count)std::memcpy(results,completed.data(),*count*sizeof(*results));};
+    return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{copy(r.snapshot.flares);return 0;},[&](Renderer& r){copy(r.flares.completed);return 0;});}
 
 int32_t SEVK_CALL sevk_set_parallel_cascades(void* ctx,uint32_t enabled){return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("cascade recording policy cannot change while recording");r.world.parallel_cascades=enabled!=0;return 0;});}
 int32_t SEVK_CALL sevk_get_cascade_record_stats(void* ctx,SevkCascadeRecordStats* stats){return call(ctx,[&](Renderer& r){if(!stats || stats->size!=sizeof(*stats)||stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("cascade record stats ABI mismatch");*stats={sizeof(*stats),SEVK_ABI_VERSION,r.world.parallel_cascades?1u:0u,r.world.cascade_tasks,r.world.cascade_task_commands};return 0;});}
@@ -2121,5 +2213,6 @@ int32_t SEVK_CALL sevk_init_light_tiles(void* ctx,const void* spirv,uint64_t byt
 int32_t SEVK_CALL sevk_set_light_tiles(void* ctx,uint32_t enabled){return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("light tile policy cannot change while recording");bool value=enabled!=0;if(value!=r.light_tiles.requested){r.light_tiles.requested=value;++r.light_tiles.epoch;r.light_tiles.stats.have_result=0;r.light_tiles.stats.completed_frame=r.light_tiles.stats.assignments=r.light_tiles.stats.full_assignments=0;}return 0;});}
 int32_t SEVK_CALL sevk_get_light_tile_stats(void* ctx,SevkLightTileStats* stats){return call(ctx,[&](Renderer& r){if(!stats||stats->size!=sizeof(*stats)||stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("light tile stats ABI mismatch");*stats=r.light_tiles.stats;return 0;});}
 #include "native_pass_exports.inc"
+#include "old_cells_exports.inc"
 int32_t SEVK_CALL sevk_critical_begin(void* ctx,uint32_t stride){return call(ctx,[&](Renderer& r){if(r.recording||stride>1024)throw std::runtime_error("invalid critical sample stride");r.critical.begin(stride);return 0;});}
 int32_t SEVK_CALL sevk_critical_profile(void* ctx,SevkCriticalProfile* profile){return call(ctx,[&](Renderer& r){if(!profile||profile->size!=sizeof(*profile)||profile->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("critical profile ABI mismatch");*profile=r.critical.totals;return 0;});}

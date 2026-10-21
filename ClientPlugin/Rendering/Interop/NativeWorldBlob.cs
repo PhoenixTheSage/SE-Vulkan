@@ -46,6 +46,8 @@ public sealed partial class NativeBackend
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.DecalQueue))QueueDecals();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HighlightQueue))QueueHighlights();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ExclusionQueue))QueueShadowExclusions();
+        // Native OLD cells follow every managed packet, so physical managed indices are unchanged.
+        EmitCells();
         if(PacketProfilingEnabled)auxiliaryQueueTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started;
     }
 }

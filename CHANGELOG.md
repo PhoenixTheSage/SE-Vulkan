@@ -1,5 +1,14 @@
 # SE-Vulkan changelog
 
+## 1.3.0 — 2026-10-21
+
+- Pipeline native recording: frame N records on a native worker while managed frame N+1 runs. Native calls keep their serial order (30 void calls queue with copied arguments, seven GPU-result reads answer from a launch snapshot with a verified cascade-cache prediction, every other call waits and replays the queue). Private Pertam present cadence measured 13.28 → 10.59 ms in paired runs. `SE_VULKAN_PIPELINED_RECORDING=0` restores serial recording.
+- Add a native producer for static OLD cube grid cells: managed code commits cell inputs and per-LOD retained parts on change (pose-only commits for moving grids), and native code reproduces the retained-submission decision and appends the same world draws. `SE_VULKAN_NATIVE_CELLS=0` opts out.
+- Order equal stock OLD sort keys by logical draw owner, then submission, instead of spatial-query order; add a submission tie-break to the final world sort branch. `SE_VULKAN_OLD_OWNER_ORDER=0` restores the previous order.
+- Match GeometryStage2 forward (environment probe) parts: managed NEW-pipeline actors no longer draw non-MESH parts into probes, as stock `MyForwardRenderPass` keeps only MESH parts. Enable NativeMixedOpaque by default after the fix (`SE_VULKAN_NATIVE_MIXED_OPAQUE=0` opts out).
+- Speed up native pass publication with hashed batch, retained-batch and spot-signature maps, plain keys for unhidden batches and in-place retained-row comparison; publication output is byte-identical by signature.
+- Harness: frame cadence (`PresentMs`) alongside render-thread time, telemetry sampled before an asynchronous launch, per-phase native cell ownership in frozen-light lanes, and `-NativeCells`/`-PipelinedRecording` switches. Product-default lanes add `-NativeCells -NativeMixedOpaque -PipelinedRecording`.
+
 ## 1.2.2 — 2026-10-21
 
 - Enable native pass scenes, group occlusion and shared stock depth geometry by default when prerequisite policies permit; retain managed fallback and strict checks for an explicitly forced native path.

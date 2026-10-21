@@ -15,6 +15,7 @@ extern "C" {
 #include "se_media.h"
 #include "se_gpu_opaque.h"
 #include "se_pass_scene.h"
+#include "se_old_cells.h"
 #include "se_gpu_opaque_reference.h"
 #include "se_critical_profile.h"
 /* All callers use natural alignment (pack 8), UTF-8, and IEEE float32.
@@ -158,6 +159,9 @@ SEVK_API int32_t SEVK_CALL sevk_begin_frame(void* context, const SevkFrameInfo* 
 SEVK_API int32_t SEVK_CALL sevk_draw_mesh(void* context, const SevkDrawMesh* draw);
 SEVK_API int32_t SEVK_CALL sevk_draw_sprites(void* context, const SevkSprite* sprites, uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_end_frame(void* context);
+/* Starts end_frame on a native worker. Later calls wait for it and replay
+ * whitelisted void calls (queued with copied arguments) in issue order. */
+SEVK_API int32_t SEVK_CALL sevk_end_frame_async(void* context);
 SEVK_API int32_t SEVK_CALL sevk_remove_resource(void* context, uint32_t kind, uint64_t id); /* 0 texture,1 mesh,2 stock GBuffer mesh */
 SEVK_API int32_t SEVK_CALL sevk_get_stats(void* context, SevkStats* stats);
 SEVK_API int32_t SEVK_CALL sevk_request_readback(void* context);
@@ -290,6 +294,8 @@ SEVK_API int32_t SEVK_CALL sevk_append_models(void* ctx,const SevkModelInstance*
 typedef struct SevkMainDrawOrder {uint32_t group,part;} SevkMainDrawOrder;
 SEVK_API int32_t SEVK_CALL sevk_world_main_order(void* ctx,const SevkMainDrawOrder* orders,uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_world_old_order(void* ctx,const SevkOldPartOrder* orders,uint32_t count);
+/* Logical owner per queued draw; equal stock OLD keys order by owner, then submission. */
+SEVK_API int32_t SEVK_CALL sevk_world_draw_owners(void* ctx,const uint32_t* owners,uint32_t count);
 typedef struct SevkMainOwnerOrder {uint32_t owner,group;} SevkMainOwnerOrder;
 SEVK_API int32_t SEVK_CALL sevk_world_main_owners(void* ctx,const SevkMainOwnerOrder* owners,uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_get_model_group_stats(void* ctx,SevkModelGroupStats* stats);

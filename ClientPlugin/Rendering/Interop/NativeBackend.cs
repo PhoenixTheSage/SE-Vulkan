@@ -187,6 +187,12 @@ public sealed partial class NativeBackend : IDisposable
     }
 
     public void EndFrame() => Check(api.EndFrame(context), context);
+    // Pipelined recording: native records this frame on a worker while the next
+    // managed frame runs; calls replay in issue order (sevk_end_frame_async).
+    public bool PipelinedRecordingEnabled {get;set;}=Environment.GetEnvironmentVariable("SE_VULKAN_PIPELINED_RECORDING")!="0";
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int EndFrameAsyncFn(IntPtr context);
+    private EndFrameAsyncFn endFrameAsync;
+    public void EndFrameAsync(){endFrameAsync??=(EndFrameAsyncFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_end_frame_async"),typeof(EndFrameAsyncFn));Check(endFrameAsync(context),context);}
     public void RequestReadback() => Check(api.RequestReadback(context), context);
     public void RemoveResource(uint kind, ulong id){Check(api.RemoveResource(context, kind, id), context);DropWorldRecipes(kind,id);}
     public NativeStats GetStats()

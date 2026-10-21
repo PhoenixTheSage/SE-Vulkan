@@ -303,10 +303,10 @@ public sealed partial class NativeBackend
         // whole reference-bearing struct through the write-barrier helper.
         int index=worldPackets.Count;CollectionsMarshal.SetCount(worldPackets,index+1);ref var packet=ref CollectionsMarshal.AsSpan(worldPackets)[index];
         packet.Order=order;packet.MainGroup=mainGroup;packet.MainPart=MainPart;packet.OldOrder=(flags&OldGeometryOrder)!=0?oldPartOrder:default;packet.Recipe=recipe;packet.Pipeline=pipeline;packet.Mesh=mesh;packet.Color=color;packet.Normal=normal;packet.Extensions=extensions;packet.Alpha=alpha;
-        packet.Constants=constants;packet.Instances=instances;packet.Count=instanceCount;packet.Flags=flags;packet.CascadeMask=cascadeMask;packet.Origin=origin;packet.Radius=radius;packet.RecycleConstants=recycleConstants;packet.InstanceCapacity=false;
+        packet.Constants=constants;packet.Instances=instances;packet.Count=instanceCount;packet.Flags=flags;packet.CascadeMask=cascadeMask;packet.Origin=origin;packet.Radius=radius;packet.RecycleConstants=recycleConstants;packet.InstanceCapacity=false;packet.Owner=packetOwner;
         return (uint)index;
 #else
-        worldPackets.Add(new WorldPacket{Order=order,MainGroup=mainGroup,MainPart=MainPart,OldOrder=(flags&OldGeometryOrder)!=0?oldPartOrder:default,Recipe=recipe,Pipeline=pipeline,Mesh=mesh,Color=color,Normal=normal,Extensions=extensions,Alpha=alpha,Constants=constants,Instances=instances,Count=instanceCount,Flags=flags,CascadeMask=cascadeMask,Origin=origin,Radius=radius,RecycleConstants=recycleConstants});return (uint)worldPackets.Count-1;
+        worldPackets.Add(new WorldPacket{Order=order,MainGroup=mainGroup,MainPart=MainPart,OldOrder=(flags&OldGeometryOrder)!=0?oldPartOrder:default,Recipe=recipe,Pipeline=pipeline,Mesh=mesh,Color=color,Normal=normal,Extensions=extensions,Alpha=alpha,Constants=constants,Instances=instances,Count=instanceCount,Flags=flags,CascadeMask=cascadeMask,Origin=origin,Radius=radius,RecycleConstants=recycleConstants,Owner=packetOwner});return (uint)worldPackets.Count-1;
 #endif
     }
     public void QueueWorld(byte[] frame,float[] projection,float[] inverse)
@@ -412,6 +412,7 @@ public struct WorldPacket
     public Vector3 Origin;
     public float Radius;
     public bool RecycleConstants,InstanceCapacity;
+    public uint Owner;
 }
 [StructLayout(LayoutKind.Sequential,Pack=8)]
 internal struct NativeWorldDraw

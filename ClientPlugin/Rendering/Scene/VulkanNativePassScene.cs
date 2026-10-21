@@ -33,7 +33,7 @@ public sealed partial class VulkanScene
     // Full resident preparation AND native group recording. This switch never
     // re-enters the prepared color packet producer for supported actors.
     public bool NativePassSceneEnabled {get;set;}=NativePassPolicy.Enabled;
-    public bool NativeMixedOpaqueEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_NATIVE_MIXED_OPAQUE")=="1";
+    public bool NativeMixedOpaqueEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_NATIVE_MIXED_OPAQUE")!="0";
     public bool GpuHybridPassEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_GPU_OPAQUE_HYBRID")=="1";
     private sealed class PassFamily
     {
@@ -55,7 +55,7 @@ public sealed partial class VulkanScene
     private long nativePassCommits,nativePassRegistrations,nativePassFallbacks;
     public object GetNativePassSceneStats()=>new{Enabled=NativePassSceneEnabled,Active=nativePassActive,Actors=actors.Values.Count(x=>x.PassOwned),Families=nativePassFamilies.Count,Commits=nativePassCommits,Registrations=nativePassRegistrations,Fallbacks=nativePassFallbacks};
 
-    private void DirtyNativePass(ActorData actor,bool bindings=false,bool appearance=true){nativePassDirty.Add(actor);gpuDirty.Add(actor);actor.GpuBindingDirty|=bindings;actor.GpuAppearanceDirty|=appearance||bindings;actor.PassBindingDirty|=bindings;actor.PassAppearanceDirty|=appearance;}
+    private void DirtyNativePass(ActorData actor,bool bindings=false,bool appearance=true){nativePassDirty.Add(actor);if(bindings||appearance)cellDirty.Add(actor);else cellPoseDirty.Add(actor);gpuDirty.Add(actor);actor.GpuBindingDirty|=bindings;actor.GpuAppearanceDirty|=appearance||bindings;actor.PassBindingDirty|=bindings;actor.PassAppearanceDirty|=appearance;}
     private uint PassMaterialId(string name){name??=string.Empty;if(!nativePassMaterials.TryGetValue(name,out uint id)){id=checked((uint)nativePassMaterials.Count+1);nativePassMaterials.Add(name,id);}return id;}
     private static bool PassModelSupported(VulkanModel model,bool mixed=false)=>model.SharedMesh!=0&&model.Parts.Count!=0&&model.Parts.All(p=>p.Technique==MyMeshDrawTechnique.MESH||p.Technique==MyMeshDrawTechnique.ALPHA_MASKED||p.Technique==MyMeshDrawTechnique.ALPHA_MASKED_SINGLE_SIDED||p.Technique==MyMeshDrawTechnique.DECAL_CUTOUT||(mixed&&p.Technique==MyMeshDrawTechnique.GLASS));
     private bool PassActorSupported(ActorData actor)=>actor.Model!=null&&!KnownStockOldPipeline(actor)&&actor.InstanceBuffer==uint.MaxValue&&actor.StaticInstances==null&&actor.SkinMatrices==null&&actor.Dithering==0&&!HasHighlight(actor.Actor.ID)&&!frameExcludedActors.Contains(actor.Actor.ID)&&PassModelSupported(actor.Model,NativeMixedOpaqueEnabled)&&models.IsStockNewModel(actor.Model);
@@ -192,6 +192,7 @@ public sealed partial class VulkanScene
             }
             }
         }finally{if(pending)backend.CancelPassFrame();}
+        PublishCells();
         FinishPassVisibility();
     }
     private void FinishPassVisibility()

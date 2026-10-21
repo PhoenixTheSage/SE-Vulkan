@@ -46,7 +46,7 @@ if ($CrossLinux) {
     else { $nativeBuild=Join-Path $projectRoot 'Native/build-linux-debug' }
     & $cmakePath -S (Join-Path $projectRoot 'Native') -B $nativeBuild -G Ninja "-DCMAKE_MAKE_PROGRAM=$ninjaPath" "-DCMAKE_TOOLCHAIN_FILE=$(Join-Path $projectRoot 'Native/cmake/zig-linux.cmake')" "-DSEVK_ZIG_EXECUTABLE=$ZigPath" "-DCMAKE_BUILD_TYPE=$Configuration" "-DSEVK_DXC=$hostDxc" "-DSEVK_SPIRV_VAL=$hostValidator"
     if ($LASTEXITCODE -ne 0) { throw 'Linux cross configuration failed' }
-    & $cmakePath --build $nativeBuild --target se_vulkan_native sevk_smoke sevk_media_tests sevk_media_stream sevk_world_instance_arena sevk_world_indirect_plan sevk_world_object_records sevk_spot_bounds sevk_scene_actor_plan sevk_native_pass_scene sevk_resident_proxy_references --parallel 4
+    & $cmakePath --build $nativeBuild --target se_vulkan_native sevk_smoke sevk_media_tests sevk_media_stream sevk_world_instance_arena sevk_world_indirect_plan sevk_world_object_records sevk_spot_bounds sevk_scene_actor_plan sevk_native_pass_scene sevk_resident_proxy_references sevk_old_cells --parallel 4
     if ($LASTEXITCODE -ne 0) { throw 'Linux cross build failed' }
     if ($Deploy) {
         $nativeTarget=Join-Path $projectRoot 'Assets/Native/linux-x64'
@@ -71,7 +71,7 @@ if ($BuildDirectory -and $nativeBuild -ne [IO.Path]::GetFullPath($nativeCache)) 
 }
 & $cmakePath -S (Join-Path $projectRoot 'Native') -B $nativeBuild -A x64 ("-DSEVK_PROFILE_SYMBOLS="+$(if($ProfileSymbols){'ON'}else{'OFF'})) @configureOptions
 if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed' }
-& $cmakePath --build $nativeBuild --config $Configuration --target se_vulkan_native sevk_smoke sevk_media_tests sevk_media_stream sevk_world_instance_arena sevk_world_indirect_plan sevk_world_object_records sevk_spot_bounds sevk_scene_actor_plan sevk_native_pass_scene sevk_resident_proxy_references sevk_ray_policy sevk_gpu_opaque_admission sevk_gpu_opaque_registry sevk_gpu_opaque_reference --parallel 8
+& $cmakePath --build $nativeBuild --config $Configuration --target se_vulkan_native sevk_smoke sevk_media_tests sevk_media_stream sevk_world_instance_arena sevk_world_indirect_plan sevk_world_object_records sevk_spot_bounds sevk_scene_actor_plan sevk_native_pass_scene sevk_resident_proxy_references sevk_old_cells sevk_native_pass_publish_bench sevk_ray_policy sevk_gpu_opaque_admission sevk_gpu_opaque_registry sevk_gpu_opaque_reference --parallel 8
 if ($LASTEXITCODE -ne 0) { throw 'Native build failed' }
 if ($Test) {
     & (Join-Path (Split-Path $cmakePath) 'ctest.exe') --test-dir $nativeBuild -C $Configuration --output-on-failure

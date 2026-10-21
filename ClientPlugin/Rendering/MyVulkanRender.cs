@@ -330,7 +330,7 @@ public sealed class MyVulkanRender : IMyRender
             long nativeStart = System.Diagnostics.Stopwatch.GetTimestamp();
             GuestBridge.Bind(backend, scene);
             BackendRuntime.RaiseFrame();
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeRecord))backend.EndFrame(); frameOpen = false;
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeRecord)){if(backend.PipelinedRecordingEnabled)backend.EndFrameAsync();else backend.EndFrame();} frameOpen = false;
             shadows.CommitPreparedFrame();
             RendererCpuProfiler.EndFrame();
             FrameProfiler.Since(FrameProfiler.Section.NativeRecord, nativeStart);

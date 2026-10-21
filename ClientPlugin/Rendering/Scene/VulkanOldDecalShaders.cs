@@ -34,8 +34,11 @@ public sealed partial class VulkanScene
                 noCull &= (material.Flags.Remove & RenderFlags.NoBackFaceCulling) == 0;
             }
         }
+        // GeometryStage2 forward (environment probe) parts are MESH only
+        // (MyForwardRenderPass.PreprocessData); OLD submeshes draw every part.
+        bool forward = UsesOldDecalShaders(actor) || part.Technique == MyMeshDrawTechnique.MESH;
         return (noCull ? NativeBackend.StockNoCull : NativeBackend.StockBackCull) |
-            (noCull && UsesOldDecalShaders(actor) ? NativeBackend.OldDepthNoCull : 0u);
+            (noCull && UsesOldDecalShaders(actor) ? NativeBackend.OldDepthNoCull : 0u) | (forward ? 0u : 16384u);
     }
 
     private static bool IsBlendedMeshDecal(VulkanModelPart part) =>

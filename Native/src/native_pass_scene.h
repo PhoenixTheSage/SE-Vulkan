@@ -87,14 +87,19 @@ class Scene {
     // rewrites a row only when its owner, epoch, transition or material
     // activation changes, and patches camera-relative translation in place.
     using BatchKey=std::tuple<uint32_t,uint64_t,bool,std::vector<uint32_t>>;
+    // Batches are only looked up; publication order comes from batch_order.
+    struct BatchHash {size_t operator()(const BatchKey& key)const noexcept{
+        uint64_t h=(uint64_t(std::get<0>(key))<<1|uint64_t(std::get<2>(key)))*0x9e3779b97f4a7c15ull^std::get<1>(key);
+        for(uint32_t material:std::get<3>(key)){h^=material;h*=0x100000001b3ull;}h^=h>>29;h*=0xbf58476d1ce4e5b9ull;h^=h>>32;return size_t(h);}};
     struct RetainedBatch {
         std::vector<uint32_t> owners,activated;std::vector<uint64_t> epochs;std::vector<float> states;
         scene_actor::Vec3 camera{};std::shared_ptr<InstanceStream> base;std::map<uint32_t,std::shared_ptr<InstanceStream>> materials;
     };
-    std::map<BatchKey,RetainedBatch> retained_batches;
+    std::unordered_map<BatchKey,RetainedBatch,BatchHash> retained_batches;
     // Optional lanes for per-batch publication; output is identical either way.
     std::unique_ptr<ViewJobs> jobs;
-    std::map<std::pair<uint32_t,uint32_t>,std::pair<uint64_t,uint64_t>> spot_signature;
+    struct SpotKeyHash {size_t operator()(const std::pair<uint32_t,uint32_t>& key)const noexcept{uint64_t h=(uint64_t(key.first)<<32|key.second)*0x9e3779b97f4a7c15ull;return size_t(h^h>>31);}};
+    std::unordered_map<std::pair<uint32_t,uint32_t>,std::pair<uint64_t,uint64_t>,SpotKeyHash> spot_signature;
     uint64_t spot_updates{};
     // Retained streams and spotlight signatures outlive individual actors.
     // Never reuse a commit epoch when an owner ID is removed and recreated.
@@ -114,7 +119,7 @@ class Scene {
     int lod_for(const Family& family,const View& view,const Selection& selection,bool main)const{return std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.current+(main?view.lod.visible_shift:view.lod.shift)));}
     void request(uint64_t family,uint32_t lod){auto item=Missing{family,lod};if(std::none_of(missing.begin(),missing.end(),[&](const Missing& m){return m.family==family&&m.lod==lod;}))missing.push_back(item);}
 public:
-    struct Profile {uint64_t prepares{},publishes{},committed_actors{},selected_actors{},emitted_rows{},stream_bytes{},groups{};double commits_us{},prepare_us{},requests_us{},publish_us{},emit_us{},spots_us{};uint64_t appearance_entries{};double actor_parse_us{},actor_apply_us{};};
+    struct Profile {uint64_t prepares{},publishes{},committed_actors{},selected_actors{},emitted_rows{},stream_bytes{},groups{};double commits_us{},prepare_us{},requests_us{},publish_us{},emit_us{},spots_us{};uint64_t appearance_entries{};double actor_parse_us{},actor_apply_us{};double pack_us{};};
     struct CpuScope {double* destination{};std::chrono::steady_clock::time_point start;CpuScope(bool enabled,double& value){if(enabled){destination=&value;start=std::chrono::steady_clock::now();}}~CpuScope(){if(destination)*destination+=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();}};
     bool profiling{};Profile profile;
     uint64_t register_model(Model model){
@@ -200,25 +205,35 @@ public:
         CpuScope total(profiling,profile.publish_us);if(profiling)++profile.publishes;
         if(!pending)throw std::runtime_error("pass publication without preparation");
         std::unordered_map<uint64_t,uint64_t> hidden;for(auto& result:results)if(!hidden.emplace(result.group,result.hidden_views).second)throw std::runtime_error("duplicate pass query result");
+        auto hidden_views=[&](uint64_t group){auto it=hidden.find(group);return it==hidden.end()?uint64_t(0):it->second;};
         groups.clear();streams.clear();visible_owners.clear();transparent.clear();
-        decltype(spot_signature) next_spots;
+        decltype(spot_signature) next_spots;next_spots.reserve(spot_signature.size());
         struct Row {const Actor* actor;float state;};
         struct Batch {const Model* model;const View* view;std::vector<Row> rows;};
         // Stock groups by model/LOD, view and render state. Hidden material
         // boundaries need distinct coverage; appearance values stay in streams.
-        std::map<BatchKey,Batch> batches;
-        std::vector<BatchKey> batch_order;
+        struct PlainKey {uint64_t model;uint32_t view;bool transition;bool operator==(const PlainKey&)const=default;};
+        struct PlainHash {size_t operator()(const PlainKey& k)const noexcept{uint64_t h=k.model*0x9e3779b97f4a7c15ull^(uint64_t(k.view)<<1|k.transition);h^=h>>32;h*=0xbf58476d1ce4e5b9ull;return size_t(h^h>>29);}};
+        std::unordered_map<PlainKey,uint32_t,PlainHash> plain_index;plain_index.reserve(retained_batches.size()+64);
+        std::unordered_map<BatchKey,uint32_t,BatchHash> batch_index;
+        std::vector<Batch> batches;std::vector<BatchKey> batch_order;
         auto select_batch=[&](const Actor& actor,uint64_t model_handle,const View& view,float state,bool transition){
-            CpuScope emission(profiling,profile.emit_us);
             auto& model=models.get(model_handle);std::vector<uint32_t> hidden_materials;
             if(model.parts.empty())return;
             if(std::any_of(actor.appearance.begin(),actor.appearance.end(),[](const Appearance& a){return !a.visible;})){
                 for(auto& part:model.parts){auto material=appearance(actor,part.material);if(material&&!material->visible)hidden_materials.push_back(part.material);}
                 std::sort(hidden_materials.begin(),hidden_materials.end());hidden_materials.erase(std::unique(hidden_materials.begin(),hidden_materials.end()),hidden_materials.end());
             }
-            auto [it,added]=batches.try_emplace({view.id,model_handle,transition,std::move(hidden_materials)});if(added){it->second.model=&model;it->second.view=&view;batch_order.push_back(it->first);}it->second.rows.push_back({&actor,state});
+            // Keys without hidden materials (nearly all) use a plain-key map;
+            // both maps assign batch indices in first-selection order.
+            uint32_t index;
+            if(hidden_materials.empty()){auto [it,added]=plain_index.try_emplace(PlainKey{model_handle,view.id,transition},uint32_t(batches.size()));index=it->second;if(added){batches.push_back({&model,&view,{}});batch_order.push_back({view.id,model_handle,transition,{}});}}
+            else{auto [it,added]=batch_index.try_emplace({view.id,model_handle,transition,std::move(hidden_materials)},uint32_t(batches.size()));index=it->second;if(added){batches.push_back({&model,&view,{}});batch_order.push_back(it->first);}}
+            batches[index].rows.push_back({&actor,state});
         };
-        for(auto& selection:selected){auto& actor=actors.get(selection.handle);auto& family=families.get(actor.family);uint64_t view_mask=selection.views & ~(actor.group?hidden[actor.group]:0);bool main=false;for(auto& view:frame.views)if(view.kind==Kind::Colour&&(view_mask&(uint64_t(1)<<view.id)))main=true;
+        // One scope for the whole selection; a per-call clock pair inflated emission.
+        {CpuScope selection_scope(profiling,profile.emit_us);
+        for(auto& selection:selected){auto& actor=actors.get(selection.handle);auto& family=families.get(actor.family);uint64_t view_mask=selection.views & ~(actor.group?hidden_views(actor.group):0);bool main=false;for(auto& view:frame.views)if(view.kind==Kind::Colour&&(view_mask&(uint64_t(1)<<view.id)))main=true;
             bool missing_model=false;for(auto& view:frame.views)if(view_mask&(uint64_t(1)<<view.id)){int lod=lod_for(family,view,selection,main);if(!model_ready(family.levels[lod]))missing_model=true;if(view.kind==Kind::Colour&&selection.next.previous>=0){int old=std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift)));if(!model_ready(family.levels[old]))missing_model=true;}}
             if(missing_model){fallbacks.push_back({selection.handle,actor.owner,actor.lod});continue;}
             for(auto& view:frame.views)if(view_mask&(uint64_t(1)<<view.id)){
@@ -232,17 +247,17 @@ public:
             // main frustum candidates are reported before occlusion rejection.
             if(selection.main_candidate)visible_owners.push_back(actor.owner);
             actor.lod=selection.next;actor.last_camera=selection.camera;actor.have_camera=true;
-        }
-        std::map<BatchKey,RetainedBatch> next_retained;
+        }}
+        std::unordered_map<BatchKey,RetainedBatch,BatchHash> next_retained;next_retained.reserve(batch_order.size());
         {
-            CpuScope emission(profiling,profile.emit_us);
+            CpuScope emission(profiling,profile.emit_us);CpuScope packing(profiling,profile.pack_us);
             // Row bookkeeping and packing touch only one batch and its own
             // retained entry, so batches prepare in parallel. Stream indices,
             // groups and the next retained map are assembled in batch order.
             struct Packed {RetainedBatch stored;uint64_t rows{},bytes{};};
-            std::vector<Batch*> ordered;ordered.reserve(batch_order.size());for(auto& batch_key:batch_order)ordered.push_back(&batches.at(batch_key));
+            auto& ordered=batches;
             std::vector<Packed> prepared(batch_order.size());
-            auto prepare_batch=[&](uint32_t index){auto& batch_key=batch_order[index];auto& batch=*ordered[index];
+            auto prepare_batch=[&](uint32_t index){auto& batch_key=batch_order[index];auto& batch=ordered[index];
                 auto& view=*batch.view;auto& rows=batch.rows;auto& hidden_materials=std::get<3>(batch_key);
                 uint32_t stride=view.kind==Kind::Depth?48u:64u;
                 auto pack_row=[&](uint8_t* destination,size_t i,uint32_t material){
@@ -250,31 +265,35 @@ public:
                     if(view.kind!=Kind::Depth){std::copy_n(actor.key_colour,3,packed.key);packed.key[3]=half(rows[i].state);const uint16_t defaults[]{0x3c00,0x3c00,0x3c00,0x3c00};auto override=appearance(actor,material);std::copy_n(override?override->colour:defaults,4,packed.colour);}
                     std::memcpy(destination,&packed,stride);
                 };
-                std::vector<uint32_t> owners,activated;std::vector<uint64_t> epochs;std::vector<float> states;
-                owners.reserve(rows.size());epochs.reserve(rows.size());states.reserve(rows.size());
-                for(auto& row:rows){owners.push_back(row.actor->owner);epochs.push_back(row.actor->depth_epoch);states.push_back(row.state);}
+                std::vector<uint32_t> activated;
                 auto material_active=[&](uint32_t material){return std::any_of(rows.begin(),rows.end(),[&](const Row& row){return std::any_of(row.actor->appearance.begin(),row.actor->appearance.end(),[&](const Appearance& item){return item.material==material;});});};
                 if(view.kind!=Kind::Depth)for(auto& part:batch.model->parts)if(!std::binary_search(hidden_materials.begin(),hidden_materials.end(),part.material)&&(view.kind!=Kind::Forward||part.forward)&&material_active(part.material)&&std::find(activated.begin(),activated.end(),part.material)==activated.end())activated.push_back(part.material);
                 auto found=retained_batches.find(batch_key);
-                bool same_layout=found!=retained_batches.end()&&found->second.owners==owners&&found->second.activated==activated&&found->second.base&&found->second.base->instances.size()==rows.size()*stride&&found->second.materials.size()==activated.size();
+                // Unchanged layouts compare and update the retained rows in place.
+                bool same_layout=found!=retained_batches.end()&&found->second.owners.size()==rows.size()&&found->second.activated==activated&&found->second.base&&found->second.base->instances.size()==rows.size()*stride&&found->second.materials.size()==activated.size();
+                if(same_layout)for(size_t i=0;i<rows.size();++i)if(found->second.owners[i]!=rows[i].actor->owner){same_layout=false;break;}
                 if(same_layout)for(uint32_t material:activated){auto it=found->second.materials.find(material);if(it==found->second.materials.end()||!it->second||it->second->instances.size()!=rows.size()*stride)same_layout=false;}
                 auto& stored=prepared[index].stored;
                 if(same_layout){
-                    bool same_rows=found->second.epochs==epochs&&found->second.states==states;
                     bool same_camera=found->second.camera.x==frame.selection.camera.x&&found->second.camera.y==frame.selection.camera.y&&found->second.camera.z==frame.selection.camera.z;
                     stored=std::move(found->second);
+                    bool same_rows=stored.epochs.size()==rows.size()&&stored.states.size()==rows.size();
+                    if(same_rows)for(size_t i=0;i<rows.size();++i)if(stored.epochs[i]!=rows[i].actor->depth_epoch||stored.states[i]!=rows[i].state){same_rows=false;break;}
                     if(!same_rows||!same_camera){
                         auto rewrite=[&](InstanceStream& stream,uint32_t material){
                             for(size_t i=0;i<rows.size();++i){
-                                bool dirty=epochs[i]!=stored.epochs[i]||(view.kind!=Kind::Depth&&states[i]!=stored.states[i]);
+                                bool dirty=rows[i].actor->depth_epoch!=stored.epochs[i]||(view.kind!=Kind::Depth&&rows[i].state!=stored.states[i]);
                                 if(dirty){pack_row(stream.instances.data()+i*stride,i,material);++prepared[index].rows;prepared[index].bytes+=stride;}
                                 else if(!same_camera){auto relative=transform(*rows[i].actor,frame.selection.camera);std::memcpy(stream.instances.data()+i*stride,&relative,sizeof(Transform));}
                             }
                         };
                         rewrite(*stored.base,UINT32_MAX);for(uint32_t material:activated)rewrite(*stored.materials[material],material);
                     }
-                    stored.epochs=std::move(epochs);stored.states=std::move(states);stored.camera=frame.selection.camera;
+                    stored.epochs.resize(rows.size());stored.states.resize(rows.size());for(size_t i=0;i<rows.size();++i){stored.epochs[i]=rows[i].actor->depth_epoch;stored.states[i]=rows[i].state;}stored.camera=frame.selection.camera;
                 }else{
+                    std::vector<uint32_t> owners;std::vector<uint64_t> epochs;std::vector<float> states;
+                    owners.reserve(rows.size());epochs.reserve(rows.size());states.reserve(rows.size());
+                    for(auto& row:rows){owners.push_back(row.actor->owner);epochs.push_back(row.actor->depth_epoch);states.push_back(row.state);}
                     auto make_stream=[&](uint32_t material){
                         auto stream=std::make_shared<InstanceStream>();stream->instances.resize(rows.size()*stride);stream->owners=owners;
                         for(size_t i=0;i<rows.size();++i)pack_row(stream->instances.data()+i*stride,i,material);
@@ -285,7 +304,7 @@ public:
                 }
             };
             if(jobs&&batch_order.size()>1)jobs->run(uint32_t(batch_order.size()),prepare_batch);else for(uint32_t index=0;index<batch_order.size();++index)prepare_batch(index);
-            for(uint32_t index=0;index<batch_order.size();++index){auto& batch_key=batch_order[index];auto& batch=*ordered[index];auto& stored=prepared[index].stored;
+            for(uint32_t index=0;index<batch_order.size();++index){auto& batch_key=batch_order[index];auto& batch=ordered[index];auto& stored=prepared[index].stored;
                 auto& view=*batch.view;auto& rows=batch.rows;auto& hidden_materials=std::get<3>(batch_key);
                 if(profiling){profile.emitted_rows+=prepared[index].rows;profile.stream_bytes+=prepared[index].bytes;}
                 auto publish_stream=[&](const std::shared_ptr<InstanceStream>& stream){stream->index=uint32_t(streams.size());stream->identities.clear();stream->identities.reserve(rows.size());for(const auto& row:rows)stream->identities.push_back(row.actor->history_identity);streams.push_back(stream);};

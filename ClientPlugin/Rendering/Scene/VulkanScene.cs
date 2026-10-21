@@ -84,6 +84,7 @@ namespace ClientPlugin.Rendering.Scene
             public bool HaveShadowPose, DynamicShadow;
             public bool SizeCulled;
             public ulong PassHandle;public PassFamily PassFamily;public bool PassOwned,PassBindingDirty=true,PassAppearanceDirty=true;
+            public ulong CellHandle;public bool CellOwned;public VulkanModel[] CellModels;public NativeBackend.WorldRecipe[] CellRecipes;
         }
         private sealed class PartFrame
         {
@@ -499,7 +500,7 @@ namespace ClientPlugin.Rendering.Scene
 
         private void SetModel(ActorData actor, VulkanModel model,bool trackOldIdentity=true)
         {
-            RemoveNativePassActor(actor,false);
+            RemoveNativePassActor(actor,false);ReleaseCell(actor,false);
             ReleaseDynamicMeshes(actor);
             actor.Model = model;
             actor.TrackOldIdentity=trackOldIdentity;actor.OldModel=null;if(trackOldIdentity)EnsureOldModelIdentity(actor);
@@ -555,7 +556,7 @@ namespace ClientPlugin.Rendering.Scene
             long cullStarted = Stopwatch.GetTimestamp();
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Occlusion)){visible.Clear();if(target.WorldReady)BeginOcclusion();}
             if(target.WorldReady)BeginShadowGroupOcclusion();
-            CommitNativePassActors();
+            CommitNativePassActors();CommitCells();
             profileCullTicks += Stopwatch.GetTimestamp() - cullStarted;
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorTraversal)){
             IEnumerable<ActorData> drawCandidates;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CandidateQuery))drawCandidates=DrawCandidates(target.WorldReady);
@@ -568,7 +569,7 @@ namespace ClientPlugin.Rendering.Scene
                 if(planned){var plan=candidatePlans[candidateIndex++];ancestorsVisible=plan.Visible;ownerKey=plan.Key;}
                 else{ancestorsVisible=data.Model!=null&&IsVisible(data.Actor);ownerKey=ancestorsVisible&&(data.Flags&RenderFlags.SkipInMainView)==0?MainGroupKey(data,true):null;}
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.MainOwnerDeclare,false))if(ownerKey!=null)target.DeclareMainOwner(data.Actor.ID,ownerKey);
-                if(data.GpuOwned){if((data.Flags&RenderFlags.SkipInMainView)==0&&(frustum==null||frustum.Contains(data.Bounds)!=ContainmentType.Disjoint))visible.Add(data.Actor.ID);continue;}if(data.PassOwned)continue;
+                if(data.GpuOwned){if((data.Flags&RenderFlags.SkipInMainView)==0&&(frustum==null||frustum.Contains(data.Bounds)!=ContainmentType.Disjoint))visible.Add(data.Actor.ID);continue;}if(data.PassOwned||data.CellOwned)continue;
                 long actorStarted = Stopwatch.GetTimestamp();
                 bool actorVisible;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorAncestorVisibility,false))actorVisible=ancestorsVisible&&((data.Flags&RenderFlags.SkipInMainView)==0 || NewActorViewsEnabled);
                 if (!actorVisible) { profileCullTicks += Stopwatch.GetTimestamp() - actorStarted; continue; }
@@ -643,7 +644,7 @@ namespace ClientPlugin.Rendering.Scene
         private void DrawWorld(NativeBackend target, ActorData actor, MatrixD world,bool probeOnly,bool occluded,bool outsideProbe,BoundingBoxD bounds,uint? selectedCascades=null)
         {
             var setupProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.DrawWorldSetup,false);
-            using var logicalOwner=target.WithLogicalOwner(actor.Actor.ID);
+            using var logicalOwner=target.WithLogicalOwner(actor.Actor.ID);using var packetOwner=target.WithPacketOwner(actor.Actor.ID);
             using var mainGroup=target.WithMainGroup(MainGroupKey(actor));
             long packedAt = Stopwatch.GetTimestamp();
             bool casts=(actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))==RenderFlags.CastShadows;
@@ -767,13 +768,7 @@ namespace ClientPlugin.Rendering.Scene
             for(int i=0;i<count;i++)
             {
                 if(actor.StaticInstances!=null){WriteInstance(stream,i,actor.StaticInstances[i],new Vector4(hsv,0));continue;}
-                if(buffer.Cubes!=null)
-                {
-                    int offset=i*64;var cube=buffer.Cubes[start+i];
-                    for(int b=0;b<8;b++){var packed=cube.GetPackedBone(b);stream[offset+b*4]=packed.X;stream[offset+b*4+1]=packed.Y;stream[offset+b*4+2]=packed.Z;stream[offset+b*4+3]=packed.W;}
-                    Vector4 p=cube.PackedOrthoMatrix,mask=cube.ColorMaskHSV;mask.X+=hsv.X;mask.Y+=hsv.Y;mask.Z+=hsv.Z;
-                    WriteFloat4(stream,offset+32,p.X,p.Y,p.Z,p.W);WriteFloat4(stream,offset+48,mask.X,mask.Y,mask.Z,mask.W);dithered|=mask.W!=0;
-                }
+                if(buffer.Cubes!=null)dithered|=WriteCubeInstance(stream,i,buffer.Cubes[start+i],hsv);
                 else {var instance=buffer.Generic[start+i];Vector4 mask=instance.ColorMaskHSV.ToVector4();mask.X+=hsv.X;mask.Y+=hsv.Y;mask.Z+=hsv.Z;WriteInstance(stream,i,instance.LocalMatrix,mask);dithered|=mask.W!=0;}
             }
             actor.Packed=new PackedInstances{Source=source,Revision=revision,Start=start,Count=count,Type=type,Hsv=hsv,Bytes=stream,Dithered=dithered};
@@ -879,6 +874,13 @@ namespace ClientPlugin.Rendering.Scene
         private static unsafe void WriteFloat4(byte[] bytes,int offset,float x,float y,float z,float w)
         {
             fixed(byte* raw=bytes){float* f=(float*)(raw+offset);f[0]=x;f[1]=y;f[2]=z;f[3]=w;}
+        }
+        private static bool WriteCubeInstance(byte[] stream,int i,MyCubeInstanceData cube,Vector3 hsv)
+        {
+            int offset=i*64;
+            for(int b=0;b<8;b++){var packed=cube.GetPackedBone(b);stream[offset+b*4]=packed.X;stream[offset+b*4+1]=packed.Y;stream[offset+b*4+2]=packed.Z;stream[offset+b*4+3]=packed.W;}
+            Vector4 p=cube.PackedOrthoMatrix,mask=cube.ColorMaskHSV;mask.X+=hsv.X;mask.Y+=hsv.Y;mask.Z+=hsv.Z;
+            WriteFloat4(stream,offset+32,p.X,p.Y,p.Z,p.W);WriteFloat4(stream,offset+48,mask.X,mask.Y,mask.Z,mask.W);return mask.W!=0;
         }
         private static unsafe void WriteInstance(byte[] stream,int i,Matrix m,Vector4 hsv)
         {
@@ -1014,7 +1016,7 @@ namespace ClientPlugin.Rendering.Scene
             ActorData actor;
             if (actors.TryGetValue(id, out actor))
             {
-                RemoveNativePassActor(actor,false);nativePassDirty.Remove(actor);
+                RemoveNativePassActor(actor,false);nativePassDirty.Remove(actor);ReleaseCell(actor,false);cellDirty.Remove(actor);cellPoseDirty.Remove(actor);
                 InvalidateOcclusion("Removal");
                 groupMembershipDirty=true;occlusionGroups.Remove(actor.Actor);
                 if(actor.HaveShadowPose)removedShadowRegions.Add((actor.ShadowCenter,actor.ShadowRadius));

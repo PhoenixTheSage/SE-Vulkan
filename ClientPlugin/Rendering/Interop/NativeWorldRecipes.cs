@@ -34,11 +34,13 @@ public sealed partial class NativeBackend
         hint=new WorldRecipe{Owner=this,Alive=true,Handle=handle,Key=key};worldRecipes[key]=hint;return hint;
     }
     private WorldRecipe PacketRecipe(in WorldPacket packet){var recipe=packet.Recipe;return EnsureWorldRecipe(ref recipe,packet.Pipeline,packet.Mesh,packet.Color,packet.Normal,packet.Extensions,packet.Alpha,packet.Constants.Length);}
-    private void ResetWorldRecipes(){ResetNativeModels();foreach(var recipe in worldRecipes.Values)recipe.Alive=false;worldRecipes.Clear();}
+    // Advanced whenever handles may retire; native cell parts then recommit.
+    public uint WorldRecipeRevision {get;private set;}
+    private void ResetWorldRecipes(){WorldRecipeRevision++;ResetNativeModels();foreach(var recipe in worldRecipes.Values)recipe.Alive=false;worldRecipes.Clear();}
     private void DropWorldRecipes(uint kind,ulong id){
         if(kind!=3 || worldRecipes.Count==0)return;nativeModelResourceRevision++;
         var removed=new List<RecipeKey>();foreach(var pair in worldRecipes)if(pair.Key.Mesh==id){pair.Value.Alive=false;removed.Add(pair.Key);}
-        foreach(var key in removed)worldRecipes.Remove(key);
+        foreach(var key in removed)worldRecipes.Remove(key);if(removed.Count!=0)WorldRecipeRevision++;
     }
     public NativeRecipeStats GetRecipeStats(){if(recipeStatsGet==null)recipeStatsGet=(RecipeStatsFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_get_recipe_stats"),typeof(RecipeStatsFn));var stats=new NativeRecipeStats{Size=40,AbiVersion=AbiVersion};Check(recipeStatsGet(context,ref stats),context);return stats;}
 }

@@ -46,6 +46,19 @@ internal sealed class VulkanShadows
         for(int c=0;c<8;c++)if(casterFrusta[c]!=null)casterFrusta[c].Matrix=worldMatrices[c];UpdateMask=0;pending=false;
     }
     internal BoundingFrustumD CasterFrustum(int cascade)=>casterFrusta[cascade];
+    // The CascadeMask inputs per cascade, for native producers that must
+    // reproduce it exactly: active, small-object threshold and caster frustum.
+    internal unsafe void WriteCellCascades(NativeCellCascade* cascades)
+    {
+        int count = activeCascades<0?splits.Length:activeCascades;
+        for (int cascade = 0; cascade < 8; cascade++)
+        {
+            ref var output = ref cascades[cascade]; output = default;
+            output.Active = cascade < count && (!StockSchedulingEnabled || (UpdateMask&(1u<<cascade))!=0) ? 1u : 0u;
+            if (StockFittingEnabled && fitted[cascade]) { float factor=ProjectionFactors[cascade],threshold=Settings.Cascades[cascade].SkippingSmallObjectThreshold; output.SizeTest=1; output.SizeSquared=threshold*threshold/(factor*factor); }
+            if (fitted[cascade] && casterFrusta[cascade]!=null) { output.Fitted=1; for (int i = 0; i < 6; i++) { var plane=casterFrusta[cascade][i]; output.Planes[i*4]=plane.Normal.X; output.Planes[i*4+1]=plane.Normal.Y; output.Planes[i*4+2]=plane.Normal.Z; output.Planes[i*4+3]=plane.D; } }
+        }
+    }
     public uint CascadeMask(BoundingBoxD worldBounds, Vector3D camera)
     {
         uint mask = 0; int count = activeCascades<0?splits.Length:activeCascades;

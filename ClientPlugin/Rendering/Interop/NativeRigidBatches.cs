@@ -85,7 +85,7 @@ public sealed partial class NativeBackend
             if(WorldRecipesEnabled)EnsureWorldRecipe(ref batch.Recipe,pipeline+2,mesh,color,normal,extensions,alpha,batch.Constants.Length);
             batch.Frame=batchFrame;
             rigidBatchPackets++;
-            batch.PacketIndex=(int)AddWorldPacket(pipeline+2,mesh,color,normal,extensions,alpha,batch.Constants,batch.Instances,1,flags,cascades,origin,radius,false,batch.Recipe,false);
+            using var sharedOwner=WithPacketOwner(0);batch.PacketIndex=(int)AddWorldPacket(pipeline+2,mesh,color,normal,extensions,alpha,batch.Constants,batch.Instances,1,flags,cascades,origin,radius,false,batch.Recipe,false);
             ref var first=ref PacketAt(batch.PacketIndex);first.Count=0;first.InstanceCapacity=true;
         }
         ref var packet=ref PacketAt(batch.PacketIndex);int at=checked((int)packet.Count*64);
