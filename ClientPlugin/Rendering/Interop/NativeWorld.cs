@@ -24,6 +24,18 @@ public sealed partial class NativeBackend
     private readonly HashSet<uint> tintedGenericPipelines=new();
     public readonly Dictionary<uint, ShaderMetadata> WorldLayouts = new Dictionary<uint, ShaderMetadata>();
     private readonly List<WorldPacket> worldPackets = new List<WorldPacket>();
+    // In-place packet access. WorldPacket is a large struct with references;
+    // copying it out and back per appended instance dominated batch appends.
+    // The reference is valid only until the next Add to worldPackets.
+#if NETCOREAPP
+    private ref WorldPacket PacketAt(int index)=>ref CollectionsMarshal.AsSpan(worldPackets)[index];
+#else
+    private static readonly Func<List<WorldPacket>,WorldPacket[]> packetItems=CreatePacketItems();
+    private static Func<List<WorldPacket>,WorldPacket[]> CreatePacketItems(){var list=System.Linq.Expressions.Expression.Parameter(typeof(List<WorldPacket>));
+        var items=typeof(List<WorldPacket>).GetField("_items",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)??throw new MissingFieldException("List<T>._items");
+        return System.Linq.Expressions.Expression.Lambda<Func<List<WorldPacket>,WorldPacket[]>>(System.Linq.Expressions.Expression.Field(list,items),list).Compile();}
+    private ref WorldPacket PacketAt(int index){if((uint)index>=(uint)worldPackets.Count)throw new ArgumentOutOfRangeException(nameof(index));return ref packetItems(worldPackets)[index];}
+#endif
     private readonly Dictionary<byte[], int> instanceOffsets = new Dictionary<byte[], int>(ByteIdentity.Instance);
     private byte[] constantArena = Array.Empty<byte>(), instanceArena = Array.Empty<byte>();
     public bool ObjectRetentionEnabled {get;set;}=Environment.GetEnvironmentVariable("SE_VULKAN_RETAINED_OBJECTS")=="1";
@@ -286,7 +298,16 @@ public sealed partial class NativeBackend
         if(worldPackets.Count>=65536)throw new InvalidOperationException("World packet batch exceeds 65536 draws.");
         if(recordLogical)NoteLogicalDraw(pipeline,mesh,instanceCount,flags,cascadeMask);
         uint order=++modelSubmissionOrder;NoteMainGroupOrder(flags,order);
+#if NET8_0_OR_GREATER
+        // Fill the new slot in place: a temporary plus List.Add copies the
+        // whole reference-bearing struct through the write-barrier helper.
+        int index=worldPackets.Count;CollectionsMarshal.SetCount(worldPackets,index+1);ref var packet=ref CollectionsMarshal.AsSpan(worldPackets)[index];
+        packet.Order=order;packet.MainGroup=mainGroup;packet.MainPart=MainPart;packet.OldOrder=(flags&OldGeometryOrder)!=0?oldPartOrder:default;packet.Recipe=recipe;packet.Pipeline=pipeline;packet.Mesh=mesh;packet.Color=color;packet.Normal=normal;packet.Extensions=extensions;packet.Alpha=alpha;
+        packet.Constants=constants;packet.Instances=instances;packet.Count=instanceCount;packet.Flags=flags;packet.CascadeMask=cascadeMask;packet.Origin=origin;packet.Radius=radius;packet.RecycleConstants=recycleConstants;packet.InstanceCapacity=false;
+        return (uint)index;
+#else
         worldPackets.Add(new WorldPacket{Order=order,MainGroup=mainGroup,MainPart=MainPart,OldOrder=(flags&OldGeometryOrder)!=0?oldPartOrder:default,Recipe=recipe,Pipeline=pipeline,Mesh=mesh,Color=color,Normal=normal,Extensions=extensions,Alpha=alpha,Constants=constants,Instances=instances,Count=instanceCount,Flags=flags,CascadeMask=cascadeMask,Origin=origin,Radius=radius,RecycleConstants=recycleConstants});return (uint)worldPackets.Count-1;
+#endif
     }
     public void QueueWorld(byte[] frame,float[] projection,float[] inverse)
     {
@@ -339,7 +360,7 @@ public sealed partial class NativeBackend
         }
         finally{constantPin.Free();if(instancePin.IsAllocated)instancePin.Free();}
     }
-    private void ClearWorldPackets(){ShadowExclusions=Array.Empty<NativeShadowExclusion>();if(WorldReady)QueueShadowExclusions();foreach(var packet in worldPackets)if(packet.RecycleConstants)ReflectedConstantBuffer.Recycle(packet.Constants);worldPackets.Clear();if(WorldReady)QueueOcclusion(0,Array.Empty<NativeOcclusionDraw>());highlightPackets.Clear();if(WorldReady)Check(HighlightApi.Queue(context,null,0),context);if(WorldReady)Check(WorldApi.Queue(context,null,0,null,null,null,0),context);}
+    private void ClearWorldPackets(){ShadowExclusions=Array.Empty<NativeShadowExclusion>();if(WorldReady)QueueShadowExclusions();for(int i=0;i<worldPackets.Count;i++){ref readonly var packet=ref PacketAt(i);if(packet.RecycleConstants)ReflectedConstantBuffer.Recycle(packet.Constants);}worldPackets.Clear();if(WorldReady)QueueOcclusion(0,Array.Empty<NativeOcclusionDraw>());highlightPackets.Clear();if(WorldReady)Check(HighlightApi.Queue(context,null,0),context);if(WorldReady)Check(WorldApi.Queue(context,null,0,null,null,null,0),context);}
     public void UploadWorldCube(ulong id,int width,int height,int format,byte[] bytes,bool srgb)
         => Check(WorldApi.Cube(context,id,(uint)width,(uint)height,TextureFormat(format),srgb?1u:0u,bytes,(ulong)bytes.Length),context);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]private delegate int CubeMipsFn(IntPtr ctx,ulong id,uint width,uint height,uint format,uint srgb,byte[] data,ulong bytes,uint mips);

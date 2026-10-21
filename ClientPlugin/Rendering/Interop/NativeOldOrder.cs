@@ -27,9 +27,9 @@ public sealed partial class NativeBackend
     OldOrderFn oldOrderApi;NativeOldPartOrder[] oldOrderScratch=Array.Empty<NativeOldPartOrder>();
     unsafe void QueueOldOrder()
     {
-        int count=worldPackets.Count;if(count==0)return;bool any=false;foreach(var packet in worldPackets)any|=packet.OldOrder.Valid!=0;
+        int count=worldPackets.Count;if(count==0)return;bool any=false;for(int i=0;i<count;i++)any|=PacketAt(i).OldOrder.Valid!=0;
         if(!any&&oldOrderApi==null)return;
-        if(oldOrderScratch.Length<count)Array.Resize(ref oldOrderScratch,count);for(int i=0;i<count;i++)oldOrderScratch[i]=worldPackets[i].OldOrder;
+        if(oldOrderScratch.Length<count)Array.Resize(ref oldOrderScratch,count);for(int i=0;i<count;i++)oldOrderScratch[i]=PacketAt(i).OldOrder;
         oldOrderApi??=(OldOrderFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_world_old_order"),typeof(OldOrderFn));
         fixed(NativeOldPartOrder* rows=oldOrderScratch)Check(oldOrderApi(context,(IntPtr)rows,(uint)count),context);
     }

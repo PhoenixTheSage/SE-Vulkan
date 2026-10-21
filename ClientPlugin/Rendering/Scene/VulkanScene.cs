@@ -63,6 +63,7 @@ namespace ClientPlugin.Rendering.Scene
             public readonly Dictionary<string, MaterialOverride> Materials = new Dictionary<string, MaterialOverride>(StringComparer.Ordinal);
             public readonly Dictionary<int, ulong[]> DeformedMeshes = new Dictionary<int, ulong[]>();
             public PartFrame[] PartFrames;
+            internal MainGroupKeyCache MainGroupKeys;
             public uint MaterialRevision;
             public NativeBackend.PreparedActor Submission;
             public uint SubmissionRevision,SubmissionType;
@@ -560,7 +561,7 @@ namespace ClientPlugin.Rendering.Scene
             IEnumerable<ActorData> drawCandidates;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CandidateQuery))drawCandidates=DrawCandidates(target.WorldReady);
             foreach (var data in drawCandidates)
             {
-                if(data.Model!=null&&IsVisible(data.Actor)&&(data.Flags&RenderFlags.SkipInMainView)==0)target.DeclareMainOwner(data.Actor.ID,MainGroupKey(data,true));
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.MainOwnerDeclare,false))if(data.Model!=null&&IsVisible(data.Actor)&&(data.Flags&RenderFlags.SkipInMainView)==0)target.DeclareMainOwner(data.Actor.ID,MainGroupKey(data,true));
                 if(data.GpuOwned){if((data.Flags&RenderFlags.SkipInMainView)==0&&(frustum==null||frustum.Contains(data.Bounds)!=ContainmentType.Disjoint))visible.Add(data.Actor.ID);continue;}if(data.PassOwned)continue;
                 long actorStarted = Stopwatch.GetTimestamp();
                 bool actorVisible;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorAncestorVisibility,false))actorVisible=data.Model!=null&&IsVisible(data.Actor)&&((data.Flags&RenderFlags.SkipInMainView)==0 || NewActorViewsEnabled);
@@ -635,6 +636,7 @@ namespace ClientPlugin.Rendering.Scene
 
         private void DrawWorld(NativeBackend target, ActorData actor, MatrixD world,bool probeOnly,bool occluded,bool outsideProbe,BoundingBoxD bounds,uint? selectedCascades=null)
         {
+            var setupProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.DrawWorldSetup,false);
             using var logicalOwner=target.WithLogicalOwner(actor.Actor.ID);
             using var mainGroup=target.WithMainGroup(MainGroupKey(actor));
             long packedAt = Stopwatch.GetTimestamp();
@@ -646,6 +648,7 @@ namespace ClientPlugin.Rendering.Scene
             PrepareInstances(actor,out uint type,out uint count,out byte[] stream,out bool instanceDither);
             bool dithered=actor.Dithering!=0 || instanceDither;
             profilePackTicks += Stopwatch.GetTimestamp() - packedAt;
+            setupProfile.Dispose();
             if(count==0)return;
             long materialsAt = Stopwatch.GetTimestamp();
             world.Translation-=Environment.CameraPosition;

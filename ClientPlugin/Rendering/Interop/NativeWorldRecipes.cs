@@ -33,7 +33,7 @@ public sealed partial class NativeBackend
         Check(registerRecipe(context,ref definition,out ulong handle),context);
         hint=new WorldRecipe{Owner=this,Alive=true,Handle=handle,Key=key};worldRecipes[key]=hint;return hint;
     }
-    private WorldRecipe PacketRecipe(WorldPacket packet){var recipe=packet.Recipe;return EnsureWorldRecipe(ref recipe,packet.Pipeline,packet.Mesh,packet.Color,packet.Normal,packet.Extensions,packet.Alpha,packet.Constants.Length);}
+    private WorldRecipe PacketRecipe(in WorldPacket packet){var recipe=packet.Recipe;return EnsureWorldRecipe(ref recipe,packet.Pipeline,packet.Mesh,packet.Color,packet.Normal,packet.Extensions,packet.Alpha,packet.Constants.Length);}
     private void ResetWorldRecipes(){ResetNativeModels();foreach(var recipe in worldRecipes.Values)recipe.Alive=false;worldRecipes.Clear();}
     private void DropWorldRecipes(uint kind,ulong id){
         if(kind!=3 || worldRecipes.Count==0)return;nativeModelResourceRevision++;

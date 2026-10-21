@@ -84,10 +84,15 @@ public sealed class VulkanWindowHost
         settings = updated; LastDisplayChange = null;
         if (!IsLinux && displayModeChanged && updated.WindowMode != MyWindowModeEnum.Fullscreen) RestoreDisplayMode();
         var window = IsLinux ? sdlWindow : (object)MyVRage.Platform.Windows.Window;
-        var method = window.GetType().GetMethod("OnModeChanged", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null,
-            new[] { typeof(MyWindowModeEnum), typeof(int), typeof(int), typeof(Rectangle) }, null);
+        var method = RuntimeMethodContract.FindWindowModeMethod(window.GetType(), typeof(MyWindowModeEnum), typeof(Rectangle));
         if (method == null) throw new MissingMethodException(window.GetType().FullName, "OnModeChanged");
-        Action apply = () => method.Invoke(window, new object[] { updated.WindowMode, updated.BackBufferWidth, updated.BackBufferHeight, DisplayBounds() });
+        Action apply = () =>
+        {
+            var arguments = new List<object> { updated.WindowMode, updated.BackBufferWidth, updated.BackBufferHeight, DisplayBounds() };
+            // LinuxCompat's newer SDL contract accepts Hz; renderer settings use millihertz.
+            if (method.GetParameters().Length == 5) arguments.Add(updated.RefreshRate > 0 ? updated.RefreshRate / 1000f : 0f);
+            method.Invoke(window, arguments.ToArray());
+        };
         if (IsLinux) InvokeSdl(apply); else { apply(); PlaceWindows(updated); }
     }
     public void RestoreDisplayMode()
@@ -276,10 +281,10 @@ public sealed class VulkanWindowHost
             window?.GetProperty("Handle", BindingFlags.NonPublic | BindingFlags.Instance)?.PropertyType == typeof(IntPtr) &&
             window.GetProperty("ClientSizePixels", BindingFlags.NonPublic | BindingFlags.Instance)?.PropertyType == typeof(Vector2I) &&
             provider?.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)?.PropertyType == window &&
-            RuntimeMethodContract.FindVoidMethod(window, "OnModeChanged", BindingFlags.Public | BindingFlags.Instance, typeof(MyWindowModeEnum), typeof(int), typeof(int), typeof(Rectangle)) != null &&
+            RuntimeMethodContract.FindWindowModeMethod(window, typeof(MyWindowModeEnum), typeof(Rectangle)) != null &&
             RuntimeMethodContract.FindVoidMethod(forwarder, "Forward", BindingFlags.Public | BindingFlags.Static, typeof(MyRenderDeviceSettings?)) != null &&
             RuntimeMethodContract.FindVoidMethod(forwarder, "DriveDirect", BindingFlags.Public | BindingFlags.Static, typeof(MyRenderDeviceSettings)) != null;
-        reason = valid ? "LinuxCompat SDL3 integration signatures verified (reference 1b43eca)." : "LinuxCompat SDL3 integration unavailable or changed; Vulkan Linux startup disabled.";
+        reason = valid ? "LinuxCompat SDL3 integration signatures verified." : "LinuxCompat SDL3 integration unavailable or changed; Vulkan Linux startup disabled.";
         BackendRuntime.PlatformSummary = reason; return valid;
     }
     public static void InstallLinuxForwardingGuard(Harmony harmony)

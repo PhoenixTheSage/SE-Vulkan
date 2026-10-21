@@ -68,14 +68,22 @@ VkPipeline world_graphics(VkShaderModule vs,const char* ve,VkShaderModule ps,con
 // Core Vulkan 1.3 dynamic raster state. Legacy raw packets (no explicit
 // flags) retain their original pipeline defaults; production model packets
 // carry stock technique/actor/material state through all submission routes.
-void world_model_raster(VkCommandBuffer cmd,uint32_t pipeline,uint32_t flags,bool depth=false,VkCullModeFlags depth_default=VK_CULL_MODE_NONE,bool stock_depth=false){
+// Last dynamic raster state recorded by one draw loop. A loop starts invalid
+// and invalidates it after binding a pipeline whose raster state is static
+// (voxels): that bind overwrites the command buffer state.
+struct WorldRasterCache{bool valid{};VkCullModeFlags cull{};VkFrontFace front{};VkBool32 bias{};};
+void world_model_raster(VkCommandBuffer cmd,uint32_t pipeline,uint32_t flags,bool depth=false,VkCullModeFlags depth_default=VK_CULL_MODE_NONE,bool stock_depth=false,WorldRasterCache* cache=nullptr){
     VkCullModeFlags cull=depth?depth_default:world_blended_decal(pipeline)?VK_CULL_MODE_BACK_BIT:VK_CULL_MODE_NONE;
     VkFrontFace front=depth?VK_FRONT_FACE_COUNTER_CLOCKWISE:world_blended_decal(pipeline)?VK_FRONT_FACE_CLOCKWISE:VK_FRONT_FACE_COUNTER_CLOCKWISE;
     if(flags&(depth?0x20000000u:0x10000000u))cull=VK_CULL_MODE_NONE;
     else if(!depth && (flags&0x08000000u))cull=VK_CULL_MODE_BACK_BIT;
     if(!depth && (flags&0x18000000u))front=VK_FRONT_FACE_CLOCKWISE;
-    vkCmdSetCullMode(cmd,cull);vkCmdSetFrontFace(cmd,front);
-    vkCmdSetDepthBiasEnable(cmd,stock_depth && !(flags&0x20000000u));
+    VkBool32 bias=stock_depth && !(flags&0x20000000u);
+    if(!cache){vkCmdSetCullMode(cmd,cull);vkCmdSetFrontFace(cmd,front);vkCmdSetDepthBiasEnable(cmd,bias);return;}
+    if(!cache->valid || cache->cull!=cull)vkCmdSetCullMode(cmd,cull);
+    if(!cache->valid || cache->front!=front)vkCmdSetFrontFace(cmd,front);
+    if(!cache->valid || cache->bias!=bias)vkCmdSetDepthBiasEnable(cmd,bias);
+    *cache={true,cull,front,bias};
 }
 void init_world_layouts(){
     if(world.material_layout)return;

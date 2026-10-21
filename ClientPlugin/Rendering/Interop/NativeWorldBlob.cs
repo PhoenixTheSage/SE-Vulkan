@@ -20,13 +20,13 @@ public sealed partial class NativeBackend
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.BlobPack)){
         for(int i=0;i<worldPackets.Count;++i)
         {
-            var packet=worldPackets[i];int bytes=checked((int)(packet.Count*64L));
+            ref readonly var packet=ref PacketAt(i);int bytes=checked((int)(packet.Count*64L));
             if(packet.Constants==null || packet.Instances!=null && (packet.InstanceCapacity?packet.Instances.Length<bytes:packet.Instances.Length!=bytes))throw new ArgumentException("World object/instance data mismatch.");
             int aligned=checked((packet.Constants.Length+objectAlignment-1)/objectAlignment*objectAlignment);
             if((long)objectUsed+aligned>256*1024*1024 || (long)instanceUsed+bytes>256*1024*1024)throw new ArgumentException("World blob exceeds bounded upload budget.");
             Grow(ref constantArena,objectUsed,aligned);Buffer.BlockCopy(packet.Constants,0,constantArena,objectUsed,packet.Constants.Length);
             int instanceAt=0;if(packet.Instances!=null && !instanceOffsets.TryGetValue(packet.Instances,out instanceAt)){instanceAt=instanceUsed;Grow(ref instanceArena,instanceUsed,bytes);Buffer.BlockCopy(packet.Instances,0,instanceArena,instanceUsed,bytes);instanceUsed=checked(instanceUsed+bytes);instanceOffsets.Add(packet.Instances,instanceAt);}
-            if(recipes){var recipe=PacketRecipe(packet);recipeScratch[i]=new NativeRecipeDraw{Recipe=recipe.Handle,Count=packet.Count,Flags=packet.Flags,Cascades=packet.CascadeMask,ObjectOffset=(uint)objectUsed,InstanceOffset=(packet.Pipeline==20 || packet.Pipeline==21) || ClientPlugin.Rendering.Shaders.WorldShaderVariants.BasePipeline(packet.Pipeline)%5<2 || packet.Instances==null?uint.MaxValue:(uint)instanceAt,OriginX=packet.Origin.X,OriginY=packet.Origin.Y,OriginZ=packet.Origin.Z,Radius=packet.Radius};}
+            if(recipes){var recipe=PacketRecipe(in packet);recipeScratch[i]=new NativeRecipeDraw{Recipe=recipe.Handle,Count=packet.Count,Flags=packet.Flags,Cascades=packet.CascadeMask,ObjectOffset=(uint)objectUsed,InstanceOffset=(packet.Pipeline==20 || packet.Pipeline==21) || ClientPlugin.Rendering.Shaders.WorldShaderVariants.BasePipeline(packet.Pipeline)%5<2 || packet.Instances==null?uint.MaxValue:(uint)instanceAt,OriginX=packet.Origin.X,OriginY=packet.Origin.Y,OriginZ=packet.Origin.Z,Radius=packet.Radius};}
             else drawScratch[i]=new NativeWorldDraw{Size=WorldDrawSize,Pipeline=packet.Pipeline,Count=packet.Count,Flags=packet.Flags,Mesh=packet.Mesh,Color=packet.Color,Normal=packet.Normal,Extensions=packet.Extensions,Alpha=packet.Alpha,ConstantBytes=(uint)packet.Constants.Length,Reserved=packet.CascadeMask,OriginX=packet.Origin.X,OriginY=packet.Origin.Y,OriginZ=packet.Origin.Z,Radius=packet.Radius,Constants=new IntPtr(objectUsed+1),Instances=packet.Instances==null?IntPtr.Zero:new IntPtr(instanceAt+1)};
             objectUsed=checked(objectUsed+aligned);
             if(objectUsed>256*1024*1024 || instanceUsed>256*1024*1024)throw new ArgumentException("World blob exceeds bounded upload budget.");

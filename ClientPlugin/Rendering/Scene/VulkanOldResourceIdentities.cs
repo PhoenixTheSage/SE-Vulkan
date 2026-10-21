@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Xml.Linq;
 using ClientPlugin.Rendering.Content;
 using ClientPlugin.Rendering.Interop;
@@ -28,15 +29,19 @@ public sealed partial class VulkanScene
         for(int lod=0;lod<layouts.Length;lod++){int original=model.Layout(lod);layouts[lod]=stream!=0?OldResources.Layouts.Combine(original,stream):original;}
         actor.OldLodLayouts=layouts;actor.OldLayoutModel=model;actor.OldLayoutInstance=actor.InstanceBuffer;actor.OldLayoutStream=stream;
     }
+    // Source LOD matches resolve and canonicalize asset paths; they depend only
+    // on the identity, the drawn model file and the requested level.
+    readonly Dictionary<(object Identity,string Model,int Requested),int> oldLodMatches=new();
     NativeOldPartOrder OldPartOrder(ActorData actor,VulkanModel model,VulkanModelPart part,int requestedLod)
     {
         var identity=actor.OldModel;if(identity==null)return default;
         RegisterOldActorLayouts(actor);int lod=0;
-        if(identity.File!=null){
+        if(identity.File!=null&&!oldLodMatches.TryGetValue((identity,model.Name,requestedLod),out lod)){
             string Path(string name)=>System.IO.Path.GetFullPath(VulkanTextureCache.ResolvePath(name));string file=Path(model.Name);
             bool Match(int index)=>index>=0&&index<identity.LodCount&&string.Equals(Path(identity.File.Lods[index].AssetFile),file,StringComparison.OrdinalIgnoreCase);
             if(Match(requestedLod))lod=requestedLod;
             else {lod=-1;for(int i=0;i<identity.LodCount;i++)if(Match(i)){lod=i;break;}if(lod<0)throw new InvalidOperationException("OLD draw has no retained source LOD identity.");}
+            oldLodMatches[(identity,model.Name,requestedLod)]=lod;
         }
         int count=identity.File!=null?identity.File.Lods[lod].Materials.SourceMaterials.Count:identity.Runtime.Materials.Length;
         if(part.SourceIndex<0||part.SourceIndex>=count)return default;

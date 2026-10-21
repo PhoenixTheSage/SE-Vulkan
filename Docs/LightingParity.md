@@ -1,16 +1,27 @@
 # DX11 lighting and PBR parity
 
-Status: paused at the user's request (2026-10-20), for repository cleanup and
-push preparation. Full parity is not complete. The earlier Anomaly producer
-work did not establish equality of
-base scene lighting/material appearance. Earlier Creative captures exposed
-darker Vulkan walls/floor and incorrect LCD shading. A successful launch or
-producer catalog check is not the acceptance oracle for this work.
+Status: general stock lighting/material parity accepted (2026-10-20), against
+the user's clarified common-path/appearance standard. The fresh paired broad
+scene, producer/topology checks, reviewed medium-off/on images and scoped
+numeric evidence are recorded in the final acceptance section below. Minor
+edge cases remain explicitly deferred. Earlier Creative captures exposed
+darker Vulkan walls/floor and incorrect LCD shading; those historical failures
+remain preserved alongside their corrections and subsequent acceptance.
 
 Accepted completion standard (2026-10-18): match stock features and appearance,
 with documented GPU tolerances. Exact vendor-specific interpolation bits are
 not required. Numeric limits must retain their measured scope and cannot
 excuse unexplained visual differences.
+
+Completion priority clarified by the user (2026-10-20): establish general
+stock feature and appearance parity on common rendering paths. Minor or rare
+edge cases may be documented for later rather than blocking this milestone.
+Do not treat unproven pathological resource collisions, unusual allocation/LOD
+ties, or a missing diagnostic-only disposal marker as general-parity blockers
+without evidence of a material common-path failure. Visible shading defects,
+missing common features, GPU errors and real lifetime failures still require
+resolution. The historical full-audit checklist below retains its original
+scope as follow-up evidence, not an unconditional general-parity gate.
 
 Current checkpoint (2026-10-20): the four-panel spatial OLD resource-order
 fixture passes its exact color/LOD and depth gate. The missing normal/gloss
@@ -18,11 +29,11 @@ fallback now uses stock bytes and decoded panel normals/materials match.
 Matched FP16 panel HDR RGB differs by at most one representable step. A
 source-incompatible probe restart on large camera movement was removed;
 the probe suites pass427 checks without indexed input and485 with indexed
-input, with zero Vulkan core/synchronization errors. Full scene/material
-acceptance remains open. Resume with matched render-step conditions for timed
-probe publication, then the remaining OLD/NEW LOD/order/ownership variants,
-read-only decal auxiliary outputs, broader raster cases and final lifecycle
-acceptance. Detailed evidence and limitations are recorded below.
+input, with zero Vulkan core/synchronization errors. Fresh broad acceptance
+matches quality, verifies all requested producers and room topology, and
+retains the accepted HDR bounds over 26,391 exact-input pixels. Vulkan unload,
+disposal and process exit complete normally. Deferred permutations and the
+separate DX11 reference-host teardown limitation are recorded below.
 
 **Quality audit correction:** runs through `62eb45a2130a4640a7d8ec11571d1eba`
 pinned viewport/camera/sun but allowed the game to choose renderer-specific
@@ -4686,3 +4697,89 @@ broader accelerated raster variants, and final matched-scene/lifecycle acceptanc
 Earlier focused passes do not certify those cases or the complete scene suite.
 The user's accepted standard remains stock features and appearance with
 documented, scoped GPU tolerances.
+
+### General parity acceptance resumed — 2026-10-20
+
+The user resumed work after release1.2.0 (d03e121) and explicitly allowed
+minor/rare edge cases to be noted for later. The milestone now targets
+general stock feature and appearance parity rather than exhaustive equivalence
+of every allocation clock, tie and optional extension output. Common visible
+differences and real validation/lifetime failures still block acceptance.
+
+Fresh broad comparison: DX11 c0e7f193b2144e23a2ee985122d6897f and Vulkan
+2c0c3ca588554f7c8ef8b1830147c88f. Both use the same marked baseline world,
+pinned render quality/HBAO seed, static held lighting view, moving-geometry
+exercises before that view, and actual Anomaly producer/room-topology checks.
+Snapshots use managed648ACBA6, native8167C0E9 and Anomaly5C57FE30. These runs
+must complete and their captured images/stages be reviewed before acceptance.
+
+Deferred follow-ups, unless broad acceptance exposes a material failure:
+
+- Pathological truncated resource-key collisions, exact allocator reuse clocks,
+  and ambiguous coplanar ties in unusual merged/LOD combinations.
+- Additional root/selected-LOD, per-view and equal-instance tie permutations
+  beyond the covered ordinary LOD, ordering, ownership and history paths.
+- Read-only decal writes into optional temporal motion/reactive extension
+  targets; stock appearance acceptance does not certify those extra outputs.
+- Non-default OLD actor/material culling overrides on optional accelerated
+  submission routes, beyond the validated fallback and ordinary technique paths.
+- A missing DX11 harness-disposal marker after verified render-object cleanup,
+  world unload and actual process exit; real leaks or GPU errors remain blockers.
+
+Independent timed-probe snapshots are not matched-history inputs. Immediate
+stock probe controls and stopped-clock scheduling regressions retain their
+measured scope; exhaustive render-step-identical convergence is deferred if
+the broad scene has no material reflection/lighting discrepancy.
+
+### General lighting/material parity acceptance — 2026-10-20
+
+The fresh broad pair named above completed simulation, producer/topology and
+all requested capture checks on release1.2.0. Actual quality dictionaries
+match, including the pinned HBAO seed. Both backends expose occupancy512x512,
+pointShadowAtlas384x129, playerDepth/litMips/volumeReactive640x480. The atlas
+records two lights, twelve face draws and24,949 copied skinned-character
+triangles. Both room checks observe actual sealed zero-oxygen topology,
+opening a wall and rebuilding it. These new live observations complement the
+earlier strict producer and lifecycle tests; availability alone is not being
+substituted for their implementation/contract evidence.
+
+Both medium-off and medium-on images were reviewed. The platform materials,
+LCD/sprites, glass, lighting and shadows closely match. No exposure fit,
+brightness compensation, resampling or quality reduction was used. Detailed
+stage comparison: lighting-general-parity-comparison.json. Frozen acceptance
+inputs and lifecycle qualifications: lighting-general-parity-acceptance.json.
+
+There are67,538 shared foreground pixels and59,477 with aligned depth/normals.
+The26,391-pixel subset with bit-exact captured GBuffer, AO footprint and sun
+inputs has RGB HDR mean absolute errors
+(0.00005386484,0.00005620459,0.00002869573), maxima0.015625/channel and
+P95(0.00006103516,0.00012207031,0.00006103516). These retain the previously
+accepted measured GPU tolerance. This subset does not assert that all probe,
+local-light, transparent or independently animated inputs are bit-identical.
+
+Across the aligned image region above the HUD, asynchronous final-image RGB8
+mean errors are(0.599,0.538,0.623), with P95(2,2,2). On the exact-material
+image subset, means are(0.305,0.301,0.327), P95(1,1,1), and93.75% of pixels
+are within one RGB8 level in every channel. Isolated image maxima77/51/77
+remain recorded rather than hidden by averages. Broader raw HDR differences
+above0.25 affect101/67,538 foreground pixels (0.150%), with maximum8.625;
+these are outside the exact-input subset and do not redefine its tolerance.
+Their sparse highlight/material-boundary variation does not create a material
+visual mismatch in the reviewed common scene; further per-pixel attribution
+is a follow-up under the user's clarified criterion.
+
+Vulkan validation is enabled with zero errors and no device loss. It completes
+world unload, exit request and Harness disposed at215.4s; its actual process
+is absent. DX11 completes every capture and simulation/producer check but
+stalls in its return-to-menu unload while the stock host logs DLC banner
+downloads. Its verified private process is stopped at447s, with an explicit
+host-deadline-stop.json. No clean DX11 unload/disposal is claimed. This
+reference-host limitation does not reproduce in the current Vulkan run.
+
+The existing live mesh-decal/raster/OLD ordering proofs and normal fallback,
+probe, local-light, shadow, motion/history and lifetime regressions retain
+their recorded scopes. Together with this fresh broad run they establish the
+general lighting/material milestone. The deferred list above remains open for
+later work, along with unrelated renderer-registry gaps such as voxel-debris
+drawing. General lighting/material acceptance is not a certification of every
+backend feature or every possible extension/driver configuration.

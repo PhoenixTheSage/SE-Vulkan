@@ -30,6 +30,9 @@ internal static class Program
     private static class ValidModeForwarder { public static void Forward(int? settings) { } public static void DriveDirect(int settings) { } }
     private static class WrongModeForwarder { public static void Forward(int settings) { } public static bool DriveDirect(int settings) => true; }
     private static class GenericInvoker { internal static void Invoke<T>(Action action) { } }
+    private sealed class LegacyWindow { public void OnModeChanged(byte mode, int width, int height, int bounds) { } }
+    private sealed class RefreshWindow { public float Refresh; public void OnModeChanged(byte mode, int width, int height, int bounds, float refresh) { Refresh = refresh; } }
+    private sealed class ChangedWindow { public void OnModeChanged(byte mode, int width, int height, int bounds, double refresh) { } }
     private static int checks;
     private static void Check(bool condition, string name) { if (!condition) throw new Exception(name); checks++; Console.WriteLine("PASS " + name); }
     private static int Main(string[] args)
@@ -38,6 +41,12 @@ internal static class Program
         try
         {
             var staticPublic = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static;
+            Check(RuntimeMethodContract.FindWindowModeMethod(typeof(LegacyWindow), typeof(byte), typeof(int))?.GetParameters().Length == 4, "legacy Linux window mode callback remains supported");
+            var refreshWindow = new RefreshWindow();
+            var refreshMethod = RuntimeMethodContract.FindWindowModeMethod(typeof(RefreshWindow), typeof(byte), typeof(int));
+            refreshMethod?.Invoke(refreshWindow, new object[] { (byte)0, 1920, 1080, 0, 144f });
+            Check(refreshWindow.Refresh == 144f, "current Linux window mode callback resolves and receives refresh rate");
+            Check(RuntimeMethodContract.FindWindowModeMethod(typeof(ChangedWindow), typeof(byte), typeof(int)) == null, "unsupported Linux window mode callback remains rejected");
             Check(RuntimeMethodContract.FindVoidMethod(typeof(ValidModeForwarder), "Forward", staticPublic, typeof(int?)) != null && RuntimeMethodContract.FindVoidMethod(typeof(ValidModeForwarder), "DriveDirect", staticPublic, typeof(int)) != null, "Linux mode forwarders require the pinned nullable/direct parameter contracts");
             Check(RuntimeMethodContract.FindVoidMethod(typeof(WrongModeForwarder), "Forward", staticPublic, typeof(int?)) == null, "changed nullable Linux forwarding signature is rejected before activation");
             Check(RuntimeMethodContract.FindVoidMethod(typeof(WrongModeForwarder), "DriveDirect", staticPublic, typeof(int)) == null && RuntimeMethodContract.FindVoidMethod(typeof(GenericInvoker), "Invoke", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static, typeof(Action)) == null, "non-void and generic Linux host callbacks cannot satisfy preflight");

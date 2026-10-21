@@ -28,7 +28,8 @@ public static class RendererCpuProfiler
         NativePassPrepare, NativePassResources, NativePassQueries,
         NativePassPublish, NativePassFallbacks, NativePassEndVisibility,
         GpuFrameInputs, GpuTopologyPublication, GpuResidentQueue, GpuRootQueries,
-        GpuVisibilityPublication, Count
+        GpuVisibilityPublication,
+        MainOwnerDeclare, NewViewSpots, NewViewSelect, DrawWorldSetup, PreparedAppend, Count
     }
     public static bool Enabled {get;}=Environment.GetEnvironmentVariable("SE_VULKAN_CPU_DETAIL")=="1";
     static readonly Counter[] Current=new Counter[(int)Phase.Count];

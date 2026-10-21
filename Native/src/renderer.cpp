@@ -219,7 +219,12 @@ struct WorldSetKey {
     bool operator==(const WorldSetKey& other) const { return a==other.a && b==other.b && c==other.c && d==other.d && e==other.e && f==other.f && bytes==other.bytes && kind==other.kind; }
 };
 struct WorldSetHash { size_t operator()(const WorldSetKey& key) const noexcept { size_t h=0; auto mix=[&](uint64_t value){ h^=std::hash<uint64_t>{}(value)+0x9e3779b9+(h<<6)+(h>>2); }; mix(key.a);mix(key.b);mix(key.c);mix(key.d);mix(key.e);mix(key.f);mix((uint64_t(key.bytes)<<32)|key.kind); return h; } };
-struct WorldSlot { uint64_t material_epoch=1;Buffer frame,projections,objects,instances,point_lights,tiles,spots,glue,dimensions,history_projection,history_instances;uint64_t instance_bytes_used{},history_instance_bytes{}; VkDescriptorPool pool{}, material_pool{}; std::unordered_map<WorldSetKey,VkDescriptorSet,WorldSetHash> material_cache,probe_materials; std::unordered_set<uint64_t> dirty_textures,dirty_arrays,dirty_voxels; bool material_stale=false;std::vector<uint64_t> object_versions;
+struct WorldSlot { uint64_t material_epoch=1;Buffer frame,projections,objects,instances,point_lights,tiles,spots,glue,dimensions,history_projection,history_instances;uint64_t instance_bytes_used{},history_instance_bytes{};
+    // Host copies of the bytes uploaded to frame/projection/object/instance
+    // memory. That memory may be uncached device-local BAR; CPU readers
+    // (motion history, spot fade hashing) must never read it back.
+    std::vector<uint8_t> host_frame,host_objects,host_instances;std::array<uint8_t,64> host_projection{};bool host_projection_valid{};
+    uint32_t tile_list_tiles{},tile_list_points{},tile_list_capacity{}; VkDescriptorPool pool{}, material_pool{}; std::unordered_map<WorldSetKey,VkDescriptorSet,WorldSetHash> material_cache,probe_materials; std::unordered_set<uint64_t> dirty_textures,dirty_arrays,dirty_voxels; bool material_stale=false;std::vector<uint64_t> object_versions;
     Buffer light_tile_gpu,light_tile_readback,light_tile_constants;uint64_t tile_frame{},tile_epoch{};uint32_t tile_count{},tile_points{};bool tile_pending{};
 };
 struct AtmosphereLut { Image image; std::array<uint8_t,48> parameters{}; bool initialized{}; };

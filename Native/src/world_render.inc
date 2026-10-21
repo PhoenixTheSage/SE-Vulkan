@@ -221,8 +221,13 @@ void world_light_data(WorldSlot& s){
     light_tiles.points=points;light_tiles.stats.enabled=light_tiles.requested?1u:0u;light_tiles.stats.dispatches=0;light_tiles.stats.points=points;light_tiles.stats.frame=work.world_frames+1;
     uint32_t tx=(extent.width+15)/16,ty=(extent.height+15)/16,tiles=tx*ty;light_tiles.stats.tiles=tiles;
     if(light_tiles.requested){prepare_light_tile_storage(s,tiles,points);check(vmaFlushAllocation(allocator,s.spots.memory,0,VK_WHOLE_SIZE),"flush stock spot constants");return;}
-    world_buffer(s.tiles,uint64_t(tiles)*(capacity+1)*4,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);auto* indices=static_cast<uint32_t*>(s.tiles.mapped);
-    for(uint32_t tile=0;tile<tiles;++tile){indices[tile]=points;for(uint32_t i=0;i<points;++i)indices[tiles+uint64_t(tile)*capacity+i]=i;}check(vmaFlushAllocation(allocator,s.tiles.memory,0,uint64_t(tiles)*(capacity+1)*4),"flush conservative stock tiled light lists");check(vmaFlushAllocation(allocator,s.spots.memory,0,VK_WHOLE_SIZE),"flush stock spot constants");
+    VkBuffer previous_tiles=s.tiles.handle;world_buffer(s.tiles,uint64_t(tiles)*(capacity+1)*4,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);auto* indices=static_cast<uint32_t*>(s.tiles.mapped);
+    // The conservative list depends only on tile/point counts and capacity.
+    // This slot's persistent buffer keeps it; rewrite only when those change.
+    if(!previous_tiles || previous_tiles!=s.tiles.handle || s.tile_list_tiles!=tiles || s.tile_list_points!=points || s.tile_list_capacity!=capacity){
+        for(uint32_t tile=0;tile<tiles;++tile){indices[tile]=points;for(uint32_t i=0;i<points;++i)indices[tiles+uint64_t(tile)*capacity+i]=i;}check(vmaFlushAllocation(allocator,s.tiles.memory,0,uint64_t(tiles)*(capacity+1)*4),"flush conservative stock tiled light lists");
+        s.tile_list_tiles=tiles;s.tile_list_points=points;s.tile_list_capacity=capacity;}
+    check(vmaFlushAllocation(allocator,s.spots.memory,0,VK_WHOLE_SIZE),"flush stock spot constants");
 }
 VkDescriptorSet world_light_set(WorldSlot& s,bool spot=false){auto set=world_set(s,spot?world.spot_layout:world.light_layout);
     world_write_buffer(set,0,s.frame,1280,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,1,s.spots,208,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);world_write_buffer(set,4,s.glue,352,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,5,s.dimensions,32,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
@@ -289,12 +294,12 @@ GeometryRecordCounts record_world_selection(VkCommandBuffer cmd,WorldSlot& slot,
     critical_profile::Scope critical_geometry(cascade<0?critical_profile::MainRecord:critical_profile::CascadeOwner);
     GeometryRecordCounts counts{};bool voxel_marker=false;
     const auto& object_offsets=world.current().object_offsets;const auto& instance_offsets=world.current().instance_offsets;const auto& materials=world.current().materials;
-    struct BindCache{VkPipeline pipe{};VkDescriptorSet set{};uint32_t offset0=~0u,offset1=~0u,streams{},instance{};VkBuffer vertex{},index{};VkDeviceSize vertex_at{},index_at{};} cache{};
+    struct BindCache{VkPipeline pipe{};VkDescriptorSet set{};uint32_t offset0=~0u,offset1=~0u,streams{},instance{};VkBuffer vertex{},index{};VkDeviceSize vertex_at{},index_at{};WorldRasterCache raster{};} cache{};
     auto emit=[&](uint32_t i,int cascade,uint32_t indirect_count=0,uint32_t command_start=0){const auto& draw=world.current().draws[i];const auto& p=world.pipelines[cascade<0?draw.packet.pipeline:world_base_pipeline(draw.packet.pipeline)+32];if(cascade<0 && world_voxel(draw.packet.pipeline) && !voxel_marker){frame_mark("gbuffer voxels");voxel_marker=true;}auto& mesh=*draw.geometry;uint32_t offsets[]{cascade<0?0:static_cast<uint32_t>(world_align(64)*(cascade+1)),object_offsets[i]};
         if(cascade<0 && (main_phase>=0?world_main_phase(draw.packet.pipeline,draw.packet.flags)!=uint32_t(main_phase):world_mesh_decal(draw.packet.pipeline)!=decals))return;
         VkPipeline handle=cascade>=0 && cascade<8 && shadow_pass_constants_provided?p.stock_cascade:p.handle;if(!handle)throw std::runtime_error("stock shadow rasterizer unavailable");
-        if(cache.pipe!=handle){vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,handle);cache.pipe=handle;}
-        if(!world_voxel(draw.packet.pipeline))world_model_raster(cmd,draw.packet.pipeline,draw.packet.flags,cascade>=0,cascade>=0 && cascade<8 && shadow_pass_constants_provided?VK_CULL_MODE_BACK_BIT:VK_CULL_MODE_NONE,cascade>=0 && cascade<8 && shadow_pass_constants_provided);
+        if(cache.pipe!=handle){vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,handle);cache.pipe=handle;if(world_voxel(draw.packet.pipeline))cache.raster.valid=false;}
+        if(!world_voxel(draw.packet.pipeline))world_model_raster(cmd,draw.packet.pipeline,draw.packet.flags,cascade>=0,cascade>=0 && cascade<8 && shadow_pass_constants_provided?VK_CULL_MODE_BACK_BIT:VK_CULL_MODE_NONE,cascade>=0 && cascade<8 && shadow_pass_constants_provided,&cache.raster);
         if(cache.set!=materials[i]||cache.offset0!=offsets[0]||cache.offset1!=offsets[1]){vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,world.material_pipeline_layout,0,1,&materials[i],2,offsets);cache.set=materials[i];cache.offset0=offsets[0];cache.offset1=offsets[1];}
         uint32_t streams=p.type>=2?2u:1u,instance=streams>1&&!indirect_count?instance_offsets[i]:0u;
         VkDeviceSize vertex_at=indirect_count?0:mesh.vertex_offset,index_at=indirect_count?0:mesh.index_offset;
@@ -417,7 +422,8 @@ void render_world(){
     auto profile_stamp=std::chrono::steady_clock::now();
     auto profile_take=[&](){auto now=std::chrono::steady_clock::now();uint32_t elapsed=(uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(now-profile_stamp).count();profile_stamp=now;return elapsed;};
     prepare_shadow_targets(slots[slot_index].command);world_targets();auto& slot=world.slots[slot_index];auto cmd=slots[slot_index].command;check(vkResetDescriptorPool(device,slot.pool,0),"recycle completed world descriptors");slot.probe_materials.clear();
-    std::memcpy(slot.frame.mapped,world.current().frame.data(),1280);std::memcpy(slot.projections.mapped,world.current().projection.data(),64);for(uint32_t i=0;i<8;++i)std::memcpy(static_cast<uint8_t*>(slot.projections.mapped)+world_align(64)*(i+1),shadow_matrices[i],64);
+    std::memcpy(slot.frame.mapped,world.current().frame.data(),1280);std::memcpy(slot.projections.mapped,world.current().projection.data(),64);
+    slot.host_frame.assign(world.current().frame.data(),world.current().frame.data()+1280);std::memcpy(slot.host_projection.data(),world.current().projection.data(),64);slot.host_projection_valid=true;for(uint32_t i=0;i<8;++i)std::memcpy(static_cast<uint8_t*>(slot.projections.mapped)+world_align(64)*(i+1),shadow_matrices[i],64);
     for(auto& config:spots.config)std::memcpy(static_cast<uint8_t*>(slot.projections.mapped)+world_align(64)*(9+config.light),config.projection,64);
     if(guest.depth_configured)for(uint32_t i=0;i<guest.depth_count;i++)
         std::memcpy(static_cast<uint8_t*>(slot.projections.mapped)+world_align(64)*(73+i),guest.depth_matrices[i],64);
@@ -433,14 +439,16 @@ void render_world(){
     world.object_uploaded_bytes=0;
     if(world.retained_objects){
         if(material_buffers_moved)slot.object_versions.clear();
-        slot.object_versions.resize((object_bytes+world.alignment-1)/world.alignment);
+        slot.object_versions.resize((object_bytes+world.alignment-1)/world.alignment);slot.host_objects.resize(size_t(object_bytes));
         uint64_t first=UINT64_MAX,last=0;
         for(uint64_t id:world.object_records.selected){const auto& record=world.object_records.records.at(id);auto& version=slot.object_versions[record.offset/world.alignment];
             if(version==record.revision)continue;
             std::memcpy(static_cast<uint8_t*>(slot.objects.mapped)+record.offset,world.object_records.data.data()+record.offset,record.bytes);
+            std::memcpy(slot.host_objects.data()+record.offset,world.object_records.data.data()+record.offset,record.bytes);
             version=record.revision;first=std::min(first,uint64_t(record.offset));last=std::max(last,uint64_t(record.offset)+record.bytes);world.object_uploaded_bytes+=record.bytes;}
         if(last)check(vmaFlushAllocation(allocator,slot.objects.memory,first,last-first),"flush changed retained objects");
-    }else if(object_bytes){std::memcpy(slot.objects.mapped,world.current().draw_objects.data(),size_t(object_bytes));world.object_uploaded_bytes=object_bytes;}
+    }else{slot.host_objects.assign(world.current().draw_objects.data(),world.current().draw_objects.data()+object_bytes);if(object_bytes){std::memcpy(slot.objects.mapped,world.current().draw_objects.data(),size_t(object_bytes));world.object_uploaded_bytes=object_bytes;}}
+    slot.host_instances.assign(world.current().instances.data.data(),world.current().instances.data.data()+instance_bytes);
     if(instance_bytes)std::memcpy(slot.instances.mapped,world.current().instances.data.data(),instance_bytes);slot.instance_bytes_used=instance_bytes;
     struct Glue{float inverse[16],matrices[64],splits[4];uint32_t count,width,height,reserved;};static_assert(sizeof(Glue)==352);Glue glue{};std::memcpy(glue.inverse,world.current().inverse.data(),64);std::memcpy(glue.matrices,shadow_matrices,sizeof(glue.matrices));std::memcpy(glue.splits,shadow_splits,sizeof(glue.splits));glue.count=std::min(4u,shadow_count);glue.width=extent.width;glue.height=extent.height;std::memcpy(slot.glue.mapped,&glue,sizeof(glue));
     for(auto* b:{&slot.frame,&slot.projections,&slot.instances,&slot.glue})check(vmaFlushAllocation(allocator,b->memory,0,VK_WHOLE_SIZE),"flush batched world uniforms/instances");if(!world.retained_objects)check(vmaFlushAllocation(allocator,slot.objects.memory,0,VK_WHOLE_SIZE),"flush legacy world objects");world_light_data(slot);
@@ -449,20 +457,25 @@ void render_world(){
     prepare_pass_gpu(slot);
     performance.descriptors_us=perf_prepare_take();
     auto& order=world.current().order;order.resize(world.current().draws.size());for(uint32_t n=0;n<order.size();++n)order[n]=n;
+    // Compact per-draw copies of every comparator input. The comparator is the
+    // same function of them, so std::sort yields the same order without
+    // touching the large WorldDraw records on each comparison.
+    struct SortKey{uint64_t old_key,mesh;VkDescriptorSet material;uint32_t phase,main_order,main_part,pipeline,technique,old_valid;bool mesh_decal,old_flag;};
+    static thread_local std::vector<SortKey> keys;keys.resize(order.size());
+    for(uint32_t n=0;n<order.size();++n){const auto& d=world.current().draws[n];const auto& p=d.packet;keys[n]={d.old_order.key,p.mesh,materials[n],world_main_phase(p.pipeline,p.flags),d.main_order?d.main_order:n+1,d.main_part,p.pipeline,world_decal_technique_order(p.pipeline),d.old_order.valid,world_mesh_decal(p.pipeline),(p.flags&0x04000000u)!=0};}
     std::sort(order.begin(),order.end(),[&](uint32_t a,uint32_t b){
-        const auto& A=world.current().draws[a].packet;const auto& B=world.current().draws[b].packet;
-        auto phase_a=world_main_phase(A.pipeline,A.flags),phase_b=world_main_phase(B.pipeline,B.flags);if(phase_a!=phase_b)return phase_a<phase_b;
-        if(phase_a<4){const auto& x=world.current().draws[a].old_order;const auto& y=world.current().draws[b].old_order;if(x.valid!=y.valid)return x.valid<y.valid;if(x.valid)return x.key!=y.key?x.key<y.key:a<b;}
+        const auto& A=keys[a];const auto& B=keys[b];
+        if(A.phase!=B.phase)return A.phase<B.phase;
+        if(A.phase<4){if(A.old_valid!=B.old_valid)return A.old_valid<B.old_valid;if(A.old_valid)return A.old_key!=B.old_key?A.old_key<B.old_key:a<b;}
         // NEW groups are emitted with their preprocessed parts together.
         // A global shader/mesh/decal sort breaks read-only decal ownership.
-        if(phase_a==4){const auto& da=world.current().draws[a];const auto& db=world.current().draws[b];uint32_t oa=da.main_order?da.main_order:a+1,ob=db.main_order?db.main_order:b+1;if(oa!=ob)return oa<ob;if(da.main_part!=db.main_part)return da.main_part<db.main_part;return a<b;}
-        if(world_mesh_decal(A.pipeline)&&world_mesh_decal(B.pipeline)){
-            bool old_a=(A.flags&0x04000000u)!=0,old_b=(B.flags&0x04000000u)!=0;
-            if(old_a!=old_b)return old_a;
-            if(old_a){auto technique_a=world_decal_technique_order(A.pipeline),technique_b=world_decal_technique_order(B.pipeline);if(technique_a!=technique_b)return technique_a<technique_b;}
+        if(A.phase==4){if(A.main_order!=B.main_order)return A.main_order<B.main_order;if(A.main_part!=B.main_part)return A.main_part<B.main_part;return a<b;}
+        if(A.mesh_decal&&B.mesh_decal){
+            if(A.old_flag!=B.old_flag)return A.old_flag;
+            if(A.old_flag){if(A.technique!=B.technique)return A.technique<B.technique;}
             return a<b;
         }
-        if(A.pipeline!=B.pipeline)return A.pipeline<B.pipeline;if(A.mesh!=B.mesh)return A.mesh<B.mesh;return materials[a]<materials[b];
+        if(A.pipeline!=B.pipeline)return A.pipeline<B.pipeline;if(A.mesh!=B.mesh)return A.mesh<B.mesh;return A.material<B.material;
     });
     for(auto& casters:world.current().cascade_casters)casters.clear();
     if(scheduled_shadows)shadow_update_mask|=((1u<<shadow_count)-1)&~shadow_image_mask;

@@ -23,7 +23,7 @@ public sealed partial class VulkanScene
         bool main=!probeOnly&&!occluded&&(actor.Flags&RenderFlags.SkipInMainView)==0;
         bool probe=!outsideProbe&&(actor.Flags&RenderFlags.SkipInForward)==0;
         bool casts=(actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))==RenderFlags.CastShadows;
-        bool spots=false;if(casts){Vector3 origin=(Vector3)(bounds.Center-Environment.CameraPosition);float radius=(float)bounds.HalfExtents.Length();foreach(var light in liveSpots)if(SpotSphereVisible(origin-(Vector3)(light.Position-Environment.CameraPosition),light.Direction,light.Range,light.Cone,radius)){spots=true;break;}}
+        bool spots=false;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NewViewSpots,false))if(casts){Vector3 origin=(Vector3)(bounds.Center-Environment.CameraPosition);float radius=(float)bounds.HalfExtents.Length();foreach(var light in liveSpots)if(SpotSphereVisible(origin-(Vector3)(light.Position-Environment.CameraPosition),light.Direction,light.Range,light.Cone,radius)){spots=true;break;}}
         uint masks=selectedCascades??(casts?(CascadeMaskFor?.Invoke(bounds,Environment.CameraPosition)??255u):0u);
         if(casts)masks=FilterShadowGroupCascades(actor,masks);
         int LodFor(MyPassLoddingSetting pass,int lod)=>Math.Min(actor.Model.LodDistances.Length,Math.Max(pass.MinLod,lod+(main?pass.LodShiftVisible:pass.LodShift)));
@@ -44,7 +44,7 @@ public sealed partial class VulkanScene
         actor.SuppressViewHighlight=true;
         // Stock GeometryStage2 uses the 255 pipeline marker in its placeholder
         // object buffer; the selected geometry level belongs to the view plan.
-        try{for(int i=0;i<actorViewSliceCount;i++){var view=actorViewSlices[i];SelectRepresentation(actor,models.GetLod(actor.Model,view.Lod),255);actor.LodAlpha=view.Alpha;
+        try{for(int i=0;i<actorViewSliceCount;i++){var view=actorViewSlices[i];using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NewViewSelect,false))SelectRepresentation(actor,models.GetLod(actor.Model,view.Lod),255);actor.LodAlpha=view.Alpha;
                 actor.ExtraViewFlags=(view.Spots?0u:0x2000000u)|((view.Cascades==0&&!view.Spots)?512u:0u);
                 DrawWorld(target,actor,world,!view.Main,false,!view.Probe,bounds,view.Cascades);newViewStats.Representations++;}
         }finally{actor.ExtraViewFlags=0;actor.SuppressViewHighlight=false;}

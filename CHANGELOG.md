@@ -1,5 +1,14 @@
 # SE-Vulkan changelog
 
+## 1.2.1 — 2026-10-20
+
+- Keep CPU mirrors of uploaded frame/projection/object/instance data and use them for motion, attachment and spotlight dependency reads instead of reading uncached GPU mappings.
+- Cache material identity by revision and main-group keys by model/fade inputs; use structural keys with precomputed hashes and avoid repeated sorting/path construction.
+- Skip redundant dynamic raster-state commands, sort compact copies of the same draw-order inputs, reuse conservative light-tile lists and access large world packets in place.
+- Cache indirect skybox path selection and add CPU profiling phases for owner declaration, view selection, setup and prepared appends.
+- Support both LinuxCompat window-mode callback signatures, convert millihertz to hertz for the newer callback and reject unsupported signatures; extend bootstrap regressions and cover stable probe-path caching across file appearance and fresh-cache creation.
+- Document paired CPU-regression benchmarks and parity checkpoints. The archived private scene improved from about 119 ms mean in 1.2.0 to about 22 ms with these changes; this is workload-specific historical evidence, not a universal performance guarantee. The sub-4.17 ms target remains open; the general lighting/material milestone and deferred parity gates retain the scope documented in LightingParity.md.
+
 ## 1.2.0 — 2026-10-20
 
 Heavy DX11 visual parity is in place, but lower performance than previous builds is expected until further optimization passes. Full scene/material parity acceptance remains open; scoped fixture matches do not establish complete renderer equivalence.

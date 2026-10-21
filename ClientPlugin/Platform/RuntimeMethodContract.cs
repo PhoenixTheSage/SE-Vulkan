@@ -6,6 +6,13 @@ namespace ClientPlugin.Platform;
 
 internal static class RuntimeMethodContract
 {
+    internal static MethodInfo FindWindowModeMethod(Type type, Type modeType, Type boundsType)
+    {
+        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        return FindVoidMethod(type, "OnModeChanged", flags, modeType, typeof(int), typeof(int), boundsType, typeof(float)) ??
+            FindVoidMethod(type, "OnModeChanged", flags, modeType, typeof(int), typeof(int), boundsType);
+    }
+
     internal static MethodInfo FindVoidMethod(Type type, string name, BindingFlags flags, params Type[] parameterTypes)
     {
         if (type == null) return null;

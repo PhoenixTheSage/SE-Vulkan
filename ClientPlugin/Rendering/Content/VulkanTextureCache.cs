@@ -30,6 +30,7 @@ namespace ClientPlugin.Rendering.Content
         private readonly ConcurrentDictionary<ulong, byte> singleChannelTextures = new ConcurrentDictionary<ulong, byte>();
         private readonly Dictionary<string, ulong[]> cubes = new Dictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, ulong> worldCubes = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> worldProbeCubePaths = new Dictionary<string, string>(StringComparer.Ordinal);
         private ulong neutralNormal, neutralExtensions;
         private int ownerThread;
         private ulong nextHandle = 1;
@@ -69,9 +70,12 @@ namespace ClientPlugin.Rendering.Content
         public ulong GetWorldProbeCube(string path)
         {
             RequireOwner();if(string.IsNullOrWhiteSpace(path))return 0;
-            string resolved=ResolvePath(path);
-            string indirect=Path.Combine(Path.GetDirectoryName(resolved)??"",Path.GetFileNameWithoutExtension(resolved)+"Indirect"+Path.GetExtension(resolved));
-            return GetWorldCube(MyFileSystem.FileExists(indirect)?indirect:resolved);
+            // The skybox asks every frame; probe the file system once per path.
+            if(!worldProbeCubePaths.TryGetValue(path,out string source)){
+                string resolved=ResolvePath(path);
+                string indirect=Path.Combine(Path.GetDirectoryName(resolved)??"",Path.GetFileNameWithoutExtension(resolved)+"Indirect"+Path.GetExtension(resolved));
+                worldProbeCubePaths.Add(path,source=MyFileSystem.FileExists(indirect)?indirect:resolved);}
+            return GetWorldCube(source);
         }
         public ulong GetWorldCube(string path)
         {
@@ -305,7 +309,7 @@ namespace ClientPlugin.Rendering.Content
             foreach (ulong[] cube in cubes.Values) if (cube != null) foreach (ulong handle in cube) backend.RemoveResource(0, handle);
             entries.Clear(); generated.Clear(); singleChannelTextures.Clear();
             cubes.Clear();
-            foreach(ulong cube in worldCubes.Values)if(cube!=0)backend.RemoveResource(4,cube);worldCubes.Clear();
+            foreach(ulong cube in worldCubes.Values)if(cube!=0)backend.RemoveResource(4,cube);worldCubes.Clear();worldProbeCubePaths.Clear();
             if(neutralNormal!=0)backend.RemoveResource(0,neutralNormal);if(neutralExtensions!=0)backend.RemoveResource(0,neutralExtensions);neutralNormal=neutralExtensions=0;
             KeyValuePair<string, uint> ignored;
             while (pending.TryDequeue(out ignored)) { }

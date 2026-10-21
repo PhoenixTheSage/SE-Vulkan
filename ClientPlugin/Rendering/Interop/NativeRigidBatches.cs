@@ -86,9 +86,9 @@ public sealed partial class NativeBackend
             batch.Frame=batchFrame;
             rigidBatchPackets++;
             batch.PacketIndex=(int)AddWorldPacket(pipeline+2,mesh,color,normal,extensions,alpha,batch.Constants,batch.Instances,1,flags,cascades,origin,radius,false,batch.Recipe,false);
-            var first=worldPackets[batch.PacketIndex];first.Count=0;first.InstanceCapacity=true;worldPackets[batch.PacketIndex]=first;
+            ref var first=ref PacketAt(batch.PacketIndex);first.Count=0;first.InstanceCapacity=true;
         }
-        var packet=worldPackets[batch.PacketIndex];int at=checked((int)packet.Count*64);
+        ref var packet=ref PacketAt(batch.PacketIndex);int at=checked((int)packet.Count*64);
         if(packet.Count>=1000000)throw new InvalidOperationException("Rigid instance batch exceeds native instance count.");
         Grow(ref batch.Instances,at,64);
         fixed(byte* bytes=batch.Instances){float* f=(float*)(bytes+at);
@@ -104,7 +104,7 @@ public sealed partial class NativeBackend
                     else{float combined=(distance+packet.Radius+radius)*.5f;if(distance>0)packet.Origin+=shift*((combined-packet.Radius)/distance);packet.Radius=combined;}}}
         }
         NoteLogicalDraw(pipeline+2,mesh,1,flags,cascades);
-        packet.Count++;packet.Instances=batch.Instances;worldPackets[batch.PacketIndex]=packet;LogicalRigidDraws++;
+        packet.Count++;packet.Instances=batch.Instances;LogicalRigidDraws++;
         if(PacketProfilingEnabled)rigidAppendTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-detailAt;
         return (uint)batch.PacketIndex;
     }

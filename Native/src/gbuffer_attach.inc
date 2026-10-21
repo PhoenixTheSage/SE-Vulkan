@@ -90,17 +90,17 @@ void render_gbuffer_attachments(VkCommandBuffer cmd,WorldSlot& slot){
         vkCmdBeginRendering(cmd,&rendering);world_viewport(cmd,extent.width,extent.height);
         if(slot.projections.handle){
             vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,world.attach_layout,0,1,&world.attach_sets[slot_index],0,nullptr);
-            VkPipeline bound{};
+            VkPipeline bound{};WorldRasterCache raster{};
             for(uint32_t i:world.current().order){
                 const auto& draw=world.current().draws[i];const auto& packet=draw.packet;if((packet.flags&(4096|8192)) || world_unfade(packet.pipeline)>=20 || !packet.instance_count || !draw.geometry)continue;
                 uint32_t type=world_unfade(packet.pipeline)%5;if(type==1)continue;uint32_t kind=type==0?0u:type-1;if(!target.pipe[kind])continue;
                 const auto& pipe=world.pipelines[packet.pipeline];
-                float curr[12]{};if(!motion_rows(slot.objects,draw.gpu_object_at,pipe.row0,pipe.row1,pipe.row2,curr))continue;
+                float curr[12]{};if(!motion_rows(slot.host_objects,draw.gpu_object_at,pipe.row0,pipe.row1,pipe.row2,curr))continue;
                 uint64_t instance_bytes=uint64_t(packet.instance_count)*64;
                 bool previous_ok=kind && slot.history_instances.handle && uint64_t(draw.instance_at)+instance_bytes<=slot.history_instance_bytes;
                 if(kind && (uint64_t(draw.instance_at)+instance_bytes>slot.instances.bytes || !slot.instances.handle))continue;
                 if(bound!=target.pipe[kind]){vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,target.pipe[kind]);bound=target.pipe[kind];}
-                world_model_raster(cmd,packet.pipeline,packet.flags);
+                world_model_raster(cmd,packet.pipeline,packet.flags,false,VK_CULL_MODE_NONE,false,&raster);
                 float push[28]{};std::memcpy(push,curr,sizeof(curr));std::memcpy(push+12,curr,sizeof(curr));push[24]=float(extent.width);push[25]=float(extent.height);push[26]=push[27]=motion_distance_fade(slot,packet.pipeline);
                 vkCmdPushConstants(cmd,world.attach_layout,VK_SHADER_STAGE_VERTEX_BIT,0,112,push);
                 VkBuffer instance=previous_ok?slot.history_instances.handle:slot.instances.handle;

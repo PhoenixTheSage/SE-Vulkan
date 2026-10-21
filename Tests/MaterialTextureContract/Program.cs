@@ -47,8 +47,13 @@ var cubeFaces=cache.GetCubeTextures(cubePath);
 Check(cubeFaces.Length==6 && cubeFaces.All(f=>backend.Uploads[f].Levels.Length==3),"flat cubemap fallback also retains authored mip levels");
 Check(cache.GetWorldProbeCube(cubePath)==cube,"missing indirect skybox uses the visible cube for probe capture");
 string indirectPath=Path.Combine(output,Path.GetFileNameWithoutExtension(cubePath)+"Indirect.dds");var indirectBytes=File.ReadAllBytes(cubePath);Array.Fill(indirectBytes,(byte)200,128,indirectBytes.Length-128);File.WriteAllBytes(indirectPath,indirectBytes);
-ulong indirectCube=cache.GetWorldProbeCube(cubePath);
-Check(indirectCube!=cube && backend.Uploads[indirectCube].Levels.All(m=>m.All(b=>b==200)),"existing Indirect DDS supplies its own complete probe cube mip chains");
+Check(cache.GetWorldProbeCube(cubePath)==cube,"probe path selection remains cached after a file appears");
+var freshBackend=new NativeBackend();
+using(var freshCache=new VulkanTextureCache(freshBackend)) {
+    ulong indirectCube=freshCache.GetWorldProbeCube(cubePath);
+    Check(freshBackend.Uploads[indirectCube].Levels.All(m=>m.All(b=>b==200)),"fresh cache selects existing Indirect DDS with its complete mip chains");
+}
+Check(freshBackend.Uploads.Count==0,"fresh probe cache releases its uploads");
 Check(cache.GetWorldCube(cubePath)==cube,"indirect probe selection preserves the visible skybox resource");
 cache.Dispose();Check(backend.Uploads.Count==0,"role-specific uploads release on cache disposal");
 Console.WriteLine("PASS "+checks+" actual production texture-cache contract checks; upload observation only, not GPU/live parity.");
