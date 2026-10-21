@@ -136,3 +136,18 @@ ANOMALY_TEST_NATIVE_DLL selects that binary without replacing the normal build
 or deploying to the game profile. Full named-stage activation and same-draw
 attachments remain unimplemented and are reported as unsupported by Anomaly's
 capability query.
+
+
+Native bit18 (262144) advertises format-aware owned-raster generations. ABI-1
+layouts stay compatible; Anomaly requires this bit and bit13 before preparing
+replacement generations, with an actionable refusal on older hosts. Native is
+still solely responsible for pipeline/image lifetime and submission retirement.
+The initial Anomaly-owned raster subset atomically activates CameraVelocity,
+LinearDepth/HiZ and HistoryColor, including the shared fullscreen vertex.
+Stock postprocess/geometry/etc. owner activation and full attachments remain open.
+
+The coordinated isolated native build passes17 tests; the actual-core suite
+passes355 checks with synchronization validation and zero errors. This includes
+real provider include capture and owned-stage synchronous/pipelined replacement
+with an outstanding submission, target preservation, rollback and restoration.
+Loaded-world/vendor/performance acceptance remains open.

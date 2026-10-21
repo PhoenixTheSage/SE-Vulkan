@@ -44,6 +44,8 @@ partial class Program
             Call("Shaders.VolumetricMediumRegistry","InvalidateHistory",fog);
         }
         Parameters(.001f,0);Call("Backend.GuestVolumes","PreparePrograms",assets);Call("Backend.GuestCompiler","CompilePending",assets);
+        var failed=((System.Collections.IEnumerable)Call("Backend.GuestPassList","Snapshot")).Cast<object>().Where(p=>((string)p.GetType().GetField("Id").GetValue(p)).StartsWith("anomaly.owned.Volumes.")&&(ulong)p.GetType().GetField("Pipeline").GetValue(p)==0).Select(p=>p.GetType().GetField("Id").GetValue(p)+": "+p.GetType().GetField("Error").GetValue(p)).ToArray();
+        Check(failed.Length==0,"real provider shader pipelines ready: "+string.Join("; ",failed));
         var read=typeof(NativeBackend).GetMethod("GuestReadback",BindingFlags.Instance|BindingFlags.NonPublic);
         float[] Coefficients() {
             object image=core.GetType("ClientPlugin.Backend.GuestVolumes",true).GetField("oldCoefficients",stat).GetValue(null);

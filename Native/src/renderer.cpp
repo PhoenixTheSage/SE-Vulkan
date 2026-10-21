@@ -2132,7 +2132,7 @@ int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32
     });
 }
 int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.resolution;return 0;},[&](Renderer& r){r.collect();*stats=r.resolution_stats;return 0;});}
-uint32_t SEVK_CALL sevk_guest_features(void){return 262143u;}
+uint32_t SEVK_CALL sevk_guest_features(void){return 524287u;}
 int32_t SEVK_CALL sevk_guest_frame_environment(void* ctx,const SevkGuestEnvironment* environment){
     if(!environment || environment->size!=sizeof(*environment) || environment->abi_version!=SEVK_ABI_VERSION || environment->reserved || environment->pad)return -1;
     const auto copied=*environment;

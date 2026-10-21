@@ -109,6 +109,7 @@ partial class Program
         Call("Shaders.VolumetricMediumRegistry","RequestRenderer",id,false);Call("Shaders.VolumetricMediumRegistry","SetEnabled",id,false);Call("Buffers.BufferCatalog","UnregisterLifetime","fixture.epoch");
         int packChecks=RealPackVolumes(core,root,assets,backend,Frame);checks+=packChecks;
         checks+=SnapshotRegression(core,assets,output,backend,library,projection,light);
+        checks+=OwnedStageRegression(core,assets,output,backend,projection,light);
         var finalStats=backend.GetStats();
         Check(finalStats.ValidationErrors==0,"entire recreated volume/resize/provider/snapshot lane reports no validation errors");
         Console.WriteLine("recreated volume lane validation enabled="+finalStats.ValidationEnabled);
