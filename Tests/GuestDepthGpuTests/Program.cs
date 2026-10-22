@@ -29,7 +29,7 @@ partial class Program
             string path=Path.Combine(bin,name.Name+".dll");
             return File.Exists(path)?AssemblyLoadContext.Default.LoadFromAssemblyPath(path):null;
         };
-        try{return args.Contains("--interior-only")?InteriorTopology(bin):Run(bin);}catch(Exception error){Console.Error.WriteLine(error);return 1;}
+        try{return args.Contains("--native-stages-only")?NativeStagesOnly(bin):args.Contains("--interior-only")?InteriorTopology(bin):Run(bin);}catch(Exception error){Console.Error.WriteLine(error);return 1;}
     }
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     static unsafe int Run(string bin)

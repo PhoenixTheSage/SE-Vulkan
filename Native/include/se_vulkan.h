@@ -607,7 +607,9 @@ typedef struct SevkRayOptions {
 } SevkRayOptions;
 SEVK_API int32_t SEVK_CALL sevk_get_ray_capabilities(void* ctx, SevkRayCapabilities* caps);
 SEVK_API int32_t SEVK_CALL sevk_set_ray_options(void* ctx, const SevkRayOptions* options);
-/* Detached stock-postprocess generations; feature bit19. ABI-1 layouts above stay unchanged. */
+/* Detached native generations: bit19 postprocess IDs 0..61/128..143; bit20 adds
+ * lighting IDs 256 Dir, 257 Point, 258 Spot, 259 shadowed Spot to the same atomic batch.
+ * Existing ABI-1 layouts and transport sizes stay unchanged. */
 typedef struct SevkPostprocessModule {uint32_t size,abi_version,stage,reserved;const void* spirv;uint64_t bytes;} SevkPostprocessModule;
 typedef struct SevkPostprocessGenerationStats {
     uint32_t size,abi_version;uint64_t active,pending,executions,last_completion,completed;

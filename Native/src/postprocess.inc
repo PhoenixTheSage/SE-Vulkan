@@ -62,13 +62,15 @@ void init_postprocess(uint32_t id,const void* data,uint64_t bytes){
 uint64_t post_prepare_generation(uint64_t expected,const SevkPostprocessModule* modules,uint32_t count){
     static_assert(sizeof(SevkPostprocessModule)==32);static_assert(sizeof(SevkPostprocessGenerationStats)==72);
     if(expected!=post.revision)throw std::runtime_error("stale postprocess generation revision");
-    if(!modules || !count || count>78)throw std::runtime_error("invalid postprocess generation module count");
+    if(!modules || !count || count>82)throw std::runtime_error("invalid postprocess generation module count");
     std::set<uint32_t> seen;std::vector<std::pair<uint32_t,PostStage>> candidate;candidate.reserve(count);
     try{
         for(uint32_t i=0;i<count;++i){const auto& module=modules[i];
-            if(module.size!=sizeof(module)||module.abi_version!=SEVK_ABI_VERSION||module.reserved||(module.stage>=62&&module.stage<128)||module.stage>=144||!post.stages[module.stage].pipeline||!seen.insert(module.stage).second)
-                throw std::runtime_error("invalid/duplicate/uninitialized postprocess generation stage");
-            candidate.emplace_back(module.stage,post_build_stage(module.stage,module.spirv,module.bytes,true));
+            bool lighting=native_lighting_id(module.stage);
+            bool available=lighting?world.lights[module.stage-256]!=VK_NULL_HANDLE:module.stage<144&&(module.stage<62||module.stage>=128)&&post.stages[module.stage].pipeline;
+            if(module.size!=sizeof(module)||module.abi_version!=SEVK_ABI_VERSION||module.reserved||!available||!seen.insert(module.stage).second)
+                throw std::runtime_error("invalid/duplicate/uninitialized native owner generation stage");
+            candidate.emplace_back(module.stage,lighting?build_lighting_generation(module.stage,module.spirv,module.bytes):post_build_stage(module.stage,module.spirv,module.bytes,true));
         }
         for(uint32_t id=36;id<52;++id)if(seen.count(id)!=seen.count(id+92))throw std::runtime_error("incomplete HBAO derived generation closure");
         uint64_t generation=++post.next_generation;for(auto& entry:candidate)entry.second.generation=generation;
@@ -92,18 +94,25 @@ void post_activate_pending(){
     if(found->second.expected!=post.revision)throw std::runtime_error("stale postprocess generation revision");
     if(found->second.format!=world.hdr_format)throw std::runtime_error("postprocess generation HDR format changed");
     post.retired.reserve(post.retired.size()+found->second.stages.size());
-    for(auto& entry:found->second.stages){auto& live=post.stages[entry.first];post.retired.emplace_back(next_completion,std::move(live));live=std::move(entry.second);entry.second={};}
+    for(auto& entry:found->second.stages){
+        if(native_lighting_id(entry.first)){
+            uint32_t index=entry.first-256;PostStage retired{};retired.pipeline=world.lights[index];retired.other_hdr=world.other_hdr_lights[index];post.retired.emplace_back(next_completion,std::move(retired));
+            world.lights[index]=entry.second.pipeline;world.other_hdr_lights[index]=entry.second.other_hdr;
+            post.lighting[index]=std::move(entry.second);post.lighting[index].pipeline=post.lighting[index].other_hdr=VK_NULL_HANDLE;
+        }else{auto& live=post.stages[entry.first];post.retired.emplace_back(next_completion,std::move(live));live=std::move(entry.second);}
+        entry.second={};
+    }
     post.candidates.erase(found);post.pending=0;++post.revision;
 }
 void post_collect(uint64_t completed){
     for(auto it=post.retired.begin();it!=post.retired.end();)if(it->first<=completed){post_destroy_stage(it->second);it=post.retired.erase(it);}else ++it;
 }
 void post_generation_status(uint32_t id,SevkPostprocessGenerationStats* out){
-    if(id>=144||!out||out->size!=sizeof(*out)||out->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("invalid postprocess generation status");
+    if((id>=144&&!native_lighting_id(id))||!out||out->size!=sizeof(*out)||out->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("invalid postprocess generation status");
     uint64_t completed=0;check_gpu(vkGetSemaphoreCounterValue(device,timeline,&completed),"query postprocess generation completion");
-    auto& stage=post.stages[id];*out={sizeof(*out),SEVK_ABI_VERSION,stage.generation,post.pending,stage.executions,stage.last_completion,completed,stage.last_frame,uint32_t(post.candidates.size()),uint32_t(post.retired.size()),uint32_t(world.hdr_format),post.revision};
+    auto& stage=native_lighting_id(id)?post.lighting[id-256]:post.stages[id];*out={sizeof(*out),SEVK_ABI_VERSION,stage.generation,post.pending,stage.executions,stage.last_completion,completed,stage.last_frame,uint32_t(post.candidates.size()),uint32_t(post.retired.size()),uint32_t(world.hdr_format),post.revision};
 }
-void post_note_execution(uint32_t id){auto& stage=post.stages[id];++stage.executions;stage.last_completion=next_completion+1;stage.last_frame=guest.frame.frame_index;}
+void post_note_execution(uint32_t id){auto& stage=native_lighting_id(id)?post.lighting[id-256]:post.stages[id];++stage.executions;stage.last_completion=next_completion+1;stage.last_frame=guest.frame.frame_index;}
 void set_postprocess(const SevkPostprocessConfig& config){
     static_assert(sizeof(SevkPostprocessConfig)==384);if(recording || config.size!=sizeof(config) || config.abi_version!=SEVK_ABI_VERSION || config.flags&~4095u || config.reserved || config.bloom_size<1 || config.bloom_size>8 || config.chromatic_iterations<1 || config.chromatic_iterations>16 || (config.dirt && !textures.count(config.dirt)))throw std::runtime_error("invalid postprocess configuration");
     for(uint32_t i=0;i<352/4;++i){float f;std::memcpy(&f,reinterpret_cast<const uint8_t*>(&config)+32+i*4,4);if(!std::isfinite(f))throw std::runtime_error("nonfinite postprocess constant");}

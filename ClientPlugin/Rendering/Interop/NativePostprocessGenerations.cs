@@ -47,7 +47,8 @@ public sealed partial class NativeBackend
     public ulong PreparePostprocessGeneration(IDictionary<uint,VulkanShaderArtifact> artifacts,string fingerprint)
     {
         if((GuestFeatures()&524288)==0)throw new NotSupportedException("Update SE-Vulkan native library: postprocess generations require bit19.");
-        if(artifacts==null||artifacts.Count==0)throw new ArgumentException("Postprocess generation requires stages.");
+        if(artifacts==null||artifacts.Count==0)throw new ArgumentException("Native owner generation requires stages.");
+        if(artifacts.Keys.Any(id=>id>=256)&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
         ulong expected=GetPostprocessGeneration(13).Revision;var pins=new List<GCHandle>();
         try
         {
@@ -65,12 +66,20 @@ public sealed partial class NativeBackend
     public object[][] PostprocessCatalog()
     {
         if(postprocessLibrary==null)return Array.Empty<object[]>();
-        return Enumerable.Range(0,62).Concat(Enumerable.Range(128,16)).Select(index=>{uint id=(uint)index;var artifact=postprocessLibrary.Load(PostprocessShaderVariants.Stages[id>=128?id-92:id]);return new object[]{id,artifact.Source};}).ToArray();
+        var ids=Enumerable.Range(0,62).Concat(Enumerable.Range(128,16));
+        if((GuestFeatures()&1048576)!=0)ids=ids.Concat(Enumerable.Range(256,4));
+        return ids.Select(index=>{uint id=(uint)index;var artifact=postprocessLibrary.Load(NativeOwnerVariant(id));return new object[]{id,artifact.Source,artifact.Profile};}).ToArray();
+    }
+    static string NativeOwnerVariant(uint id)
+    {
+        if(id>=256&&id<260)return id==259?"7e7f8a00e6cfc94f5e7f149a9a4df82ce433557cf56c91d2a08dfaa598952493":WorldShaderVariants.Lighting[id-255];
+        if(id<62||id>=128&&id<144)return PostprocessShaderVariants.Stages[id>=128?id-92:id];
+        throw new ArgumentException("Stage is outside the captured native owner catalog.");
     }
     public object[] PostprocessGenerationState(uint id)
     {
         var state=GetPostprocessGeneration(id);string fingerprint=null;
-        ActivePostprocessGeneration?.Fingerprints.TryGetValue(id,out fingerprint);
+        if(state.Active!=0)ActivePostprocessGeneration?.Fingerprints.TryGetValue(id,out fingerprint);
         return new object[]{state.Active,state.Executions,state.LastCompletion,state.Completed,state.LastFrame,pendingPostprocess?.Token??0UL,fingerprint,PostprocessGenerationError,GuestEpoch,state.Format,state.Revision};
     }
     public object[] CompilePostprocessGeneration(string identity,Dictionary<string,byte[]> sources,Dictionary<string,string> defines,uint[] stages)
@@ -81,10 +90,10 @@ public sealed partial class NativeBackend
         using(var compiler=VulkanShaderCompiler.CreateBundled(System.IO.Path.Combine(resourceCacheDirectory,"PostprocessGenerations")))
         foreach(uint id in stages)
         {
-            if(id>=62&&id<128||id>=144)throw new ArgumentException("Stage is outside the postprocess owner generation.");
-            string variant=PostprocessShaderVariants.Stages[id>=128?id-92:id];
+            string variant=NativeOwnerVariant(id);
+            if(id>=256&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
             var request=postprocessLibrary.DerivedRequest(variant,generation,defines);
-            if(id>=128)
+            if(id>=128&&id<144)
             {
                 // A replacement without the quarter-depth descriptor has no border
                 // fetch to adapt. Reuse its authenticated base variant in both modes.

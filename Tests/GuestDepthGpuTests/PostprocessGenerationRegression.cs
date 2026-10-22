@@ -94,10 +94,9 @@ partial class Program
             Frame();Check(backend.GetPostprocessGeneration(13).Prepared==0&&backend.GetPostprocessGeneration(13).Retired==0,"postprocess candidate and retirement counts return to zero");
             // Only the include changes; the stock entry point must consume its replacement.
             File.Delete(shader);File.Delete(owned);File.Delete(injection);
-            string header;
-            // Game root is supplied by the loaded shader library, rather than the Anomaly assets folder.
-            string game=Environment.GetCommandLineArgs().Last();
-            header=File.ReadAllText(Path.Combine(Path.GetDirectoryName(game),"Content/Shaders/Postprocess/Fxaa3_11.hlsli"));
+            // Resolve the same game shader root as the actual core; optional CLI flags are independent.
+            string gameShaders=(string)Call("Backend.GuestCompiler","GameShaderDirectory");
+            string header=File.ReadAllText(Path.Combine(gameShaders,"Postprocess/Fxaa3_11.hlsli"));
             File.WriteAllText(Path.Combine(overlay,"Fxaa3_11.hlsli"),header.Replace("FxaaPixelShader","AnomalyOriginalFxaaPixelShader")+"\n#define FxaaPixelShader(a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p) float4(.375,.625,.125,1)\n");
             Call("Backend.GuestPassList","RegisterRoot","fixture.native.post",root,null);Frame();Pixels(96,159,32);
             Check(backend.GetPostprocessGeneration(13).Active!=second.Active,"include-only overlay activates an executed native generation");

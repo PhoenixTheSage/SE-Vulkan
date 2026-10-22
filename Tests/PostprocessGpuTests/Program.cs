@@ -38,7 +38,7 @@ class Program
             Check(cached.CacheHit && cached.Metadata.SourceTransform=="HbaoNegativeBorder-1" && cached.Metadata.BaseSpirvSha256==library.Load(PostprocessShaderVariants.Stages[36]).Layout.SpirvSha256 && cached.Metadata.SpirvSha256==derived.Metadata.SpirvSha256,"derived HBAO cache preserves the exact authenticated base module and transform identity");
         }
         using var backend=new NativeBackend(null);backend.Create(65,63,0,true,Path.Combine(output,"Cache"));backend.InitializeGBuffer(library.Load(VanillaGBufferShaders.VertexId),library.Load(VanillaGBufferShaders.PixelId));backend.ConfigureWorld(library,Path.Combine(bin,"../Content/Shaders"));
-        uint[] generationStages=Enumerable.Range(0,62).Concat(Enumerable.Range(128,16)).Select(i=>(uint)i).ToArray();
+        uint[] generationStages=Enumerable.Range(0,62).Concat(Enumerable.Range(128,16)).Concat(Enumerable.Range(256,4)).Select(i=>(uint)i).ToArray();
         ulong generationToken=0;
         if(generationMode)
         {
@@ -182,6 +182,10 @@ class Program
         post.Hbao.DepthClampToEdge=false;Render();var flatBorder=backend.ReadbackLightingInput(0,width,height);
         Check(flatBorder.All(v=>v>=254),"stock negative-depth border adds no false viewport-edge occluders to a flat plane");
         post.Hbao=savedHbao;
+        if(generationMode)
+        {
+            Check(Enumerable.Range(256,4).All(id=>{var state=backend.GetPostprocessGeneration((uint)id);return state.Active==generationToken&&state.Executions>0&&state.LastCompletion<=state.Completed;}),"all four deferred lighting generation variants execute with stock-equivalent pixels");
+        }
         // Exercise the actual shared shadow sampler against real rendered D32
         // maps. Test-only fragment programs expose border and bilinear PCF state.
         string shadowRoot=Path.Combine(output,"ShadowSamplerSources");Directory.CreateDirectory(shadowRoot);
@@ -203,6 +207,7 @@ class Program
             ShadowRectangle(0);ShadowProgram("constant");var halfReference=Render();ShadowProgram("half");var halfPcf=Render();
             Check(halfReference.Zip(halfPcf,(a,b)=>Math.Abs(a-b)).Max()<=1,"stock comparison sampler linearly filters the half-occluded texel boundary");
         }
+        if(generationMode)Check(backend.GetPostprocessGeneration(259).Active==0&&backend.PostprocessGenerationState(259)[6]==null,"legacy diagnostic replacement clears the lighting generation identity");
         backend.SetLights(Array.Empty<NativeLight>());backend.SetSpots(256,Array.Empty<NativeSpot>());casts=false;queries=Array.Empty<NativeOcclusionDraw>();
         backend.UploadWorldMesh(1,new[]{V(-1,-1),V(1,-1),V(0,1)},new uint[]{0,1,2});
         post.Hbao.Enabled=false;post.Ssao.Enabled=false;
@@ -233,7 +238,7 @@ class Program
             foreach(bool antiflicker in new[]{false,true}){post.Settings.BloomAntiFlickerFilter=antiflicker;Render();}
             post.Settings.BloomEnabled=false;
             foreach(bool tone in new[]{false,true})foreach(bool aaEnabled in new[]{false,true}){post.Settings.EnableTonemapping=tone;Render(aaEnabled);}
-            var unexecuted=generationStages.Where(id=>backend.GetPostprocessGeneration(id).Active!=generationToken||backend.GetPostprocessGeneration(id).Executions==0).ToArray();
+            var unexecuted=generationStages.Where(id=>id<256).Where(id=>backend.GetPostprocessGeneration(id).Active!=generationToken||backend.GetPostprocessGeneration(id).Executions==0).ToArray();
             Check(unexecuted.Length==0,"all 78 selected postprocess generation variants execute: missing="+string.Join(",",unexecuted));
             Check(backend.ActivePostprocessGeneration.Token==generationToken,"full postprocess family generation publishes coherent immutable metadata");
             HbaoReplacement();
