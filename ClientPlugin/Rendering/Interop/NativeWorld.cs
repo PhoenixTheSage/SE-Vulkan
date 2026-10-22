@@ -165,7 +165,7 @@ public sealed partial class NativeBackend
         if(WorldReady)return;
         void Material(uint id,VulkanShaderArtifact vs,VulkanShaderArtifact ps)
         {
-            if(id<20 && id%5==2){var adjusted=library.LoadObjectTintPixel(id,ps);if(!ReferenceEquals(adjusted,ps))tintedGenericPipelines.Add(id);ps=adjusted;}
+            if(StockGeometryObjectTint(id)){var adjusted=library.LoadObjectTintPixel(id,ps);if(!ReferenceEquals(adjusted,ps))tintedGenericPipelines.Add(id);ps=adjusted;}
             byte[] vertex=SpirvRuntimeModule.FromArtifact(vs),pixel=SpirvRuntimeModule.FromArtifact(ps);
             Check(WorldApi.InitPipeline(context,id,vertex,(ulong)vertex.Length,pixel,(ulong)pixel.Length),context);
             WorldLayouts[id]=vs.Layout;

@@ -316,6 +316,7 @@ GeometryRecordCounts record_world_selection(VkCommandBuffer cmd,WorldSlot& slot,
         if(cache.vertex!=mesh.vertices.handle||cache.index!=mesh.indices.handle||cache.streams!=streams||cache.instance!=instance||cache.vertex_at!=vertex_at||cache.index_at!=index_at){VkBuffer buffers[]{mesh.vertices.handle,slot.instances.handle};VkDeviceSize positions[]{vertex_at,instance};vkCmdBindVertexBuffers(cmd,0,streams,buffers,positions);vkCmdBindIndexBuffer(cmd,mesh.indices.handle,index_at,VK_INDEX_TYPE_UINT32);cache.vertex=mesh.vertices.handle;cache.index=mesh.indices.handle;cache.streams=streams;cache.instance=instance;cache.vertex_at=vertex_at;cache.index_at=index_at;}
         if(indirect_count){vkCmdDrawIndexedIndirect(cmd,world.indirect_buffers[slot_index].handle,uint64_t(command_start)*sizeof(WorldIndirectPlan::Command),indirect_count,sizeof(WorldIndirectPlan::Command));counts.packets+=indirect_count;++counts.groups;}
         else vkCmdDrawIndexed(cmd,mesh.index_count,draw.packet.instance_count,0,0,0);
+        geometry_note_execution(cascade<0?draw.packet.pipeline:world_base_pipeline(draw.packet.pipeline)+32);
         ++counts.commands;};
 
     if(plan){for(uint32_t r=run_begin;r<std::min(run_end,uint32_t(plan->runs.size()));++r){const auto& run=plan->runs[r];emit(selection[run.selection_start],cascade,run.indirect?run.packet_count:0,base+run.command_start);}}

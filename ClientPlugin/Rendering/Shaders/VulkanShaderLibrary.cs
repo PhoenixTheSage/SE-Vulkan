@@ -38,6 +38,15 @@ public sealed class VulkanShaderLibrary
             Profile=variant.Profile,EntryPoint=variant.Entry,Defines=defines,SourceGeneration=generation};
     }
 
+    public VulkanShaderRequest DerivedExtraRequest(uint id,string material,string stage,Dictionary<string,string> stockDefines,ShaderSourceGeneration generation,IDictionary<string,string> packDefines)
+    {
+        LoadExtra(id,material,stage,stockDefines); // Authenticate supplement and definitions before deriving a candidate.
+        foreach(var dependency in sourceHashes)generation.Authenticate(dependency.Key.Substring(6),dependency.Value);
+        var defines=new Dictionary<string,string>(stockDefines,StringComparer.Ordinal);
+        if(packDefines!=null)foreach(var define in packDefines)defines[define.Key]=define.Value;
+        return new VulkanShaderRequest{SourcePath=Path.Combine(contentDirectory,"Geometry","Materials",material,stage+".hlsl"),ContentDirectory=contentDirectory,Profile=stage=="Vertex"?"vs_5_0":"ps_5_0",EntryPoint=stage=="Vertex"?"__vertex_shader":"__pixel_shader",Defines=defines,SourceGeneration=generation};
+    }
+
     public VulkanShaderLibrary(string directory, string contentDirectory, string gameAssemblyPath = null, string catalogSha256 = null)
     {
         this.directory = Path.GetFullPath(directory);this.contentDirectory=Path.GetFullPath(contentDirectory);

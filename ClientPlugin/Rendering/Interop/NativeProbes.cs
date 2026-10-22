@@ -15,7 +15,7 @@ public sealed partial class NativeBackend
     }
     public void ConfigureProbes(VulkanShaderLibrary library)
     {
-        foreach(var spec in ProbeShaderVariants.Extra){var vs=library.LoadExtra(spec.Id,spec.Material,"Vertex",spec.Defines);var ps=library.LoadExtra(spec.Id,spec.Material,"Pixel",spec.Defines);if(spec.Id>=256 && (spec.Id-256)%5==2)ps=library.LoadObjectTintPixel(spec.Id-192,ps);byte[] v=SpirvRuntimeModule.FromArtifact(vs),p=SpirvRuntimeModule.FromArtifact(ps);Check(WorldApi.InitPipeline(context,spec.Id-192,v,(ulong)v.Length,p,(ulong)p.Length),context);}
+        foreach(var spec in ProbeShaderVariants.Extra){var vs=library.LoadExtra(spec.Id,spec.Material,"Vertex",spec.Defines);var ps=library.LoadExtra(spec.Id,spec.Material,"Pixel",spec.Defines);if(StockGeometryObjectTint(spec.Id-192))ps=library.LoadObjectTintPixel(spec.Id-192,ps);byte[] v=SpirvRuntimeModule.FromArtifact(vs),p=SpirvRuntimeModule.FromArtifact(ps);Check(WorldApi.InitPipeline(context,spec.Id-192,v,(ulong)v.Length,p,(ulong)p.Length),context);}
         for(uint i=0;i<ProbeShaderVariants.Stages.Length;i++){var a=library.Load(ProbeShaderVariants.Stages[i]);var bytes=SpirvRuntimeModule.FromArtifact(a);Check(ProbeApi.Init(context,i,bytes,(ulong)bytes.Length),context);}
     }
     public void SetProbeAtmosphere(ulong id,float intensity,float desaturation,VRageMath.Vector3 direction)=>Check(ProbeApi.Atmosphere(context,id,intensity,desaturation,new[]{direction.X,direction.Y,direction.Z}),context);

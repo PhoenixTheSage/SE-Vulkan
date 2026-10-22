@@ -47,6 +47,7 @@ public sealed partial class NativeBackend
     public ulong PreparePostprocessGeneration(IDictionary<uint,VulkanShaderArtifact> artifacts,string fingerprint)
     {
         if((GuestFeatures()&524288)==0)throw new NotSupportedException("Update SE-Vulkan native library: postprocess generations require bit19.");
+        if(artifacts!=null&&artifacts.Keys.Any(GeometryModule)&&(GuestFeatures()&GeometryGenerationFeature)==0)throw new NotSupportedException("Update SE-Vulkan native library: stock world geometry generations require bit31.");
         if(artifacts==null||artifacts.Count==0)throw new ArgumentException("Native owner generation requires stages.");
         if(artifacts.Keys.Any(id=>id>=256&&id<260)&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
         if(artifacts.Keys.Any(id=>id>=512&&id<515)&&(GuestFeatures()&16777216)==0)throw new NotSupportedException("Update SE-Vulkan native library: atmosphere owner generations require bit24.");
@@ -84,7 +85,7 @@ public sealed partial class NativeBackend
         if((GuestFeatures()&268435456)!=0)ids=ids.Concat(Enumerable.Range(1536,10));
         if((GuestFeatures()&536870912)!=0)ids=ids.Concat(Enumerable.Range(1792,2));
         if((GuestFeatures()&1073741824)!=0)ids=ids.Concat(new[]{2048});
-        return ids.Select(index=>{uint id=(uint)index;var artifact=postprocessLibrary.Load(NativeOwnerVariant(id));var dependencies=artifact.Layout.Dependencies.Select(d=>d.Path.Replace('\\','/')).Where(p=>p.StartsWith("root0/",StringComparison.OrdinalIgnoreCase)).Select(p=>p.Substring(6)).Append(artifact.Source).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p=>p,StringComparer.Ordinal).ToArray();return new object[]{id,artifact.Source,artifact.Profile,dependencies};}).ToArray();
+        return ids.Select(index=>{uint id=(uint)index;var artifact=postprocessLibrary.Load(NativeOwnerVariant(id));var dependencies=artifact.Layout.Dependencies.Select(d=>d.Path.Replace('\\','/')).Where(p=>p.StartsWith("root0/",StringComparison.OrdinalIgnoreCase)).Select(p=>p.Substring(6)).Append(artifact.Source).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p=>p,StringComparer.Ordinal).ToArray();return new object[]{id,artifact.Source,artifact.Profile,dependencies};}).Concat(GeometryCatalog()).ToArray();
     }
     static string NativeOwnerVariant(uint id)
     {
@@ -115,7 +116,7 @@ public sealed partial class NativeBackend
         using(var compiler=VulkanShaderCompiler.CreateBundled(System.IO.Path.Combine(resourceCacheDirectory,"PostprocessGenerations")))
         foreach(uint id in stages)
         {
-            string variant=NativeOwnerVariant(id);
+            string variant=GeometryModule(id)?"native-world-"+id:NativeOwnerVariant(id);
             if(id==2048&&(GuestFeatures()&1073741824)==0)throw new NotSupportedException("Update SE-Vulkan native library: OIT resolve generations require bit30.");
             if(id>=1792&&id<1794&&(GuestFeatures()&536870912)==0)throw new NotSupportedException("Update SE-Vulkan native library: shadow owner generations require bit29.");
             if(id>=1536&&id<1546&&(GuestFeatures()&268435456)==0)throw new NotSupportedException("Update SE-Vulkan native library: particle owner generations require bit28.");
@@ -124,7 +125,7 @@ public sealed partial class NativeBackend
             if(id>=768&&id<773&&(GuestFeatures()&33554432)==0)throw new NotSupportedException("Update SE-Vulkan native library: foliage owner generations require bit25.");
             if(id>=512&&id<515&&(GuestFeatures()&16777216)==0)throw new NotSupportedException("Update SE-Vulkan native library: atmosphere owner generations require bit24.");
             if(id>=256&&id<260&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
-            var request=postprocessLibrary.DerivedRequest(variant,generation,defines);
+            var request=GeometryModule(id)?GeometryRequest(id,identity,sources,defines):postprocessLibrary.DerivedRequest(variant,generation,defines);
             if(id>=128&&id<144)
             {
                 // A replacement without the quarter-depth descriptor has no border

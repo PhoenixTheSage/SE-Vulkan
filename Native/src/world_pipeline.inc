@@ -199,6 +199,10 @@ void init_world_pipeline(uint32_t id,const void* vertex,uint64_t vb,const void* 
     auto candidate=build_world_pipeline(id,vertex,vb,pixel,pb,distance_fade_at);
     world_destroy_pipeline(world.pipelines[id]);world.pipelines[id]=candidate;
     world.distance_fade_at=distance_fade_at;invalidate_world_recipes(8,id);
+    if(source_id>=32&&source_id<64)geometry_invalidate_shadows();
+    if(!post.geometry.empty()&&(post.geometry[2*id].generation||post.geometry[2*id+1].generation)){
+        post_destroy_stage(post.geometry[2*id]);post_destroy_stage(post.geometry[2*id+1]);++post.revision;
+    }
 }
 
 struct GeometryRange{uint32_t page;VkDeviceSize offset;VmaVirtualAllocation allocation;};
