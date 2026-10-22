@@ -44,6 +44,7 @@ public static class GuestBridge
         current!=null&&current.SetStageBindings(frame,ids,images,requested,fresh,attachments,velocity);
     public static ulong NativeOwnerFeatures()=>current?.NativeOwnerFeatures()??0UL;
     public static object[] CompileNativeOwnerGeneration(string identity,System.Collections.Generic.Dictionary<string,byte[]> sources,System.Collections.Generic.Dictionary<string,string> defines,uint[] stages,bool restoresStock)=>current?.CompileNativeOwnerGeneration(identity,sources,defines,stages,restoresStock);
+    public static object[] CompileNativeOwnerGenerationWithContracts(string identity,System.Collections.Generic.Dictionary<string,byte[]> sources,System.Collections.Generic.Dictionary<string,string> defines,uint[] stages,bool restoresStock,uint contracts)=>current?.CompileNativeOwnerGeneration(identity,sources,defines,stages,restoresStock,contracts);
     public static object[][] PostprocessCatalog()=>current?.PostprocessCatalog();
     public static object[] CompilePostprocessGeneration(string identity,System.Collections.Generic.Dictionary<string,byte[]> sources,System.Collections.Generic.Dictionary<string,string> defines,uint[] stages)=>current?.CompilePostprocessGeneration(identity,sources,defines,stages);
     public static void QueuePostprocessGeneration(ulong token,System.Func<bool> guard)=>current?.QueuePostprocessGeneration(token,guard);

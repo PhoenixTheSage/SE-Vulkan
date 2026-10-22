@@ -80,34 +80,31 @@ void prepare_world_history(WorldSlot& slot){
 }
 void render_object_motion(VkCommandBuffer cmd,WorldSlot& slot){
     bool ready=false;for(auto pipeline:world.motion_pipe)ready|=pipeline!=VK_NULL_HANDLE;
-    if(!ready || !extent.width || !extent.height || !world.gbuffer[3].view)return;
-    if(!world.motion.view || world.motion_w!=extent.width || world.motion_h!=extent.height){
-        wait(next_completion);if(world.motion.view)destroy_image(world.motion);
-        world.motion=make_image(extent.width,extent.height,VK_FORMAT_R16G16_SFLOAT,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
-        world.motion_w=extent.width;world.motion_h=extent.height;world.motion_sampled=false;
-    }
-    bool indexed_ready=prepare_indexed_motion(slot);
-    barrier(cmd,world.motion.handle,world.motion_sampled?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,world.motion_sampled?VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT:VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,world.motion_sampled?VK_ACCESS_2_SHADER_SAMPLED_READ_BIT:0,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    bool written=gbuffer_velocity.frame;
+    if((!ready&&!written) || !extent.width || !extent.height || !world.gbuffer[3].view)return;
+    ensure_motion_image();
+    bool indexed_ready=ready&&prepare_indexed_motion(slot);
+    if(written)barrier(cmd,world.motion.handle,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT|VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    else barrier(cmd,world.motion.handle,world.motion_sampled?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,world.motion_sampled?VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT:VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,world.motion_sampled?VK_ACCESS_2_SHADER_SAMPLED_READ_BIT:0,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     barrier(cmd,world.gbuffer[3].handle,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
-    VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};color.imageView=world.motion.view;color.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;color.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;color.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};color.imageView=world.motion.view;color.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;color.loadOp=written?VK_ATTACHMENT_LOAD_OP_LOAD:VK_ATTACHMENT_LOAD_OP_CLEAR;color.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
     VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};depth.imageView=world.gbuffer[3].view;depth.imageLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;depth.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD;depth.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};rendering.renderArea={{0,0},extent};rendering.layerCount=1;rendering.colorAttachmentCount=1;rendering.pColorAttachments=&color;rendering.pDepthAttachment=&depth;
     vkCmdBeginRendering(cmd,&rendering);world_viewport(cmd,extent.width,extent.height);
-    uint64_t signature=14695981039346656037ull;auto mix=[&](uint64_t value){signature^=value;signature*=1099511628211ull;};
-    mix(world.current().draws.size());for(const auto& draw:world.current().draws){mix(draw.packet.mesh);mix(draw.packet.pipeline);mix(draw.gpu_object_at);mix(draw.instance_at);mix(draw.packet.instance_count);}
+    uint64_t signature=motion_signature();
     auto& previous=world.slots[(slot_index+1)%world.slots.size()];
     bool history=world.motion_have_signature && signature==world.motion_signature && previous.objects.mapped && previous.projections.mapped && slot.projections.handle;
-    if(slot.projections.handle && slot.history_projection.handle){
+    if(ready && slot.projections.handle && slot.history_projection.handle){
         VkDescriptorBufferInfo current{slot.projections.handle,0,64},prior{slot.history_projection.handle,0,64};
         VkWriteDescriptorSet writes[2]{};for(auto& write:writes){write.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;write.dstSet=world.motion_sets[slot_index];write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;}
         writes[0].dstBinding=0;writes[0].pBufferInfo=&current;writes[1].dstBinding=1;writes[1].pBufferInfo=&prior;vkUpdateDescriptorSets(device,2,writes,0,nullptr);
         vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,world.motion_layout,0,1,&world.motion_sets[slot_index],0,nullptr);
     }
-    if(history){
+    if(ready&&history){
         VkPipeline bound{};VkBuffer bound_vertex{},bound_index{},bound_current{},bound_previous{};VkDeviceSize bound_vertex_at{},bound_index_at{},bound_instance_at{};WorldRasterCache raster{};
         for(uint32_t i:world.current().order){
             const auto& draw=world.current().draws[i];const auto& packet=draw.packet;if((packet.flags&(4096|8192)) || world_unfade(packet.pipeline)>=20 || !packet.instance_count || !draw.geometry)continue;
-            uint32_t type=world_unfade(packet.pipeline)%5;if(type==1)continue;uint32_t kind=type==0?0u:type-1;if(!world.motion_pipe[kind])continue;
+            if(written&&world.pipelines[packet.pipeline].velocity)continue;uint32_t type=world_unfade(packet.pipeline)%5;if(type==1)continue;uint32_t kind=type==0?0u:type-1;if(!world.motion_pipe[kind])continue;
             const auto& pipe=world.pipelines[packet.pipeline];
             float curr[12]{},prev[12]{};if(!motion_rows(slot.host_objects,draw.gpu_object_at,pipe.row0,pipe.row1,pipe.row2,curr) || !motion_rows(previous.host_objects,draw.gpu_object_at,pipe.row0,pipe.row1,pipe.row2,prev))continue;
             uint64_t instance_bytes=uint64_t(packet.instance_count)*64;
@@ -125,7 +122,7 @@ void render_object_motion(VkCommandBuffer cmd,WorldSlot& slot){
             vkCmdDrawIndexed(cmd,draw.geometry->index_count,packet.instance_count,0,0,0);
         }
     }
-    if(pass_scene.ready && slot.projections.handle && slot.history_projection.handle && world.motion_pipe[1] && pass_scene.history_instances[slot_index].handle){
+    if(ready && pass_scene.ready && slot.projections.handle && slot.history_projection.handle && world.motion_pipe[1] && pass_scene.history_instances[slot_index].handle){
         vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,world.motion_pipe[1]);
         ObjectMotionPush push{};push.rows[0][0]=push.rows[1][1]=push.rows[2][2]=push.rows[3][0]=push.rows[4][1]=push.rows[5][2]=1;push.screen[0]=float(extent.width);push.screen[1]=float(extent.height);
         vkCmdPushConstants(cmd,world.motion_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(push),&push);

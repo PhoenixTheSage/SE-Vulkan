@@ -10,7 +10,7 @@ namespace ClientPlugin.Rendering.Shaders;
 // preprocessed snapshot. The material, depth and lighting programs stay stock.
 public static class GpuOpaqueShaderAdapter
 {
-    public const string Contract="GpuOpaqueIndexedStock-4;captured-stage-replacements";
+    public const string Contract="GpuOpaqueIndexedStock-5;shared-instance-id";
     private const string Varying="nointerpolation uint sevk_draw : SEVK_DRAW;";
     private static string Once(string source,string pattern,Func<Match,string> replacement)
     {
@@ -82,7 +82,9 @@ void sevk_object(uint draw_index){
             else if(cube){inputs="uint sevk_at=sevk_instance*64; input.cube_transformation=asfloat(sevk_sources.Load4(sevk_at+32));input.colormask=asfloat(sevk_sources.Load4(sevk_at+48));";
                 for(int i=0;i<8;i++)inputs+="input.packed_bone"+i+"=sevk_unorm4(sevk_sources.Load(sevk_at+"+(i*4)+"));";
             }
-            source=Once(source,@"void\s+__vertex_shader\s*\(([^)]*)\)\s*\{",m=>"void __vertex_shader("+m.Groups[1].Value+",uint sevk_instance:SV_InstanceID,[[vk::builtin(\"DrawIndex\")]] uint sevk_draw_index:SEVK_DRAW_INDEX){\nuint sevk_index=sevk_push.draw_base+sevk_draw_index;sevk_object(sevk_index);output.sevk_draw=sevk_index;"+inputs+"\n");
+            // Anomaly's velocity VertexStage already declares SV_InstanceID; reuse it rather than redeclare.
+            source=Once(source,@"void\s+__vertex_shader\s*\(([^)]*)\)\s*\{",m=>{var shared=Regex.Match(m.Groups[1].Value,@"\buint\s+(\w+)\s*:\s*SV_InstanceID\b");
+                return "void __vertex_shader("+m.Groups[1].Value+(shared.Success?"":",uint sevk_instance:SV_InstanceID")+",[[vk::builtin(\"DrawIndex\")]] uint sevk_draw_index:SEVK_DRAW_INDEX){\n"+(shared.Success?"uint sevk_instance="+shared.Groups[1].Value+";":"")+"uint sevk_index=sevk_push.draw_base+sevk_draw_index;sevk_object(sevk_index);output.sevk_draw=sevk_index;"+inputs+"\n";});
         }else{
             if(structure!=null)source=Once(source,@"void\s+__pixel_shader\s*\(([^)]*)\)\s*\{",m=>m.Value+"\nsevk_object(input.sevk_draw);\n");
             else source=Once(source,@"([A-Za-z_]\w*\s+__pixel_shader\s*\()([^)]*)(\)\s*(?::[^{}]+)?\s*\{)",m=>m.Groups[1].Value+"nointerpolation uint sevk_direct_draw:SEVK_DRAW"+(string.IsNullOrWhiteSpace(m.Groups[2].Value)?"":","+m.Groups[2].Value)+m.Groups[3].Value+"\nsevk_object(sevk_direct_draw);\n");

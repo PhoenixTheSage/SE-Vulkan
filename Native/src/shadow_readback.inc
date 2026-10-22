@@ -1,9 +1,11 @@
 void readback_lighting_input(uint32_t input,void* data,uint64_t bytes){
     PostImage* target=input==0?&post.ao:input==2?&post.tone:input==3?((post.config.flags&32)?&post.fxaa:&post.tone):nullptr;
-    if(recording || !last_image_valid || !world.initialized || input>7 || !data || bytes!=uint64_t(world.width)*world.height*(input>=2?4:1) ||
+    // Input 8 is the completed R16G16 object-motion target.
+    if(input==8&&(!world.motion.handle||!world.motion_sampled||world.motion_w!=world.width||world.motion_h!=world.height))throw std::runtime_error("object motion target unavailable for readback");
+    if(recording || !last_image_valid || !world.initialized || input>8 || !data || bytes!=uint64_t(world.width)*world.height*(input>=2?4:1) ||
        (target && (!target->image.handle || target->layout!=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || target->width!=world.width || target->height!=world.height ||
         (input>=2 && target->format!=VK_FORMAT_R8G8B8A8_UNORM))))throw std::runtime_error("invalid completed lighting-input readback");
-    wait(next_completion);auto& image=target?target->image:input>=4?world.gbuffer[input-4]:world.shadows;Buffer staging{};VkImageAspectFlags aspect=input==7?VK_IMAGE_ASPECT_DEPTH_BIT:VK_IMAGE_ASPECT_COLOR_BIT;
+    wait(next_completion);auto& image=target?target->image:input==8?world.motion:input>=4?world.gbuffer[input-4]:world.shadows;Buffer staging{};VkImageAspectFlags aspect=input==7?VK_IMAGE_ASPECT_DEPTH_BIT:VK_IMAGE_ASPECT_COLOR_BIT;
     try{staging=make_buffer(bytes,VK_BUFFER_USAGE_TRANSFER_DST_BIT,true,true);immediate([&](VkCommandBuffer cmd){
         barrier(cmd,image.handle,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,aspect,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_MEMORY_READ_BIT|VK_ACCESS_2_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_READ_BIT);
         VkBufferImageCopy copy{};copy.imageSubresource={aspect,0,0,1};copy.imageExtent={world.width,world.height,1};vkCmdCopyImageToBuffer(cmd,image.handle,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,staging.handle,1,&copy);

@@ -37,7 +37,10 @@ public sealed partial class NativeBackend
             return new object[]{id,key,artifact.Layout.EntryPoint=="__vertex_shader"?"vs_5_0":"ps_5_0",dependencies};
         }).ToArray();
     }
-    VulkanShaderRequest GeometryRequest(uint id,string identity,Dictionary<string,byte[]> sources,Dictionary<string,string> defines)
+    // Native owner extension flag8: rigid classic GBuffer owners emit DX11's velocity contract in set 2.
+    internal const ulong GBufferVelocityFeature=8;
+    internal static bool GBufferVelocityOwner(uint pipeline)=>pipeline<20&&pipeline%5==0;
+    VulkanShaderRequest GeometryRequest(uint id,string identity,Dictionary<string,byte[]> sources,Dictionary<string,string> defines,bool velocity=false)
     {
         if((GuestFeatures()&GeometryGenerationFeature)==0)throw new NotSupportedException("Update SE-Vulkan native library: stock world geometry generations require bit31.");
         var spec=GeometryOwners[(id-4096)/2];bool pixel=(id&1)!=0;var original=GeometryArtifact(id);
@@ -52,6 +55,8 @@ public sealed partial class NativeBackend
                 if(inputs.TryGetValue(key,out var bytes))inputs[key]=Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(bytes).Replace("pix.color_mul = 1;","pix.color_mul = object_.color_mul;"));
         }
         var generation=postprocessLibrary.CaptureSourceGeneration(identity+(tint?"/ObjectTint-1":""),inputs);
+        // ANOMALY_VELOCITY is GBuffer-only on DX11; Depth/Forward/Highlight never see it.
+        if(velocity&&spec.Vertex!=null&&GBufferVelocityOwner(pipeline))defines=new Dictionary<string,string>(defines,StringComparer.Ordinal){["ANOMALY_VELOCITY"]="1"};
         if(spec.Vertex!=null)return postprocessLibrary.DerivedRequest(pixel?spec.Pixel:spec.Vertex,generation,defines);
         return postprocessLibrary.DerivedExtraRequest(spec.Extra,spec.Material,pixel?"Pixel":"Vertex",spec.Defines,generation,defines);
     }
