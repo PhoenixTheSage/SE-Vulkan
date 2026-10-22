@@ -121,3 +121,17 @@ AfterUpscale passes retain output-sized scaling. The focused125-check history ga
 passes with zero validation errors, including current capture payloads, all three
 consumer positions, odd resize, DRS and rejection/recovery. The final combined
 actual-core gate passes891 checks with zero core/synchronization errors.
+
+
+The shared catalog contract now centralizes all20 names/reservations and the six
+canonical color formats plus legacy0/1. Pending DX11 target requests replay from
+the core model; allocation/clear/retirement use the renderer queue and Keen's pool.
+Cross-facade ownership and retirement prevent replay resurrection. The complete
+PublishedBuffer reflection surface is available through the core; raw DX11 calls
+remain device-only and Vulkan resources remain opaque. Structured Width is the
+element count, with matching stride/availability metadata. Native target snapshots
+invalidate after logical replacement or changed dimensions and report known DXGI
+formats. The native catalog focus105 passes with zero validation errors; the
+actual-core/linked-production DX11 WARP gate passes134 checks on both runtimes.
+The final combined894-check gate passes with zero core/synchronization errors.
+No native ABI change.

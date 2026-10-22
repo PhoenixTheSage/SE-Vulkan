@@ -72,9 +72,10 @@ partial class Program
             Check(!Exists(firstId)&&Exists(secondId),"replacement removes old native lookup after queued retirement and retains new image");
             Check(Publish(owner,name,second)&&Id(second)==secondId,"idempotent publish retains its live allocation");
             Check(Ensure(owner,name),"same owner converts publication to requested target");Check(Id(second)==0,"target conversion retires previous uploaded image");Frame();
-            ulong target=Id(Active(name));Check(target!=0&&!Exists(secondId),"requested target replaces ordinary upload through shared ownership");
+            object retainedTarget=Active(name);Check(retainedTarget.GetType().GetProperty("Format").GetValue(retainedTarget) is int targetDxgi&&targetDxgi==10,"native target exposes matching DXGI metadata");
+            ulong target=Id(retainedTarget);Check(target!=0&&!Exists(secondId),"requested target replaces ordinary upload through shared ownership");
             Check(!Publish(other,name,first),"requested target blocks competing ordinary publication");
-            Check(Publish(owner,name,first),"same owner converts target to CPU-backed publication");Call("Buffers.BufferCatalog","ApplyDeferred");Frame(true);
+            Check(Publish(owner,name,first),"same owner converts target to CPU-backed publication");Check(retainedTarget.GetType().GetProperty("IsAvailable").GetValue(retainedTarget) is false,"retained native target invalidates when its registration is replaced");Call("Buffers.BufferCatalog","ApplyDeferred");Frame(true);
             Check(Id(first)!=0&&!Exists(target)&&Exists(Id(first)),"target conversion retires target and restores retained CPU payload");
             ulong restored=Id(first);Call("Buffers.BufferCatalog","Unpublish",owner.ToUpperInvariant(),name.ToUpperInvariant());Call("Buffers.BufferCatalog","Unpublish",owner,name);
             Check(Active(name)==null&&Id(first)==0,"case-insensitive repeated unpublish removes ownership and upload once");Frame();Check(!Exists(restored),"unpublish retires native allocation");
@@ -83,6 +84,7 @@ partial class Program
             object data=Activator.CreateInstance(core.GetType("ClientPlugin.Buffers.PublishedBuffer",true));buffers.Add(data);
             data.GetType().GetMethod("PublishStructuredFloats").Invoke(data,new object[]{new float[]{1,2,3,4},16});
             Check(Publish(owner,name+".structured",data)&&BufferExists(Id(data)),"structured publication owns a usable native buffer");
+            Check(data.GetType().GetProperty("IsAvailable").GetValue(data) is true&&data.GetType().GetProperty("IsStructured").GetValue(data) is true&&(int)data.GetType().GetProperty("Stride").GetValue(data)==16&&(int)data.GetType().GetProperty("Width").GetValue(data)==1&&(IntPtr)data.GetType().GetProperty("NativeResource").GetValue(data)==IntPtr.Zero,"native structured metadata exposes element count/stride and preserves opaque GPU ownership");
             ulong dataId=Id(data);Call("Buffers.BufferCatalog","UnpublishAll",owner);Frame(true);Check(Id(data)==0&&!BufferExists(dataId),"unpublish-all retires structured buffers alongside textures");
             object volume=Activator.CreateInstance(core.GetType("ClientPlugin.Buffers.PublishedBuffer",true));buffers.Add(volume);
             volume.GetType().GetMethod("PublishVolumeMips").Invoke(volume,new object[]{new byte[][]{new byte[32],new byte[4]},2});
