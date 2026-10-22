@@ -2,9 +2,9 @@
 // VS b6 (240 B), PS b7 (16 B) and VS t15/t16 into set 2 under ANOMALY_SPIRV; the
 // owning GBuffer invocation writes Target3 into world.motion, which the replay
 // pass then loads instead of clearing and skips for those draws.
-// Classic rigid, generic-instanced, cube and deformed-cube streams take local_matrix from the object
-// block, so DX11 gives them the per-draw currToPrev rows; t15 belongs to USE_SIMPLE_INSTANCING only.
-bool gbuffer_velocity_admitted(uint32_t id,bool decal,bool voxel){return gbuffer_velocity_supported&&!decal&&!voxel&&id<20&&id%5!=1;}
+// Every classic stream takes local_matrix from the object block, so DX11 gives it the per-draw
+// currToPrev rows (skinned motion is rigid-body); t15/t16 belong to USE_SIMPLE_INSTANCING only.
+bool gbuffer_velocity_admitted(uint32_t id,bool decal,bool voxel){return gbuffer_velocity_supported&&!decal&&!voxel&&id<20;}
 void gbuffer_velocity_layouts(){
     if(gbuffer_velocity.pipeline_layout)return;init_world_layouts();
     VkDescriptorSetLayoutCreateInfo empty{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};check(vkCreateDescriptorSetLayout(device,&empty,nullptr,&gbuffer_velocity.empty),"create empty velocity set1 layout");
