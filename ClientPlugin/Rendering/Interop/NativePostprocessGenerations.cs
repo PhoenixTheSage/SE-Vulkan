@@ -86,6 +86,10 @@ public sealed partial class NativeBackend
             var request=postprocessLibrary.DerivedRequest(variant,generation,defines);
             if(id>=128)
             {
+                // A replacement without the quarter-depth descriptor has no border
+                // fetch to adapt. Reuse its authenticated base variant in both modes.
+                if(artifacts.TryGetValue(id-92,out var coarse)&&!coarse.Layout.Descriptors.Any(d=>d.Set==0&&d.RegisterClass=='t'&&d.RegisterIndex==0))
+                {artifacts.Add(id,coarse);continue;}
                 var border=postprocessLibrary.HbaoBorderRequest(variant);request.HbaoNegativeBorder=true;
                 request.HbaoBaseModule=border.HbaoBaseModule;request.HbaoBaseDependencies=border.HbaoBaseDependencies;
             }

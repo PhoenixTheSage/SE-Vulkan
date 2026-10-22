@@ -15,7 +15,8 @@ using ClientPlugin.Rendering;
 class Program
 {
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int HbaoJitterCall(IntPtr context,float[] values,uint count);
-    static int Main(string[] args){string bin=Path.GetFullPath(args[0]);AssemblyLoadContext.Default.Resolving+=(_,n)=>{string path=Path.Combine(bin,n.Name+".dll");return File.Exists(path)?AssemblyLoadContext.Default.LoadFromAssemblyPath(path):null;};try{return Run(bin);}catch(Exception error){Console.Error.WriteLine(error);return 1;}}
+    static bool generationMode,hbaoReplacementOnly;
+    static int Main(string[] args){generationMode=args.Contains("--generations");hbaoReplacementOnly=args.Contains("--hbao-replacement-only");string bin=Path.GetFullPath(args[0]);AssemblyLoadContext.Default.Resolving+=(_,n)=>{string path=Path.Combine(bin,n.Name+".dll");return File.Exists(path)?AssemblyLoadContext.Default.LoadFromAssemblyPath(path):null;};try{return Run(bin);}catch(Exception error){Console.Error.WriteLine(error);return 1;}}
     [MethodImpl(MethodImplOptions.NoInlining)]static int Run(string bin)
     {
         int checks=0;void Check(bool condition,string text){if(!condition)throw new Exception(text);checks++;Console.WriteLine("PASS "+text);}
@@ -37,6 +38,14 @@ class Program
             Check(cached.CacheHit && cached.Metadata.SourceTransform=="HbaoNegativeBorder-1" && cached.Metadata.BaseSpirvSha256==library.Load(PostprocessShaderVariants.Stages[36]).Layout.SpirvSha256 && cached.Metadata.SpirvSha256==derived.Metadata.SpirvSha256,"derived HBAO cache preserves the exact authenticated base module and transform identity");
         }
         using var backend=new NativeBackend(null);backend.Create(65,63,0,true,Path.Combine(output,"Cache"));backend.InitializeGBuffer(library.Load(VanillaGBufferShaders.VertexId),library.Load(VanillaGBufferShaders.PixelId));backend.ConfigureWorld(library,Path.Combine(bin,"../Content/Shaders"));
+        uint[] generationStages=Enumerable.Range(0,62).Concat(Enumerable.Range(128,16)).Select(i=>(uint)i).ToArray();
+        ulong generationToken=0;
+        if(generationMode)
+        {
+            var result=backend.CompilePostprocessGeneration("fixture-all-native-postprocess-families",new Dictionary<string,byte[]>(),new Dictionary<string,string>{{"ANOMALY_GENERATION_FIXTURE","1"}},generationStages);
+            generationToken=(ulong)result[0];backend.QueuePostprocessGeneration(generationToken);
+            Check(backend.GetPostprocessGeneration(13).Active==0,"complete detached postprocess generation leaves stock active until the host boundary");
+        }
         Check(backend.PostprocessLayouts.Count==128,"128 authenticated stock postprocess/highlight blur stages initialize");Check(Marshal.SizeOf<NativePostprocessConfig>()==384 && Marshal.SizeOf<NativePostprocessStats>()==88 && Marshal.SizeOf<NativeHbaoConfig>()==224,"postprocess ABI packing");
         NativeWorldVertex V(float x,float y){uint n=VF_Packer.PackNormal(Vector3.Backward);return new(){Material=new(){X=x,Y=y,Z=-3,Scale=1,NormalX=n&65535,NormalY=n>>16,TangentX=1,TangentW=1,U=(x+1)/2,V=(1-y)/2},WeightX=1};}
         backend.BeginUploads();backend.UploadWorldMesh(1,new[]{V(-1,-1),V(1,-1),V(0,1)},new uint[]{0,1,2});backend.UploadTexture(10,1,1,0,new byte[]{180,180,180,0},true);backend.UploadTexture(11,1,1,0,new byte[]{128,128,255,100},false);backend.UploadTexture(12,1,1,0,new byte[]{255,1,0,0},false);backend.EndUploads();
@@ -45,6 +54,29 @@ class Program
         var post=new VulkanPostprocess();post.Hbao.Enabled=false;post.Settings.BloomEnabled=false;post.Settings.Data.ChromaticFactor=0;post.Settings.Data.VignetteStart=0;
         NativeOcclusionDraw[] queries=Array.Empty<NativeOcclusionDraw>();ulong queryToken=0;bool packedQueries=false;bool casts=false;int highlight=0;float thickness=4;bool excludeSpot=false;int billboard=0;float fraction=1;byte[] Render(bool fxaa=false,bool opaque=true,bool ambientOcclusion=true){int rw=Math.Max(1,(int)Math.Round(width*fraction,MidpointRounding.AwayFromZero)),rh=Math.Max(1,(int)Math.Round(height*fraction,MidpointRounding.AwayFromZero));backend.BeginPacketCollection();if(opaque){uint draw=backend.AddWorldPacket(0,1,10,11,12,0,WorldConstants.Object(backend.WorldLayouts[0],MatrixD.Identity,Vector3.One,Vector3.Zero,1,0),flags:casts?0u:512u);if(highlight>0)backend.AddHighlightPacket(draw,0,3,0,1,new Vector4(0,1,0,1),thickness);if(highlight==2)backend.AddHighlightPacket(draw,0,3,0,1,new Vector4(0,0,0,1),0,true);}if(billboard>0){var data=new byte[48];Buffer.BlockCopy(new float[]{1,0,0,.5f},0,data,0,16);Buffer.BlockCopy(BitConverter.GetBytes(billboard==5?0:-1),0,data,16,4);backend.BillboardPackets.Add(new NativeBillboardDraw{Texture=20,Flags=8,Bucket=(uint)(billboard==5?4:billboard),Vertices=new float[]{-.5f,-.5f,-2,0,0,.5f,-.5f,-2,1,0,.5f,.5f,-2,1,1,-.5f,.5f,-2,0,1},Data=data});}if(excludeSpot)backend.ShadowExclusions=new[]{new NativeShadowExclusion{Light=0,Draw=0}};if(queries.Length>0){++queryToken;if(packedQueries)backend.QueueOcclusion(queryToken,queries.Select(q=>new NativePackedOcclusionDraw{Id=q.Id,MinimumX=q.Minimum[0],MinimumY=q.Minimum[1],MinimumZ=q.Minimum[2],ExtentX=q.Extents[0],ExtentY=q.Extents[1],ExtentZ=q.Extents[2],Flags=q.Flags}).ToArray(),queries.Length);else backend.QueueOcclusion(queryToken,queries);}post.Configure(backend,rw,rh,fxaa,view:MatrixD.Identity,projection:projection,ambientOcclusion:ambientOcclusion);backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,projection,rw,rh,light,delta:.25f,postprocess:post.Settings,renderFraction:fraction),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(projection)));Check(backend.BeginFrame(projection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black),"postprocess frame begins");backend.RequestReadback();backend.EndFrame();return backend.Readback(width,height);}
         int Changes(byte[] a,byte[] b)=>a.Where((v,i)=>i%4!=3 && Math.Abs(v-b[i])>2).Count();
+        void HbaoReplacement()
+        {
+            var saved=post.Hbao;post.Hbao=MyHBAOData.Default;post.Hbao.Enabled=true;post.Hbao.BlurEnable=false;post.Hbao.PowerExponent=1;post.Hbao.DepthClampToEdge=true;
+            post.Ssao.Enabled=false;post.Settings.EnableEyeAdaptation=false;post.Settings.BloomEnabled=false;post.Settings.Data.ChromaticFactor=0;post.Settings.Data.VignetteStart=0;post.Settings.EnableTonemapping=true;
+            Render();var stockAo=backend.ReadbackLightingInput(0,width,height);
+            uint[] stages=Enumerable.Range(36,16).Concat(Enumerable.Range(128,16)).Select(i=>(uint)i).ToArray();
+            var files=new Dictionary<string,byte[]>{{"Postprocess/HBAO/CoarseAO.hlsl",System.Text.Encoding.UTF8.GetBytes("float __pixel_shader():SV_Target0{return .25;}")}};
+            var result=backend.CompilePostprocessGeneration("fixture-resource-free-hbao-replacement",files,new Dictionary<string,string>(),stages);
+            ulong token=(ulong)result[0];backend.QueuePostprocessGeneration(token);
+            foreach(bool clamp in new[]{true,false})foreach(int bits in Enumerable.Range(0,16))
+            {
+                post.Hbao.DepthClampToEdge=clamp;post.Hbao.BackgroundAOEnable=(bits&1)!=0;post.Hbao.ForegroundAOEnable=(bits&2)!=0;post.Hbao.DepthThresholdEnable=(bits&4)!=0;post.Hbao.UseGBufferNormals=(bits&8)!=0;
+                Render();var actual=backend.ReadbackLightingInput(0,width,height);
+                Check(actual.All(v=>Math.Abs(v-64)<=1),"selected HBAO replacement produces quarter AO in every pixel, clamp="+clamp+", variant="+bits);
+                var state=backend.GetPostprocessGeneration((uint)(clamp?36:128)+(uint)bits);
+                Check(state.Active==token&&state.Executions>0&&state.LastCompletion<=state.Completed,"selected HBAO permutation has completed native execution");
+            }
+            var restore=backend.CompilePostprocessGeneration("fixture-resource-free-hbao-stock-restore",new Dictionary<string,byte[]>(),new Dictionary<string,string>(),stages);
+            backend.QueuePostprocessGeneration((ulong)restore[0]);post.Hbao=MyHBAOData.Default;post.Hbao.Enabled=true;post.Hbao.BlurEnable=false;post.Hbao.PowerExponent=1;post.Hbao.DepthClampToEdge=true;Render();
+            Check(stockAo.SequenceEqual(backend.ReadbackLightingInput(0,width,height)),"HBAO replacement unregister restores exact stock AO pixels");
+            post.Hbao=saved;Check(backend.GetStats().ValidationErrors==0,"HBAO replacement and restoration have zero validation errors");
+        }
+        if(hbaoReplacementOnly){HbaoReplacement();return 0;}
         var baseline=Render();Check(baseline.Where((v,i)=>i%4!=3&&v>20).Count()>100,"stock Hable tone map presents lit geometry");
         post.Settings.Data.LuminanceExposure+=2;var brighter=Render();Check(Changes(baseline,brighter)>50,"exposure settings affect actual pixels");post.Settings.Data.LuminanceExposure-=2;
         post.Settings.BloomEnabled=true;post.Settings.Data.BloomMult=2;var beforeBloom=backend.GetPostprocessStats();var bloom=Render();Check(Changes(baseline,bloom)>50,"stock bloom pyramid affects actual pixels");
@@ -193,6 +225,19 @@ class Program
         backend.SetHdrQuality(false);billboard=2;Render();var packedBillboard=Hdr();billboard=0;
         Check(Enumerable.Range(0,packedHdr.Length/4).Count(i=>packedBillboard[i*4]>packedHdr[i*4])>20,"additive billboard pipeline writes the packed main HDR target");
         backend.SetHdrQuality(true);Render();
+        if(generationMode)
+        {
+            post.Hbao.Enabled=true;post.Hbao.BlurEnable=false;
+            foreach(bool clamp in new[]{true,false})foreach(int bits in Enumerable.Range(0,16)){post.Hbao.DepthClampToEdge=clamp;post.Hbao.BackgroundAOEnable=(bits&1)!=0;post.Hbao.ForegroundAOEnable=(bits&2)!=0;post.Hbao.DepthThresholdEnable=(bits&4)!=0;post.Hbao.UseGBufferNormals=(bits&8)!=0;Render();}
+            post.Hbao.Enabled=false;post.Settings.BloomEnabled=true;post.Settings.HighQualityBloom=true;post.Settings.BloomSize=8;
+            foreach(bool antiflicker in new[]{false,true}){post.Settings.BloomAntiFlickerFilter=antiflicker;Render();}
+            post.Settings.BloomEnabled=false;
+            foreach(bool tone in new[]{false,true})foreach(bool aaEnabled in new[]{false,true}){post.Settings.EnableTonemapping=tone;Render(aaEnabled);}
+            var unexecuted=generationStages.Where(id=>backend.GetPostprocessGeneration(id).Active!=generationToken||backend.GetPostprocessGeneration(id).Executions==0).ToArray();
+            Check(unexecuted.Length==0,"all 78 selected postprocess generation variants execute: missing="+string.Join(",",unexecuted));
+            Check(backend.ActivePostprocessGeneration.Token==generationToken,"full postprocess family generation publishes coherent immutable metadata");
+            HbaoReplacement();
+        }
         var stats=backend.GetStats();Check(stats.ValidationEnabled!=0 && stats.ValidationErrors==0,"zero Vulkan core and synchronization validation errors");File.WriteAllText(Path.Combine(output,"result.json"),JsonSerializer.Serialize(new{Checks=checks,ValidationErrors=stats.ValidationErrors,Postprocess=backend.GetPostprocessStats(),Highlights=backend.GetHighlightStats(),Spots=backend.GetSpotStats(),Resolution=backend.GetResolutionStats(),Occlusion=backend.GetOcclusionStats()},new JsonSerializerOptions{IncludeFields=true,WriteIndented=true}));return 0;
     }
 }
