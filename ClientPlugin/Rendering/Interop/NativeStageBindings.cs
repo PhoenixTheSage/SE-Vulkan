@@ -28,7 +28,7 @@ public sealed partial class NativeBackend
     internal bool SetStageBindings(uint frame,uint[] ids,ulong[] images,uint[] requested,uint[] fresh,uint[] attachments,ulong velocity)
     {
         if((GuestFeatures()&4194304)==0)throw new NotSupportedException("Update SE-Vulkan: native stage bindings require bit22.");
-        if(ids==null||images==null||requested==null||fresh==null||attachments==null||ids.Length>82||
+        if(ids==null||images==null||requested==null||fresh==null||attachments==null||ids.Length>90||
             images.Length!=ids.Length*10||requested.Length!=ids.Length||fresh.Length!=ids.Length||attachments.Length!=ids.Length)
             throw new ArgumentException("Native stage binding row lengths differ.");
         var rows=new StageBindingRow[ids.Length];
