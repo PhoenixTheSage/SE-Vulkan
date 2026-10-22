@@ -125,12 +125,20 @@ uint32_t world_distance_fade_bits(){
     if(world.distance_fade_at>world.current().frame.size()-4)throw std::runtime_error("distance-fade frame layout is unavailable");
     uint32_t bits;std::memcpy(&bits,world.current().frame.data()+world.distance_fade_at,4);return bits;
 }
-void init_world_pipeline(uint32_t id,const void* vertex,uint64_t vb,const void* pixel,uint64_t pb){
+// Build every stock raster variant before installing the owner. Candidates never
+// mutate the live pipeline, motion rows, distance-fade layout or recipe caches.
+void world_destroy_pipeline(WorldPipeline& p){
+    if(p.handle)vkDestroyPipeline(device,p.handle,nullptr);
+    if(p.stock_cascade)vkDestroyPipeline(device,p.stock_cascade,nullptr);
+    if(p.stock_spot)vkDestroyPipeline(device,p.stock_spot,nullptr);p={};
+}
+WorldPipeline build_world_pipeline(uint32_t id,const void* vertex,uint64_t vb,const void* pixel,uint64_t pb,uint32_t& distance_fade_at){
     const uint32_t source_id=world_unfade(id);bool decal=world_blended_decal(id);
-    if(recording || id>=world.pipelines.size() || (!decal && (source_id>=116 || (source_id>=32 && (source_id%32)>=22) || (source_id>=86 && source_id<96) || (source_id>=96 && source_id%32>=20))))throw std::runtime_error("invalid world pipeline id/state");wait(next_completion);init_world_layouts();bool probe=source_id>=64 && source_id<86;if(probe)require_probe_format();bool highlight=source_id>=96 && source_id<116;if(highlight && !highlights.layout){highlights.layout=world_layout(true,false,false,true);highlights.pipeline_layout=world_pipeline_layout(highlights.layout);}if(probe && !probes.material_layout){probes.material_layout=world_layout(true,false,true);probes.material_pipeline_layout=world_pipeline_layout(probes.material_layout);}
-    SpvReflectShaderModule vr{},pr{};VkShaderModule vs{},ps{};
+    if(recording || id>=world.pipelines.size() || (!decal && (source_id>=116 || (source_id>=32 && (source_id%32)>=22) || (source_id>=86 && source_id<96) || (source_id>=96 && source_id%32>=20))))throw std::runtime_error("invalid world pipeline id/state");
+    bool probe=source_id>=64 && source_id<86,highlight=source_id>=96 && source_id<116;
+    WorldPipeline candidate{};SpvReflectShaderModule vr{},pr{};VkShaderModule vs{},ps{};
     try{vs=world_shader(vertex,vb,VK_SHADER_STAGE_VERTEX_BIT,vr);ps=world_shader(pixel,pb,VK_SHADER_STAGE_FRAGMENT_BIT,pr);
-        if(id>=2560){uint32_t at=reflect_distance_fade(vr);if(at>world.current().frame.size()-4 || (world.distance_fade_at!=UINT32_MAX && world.distance_fade_at!=at))throw std::runtime_error("distance-fade frame field changed");world.distance_fade_at=at;}
+        if(id>=2560){uint32_t at=reflect_distance_fade(vr);if(at>world.current().frame.size()-4 || (world.distance_fade_at!=UINT32_MAX && world.distance_fade_at!=at))throw std::runtime_error("distance-fade frame field changed");distance_fade_at=at;}
         bool voxel=!decal && world_voxel(id%32);uint32_t stream=world_base_pipeline(decal?id:id%32);uint32_t object_bytes=voxel?144:(stream%5==1?3968:128);bool valid=true;
         for(auto* reflection:{&vr,&pr})for(uint32_t i=0;i<reflection->descriptor_binding_count;++i){auto& b=reflection->descriptor_bindings[i];
             bool uniform=b.descriptor_type==SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
@@ -176,14 +184,23 @@ void init_world_pipeline(uint32_t id,const void* vertex,uint64_t vb,const void* 
         bool shadow=source_id>=32 && source_id<64;const VkFormat highlight_format=VK_FORMAT_R16G16B16A16_SFLOAT;const VkFormat probe_formats[]{stock_probe_format,stock_probe_format};auto pipeline=world_graphics(vs,"__vertex_shader",ps,"__pixel_shader",highlight?highlights.pipeline_layout:probe?probes.material_pipeline_layout:world.material_pipeline_layout,bindings,attributes,highlight?&highlight_format:probe?probe_formats:shadow?nullptr:stock_formats.data(),highlight?1:probe?2:shadow?0:3,true,shadow,false,false,blend,highlight||world_cutout(id)||decal,VK_NULL_HANDLE,false,false,false,false,decal?VK_CULL_MODE_BACK_BIT:VK_CULL_MODE_NONE,decal?VK_FRONT_FACE_CLOCKWISE:VK_FRONT_FACE_COUNTER_CLOCKWISE,VK_COMPARE_OP_GREATER_OR_EQUAL,false,!voxel&&!highlight);
         bool indirect_safe=type>=2;
         for(uint32_t i=0;i<vr.input_variable_count;++i)if(vr.input_variables[i]->decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)indirect_safe=false;
-        auto& p=world.pipelines[id];if(p.handle)vkDestroyPipeline(device,p.handle,nullptr);if(p.stock_cascade)vkDestroyPipeline(device,p.stock_cascade,nullptr);if(p.stock_spot)vkDestroyPipeline(device,p.stock_spot,nullptr);p={pipeline,object_bytes,type,indirect_safe};p.row0=p.row1=p.row2=0xFFFFFFFFu;if(!voxel)reflect_motion_rows(vr,p.row0,p.row1,p.row2);invalidate_world_recipes(8,id);
+        auto& p=candidate;p={pipeline,object_bytes,type,indirect_safe};p.row0=p.row1=p.row2=0xFFFFFFFFu;if(!voxel)reflect_motion_rows(vr,p.row0,p.row1,p.row2);
         if(shadow && shadow_depth_bias_clamp){
             p.stock_cascade=world_graphics(vs,"__vertex_shader",ps,"__pixel_shader",world.material_pipeline_layout,bindings,attributes,nullptr,0,true,true,false,false,0,false,VK_NULL_HANDLE,false,false,true,true,VK_CULL_MODE_NONE,VK_FRONT_FACE_COUNTER_CLOCKWISE,VK_COMPARE_OP_GREATER_OR_EQUAL,false,!voxel);
             p.stock_spot=world_graphics(vs,"__vertex_shader",ps,"__pixel_shader",world.material_pipeline_layout,bindings,attributes,nullptr,0,true,true,false,false,0,false,VK_NULL_HANDLE,false,false,true,false,VK_CULL_MODE_NONE,VK_FRONT_FACE_COUNTER_CLOCKWISE,VK_COMPARE_OP_GREATER_OR_EQUAL,false,!voxel);
         }
-        spvReflectDestroyShaderModule(&vr);spvReflectDestroyShaderModule(&pr);vkDestroyShaderModule(device,ps,nullptr);vkDestroyShaderModule(device,vs,nullptr);
-    }catch(...){if(vr._internal)spvReflectDestroyShaderModule(&vr);if(pr._internal)spvReflectDestroyShaderModule(&pr);if(ps)vkDestroyShaderModule(device,ps,nullptr);if(vs)vkDestroyShaderModule(device,vs,nullptr);throw;}
+        spvReflectDestroyShaderModule(&vr);spvReflectDestroyShaderModule(&pr);vkDestroyShaderModule(device,ps,nullptr);vkDestroyShaderModule(device,vs,nullptr);return candidate;
+    }catch(...){world_destroy_pipeline(candidate);if(vr._internal)spvReflectDestroyShaderModule(&vr);if(pr._internal)spvReflectDestroyShaderModule(&pr);if(ps)vkDestroyShaderModule(device,ps,nullptr);if(vs)vkDestroyShaderModule(device,vs,nullptr);throw;}
 }
+void init_world_pipeline(uint32_t id,const void* vertex,uint64_t vb,const void* pixel,uint64_t pb){
+    const uint32_t source_id=world_unfade(id);bool decal=world_blended_decal(id);
+    if(recording || id>=world.pipelines.size() || (!decal && (source_id>=116 || (source_id>=32 && (source_id%32)>=22) || (source_id>=86 && source_id<96) || (source_id>=96 && source_id%32>=20))))throw std::runtime_error("invalid world pipeline id/state");wait(next_completion);init_world_layouts();bool probe=source_id>=64 && source_id<86;if(probe)require_probe_format();bool highlight=source_id>=96 && source_id<116;if(highlight && !highlights.layout){highlights.layout=world_layout(true,false,false,true);highlights.pipeline_layout=world_pipeline_layout(highlights.layout);}if(probe && !probes.material_layout){probes.material_layout=world_layout(true,false,true);probes.material_pipeline_layout=world_pipeline_layout(probes.material_layout);}
+    uint32_t distance_fade_at=world.distance_fade_at;
+    auto candidate=build_world_pipeline(id,vertex,vb,pixel,pb,distance_fade_at);
+    world_destroy_pipeline(world.pipelines[id]);world.pipelines[id]=candidate;
+    world.distance_fade_at=distance_fade_at;invalidate_world_recipes(8,id);
+}
+
 struct GeometryRange{uint32_t page;VkDeviceSize offset;VmaVirtualAllocation allocation;};
 GeometryRange allocate_geometry(std::vector<GeometryPage>& pages,uint64_t bytes,uint32_t unit,VkBufferUsageFlags usage){
     if(!unit || bytes%unit)throw std::runtime_error("geometry allocation units mismatch");

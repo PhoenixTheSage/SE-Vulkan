@@ -399,3 +399,22 @@ transparency/particle lifecycle regression and native CTest (16 executed passes,
 one configured reference skip) pass. Both managed target frameworks and focused
 CPU native-stage contracts pass. The full recreation fixture compiles with this
 new fixture; the broad combined recreation suite was not rerun for this batch.
+
+
+### Stock geometry candidate construction — stage6 groundwork
+
+The stock world pipeline builder now returns a complete candidate containing its
+main pipeline, motion-row metadata and optional cascade/spot variants. Building
+or rejecting a candidate cannot install handles, invalidate recipes or change
+the live distance-fade layout. The existing initialization caller waits as before,
+then installs the completed bundle. Partial construction destroys only candidate
+resources; the previous complete owner survives failure. This is an internal
+prerequisite for native geometry generations, not a new advertised capability or
+frame-boundary generation activation.
+
+The41-check depth-geometry gate passes with zero validation errors, including
+actual main/shadow rebuilds, wrong-stage candidate rejection, exact retained
+shadow coverage, shared geometry retirement, installed-model silhouettes and
+visibility/highlight fallback. Both aggregate flags remain false. Reserved
+geometry descriptors, generation transactions and full same-invocation attachment
+outputs across every geometry path remain required stage6 work.

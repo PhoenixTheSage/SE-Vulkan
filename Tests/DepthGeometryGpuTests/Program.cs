@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using System.Text.Json;
 using ClientPlugin.Rendering.Content;
@@ -13,6 +14,7 @@ using VRageRender.Import;
 using VRageRender.Messages;
 
 class Program {
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int WorldPipelineFn(IntPtr context,uint id,byte[] vertex,ulong vertexBytes,byte[] pixel,ulong pixelBytes);
     static int Main(string[] args){string bin=Path.GetFullPath(args[0]);AssemblyLoadContext.Default.Resolving+=(_,n)=>{string path=Path.Combine(bin,n.Name+".dll");return File.Exists(path)?AssemblyLoadContext.Default.LoadFromAssemblyPath(path):null;};return Run(bin);}
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     static int Run(string bin){
@@ -35,6 +37,23 @@ class Program {
         backend.RegisterWorldMeshRange(9001,9000,0,3);backend.RegisterWorldMeshRange(9002,9000,3,3);Check(backend.GetStats().UploadedBytes==uploaded,"color/depth range registration allocates no duplicate geometry upload");
         float[] Range(ulong mesh){backend.BeginPacketCollection();backend.AddWorldPacket(0,mesh,0,0,0,0,WorldConstants.Object(backend.WorldLayouts[0],MatrixD.Identity,Vector3.One,Vector3.Zero,1,0),null,1,4096|16384,1);Publish();return backend.ReadbackShadow(0,256);}
         var first=Range(9001);Check(first.Any(f=>f<1),"shared depth range actually renders a silhouette");
+        // Exercise the actual stock builder and installer, including the auxiliary
+        // cascade/spot variants. A rejected candidate must leave covered pixels exact.
+        var native=NativeLibrary.Load(NativeBackend.LibraryPath);
+        try{
+            var init=Marshal.GetDelegateForFunctionPointer<WorldPipelineFn>(NativeLibrary.GetExport(native,"sevk_init_world_pipeline"));
+            var context=(IntPtr)typeof(NativeBackend).GetField("context",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(backend)!;
+            foreach(uint id in new uint[]{0,32}){
+                var spec=WorldShaderVariants.Materials.Single(v=>v.Id==id);
+                byte[] vertex=SpirvRuntimeModule.FromArtifact(library.Load(spec.Vertex)),pixel=SpirvRuntimeModule.FromArtifact(library.Load(spec.Pixel));
+                Check(init(context,id,vertex,(ulong)vertex.Length,pixel,(ulong)pixel.Length)==0,"stock geometry owner installs its complete candidate bundle id"+id);
+                Check(Range(9001).SequenceEqual(first),"rebuilt stock geometry preserves exact shadow coverage id"+id);
+                byte[] wrongStage=vertex;
+                Check(init(context,id,vertex,(ulong)vertex.Length,wrongStage,(ulong)wrongStage.Length)!=0,"wrong-stage candidate refuses before live installation id"+id);
+                Check(Range(9001).SequenceEqual(first),"failed candidate preserves prior stock shadow variants id"+id);
+            }
+        }finally{NativeLibrary.Free(native);}
+
         backend.RemoveResource(3,9000);Check(Range(9001).SequenceEqual(first),"retiring source allocation leaves the registered view alive through GPU completion");
         backend.UploadWorldMesh(9000,new[]{V(-2,-2,-9),V(2,-2,-9),V(0,2,-9)},new uint[]{0,1,2});Check(Range(9001).SequenceEqual(first),"source replacement cannot change the retained range's geometry generation");
         backend.RemoveResource(3,9001);var second=Range(9002);Check(second.Any(f=>f<1)&&!second.SequenceEqual(first),"last surviving range retains its distinct index coverage");backend.RemoveResource(3,9002);backend.RemoveResource(3,9000);
