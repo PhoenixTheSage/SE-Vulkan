@@ -118,6 +118,10 @@ partial class Program
         checks+=CatalogLifecycleRegression(core,backend,projection,light);
         checks+=LateColorHistoryRegression(core,assets,output,backend,projection,light);
         checks+=ClassicNullRegression(core,assets,output,backend,projection,light);
+        checks+=FoliageGenerationRegression(core,assets,output,backend,projection,light,library);
+        checks+=AtmosphereGenerationRegression(core,assets,output,backend,projection,light);
+        checks+=ProbeAtmosphereGenerationRegression(core,assets,output,bin,backend,projection,light);
+        checks+=DecalGenerationRegression(core,assets,output,backend,projection,light,library);
         var finalStats=backend.GetStats();
         Check(finalStats.ValidationErrors==0,"entire recreated volume/resize/provider/snapshot lane reports no validation errors");
         Console.WriteLine("recreated volume lane validation enabled="+finalStats.ValidationEnabled);

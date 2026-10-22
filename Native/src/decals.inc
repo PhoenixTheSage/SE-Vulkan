@@ -16,9 +16,29 @@ void prepare_decals(VkCommandBuffer cmd,WorldSlot& slot){
     auto& constants=decals.constants[slot_index];world_buffer(constants,world_align(65536)*decals.batches.size(),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);std::memset(constants.mapped,0,constants.bytes);for(uint32_t i=0;i<decals.batches.size();++i)for(uint32_t k=0;k<decals.batches[i].draws.size();++k)std::memcpy(static_cast<uint8_t*>(constants.mapped)+world_align(65536)*i+128*k,decals.draws[decals.batches[i].draws[k]].constants,128);check(vmaFlushAllocation(allocator,constants.memory,0,VK_WHOLE_SIZE),"copied stock decal batches");
 }
 void render_decal_batches(VkCommandBuffer cmd,WorldSlot& slot,bool transparent,VkImageView depth_view={},VkImageLayout depth_layout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL){
-    for(uint32_t i=0;i<decals.batches.size();++i){auto& b=decals.batches[i];if((b.role==8)!=transparent)continue;auto set=world_set(slot,decals.layout);world_write_buffer(set,0,slot.frame,1280,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,2,decals.constants[slot_index],65536,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);if(transparent){world_write_buffer(set,4,transparency.shadow_constants[slot_index],1200,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_image(set,139,probes.ready?probes.final[0].image.view:world.ambient.view);world_write_image(set,145,probes.ready?probes.final[1].image.view:world.ambient.view);world_write_image(set,144,transparency.csm.view);world_write_image(set,271,{},shadow_sampler,true);}
-        VkDescriptorImageInfo depth{{},depth_view?depth_view:world.gbuffer[3].view,depth_view?depth_layout:VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL};VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=set;w.dstBinding=128;w.descriptorCount=1;w.descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;w.pImageInfo=&depth;vkUpdateDescriptorSets(device,1,&w,0,nullptr);world_write_image(set,129,decals.normals.view);for(uint32_t k=0;k<4;++k)world_write_image(set,131+k,textures.at(b.textures[k]).image.view);world_write_image(set,258,{},standard_sampler(258),true);world_write_image(set,259,{},sampler,true);
-        uint32_t offset=uint32_t(world_align(65536)*i);vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,decals.pipelines[b.role]);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,decals.pipeline_layout,0,1,&set,1,&offset);vkCmdBindIndexBuffer(cmd,decals.indices.handle,0,VK_INDEX_TYPE_UINT32);world_viewport(cmd,extent.width,extent.height);vkCmdDrawIndexed(cmd,uint32_t(b.draws.size())*36,1,0,0,0);transparency.stats.decal_draws+=b.draws.size();
+    for(uint32_t i=0;i<decals.batches.size();++i){auto& b=decals.batches[i];if((b.role==8)!=transparent)continue;uint32_t id=decal_generation_pixel(b.role);
+        auto* generation=post.decals[id-1024].generation?&post.decals[id-1024]:nullptr;auto set=world_set(slot,generation?generation->layout:decals.layout);bool dynamic=!generation;
+        auto write=[&](uint32_t binding,VkDescriptorType type){
+            if(type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER||type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC){
+                if(binding==6){write_stage_extras(set,id);return;}
+                if(binding==2){world_write_buffer(set,2,decals.constants[slot_index],65536,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);dynamic=true;}
+                else if(binding==0)world_write_buffer(set,0,slot.frame,1280,type);
+                else world_write_buffer(set,4,transparency.shadow_constants[slot_index],1200,type);
+            }else if(type==VK_DESCRIPTOR_TYPE_SAMPLER)world_write_image(set,binding,{},binding==271?shadow_sampler:binding==259?sampler:environment_generation_sampler(binding),true);
+            else if(type==VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE){
+                if(binding==128){VkDescriptorImageInfo depth{{},depth_view?depth_view:world.gbuffer[3].view,depth_view?depth_layout:VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL};VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=set;w.dstBinding=128;w.descriptorCount=1;w.descriptorType=type;w.pImageInfo=&depth;vkUpdateDescriptorSets(device,1,&w,0,nullptr);}
+                else world_write_image(set,binding,binding==129?decals.normals.view:binding==139?(probes.ready?probes.final[0].image.view:world.ambient.view):binding==145?(probes.ready?probes.final[1].image.view:world.ambient.view):binding==144?transparency.csm.view:textures.at(b.textures[binding-131]).image.view);
+            }
+        };
+        if(generation)for(auto entry:generation->bindings){
+            auto catalog=std::find_if(generation->catalog.begin(),generation->catalog.end(),[&](auto r){return r.binding==entry.first;});auto row=stage_binding_row(id);
+            if(catalog!=generation->catalog.end()&&(!catalog->owner_input||(row&&(row->requested_mask&(1u<<(entry.first-128))))))write_stage_catalog(set,id,*catalog);else write(entry.first,entry.second);
+        }else{
+            write(0,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);write(2,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
+            if(transparent){write(4,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);for(uint32_t binding:{139u,144u,145u})write(binding,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);write(271,VK_DESCRIPTOR_TYPE_SAMPLER);}
+            for(uint32_t binding:{128u,129u,131u,132u,133u,134u})write(binding,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);for(uint32_t binding:{258u,259u})write(binding,VK_DESCRIPTOR_TYPE_SAMPLER);
+        }
+        uint32_t offset=uint32_t(world_align(65536)*i);vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,decals.pipelines[b.role]);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,generation?generation->pipeline_layout:decals.pipeline_layout,0,1,&set,dynamic?1u:0u,dynamic?&offset:nullptr);vkCmdBindIndexBuffer(cmd,decals.indices.handle,0,VK_INDEX_TYPE_UINT32);world_viewport(cmd,extent.width,extent.height);post_note_execution(id-1);post_note_execution(id);vkCmdDrawIndexed(cmd,uint32_t(b.draws.size())*36,1,0,0,0);transparency.stats.decal_draws+=b.draws.size();
     }
 }
 void render_opaque_decals(VkCommandBuffer cmd,WorldSlot& slot){
