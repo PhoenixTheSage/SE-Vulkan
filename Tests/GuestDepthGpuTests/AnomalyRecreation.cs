@@ -123,6 +123,7 @@ partial class Program
         checks+=ProbeAtmosphereGenerationRegression(core,assets,output,bin,backend,projection,light);
         checks+=DecalGenerationRegression(core,assets,output,backend,projection,light,library);
         checks+=ProbeProcessingGenerationRegression(core,output,bin,backend,projection,light);
+        checks+=ParticleGenerationRegression(core,output,bin,backend,projection,light,library);
         var finalStats=backend.GetStats();
         Check(finalStats.ValidationErrors==0,"entire recreated volume/resize/provider/snapshot lane reports no validation errors");
         Console.WriteLine("recreated volume lane validation enabled="+finalStats.ValidationEnabled);

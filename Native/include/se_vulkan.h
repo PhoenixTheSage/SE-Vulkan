@@ -357,6 +357,10 @@ typedef struct SevkParticleStats {uint32_t size,abi_version;uint64_t frames,disp
 SEVK_API int32_t SEVK_CALL sevk_init_particles(void* ctx,uint32_t stage,const void* spirv,uint64_t bytes);
 SEVK_API int32_t SEVK_CALL sevk_queue_particles(void* ctx,const void* emitters,uint32_t count,uint32_t bytes,uint64_t texture_array,uint32_t reset);
 SEVK_API int32_t SEVK_CALL sevk_get_particle_stats(void* ctx,SevkParticleStats* stats);
+/* Feature bit28: bounded diagnostic reads of completed native particle buffers.
+ * kind0=data,1=dead,2..3=alive,4..7=counters,8=draw args,9=sim args,10=active. */
+typedef struct SevkParticleReadback {uint32_t size,abi_version,kind,reserved;uint64_t offset,bytes;void* data;} SevkParticleReadback;
+SEVK_API int32_t SEVK_CALL sevk_readback_particle_buffer(void* ctx,const SevkParticleReadback* request);
 typedef struct SevkDecalDraw {uint32_t size,role,reserved[2];uint64_t alpha,color,normal,extensions;uint8_t constants[128];} SevkDecalDraw;
 SEVK_API int32_t SEVK_CALL sevk_init_decals(void* ctx,uint32_t role,const void* vertex,uint64_t vertex_bytes,const void* pixel,uint64_t pixel_bytes);
 SEVK_API int32_t SEVK_CALL sevk_queue_decals(void* ctx,const SevkDecalDraw* draws,uint32_t count);
@@ -485,6 +489,8 @@ SEVK_API int32_t SEVK_CALL sevk_guest_reset(void* ctx);
  * compute/main-view/probe modules 512..514. Feature bit25 adds foliage
  * modules 768..772 as a required shared-VS/two-GS/two-PS closure.
  * Feature bit26 adds decal VS/PS pairs 1024..1033; each pair is indivisible.
+ * Feature bit28 adds particle owner closure 1536..1545, including stage-local
+ * VS bindings and completed indirect participation.
  * Feature bit27 adds probe processing owners 1280..1283. The stock dormant
  * factor-blend owner retains zero execution until a real invocation exists.
  * Existing ABI-1 module/state packets retain their size and version checks. */

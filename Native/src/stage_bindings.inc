@@ -1,12 +1,12 @@
 // Frame data is copied before recording. Native owners never retain managed memory.
-bool native_binding_owner(uint32_t id){return id<62 || (id>=128&&id<144) || (id>=256&&id<260) || (id>=512&&id<515) || id==770 || id==772 || (id>=1025&&id<1034&&(id%2)) || (id>=1280&&id<1284);}
+bool native_binding_owner(uint32_t id){return id<62 || (id>=128&&id<144) || (id>=256&&id<260) || (id>=512&&id<515) || id==770 || id==772 || (id>=1025&&id<1034&&(id%2)) || (id>=1280&&id<1284) || (id>=1536&&id<1544) || id==1545;}
 void clear_stage_bindings(){
     guest.stage_bindings.clear();guest.bindings_frame=UINT32_MAX;
     guest.binding_resolved=guest.binding_missing=guest.binding_mismatched=0;
 }
 void set_stage_bindings(const SevkStageBindings* rows,uint32_t count){
     static_assert(sizeof(SevkStageBindings)==120);static_assert(sizeof(SevkStageBindingState)==48);
-    if(!recording||!guest.resources_open||count>104||(!rows&&count))throw std::runtime_error("native stage bindings require the open frame callback");
+    if(!recording||!guest.resources_open||count>114||(!rows&&count))throw std::runtime_error("native stage bindings require the open frame callback");
     guest_refresh_frame();std::unordered_map<uint32_t,SevkStageBindings> next;
     for(uint32_t i=0;i<count;++i){const auto& r=rows[i];
         if(r.size!=sizeof(r)||r.abi_version!=SEVK_ABI_VERSION||r.reserved||r.frame_index!=guest.frame.frame_index||!native_binding_owner(r.stage)||
@@ -66,7 +66,7 @@ VkImageView stage_catalog_view(uint64_t id,bool fresh,const NativeCatalogResourc
     return {};
 }
 bool write_stage_catalog(VkDescriptorSet set,uint32_t id,const NativeCatalogResource& resource){
-    auto row=stage_binding_row(id);uint32_t slot=resource.binding-128;
+    auto row=stage_binding_row(id);uint32_t slot=resource.binding%1024-128;
     uint64_t image=row&&(row->requested_mask&(1u<<slot))?row->images[slot]:0;
     bool fresh=row&&(row->fresh_mask&(1u<<slot)),mismatch=false,resolved=false;
     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=set;write.dstBinding=resource.binding;write.descriptorCount=1;write.descriptorType=resource.type;
@@ -103,7 +103,7 @@ void fill_guest_extras(GuestExtras& extras,float width,float height,float scene_
     std::memcpy(extras.sun_color,guest.frame.sun_color,12);extras.sun_diffuse=guest.frame.sun_diffuse;
     std::memcpy(extras.sun_toward,guest.frame.sun_toward,12);extras.sky_luma=guest.frame.sky_luma;std::memcpy(extras.sky_ambient,guest.frame.sky_ambient,12);
 }
-void write_stage_extras(VkDescriptorSet set,uint32_t id){
+void write_stage_extras(VkDescriptorSet set,uint32_t id,uint32_t binding=6){
     guest_refresh_frame();guest_ensure_samplers();auto row=stage_binding_row(id);
     NativeCatalogResource image{133,SpvDim2D,0,0,0,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE};bool mismatch=false;
     uint32_t velocity=row&&stage_catalog_view(row->velocity,(row->fresh_mask&1u)!=0,image,mismatch)?1u:0u,attachments=0;
@@ -117,5 +117,5 @@ void write_stage_extras(VkDescriptorSet set,uint32_t id){
     float width=float(std::max(1u,guest.frame.width)),height=float(std::max(1u,guest.frame.height));
     GuestExtras extras{};fill_guest_extras(extras,width,height,width,height,velocity,attachments);
     int pool=guest_pool_index();guest_pool(pool);auto offset=guest_uniform(pool,&extras,sizeof(extras));if(offset==~0u)throw std::runtime_error("native extras uniform arena exhausted");
-    VkDescriptorBufferInfo info{guest.bumps[pool].buffer.handle,offset,sizeof(extras)};VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=set;write.dstBinding=6;write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;write.pBufferInfo=&info;vkUpdateDescriptorSets(device,1,&write,0,nullptr);
+    VkDescriptorBufferInfo info{guest.bumps[pool].buffer.handle,offset,sizeof(extras)};VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=set;write.dstBinding=binding;write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;write.pBufferInfo=&info;vkUpdateDescriptorSets(device,1,&write,0,nullptr);
 }

@@ -70,15 +70,15 @@ void init_postprocess(uint32_t id,const void* data,uint64_t bytes){
 uint64_t post_prepare_generation(uint64_t expected,const SevkPostprocessModule* modules,uint32_t count){
     static_assert(sizeof(SevkPostprocessModule)==32);static_assert(sizeof(SevkPostprocessGenerationStats)==72);
     if(expected!=post.revision)throw std::runtime_error("stale postprocess generation revision");
-    if(!modules || !count || count>104)throw std::runtime_error("invalid postprocess generation module count");
+    if(!modules || !count || count>114)throw std::runtime_error("invalid postprocess generation module count");
     std::set<uint32_t> seen;std::vector<std::pair<uint32_t,PostStage>> candidate;candidate.reserve(count);
     try{
         for(uint32_t i=0;i<count;++i){const auto& module=modules[i];
-            bool lighting=native_lighting_id(module.stage),atmosphere=native_atmosphere_id(module.stage),foliage=native_foliage_id(module.stage),decal=native_decal_id(module.stage),probe=native_probe_id(module.stage);
-            bool available=probe?probes.stages[module.stage-1280].pipeline!=VK_NULL_HANDLE:decal?decals.pipelines[decal_generation_role(module.stage)]!=VK_NULL_HANDLE:foliage?environment.stages[module.stage-764]!=VK_NULL_HANDLE:atmosphere?environment.pipelines[module.stage==514?3:module.stage-512]!=VK_NULL_HANDLE:lighting?world.lights[module.stage-256]!=VK_NULL_HANDLE:module.stage<144&&(module.stage<62||module.stage>=128)&&post.stages[module.stage].pipeline;
+            bool lighting=native_lighting_id(module.stage),atmosphere=native_atmosphere_id(module.stage),foliage=native_foliage_id(module.stage),decal=native_decal_id(module.stage),probe=native_probe_id(module.stage),particle=native_particle_id(module.stage);
+            bool available=particle?particles.stages[module.stage-1536].module!=VK_NULL_HANDLE:probe?probes.stages[module.stage-1280].pipeline!=VK_NULL_HANDLE:decal?decals.pipelines[decal_generation_role(module.stage)]!=VK_NULL_HANDLE:foliage?environment.stages[module.stage-764]!=VK_NULL_HANDLE:atmosphere?environment.pipelines[module.stage==514?3:module.stage-512]!=VK_NULL_HANDLE:lighting?world.lights[module.stage-256]!=VK_NULL_HANDLE:module.stage<144&&(module.stage<62||module.stage>=128)&&post.stages[module.stage].pipeline;
             if(module.size!=sizeof(module)||module.abi_version!=SEVK_ABI_VERSION||module.reserved||!available||!seen.insert(module.stage).second)
                 throw std::runtime_error("invalid/duplicate/uninitialized native owner generation stage");
-            if(foliage||decal)continue;
+            if(foliage||decal||particle)continue;
             candidate.emplace_back(module.stage,probe?build_probe_generation(module.stage,module.spirv,module.bytes):atmosphere?build_atmosphere_generation(module.stage,module.spirv,module.bytes):lighting?build_lighting_generation(module.stage,module.spirv,module.bytes):post_build_stage(module.stage,module.spirv,module.bytes,true));
         }
         if(std::any_of(seen.begin(),seen.end(),[this](uint32_t id){return native_foliage_id(id);})){for(uint32_t id=768;id<773;++id)if(!seen.count(id))throw std::runtime_error("incomplete shared foliage generation closure");
@@ -87,6 +87,9 @@ uint64_t post_prepare_generation(uint64_t expected,const SevkPostprocessModule* 
         for(uint32_t id=1024;id<1034;id+=2)if(seen.count(id)||seen.count(id+1)){
             if(!seen.count(id)||!seen.count(id+1))throw std::runtime_error("incomplete decal generation pair");
             candidate.emplace_back(id,PostStage{});candidate.emplace_back(id+1,build_decal_generation(id+1,modules,count));
+        }
+        if(std::any_of(seen.begin(),seen.end(),[this](uint32_t id){return native_particle_id(id);})){for(uint32_t id=1536;id<1546;++id)if(!seen.count(id))throw std::runtime_error("incomplete particle generation closure");
+            for(uint32_t id=1536;id<1546;++id)candidate.emplace_back(id,id==1544?PostStage{}:build_particle_generation(id,modules,count));
         }
         for(uint32_t id=36;id<52;++id)if(seen.count(id)!=seen.count(id+92))throw std::runtime_error("incomplete HBAO derived generation closure");
         uint64_t generation=++post.next_generation;for(auto& entry:candidate)entry.second.generation=generation;
@@ -111,7 +114,11 @@ void post_activate_pending(){
     if(found->second.format!=world.hdr_format)throw std::runtime_error("postprocess generation HDR format changed");
     post.retired.reserve(post.retired.size()+found->second.stages.size());
     for(auto& entry:found->second.stages){
-        if(native_probe_id(entry.first)){
+        if(native_particle_id(entry.first)){
+            uint32_t index=entry.first-1536;auto& owner=particles.stages[index];PostStage retired=std::move(post.particles[index]);retired.pipeline=owner.pipeline;retired.layout=owner.layout;retired.pipeline_layout=owner.pipeline_layout;
+            post.retired.emplace_back(next_completion,std::move(retired));owner.pipeline=entry.second.pipeline;owner.layout=entry.second.layout;owner.pipeline_layout=entry.second.pipeline_layout;
+            post.particles[index]=std::move(entry.second);post.particles[index].pipeline=VK_NULL_HANDLE;post.particles[index].layout=VK_NULL_HANDLE;post.particles[index].pipeline_layout=VK_NULL_HANDLE;
+        }else if(native_probe_id(entry.first)){
             auto& live=probes.stages[entry.first-1280];post.retired.emplace_back(next_completion,std::move(live));live=std::move(entry.second);
         }else if(native_decal_id(entry.first)){
             uint32_t index=entry.first-1024;PostStage retired=std::move(post.decals[index]);
@@ -140,11 +147,12 @@ void post_collect(uint64_t completed){
     for(auto it=post.retired.begin();it!=post.retired.end();)if(it->first<=completed){post_destroy_stage(it->second);it=post.retired.erase(it);}else ++it;
 }
 void post_generation_status(uint32_t id,SevkPostprocessGenerationStats* out){
-    if((id>=144&&!native_lighting_id(id)&&!native_atmosphere_id(id)&&!native_foliage_id(id)&&!native_decal_id(id)&&!native_probe_id(id))||!out||out->size!=sizeof(*out)||out->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("invalid postprocess generation status");
+    if((id>=144&&!native_lighting_id(id)&&!native_atmosphere_id(id)&&!native_foliage_id(id)&&!native_decal_id(id)&&!native_probe_id(id)&&!native_particle_id(id))||!out||out->size!=sizeof(*out)||out->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("invalid postprocess generation status");
     uint64_t completed=0;check_gpu(vkGetSemaphoreCounterValue(device,timeline,&completed),"query postprocess generation completion");
-    auto& stage=native_probe_id(id)?probes.stages[id-1280]:native_decal_id(id)?post.decals[id-1024]:native_foliage_id(id)?post.foliage[id-768]:native_atmosphere_id(id)?post.atmosphere[id-512]:native_lighting_id(id)?post.lighting[id-256]:post.stages[id];*out={sizeof(*out),SEVK_ABI_VERSION,stage.generation,post.pending,stage.executions,stage.last_completion,completed,stage.last_frame,uint32_t(post.candidates.size()),uint32_t(post.retired.size()),uint32_t(world.hdr_format),post.revision};
+    if(native_particle_id(id))particle_resolve_generations(completed);
+    auto& stage=native_particle_id(id)?post.particles[id-1536]:native_probe_id(id)?probes.stages[id-1280]:native_decal_id(id)?post.decals[id-1024]:native_foliage_id(id)?post.foliage[id-768]:native_atmosphere_id(id)?post.atmosphere[id-512]:native_lighting_id(id)?post.lighting[id-256]:post.stages[id];*out={sizeof(*out),SEVK_ABI_VERSION,stage.generation,post.pending,stage.executions,stage.last_completion,completed,stage.last_frame,uint32_t(post.candidates.size()),uint32_t(post.retired.size()),uint32_t(world.hdr_format),post.revision};
 }
-void post_note_execution(uint32_t id){auto& stage=native_probe_id(id)?probes.stages[id-1280]:native_decal_id(id)?post.decals[id-1024]:native_foliage_id(id)?post.foliage[id-768]:native_atmosphere_id(id)?post.atmosphere[id-512]:native_lighting_id(id)?post.lighting[id-256]:post.stages[id];++stage.executions;stage.last_completion=next_completion+1;stage.last_frame=guest.frame.frame_index;}
+void post_note_execution(uint32_t id){auto& stage=native_particle_id(id)?post.particles[id-1536]:native_probe_id(id)?probes.stages[id-1280]:native_decal_id(id)?post.decals[id-1024]:native_foliage_id(id)?post.foliage[id-768]:native_atmosphere_id(id)?post.atmosphere[id-512]:native_lighting_id(id)?post.lighting[id-256]:post.stages[id];++stage.executions;stage.last_completion=next_completion+1;stage.last_frame=guest.frame.frame_index;}
 void set_postprocess(const SevkPostprocessConfig& config){
     static_assert(sizeof(SevkPostprocessConfig)==384);if(recording || config.size!=sizeof(config) || config.abi_version!=SEVK_ABI_VERSION || config.flags&~4095u || config.reserved || config.bloom_size<1 || config.bloom_size>8 || config.chromatic_iterations<1 || config.chromatic_iterations>16 || (config.dirt && !textures.count(config.dirt)))throw std::runtime_error("invalid postprocess configuration");
     for(uint32_t i=0;i<352/4;++i){float f;std::memcpy(&f,reinterpret_cast<const uint8_t*>(&config)+32+i*4,4);if(!std::isfinite(f))throw std::runtime_error("nonfinite postprocess constant");}
@@ -221,6 +229,7 @@ void cleanup_postprocess(){
     for(auto& stage:post.atmosphere)post_destroy_stage(stage);
     for(auto& stage:post.foliage)post_destroy_stage(stage);
     for(auto& stage:post.decals)post_destroy_stage(stage);
+    for(auto& stage:post.particles)post_destroy_stage(stage);
     for(auto& generation:post.candidates)for(auto& entry:generation.second.stages)post_destroy_stage(entry.second);
     for(auto& retired:post.retired)post_destroy_stage(retired.second);
     for(auto* i:{&post.shadow_blur,&post.half,&post.tone,&post.fxaa,&post.chromatic,&post.ao,&post.ao_blur})destroy_image(i->image);for(auto& i:post.exposure)destroy_image(i.image);for(auto& i:post.bloom_down)destroy_image(i.image);for(auto& i:post.bloom_up)destroy_image(i.image);for(auto& b:post.constants)destroy_buffer(b);destroy_buffer(post.histogram);if(post.point)vkDestroySampler(device,post.point,nullptr);if(post.compose)vkDestroyPipeline(device,post.compose,nullptr);post={};

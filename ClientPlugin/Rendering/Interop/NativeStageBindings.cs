@@ -28,7 +28,7 @@ public sealed partial class NativeBackend
     internal bool SetStageBindings(uint frame,uint[] ids,ulong[] images,uint[] requested,uint[] fresh,uint[] attachments,ulong velocity)
     {
         if((GuestFeatures()&4194304)==0)throw new NotSupportedException("Update SE-Vulkan: native stage bindings require bit22.");
-        if(ids==null||images==null||requested==null||fresh==null||attachments==null||ids.Length>104||
+        if(ids==null||images==null||requested==null||fresh==null||attachments==null||ids.Length>114||
             images.Length!=ids.Length*10||requested.Length!=ids.Length||fresh.Length!=ids.Length||attachments.Length!=ids.Length)
             throw new ArgumentException("Native stage binding row lengths differ.");
         var rows=new StageBindingRow[ids.Length];
@@ -55,8 +55,8 @@ public sealed partial class NativeBackend
         if(ActivePostprocessGeneration==null||postprocessLibrary==null)return Array.Empty<object[]>();
         var rows=new System.Collections.Generic.List<object[]>();
         foreach(var pair in ActivePostprocessGeneration.Layouts.Where(p=>ActivePostprocessGeneration.Fingerprints.ContainsKey(p.Key))){
-            uint id=pair.Key;if(id==768||id==769||id==771||(id>=1024&&id<1034&&id%2==0))continue; // These modules share the actual GS/PS invocation's descriptor set.
-            var members=id>=1024&&id<1034?new[]{id-1,id}:id==770?new uint[]{768,769,770}:id==772?new uint[]{768,771,772}:new[]{id};
+            uint id=pair.Key;if(id==1544||id==768||id==769||id==771||(id>=1024&&id<1034&&id%2==0))continue; // These modules share the actual GS/PS invocation's descriptor set.
+            var members=id==1545?new uint[]{1544,1545}:id>=1024&&id<1034?new[]{id-1,id}:id==770?new uint[]{768,769,770}:id==772?new uint[]{768,771,772}:new[]{id};
             var layouts=members.Where(ActivePostprocessGeneration.Layouts.ContainsKey).Select(k=>ActivePostprocessGeneration.Layouts[k]).ToArray();
             if(!layouts.Any(UsesStageBindings))continue;
             uint mask=0;foreach(var layout in layouts)foreach(var d in layout.Descriptors)if(d.Set==0&&d.RegisterClass=='t'&&d.RegisterIndex>=5&&d.RegisterIndex<=9)mask|=1u<<(int)d.RegisterIndex;
