@@ -110,3 +110,14 @@ The combined766-check gate validates this alongside the native binding, recreati
 provider and shader-generation paths with zero core/synchronization errors.
 Native retirement still uses the existing bit13 completion contract. Broader
 memory/performance qualification and DX11 target integration remain open.
+
+
+Reserved color history now shares one frame/device snapshot with fullscreen and
+portable callbacks. The snapshot validates producer identity, exact previous
+frame, epoch and render-size continuity. Capture retains the named owned shader
+and appends its copied command after all AfterUpscale/AfterFullscreen consumers.
+The captured HDR target is raster-sized, matching installed DX11 code; ordinary
+AfterUpscale passes retain output-sized scaling. The focused125-check history gate
+passes with zero validation errors, including current capture payloads, all three
+consumer positions, odd resize, DRS and rejection/recovery. The final combined
+actual-core gate passes891 checks with zero core/synchronization errors.

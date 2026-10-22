@@ -9,7 +9,7 @@ using VRageRender;
 partial class Program
 {
     // Focused actual-core gate for native owner work; the full recreation gate remains required.
-    static int NativeStagesOnly(string bin,bool bindingsOnly=false,bool oldBindingHost=false,bool catalogLifecycle=false)
+    static int NativeStagesOnly(string bin,bool bindingsOnly=false,bool oldBindingHost=false,bool catalogLifecycle=false,bool lateHistory=false)
     {
         string root=Directory.GetCurrentDirectory(),output=Path.GetFullPath(oldBindingHost?"TestResults/NativeBindingOldHostTests":"TestResults/NativeStagesGpuTests"),stage=Path.Combine(output,"Assets");
         Directory.CreateDirectory(Path.Combine(stage,"Native/win-x64"));Directory.CreateDirectory(Path.Combine(stage,"Shaders/Compiled"));
@@ -30,6 +30,7 @@ partial class Program
         var projection=MatrixD.CreatePerspectiveFieldOfView(Math.PI/2,1,.1,100);projection.M33=projection.M34-projection.M33;projection.M43=projection.M44-projection.M43;
         var light=MyEnvironmentLightData.Default;light.SunLightDirection=Vector3.Forward;light.SunColorRaw=Vector3.One;light.SunDiffuseFactor=1;light.SunDiscIntensity=0;
         if(oldBindingHost){int refused=OldBindingHostRegression(core,output,backend);Console.WriteLine("PASS "+refused+" actual older-host resource contracts");return 0;}
+        if(lateHistory){int count=LateColorHistoryRegression(core,assets,output,backend,projection,light);Console.WriteLine("PASS "+count+" actual-core late color-history checks");return 0;}
         if(catalogLifecycle){int count=CatalogLifecycleRegression(core,backend,projection,light);Console.WriteLine("PASS "+count+" actual-core catalog lifecycle checks");return 0;}
         int checks=0;
         if(!bindingsOnly){
