@@ -65,7 +65,7 @@ public sealed partial class NativeBackend : IDisposable
             GetInstanceProcAddr = host?.GetInstanceProcAddr ?? IntPtr.Zero
         };
         Check(api.Create(ref info, out context), context);ResetWorldRecipes();PresentationWidth=width;PresentationHeight=height;
-        GuestEpoch=System.Threading.Interlocked.Increment(ref nextGuestEpoch);
+        GuestEpoch=System.Threading.Interlocked.Increment(ref nextGuestEpoch);ResetPostprocessGenerations();
         textureValidationCacheApplied=false;TextureValidationCacheEnabled=textureValidationCacheEnabled;
     }
 

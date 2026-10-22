@@ -19,6 +19,7 @@ public sealed partial class NativeBackend
     }
     public void ConfigurePostprocess(VulkanShaderLibrary library)
     {
+        postprocessLibrary=library;
         InitializeHbaoJitter();
         for(uint i=0;i<PostprocessShaderVariants.Stages.Length;i++){var artifact=library.Load(PostprocessShaderVariants.Stages[i]);var bytes=SpirvRuntimeModule.FromArtifact(artifact);Check(PostApi.Init(context,i,bytes,(ulong)bytes.Length),context);PostprocessLayouts[i]=artifact.Layout;}
         using(var compiler=VulkanShaderCompiler.CreateBundled(System.IO.Path.Combine(resourceCacheDirectory,"HbaoBorder")))

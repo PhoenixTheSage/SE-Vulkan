@@ -352,10 +352,11 @@ struct FlareState {VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layo
 struct DecalBatch {uint32_t role{};uint64_t textures[4]{};std::vector<uint32_t> draws;};
 struct DecalState {VkPipeline pipelines[9]{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};Buffer constants[2]{},indices{};Image normals{};uint32_t width{},height{};bool initialized{};std::vector<SevkDecalDraw> draws;std::vector<DecalBatch> batches;};
 struct PostImage {Image image;uint32_t width{},height{};VkImageLayout layout{};VkFormat format{};};
-struct PostStage {VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{},other_hdr{};std::vector<std::pair<uint32_t,VkDescriptorType>> bindings;bool compute{};};
+struct PostStage {uint64_t generation{},executions{},last_completion{};uint32_t last_frame{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{},other_hdr{};std::vector<std::pair<uint32_t,VkDescriptorType>> bindings;bool compute{};};
 struct ShadowUsageView {Buffer gpu,readback,screen;bool pending{};};
 struct ShadowUsageState {PostStage stage;ShadowUsageView views[2][19];uint32_t pixels[19][8]{};uint64_t completion[19]{},latest{};bool enabled{};};
-struct PostState {PostStage stages[144]{};PostImage shadow_blur{},exposure[2]{},half{},bloom_down[11]{},bloom_up[10]{},tone{},fxaa{},chromatic{},ao{},ao_blur{};PostImage* output{};PostImage* after_tonemap{};Buffer constants[2]{},histogram{};VkSampler point{};VkPipeline compose{};VkFormat compose_format{};uint32_t width{},height{},exposure_index{};SevkPostprocessConfig config{};SevkPostprocessStats stats{sizeof(SevkPostprocessStats),SEVK_ABI_VERSION};};
+struct PostCandidate {uint64_t expected{};VkFormat format{};std::vector<std::pair<uint32_t,PostStage>> stages;};
+struct PostState {uint64_t revision{},next_generation{},pending{};std::map<uint64_t,PostCandidate> candidates;std::vector<std::pair<uint64_t,PostStage>> retired;PostStage stages[144]{};PostImage shadow_blur{},exposure[2]{},half{},bloom_down[11]{},bloom_up[10]{},tone{},fxaa{},chromatic{},ao{},ao_blur{};PostImage* output{};PostImage* after_tonemap{};Buffer constants[2]{},histogram{};VkSampler point{};VkPipeline compose{};VkFormat compose_format{};uint32_t width{},height{},exposure_index{};SevkPostprocessConfig config{};SevkPostprocessStats stats{sizeof(SevkPostprocessStats),SEVK_ABI_VERSION};};
 struct HbaoState {SevkHbaoConfig config{};PostImage depth{},normal{},aoz[2]{};Image quarter_depth{},quarter_ao{};VkImageView depth_views[16]{},ao_views[16]{};Buffer constants[2]{};VkSampler border{};uint32_t width{},height{};bool initialized{},jitter_provided{};float jitter[64]{};};
 struct ProbeCube {Image image;std::vector<VkImageView> views;};
 struct ProbeState {uint64_t atmosphere_id{};float atmosphere_intensity{},atmosphere_desaturation{},sun_direction[3]{};Buffer atmosphere[2][6]{},atmosphere_view[2][6]{};VkDescriptorSetLayout material_layout{};VkPipelineLayout material_pipeline_layout{};PostStage stages[4]{};ProbeCube original[2],filtered[2],final[2];Image depth[6]{};Buffer frame[2][6]{},projection[2][6]{},forward_projection[2][6]{},constants[2][6]{};SevkProbeConfig config{};SevkProbeStats stats{sizeof(SevkProbeStats),SEVK_ABI_VERSION};uint32_t resolution{},mips{},skip_levels{},face{},stage{},work_face{},blend_kind{};bool initialized{},ready{};};
@@ -646,6 +647,7 @@ struct Renderer {uint32_t recipe_generation=1;
         uint64_t complete = 0; check_gpu(vkGetSemaphoreCounterValue(device, timeline, &complete), "query GPU timeline");
         ray_collect(complete);
         guest_collect(complete);
+        post_collect(complete);
         stats.completed_timeline = complete;
         for(uint32_t i=0;i<2;++i)if(slots[i].completion<=complete){sample_timing(i);sample_occlusion(i);sample_shadow_usage(i);if(world.slots[i].material_stale)release_cached_materials(world.slots[i]);else release_dirty_materials(world.slots[i]);}
         for(auto it=retired_views.begin();it!=retired_views.end();){if(it->first<=complete){vkDestroyImageView(device,it->second,nullptr);it=retired_views.erase(it);}else ++it;}
@@ -2072,6 +2074,10 @@ int32_t SEVK_CALL sevk_build_voxel_array(void* ctx,uint64_t id,uint32_t size,uin
 
 int32_t SEVK_CALL sevk_init_environment(void* ctx,uint32_t stage,const void* data,uint64_t bytes){return call(ctx,[&](Renderer& r){r.init_environment(stage,data,bytes);return 0;});}
 int32_t SEVK_CALL sevk_set_shadow_options(void* ctx,uint32_t flags){return call_deferrable(ctx,[flags](Renderer& r){if(r.recording || flags>1)throw std::runtime_error("invalid shadow options");r.shadow_blur_enabled=flags!=0;return 0;});}
+int32_t SEVK_CALL sevk_prepare_postprocess_generation(void* ctx,uint64_t expected,const SevkPostprocessModule* modules,uint32_t count,uint64_t* generation){return call(ctx,[&](Renderer& r){if(!generation)throw std::runtime_error("null postprocess generation output");*generation=r.post_prepare_generation(expected,modules,count);return 0;});}
+int32_t SEVK_CALL sevk_activate_postprocess_generation(void* ctx,uint64_t generation){return call(ctx,[&](Renderer& r){r.post_queue_generation(generation);r.post_activate_pending();return 0;});}
+int32_t SEVK_CALL sevk_discard_postprocess_generation(void* ctx,uint64_t generation){return call(ctx,[&](Renderer& r){r.post_discard_generation(generation);return 0;});}
+int32_t SEVK_CALL sevk_get_postprocess_generation(void* ctx,uint32_t stage,SevkPostprocessGenerationStats* result){return call(ctx,[&](Renderer& r){r.post_generation_status(stage,result);return 0;});}
 int32_t SEVK_CALL sevk_init_postprocess(void* ctx,uint32_t stage,const void* data,uint64_t bytes){return call(ctx,[&](Renderer& r){r.init_postprocess(stage,data,bytes);return 0;});}
 int32_t SEVK_CALL sevk_set_hbao(void* ctx,const SevkHbaoConfig* config){if(!config)return -1;return call_deferrable(ctx,[config_copy=*config](Renderer& r){auto* config=&config_copy;r.set_hbao(*config);return 0;});}
 int32_t SEVK_CALL sevk_set_hbao_jitter(void* ctx,const float* values,uint32_t count){return call(ctx,[&](Renderer& r){r.set_hbao_jitter(values,count);return 0;});}
@@ -2132,7 +2138,7 @@ int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32
     });
 }
 int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.resolution;return 0;},[&](Renderer& r){r.collect();*stats=r.resolution_stats;return 0;});}
-uint32_t SEVK_CALL sevk_guest_features(void){return 524287u;}
+uint32_t SEVK_CALL sevk_guest_features(void){return 1048575u;}
 int32_t SEVK_CALL sevk_guest_frame_environment(void* ctx,const SevkGuestEnvironment* environment){
     if(!environment || environment->size!=sizeof(*environment) || environment->abi_version!=SEVK_ABI_VERSION || environment->reserved || environment->pad)return -1;
     const auto copied=*environment;

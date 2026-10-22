@@ -109,6 +109,13 @@ public static class BackendRuntime
         }
         if (decided) listener(backend);
     }
+    static readonly List<Action> preparationListeners=new();
+    public static void AddPreparationListener(Action listener){if(listener!=null)lock(Sync)preparationListeners.Add(listener);}
+    public static void RaisePreparation()
+    {
+        Action[] copy;lock(Sync)copy=preparationListeners.ToArray();
+        foreach(var listener in copy)try{listener();}catch(Exception error){RecordFailure("guest preparation: "+error.Message);}
+    }
     public static void AddFrameListener(Action listener)
     {
         if (listener == null) return;

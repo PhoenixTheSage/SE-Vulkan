@@ -607,6 +607,16 @@ typedef struct SevkRayOptions {
 } SevkRayOptions;
 SEVK_API int32_t SEVK_CALL sevk_get_ray_capabilities(void* ctx, SevkRayCapabilities* caps);
 SEVK_API int32_t SEVK_CALL sevk_set_ray_options(void* ctx, const SevkRayOptions* options);
+/* Detached stock-postprocess generations; feature bit19. ABI-1 layouts above stay unchanged. */
+typedef struct SevkPostprocessModule {uint32_t size,abi_version,stage,reserved;const void* spirv;uint64_t bytes;} SevkPostprocessModule;
+typedef struct SevkPostprocessGenerationStats {
+    uint32_t size,abi_version;uint64_t active,pending,executions,last_completion,completed;
+    uint32_t last_frame,prepared,retired,format;uint64_t revision;
+} SevkPostprocessGenerationStats;
+SEVK_API int32_t SEVK_CALL sevk_prepare_postprocess_generation(void*,uint64_t,const SevkPostprocessModule*,uint32_t,uint64_t*);
+SEVK_API int32_t SEVK_CALL sevk_activate_postprocess_generation(void*,uint64_t);
+SEVK_API int32_t SEVK_CALL sevk_discard_postprocess_generation(void*,uint64_t);
+SEVK_API int32_t SEVK_CALL sevk_get_postprocess_generation(void*,uint32_t,SevkPostprocessGenerationStats*);
 #ifdef __cplusplus
 }
 #endif

@@ -1,17 +1,49 @@
 // Stock postprocess modules use reflected layouts, owned images and copied CPU
 // constants. Resources stay on the graphics queue; status never waits for them.
 VkFormat post_format(uint32_t id){if(id>=126)return VK_FORMAT_R8_UNORM;if(id>=62)return VK_FORMAT_R16G16B16A16_SFLOAT;if(id==33)return VK_FORMAT_R32_SFLOAT;if(id==34)return VK_FORMAT_R16_SFLOAT;if(id==35)return VK_FORMAT_R8G8B8A8_UNORM;if(id==53 || (id>=54 && id%2==0))return VK_FORMAT_R16G16_SFLOAT;if(id>=36)return VK_FORMAT_R8_UNORM;return id==0 || id==2?VK_FORMAT_R32G32_SFLOAT:(id==14 || id>=31?VK_FORMAT_R8_UNORM:(id==13 || (id>=9 && id<=12) || (id>=15 && id<=30)?VK_FORMAT_R8G8B8A8_UNORM:VK_FORMAT_R16G16B16A16_SFLOAT));}
-void init_postprocess(uint32_t id,const void* data,uint64_t bytes){
-    if(recording || id>=144 || post.stages[id].pipeline || !world.fullscreen)throw std::runtime_error("invalid stock postprocess stage/state");wait(next_completion);
+void post_destroy_stage(PostStage& stage){
+    if(stage.other_hdr)vkDestroyPipeline(device,stage.other_hdr,nullptr);
+    if(stage.pipeline)vkDestroyPipeline(device,stage.pipeline,nullptr);
+    if(stage.pipeline_layout)vkDestroyPipelineLayout(device,stage.pipeline_layout,nullptr);
+    if(stage.layout)vkDestroyDescriptorSetLayout(device,stage.layout,nullptr);
+    stage={};
+}
+bool post_input_supplied(uint32_t id,uint32_t input){
+    if(id==0)return false;if(id==2)return input==1;
+    if(id==3||id==4||id==8||id>=36&&id<=61||id>=128)return input<=1;
+    if(id==5||id==6)return input==0||input==3;
+    if(id>=9&&id<=12)return input<=3;
+    if(id==14)return input==0||input==2||input==5;
+    if(id==31||id==32)return input==0||input==5;
+    return input==0;
+}
+PostStage post_build_stage(uint32_t id,const void* data,uint64_t bytes,bool strict=false){
+    if(id>=144 || !world.fullscreen)throw std::runtime_error("invalid stock postprocess stage/state");
+    PostStage stage{};
     bool compute=id==3 || id==4 || (id>=9 && id<=12) || (id>=15 && id<=30);
-    SpvReflectShaderModule reflection{};auto shader=world_shader(data,bytes,compute?VK_SHADER_STAGE_COMPUTE_BIT:VK_SHADER_STAGE_FRAGMENT_BIT,reflection);auto& stage=post.stages[id];
+    SpvReflectShaderModule reflection{};auto shader=world_shader(data,bytes,compute?VK_SHADER_STAGE_COMPUTE_BIT:VK_SHADER_STAGE_FRAGMENT_BIT,reflection);
     try{std::vector<VkDescriptorSetLayoutBinding> bindings;
+        if(strict&&compute){auto work=reflection.entry_points[0].local_size;uint32_t expected=id==3||id==4?16:8;
+            if(work.x!=expected||work.y!=expected||work.z!=1)throw std::runtime_error("postprocess compute local size mismatch");}
+
+        if(strict&&!compute){
+            uint32_t count=id==34?8u:1u;std::array<bool,8> outputs{};
+            for(uint32_t i=0;i<reflection.output_variable_count;++i){auto& v=*reflection.output_variables[i];
+                if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)throw std::runtime_error("postprocess fragment builtin output is unsupported");
+                bool floating=v.format==SPV_REFLECT_FORMAT_R32_SFLOAT||v.format==SPV_REFLECT_FORMAT_R32G32_SFLOAT||v.format==SPV_REFLECT_FORMAT_R32G32B32_SFLOAT||v.format==SPV_REFLECT_FORMAT_R32G32B32A32_SFLOAT;
+                if(v.location>=count||outputs[v.location]||!floating)throw std::runtime_error("postprocess fragment output contract mismatch");outputs[v.location]=true;
+            }
+            for(uint32_t i=0;i<count;++i)if(!outputs[i])throw std::runtime_error("postprocess fragment output contract incomplete");
+            for(uint32_t i=0;i<reflection.input_variable_count;++i){auto& v=*reflection.input_variables[i];if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)continue;
+                if(v.location!=0||v.format!=SPV_REFLECT_FORMAT_R32G32_SFLOAT||v.decoration_flags&SPV_REFLECT_DECORATION_FLAT)throw std::runtime_error("postprocess fullscreen input contract mismatch");}
+        }
         for(uint32_t i=0;i<reflection.descriptor_binding_count;++i){auto& b=reflection.descriptor_bindings[i];auto type=VkDescriptorType(b.descriptor_type);
             bool valid=(type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && ((b.binding==0 && b.block.size==((id>=33 && id<62)||id>=128?208u:1280u)) || (b.binding==1 && b.block.size==(id==14?288u:id>=33?32u:64u)) || (b.binding==5 && b.block.size==16))) ||
                 (type==VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE && b.binding>=128 && b.binding<=133 && b.image.dim==SpvDim2D && b.image.arrayed==(((id>=36 && id<=53)||id>=128) && b.binding==128) && !b.image.ms) ||
                 (type==VK_DESCRIPTOR_TYPE_SAMPLER && b.binding>=256 && b.binding<=259) ||
                 (type==VK_DESCRIPTOR_TYPE_STORAGE_IMAGE && b.binding==384 && compute && id!=3 && id!=4) ||
                 (type==VK_DESCRIPTOR_TYPE_STORAGE_BUFFER && ((b.binding==384 && (id==3 || id==4)) || (b.binding==128 && id==2)));
+            if(strict&&type==VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE&&!post_input_supplied(id,b.binding-128))valid=false;
             if(!valid || b.set || b.count!=1)throw std::runtime_error("postprocess descriptor mismatch stage "+std::to_string(id)+" binding "+std::to_string(b.binding)+" size "+std::to_string(b.block.size));
             bindings.push_back({b.binding,type,1,VkShaderStageFlags(compute?VK_SHADER_STAGE_COMPUTE_BIT:VK_SHADER_STAGE_FRAGMENT_BIT),nullptr});stage.bindings.push_back({b.binding,type});}
         if(reflection.push_constant_block_count)throw std::runtime_error("unexpected postprocess push constants");
@@ -20,8 +52,58 @@ void init_postprocess(uint32_t id,const void* data,uint64_t bytes){
         else if(id==1 || (id>=5 && id<=8)){hdr_pipeline_pair(stage.pipeline,stage.other_hdr,[&](VkFormat format){return world_graphics(world.fullscreen,"__vertex_shader",shader,"__pixel_shader",stage.pipeline_layout,{{0,24,VK_VERTEX_INPUT_RATE_VERTEX}},world.fullscreen_attributes,&format,1,false);});}
         else{std::array<VkFormat,8> formats{};formats.fill(post_format(id));stage.pipeline=world_graphics(world.fullscreen,"__vertex_shader",shader,"__pixel_shader",stage.pipeline_layout,{{0,24,VK_VERTEX_INPUT_RATE_VERTEX}},world.fullscreen_attributes,formats.data(),id==34?8:1,false);}
         spvReflectDestroyShaderModule(&reflection);vkDestroyShaderModule(device,shader,nullptr);
-    }catch(...){spvReflectDestroyShaderModule(&reflection);vkDestroyShaderModule(device,shader,nullptr);throw;}
+    }catch(...){spvReflectDestroyShaderModule(&reflection);vkDestroyShaderModule(device,shader,nullptr);post_destroy_stage(stage);throw;}
+    return stage;
 }
+void init_postprocess(uint32_t id,const void* data,uint64_t bytes){
+    if(recording || id>=144 || post.stages[id].pipeline)throw std::runtime_error("invalid stock postprocess stage/state");wait(next_completion);
+    post.stages[id]=post_build_stage(id,data,bytes);
+}
+uint64_t post_prepare_generation(uint64_t expected,const SevkPostprocessModule* modules,uint32_t count){
+    static_assert(sizeof(SevkPostprocessModule)==32);static_assert(sizeof(SevkPostprocessGenerationStats)==72);
+    if(expected!=post.revision)throw std::runtime_error("stale postprocess generation revision");
+    if(!modules || !count || count>78)throw std::runtime_error("invalid postprocess generation module count");
+    std::set<uint32_t> seen;std::vector<std::pair<uint32_t,PostStage>> candidate;candidate.reserve(count);
+    try{
+        for(uint32_t i=0;i<count;++i){const auto& module=modules[i];
+            if(module.size!=sizeof(module)||module.abi_version!=SEVK_ABI_VERSION||module.reserved||(module.stage>=62&&module.stage<128)||module.stage>=144||!post.stages[module.stage].pipeline||!seen.insert(module.stage).second)
+                throw std::runtime_error("invalid/duplicate/uninitialized postprocess generation stage");
+            candidate.emplace_back(module.stage,post_build_stage(module.stage,module.spirv,module.bytes,true));
+        }
+        for(uint32_t id=36;id<52;++id)if(seen.count(id)!=seen.count(id+92))throw std::runtime_error("incomplete HBAO derived generation closure");
+        uint64_t generation=++post.next_generation;for(auto& entry:candidate)entry.second.generation=generation;
+        auto entry=post.candidates.emplace(generation,PostCandidate{}).first;entry->second.expected=expected;entry->second.format=world.hdr_format;entry->second.stages=std::move(candidate);return generation;
+    }catch(...){for(auto& entry:candidate)post_destroy_stage(entry.second);throw;}
+}
+void post_discard_generation(uint64_t generation){
+    auto found=post.candidates.find(generation);if(found==post.candidates.end())throw std::runtime_error("unknown prepared postprocess generation");
+    if(post.pending==generation)post.pending=0;
+    for(auto& entry:found->second.stages)post_destroy_stage(entry.second);post.candidates.erase(found);
+}
+void post_queue_generation(uint64_t generation){
+    if(recording)throw std::runtime_error("postprocess generation activation requires a closed frame");
+    if(!post.candidates.count(generation))throw std::runtime_error("unknown prepared postprocess generation");
+    if(post.pending && post.pending!=generation)post_discard_generation(post.pending);
+    post.pending=generation;
+}
+void post_activate_pending(){
+    if(!post.pending)return;auto found=post.candidates.find(post.pending);
+    if(found==post.candidates.end())throw std::runtime_error("missing prepared postprocess generation");
+    if(found->second.expected!=post.revision)throw std::runtime_error("stale postprocess generation revision");
+    if(found->second.format!=world.hdr_format)throw std::runtime_error("postprocess generation HDR format changed");
+    post.retired.reserve(post.retired.size()+found->second.stages.size());
+    for(auto& entry:found->second.stages){auto& live=post.stages[entry.first];post.retired.emplace_back(next_completion,std::move(live));live=std::move(entry.second);entry.second={};}
+    post.candidates.erase(found);post.pending=0;++post.revision;
+}
+void post_collect(uint64_t completed){
+    for(auto it=post.retired.begin();it!=post.retired.end();)if(it->first<=completed){post_destroy_stage(it->second);it=post.retired.erase(it);}else ++it;
+}
+void post_generation_status(uint32_t id,SevkPostprocessGenerationStats* out){
+    if(id>=144||!out||out->size!=sizeof(*out)||out->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("invalid postprocess generation status");
+    uint64_t completed=0;check_gpu(vkGetSemaphoreCounterValue(device,timeline,&completed),"query postprocess generation completion");
+    auto& stage=post.stages[id];*out={sizeof(*out),SEVK_ABI_VERSION,stage.generation,post.pending,stage.executions,stage.last_completion,completed,stage.last_frame,uint32_t(post.candidates.size()),uint32_t(post.retired.size()),uint32_t(world.hdr_format),post.revision};
+}
+void post_note_execution(uint32_t id){auto& stage=post.stages[id];++stage.executions;stage.last_completion=next_completion+1;stage.last_frame=guest.frame.frame_index;}
 void set_postprocess(const SevkPostprocessConfig& config){
     static_assert(sizeof(SevkPostprocessConfig)==384);if(recording || config.size!=sizeof(config) || config.abi_version!=SEVK_ABI_VERSION || config.flags&~4095u || config.reserved || config.bloom_size<1 || config.bloom_size>8 || config.chromatic_iterations<1 || config.chromatic_iterations>16 || (config.dirt && !textures.count(config.dirt)))throw std::runtime_error("invalid postprocess configuration");
     for(uint32_t i=0;i<352/4;++i){float f;std::memcpy(&f,reinterpret_cast<const uint8_t*>(&config)+32+i*4,4);if(!std::isfinite(f))throw std::runtime_error("nonfinite postprocess constant");}
@@ -50,7 +132,7 @@ VkDescriptorSet post_set(WorldSlot& slot,uint32_t id,PostImage& dst,const std::a
     return set;
 }
 void post_pass(VkCommandBuffer cmd,WorldSlot& slot,uint32_t id,PostImage& dst,std::array<VkImageView,6> images={}){
-    auto& stage=post.stages[id];post_transition(cmd,dst,stage.compute?VK_IMAGE_LAYOUT_GENERAL:VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);auto set=post_set(slot,id,dst,images);
+    post_note_execution(id);auto& stage=post.stages[id];post_transition(cmd,dst,stage.compute?VK_IMAGE_LAYOUT_GENERAL:VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);auto set=post_set(slot,id,dst,images);
     if(stage.compute){vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,stage.pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,stage.pipeline_layout,0,1,&set,0,nullptr);vkCmdDispatch(cmd,(dst.width+7)/8,(dst.height+7)/8,1);}
     else{VkRenderingAttachmentInfo a{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};a.imageView=dst.image.view;a.imageLayout=dst.layout;a.loadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE;a.storeOp=VK_ATTACHMENT_STORE_OP_STORE;VkRenderingInfo r{VK_STRUCTURE_TYPE_RENDERING_INFO};r.renderArea={{0,0},{dst.width,dst.height}};r.layerCount=1;r.colorAttachmentCount=1;r.pColorAttachments=&a;vkCmdBeginRendering(cmd,&r);vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,stage.pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,stage.pipeline_layout,0,1,&set,0,nullptr);VkDeviceSize zero=0;vkCmdBindVertexBuffers(cmd,0,1,&world.quad.handle,&zero);world_viewport(cmd,dst.width,dst.height);vkCmdDraw(cmd,3,1,0,0);vkCmdEndRendering(cmd);}
     post_transition(cmd,dst,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -73,7 +155,7 @@ void prepare_postprocess(VkCommandBuffer cmd,WorldSlot& slot){
 void render_postprocess(VkCommandBuffer cmd,WorldSlot& slot){
     guest_replay(cmd,4);if(!(post.config.flags&1)){guest_replay(cmd,5);return;}auto flags=post.config.flags;auto& exposure=post.exposure[post.exposure_index];
     if(flags&2){post_pass(cmd,slot,1,post.half,{world.hdr.view});post_buffer_barrier(cmd,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_MEMORY_READ_BIT|VK_ACCESS_2_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT);vkCmdFillBuffer(cmd,post.histogram.handle,0,256,0);post_buffer_barrier(cmd,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT|VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-        uint32_t id=flags&1024?4:3;auto& s=post.stages[id];auto set=post_set(slot,id,post.half,{post.half.image.view,world.gbuffer[3].view});vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,s.pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,s.pipeline_layout,0,1,&set,0,nullptr);vkCmdDispatch(cmd,(post.half.width+15)/16,(post.half.height+15)/16,1);++post.stats.histogram_dispatches;post_buffer_barrier(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+        uint32_t id=flags&1024?4:3;post_note_execution(id);auto& s=post.stages[id];auto set=post_set(slot,id,post.half,{post.half.image.view,world.gbuffer[3].view});vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,s.pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,s.pipeline_layout,0,1,&set,0,nullptr);vkCmdDispatch(cmd,(post.half.width+15)/16,(post.half.height+15)/16,1);++post.stats.histogram_dispatches;post_buffer_barrier(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
         auto& next=post.exposure[post.exposure_index^1];post_pass(cmd,slot,2,next,{VK_NULL_HANDLE,exposure.image.view});post.exposure_index^=1;
     }else post_pass(cmd,slot,0,exposure);++post.stats.exposure_passes;
     VkImageView bloom{};
@@ -90,6 +172,8 @@ void render_postprocess(VkCommandBuffer cmd,WorldSlot& slot){
     if(flags&256){post_pass(cmd,slot,14+post.config.chromatic_iterations,post.chromatic,{post.output->image.view});post.output=&post.chromatic;++post.stats.chromatic_dispatches;}++post.stats.frames;
 }
 void cleanup_postprocess(){
-    for(auto& s:post.stages){if(s.other_hdr)vkDestroyPipeline(device,s.other_hdr,nullptr);if(s.pipeline)vkDestroyPipeline(device,s.pipeline,nullptr);if(s.pipeline_layout)vkDestroyPipelineLayout(device,s.pipeline_layout,nullptr);if(s.layout)vkDestroyDescriptorSetLayout(device,s.layout,nullptr);}
+    for(auto& stage:post.stages)post_destroy_stage(stage);
+    for(auto& generation:post.candidates)for(auto& entry:generation.second.stages)post_destroy_stage(entry.second);
+    for(auto& retired:post.retired)post_destroy_stage(retired.second);
     for(auto* i:{&post.shadow_blur,&post.half,&post.tone,&post.fxaa,&post.chromatic,&post.ao,&post.ao_blur})destroy_image(i->image);for(auto& i:post.exposure)destroy_image(i.image);for(auto& i:post.bloom_down)destroy_image(i.image);for(auto& i:post.bloom_up)destroy_image(i.image);for(auto& b:post.constants)destroy_buffer(b);destroy_buffer(post.histogram);if(post.point)vkDestroySampler(device,post.point,nullptr);if(post.compose)vkDestroyPipeline(device,post.compose,nullptr);post={};
 }

@@ -38,6 +38,12 @@ public static class GuestBridge
     public static object[] CaptureShadowInputs(uint localActor) => scene?.CaptureGuestShadowInputs(localActor);
     public static object[] CaptureCharacter(uint localActor) => scene?.CaptureGuestCharacter(localActor);
 
+    public static object[][] PostprocessCatalog()=>current?.PostprocessCatalog();
+    public static object[] CompilePostprocessGeneration(string identity,System.Collections.Generic.Dictionary<string,byte[]> sources,System.Collections.Generic.Dictionary<string,string> defines,uint[] stages)=>current?.CompilePostprocessGeneration(identity,sources,defines,stages);
+    public static void QueuePostprocessGeneration(ulong token,System.Func<bool> guard)=>current?.QueuePostprocessGeneration(token,guard);
+    public static bool ApplyPostprocessGeneration()=>current?.ApplyPendingPostprocessGeneration() is true;
+    public static void DiscardPostprocessGeneration(ulong token)=>current?.DiscardPostprocessGeneration(token);
+    public static object[] PostprocessGenerationState(uint id)=>current?.PostprocessGenerationState(id);
     public static void Reset() => current?.GuestReset();
     public static int SupportedPacketFlags => current == null ? 0 : current.GuestFeatures();
     public static long ResourceEpoch=>current!=null && current.IsCreated?current.GuestEpoch:0;

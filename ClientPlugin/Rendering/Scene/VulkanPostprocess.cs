@@ -23,6 +23,7 @@ public sealed class VulkanPostprocess
     }
     public NativePostprocessConfig Configure(NativeBackend backend,int width,int height,bool fxaa,ulong dirt=0,MatrixD? view=null,MatrixD? projection=null,bool ambientOcclusion=true)
     {
+        backend.ApplyPendingPostprocessGeneration();
         bool enableAo=ambientOcclusion && aoDebugEnabled;
         var p=Settings;float range=p.HistogramLogMax-p.HistogramLogMin;
         if(!(range>0) || p.HistogramFilterMax<=p.HistogramFilterMin || p.HistogramFilterMin<0 || p.HistogramFilterMax>100)throw new ArgumentException("Invalid histogram range/percentiles.");
