@@ -18,9 +18,8 @@ VkShaderModule opaque_stock_shader(const void* data,uint64_t bytes,VkShaderStage
     if(uint32_t(reflected.shader_stage)!=uint32_t(stage))throw std::runtime_error("indexed stock stage changed");
     VkShaderModuleCreateInfo create{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};create.codeSize=bytes;create.pCode=words;VkShaderModule shader{};check(vkCreateShaderModule(device,&create,nullptr,&shader),"create authenticated indexed stock shader");return shader;
 }
-void init_opaque_stock_pipeline(uint32_t id,uint32_t old,const void* vertex,uint64_t vb,const void* pixel,uint64_t pb){
-    if(recording||old>1||id>=(old?2656u:28u) || (old && world_unfade(id)>=96)||!opaque_caps.enabled)throw std::runtime_error("invalid indexed stock pipeline");wait(next_completion);init_world_layouts();init_opaque_stock_layout();
-    auto& dst=old?opaque_stock.older[id]:opaque_stock.newer[id];if(dst.back)throw std::runtime_error("indexed stock pipeline already registered");
+OpaqueStockState::Pipeline build_opaque_stock_pipeline(uint32_t id,uint32_t old,const void* vertex,uint64_t vb,const void* pixel,uint64_t pb){
+    if(recording||old>1||id>=(old?2656u:28u) || (old && world_unfade(id)>=96)||!opaque_caps.enabled)throw std::runtime_error("invalid indexed stock pipeline candidate");
     uint32_t role=old?world_unfade(id)/32:id<12?id/4:0;bool depth=role==1,forward=role==2,cutout=old?world_cutout(id):id>=12;
     VkShaderModule vs{},ps{};SpvReflectShaderModule vr{},pr{};VkPipeline back{},no_cull{};VkPipelineLayout layout{};
     try{
@@ -44,9 +43,15 @@ void init_opaque_stock_pipeline(uint32_t id,uint32_t old,const void* vertex,uint
         auto formats=depth?nullptr:forward?forward_formats:stock_formats.data();uint32_t count=depth?0:forward?2:3;
         back=world_graphics(vs,"__vertex_shader",ps,"__pixel_shader",layout,{{0,uint32_t(sizeof(SevkWorldVertex)),VK_VERTEX_INPUT_RATE_VERTEX}},attributes,formats,count,true,depth,false,false,0,cutout,{},false,false,depth,depth,VK_CULL_MODE_BACK_BIT,depth?VK_FRONT_FACE_COUNTER_CLOCKWISE:VK_FRONT_FACE_CLOCKWISE);
         no_cull=world_graphics(vs,"__vertex_shader",ps,"__pixel_shader",layout,{{0,uint32_t(sizeof(SevkWorldVertex)),VK_VERTEX_INPUT_RATE_VERTEX}},attributes,formats,count,true,depth,false,false,0,cutout,{},false,false,depth,false,VK_CULL_MODE_NONE);
-        dst={back,no_cull,layout};back=no_cull={};layout={};spvReflectDestroyShaderModule(&vr);spvReflectDestroyShaderModule(&pr);vkDestroyShaderModule(device,vs,nullptr);vkDestroyShaderModule(device,ps,nullptr);
+        OpaqueStockState::Pipeline result{back,no_cull,layout};back=no_cull={};layout={};spvReflectDestroyShaderModule(&vr);spvReflectDestroyShaderModule(&pr);vkDestroyShaderModule(device,vs,nullptr);vkDestroyShaderModule(device,ps,nullptr);return result;
     }catch(...){if(back)vkDestroyPipeline(device,back,nullptr);if(no_cull)vkDestroyPipeline(device,no_cull,nullptr);if(layout)vkDestroyPipelineLayout(device,layout,nullptr);if(vr._internal)spvReflectDestroyShaderModule(&vr);if(pr._internal)spvReflectDestroyShaderModule(&pr);if(vs)vkDestroyShaderModule(device,vs,nullptr);if(ps)vkDestroyShaderModule(device,ps,nullptr);throw;}
 }
+void init_opaque_stock_pipeline(uint32_t id,uint32_t old,const void* vertex,uint64_t vb,const void* pixel,uint64_t pb){
+    if(recording||old>1||id>=(old?2656u:28u) || (old && world_unfade(id)>=96)||!opaque_caps.enabled)throw std::runtime_error("invalid indexed stock pipeline");
+    auto& dst=old?opaque_stock.older[id]:opaque_stock.newer[id];if(dst.back)throw std::runtime_error("indexed stock pipeline already registered");
+    wait(next_completion);init_world_layouts();init_opaque_stock_layout();dst=build_opaque_stock_pipeline(id,old,vertex,vb,pixel,pb);
+}
+
 void validate_opaque_stock_geometry(){
     GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::StockGeometry);
     for(auto& g:opaque_stock.geometry){auto it=world.meshes.find(g.id);
@@ -125,6 +130,6 @@ uint32_t record_opaque_stock_view(VkCommandBuffer cmd,WorldSlot& slot,uint32_t v
         if(!r.view_batches||pipeline.layout!=bound_layout){vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline.layout,0,2,sets,2,offsets);bound_layout=pipeline.layout;}
         VkDeviceSize vertex_offset=0;if(!r.view_batches||batch.vertices!=bound_vertices){vkCmdBindVertexBuffers(cmd,0,1,&batch.vertices,&vertex_offset);bound_vertices=batch.vertices;}if(!r.view_batches||batch.indices!=bound_indices){vkCmdBindIndexBuffer(cmd,batch.indices,0,VK_INDEX_TYPE_UINT32);bound_indices=batch.indices;}
         uint32_t batch_view=b*r.view_count+view,base=view*r.draw_capacity+range.first;vkCmdPushConstants(cmd,pipeline.layout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,4,&base);
-        vkCmdDrawIndexedIndirectCount(cmd,r.slots[slot_index].args.handle,uint64_t(base)*sizeof(SevkOpaqueIndirect),r.slots[slot_index].counts.handle,batch_view*4,range.capacity,sizeof(SevkOpaqueIndirect));commands++;
+        vkCmdDrawIndexedIndirectCount(cmd,r.slots[slot_index].args.handle,uint64_t(base)*sizeof(SevkOpaqueIndirect),r.slots[slot_index].counts.handle,batch_view*4,range.capacity,sizeof(SevkOpaqueIndirect));gpu_owner_record((input.old?49153u:32769u)+2*id,batch_view,base,range.capacity);commands++;
     }return commands;
 }

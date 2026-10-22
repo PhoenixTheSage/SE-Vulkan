@@ -13,8 +13,8 @@ void geometry_invalidate_shadows(){
     saved_shadows=false;shadow_image_mask=0;for(auto& ready:spots.frozen_ready)ready=0;
 }
 void geometry_note_execution(uint32_t pipeline){
-    if(post.geometry.empty())return;uint32_t vertex=2*pipeline;
-    for(uint32_t index:{vertex,vertex+1}){auto& stage=post.geometry[index];if(!stage.generation)continue;
+    if(post.geometry.empty())return;uint32_t vertex=2*pipeline;if(gpu_owner_condition!=UINT32_MAX){gpu_owner_record_direct(4097+vertex,gpu_owner_condition);return;}
+    for(uint32_t index:{vertex,vertex+1}){auto& stage=post.geometry[index];if(!stage.generation||!stage.track_geometry)continue;
         std::atomic_ref<uint64_t>(stage.executions).fetch_add(1,std::memory_order_relaxed);
         std::atomic_ref<uint64_t>(stage.last_completion).store(next_completion+1,std::memory_order_relaxed);
         std::atomic_ref<uint32_t>(stage.last_frame).store(guest.frame.frame_index,std::memory_order_relaxed);

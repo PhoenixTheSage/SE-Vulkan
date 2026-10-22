@@ -353,11 +353,14 @@ struct DecalBatch {uint32_t role{};uint64_t textures[4]{};std::vector<uint32_t> 
 struct DecalState {VkPipeline pipelines[9]{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};Buffer constants[2]{},indices{};Image normals{};uint32_t width{},height{};bool initialized{};std::vector<SevkDecalDraw> draws;std::vector<DecalBatch> batches;};
 struct PostImage {Image image;uint32_t width{},height{};VkImageLayout layout{};VkFormat format{};};
 struct NativeCatalogResource {uint32_t binding{},dim{},arrayed{},depth{},number{};VkDescriptorType type{};bool owner_input{};};
-struct PostStage {uint64_t generation{},executions{},last_completion{};uint32_t last_frame{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{},other_hdr{};std::vector<std::pair<uint32_t,VkDescriptorType>> bindings;std::vector<NativeCatalogResource> catalog;bool compute{},probe_full_view{};WorldPipeline geometry{};};
+struct PostStage {uint64_t generation{},executions{},last_completion{};uint32_t last_frame{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{},other_hdr{};std::vector<std::pair<uint32_t,VkDescriptorType>> bindings;std::vector<NativeCatalogResource> catalog;bool compute{},probe_full_view{},track_geometry{true};WorldPipeline geometry{};};
 struct ShadowUsageView {Buffer gpu,readback,screen;bool pending{};};
 struct ShadowUsageState {PostStage stage;ShadowUsageView views[2][19];uint32_t pixels[19][8]{};uint64_t completion[19]{},latest{};bool enabled{};};
 struct PostCandidate {uint64_t expected{};VkFormat format{};std::vector<std::pair<uint32_t,PostStage>> stages;};
-struct PostState {uint64_t revision{},next_generation{},pending{};std::map<uint64_t,PostCandidate> candidates;std::vector<std::pair<uint64_t,PostStage>> retired;std::vector<PostStage> geometry;PostStage oit{},stages[144]{},lighting[4]{},atmosphere[3]{},foliage[5]{},decals[10]{},particles[10]{};PostImage shadow_blur{},exposure[2]{},half{},bloom_down[11]{},bloom_up[10]{},tone{},fxaa{},chromatic{},ao{},ao_blur{};PostImage* output{};PostImage* after_tonemap{};Buffer constants[2]{},histogram{};VkSampler point{};VkPipeline compose{};VkFormat compose_format{};uint32_t width{},height{},exposure_index{};SevkPostprocessConfig config{};SevkPostprocessStats stats{sizeof(SevkPostprocessStats),SEVK_ABI_VERSION};};
+struct PostState {uint64_t revision{},next_generation{},pending{};std::map<uint64_t,PostCandidate> candidates;std::vector<std::pair<uint64_t,PostStage>> retired;std::vector<PostStage> geometry,cells,gpu_new,gpu_old;PostStage oit{},stages[144]{},lighting[4]{},atmosphere[3]{},foliage[5]{},decals[10]{},particles[10]{};PostImage shadow_blur{},exposure[2]{},half{},bloom_down[11]{},bloom_up[10]{},tone{},fxaa{},chromatic{},ao{},ao_blur{};PostImage* output{};PostImage* after_tonemap{};Buffer constants[2]{},histogram{};VkSampler point{};VkPipeline compose{};VkFormat compose_format{};uint32_t width{},height{},exposure_index{};SevkPostprocessConfig config{};SevkPostprocessStats stats{sizeof(SevkPostprocessStats),SEVK_ABI_VERSION};};
+struct GpuOwnerRow {uint32_t module{},first{},capacity{},frame{};uint64_t generation{};uint32_t condition=UINT32_MAX;};
+struct GpuOwnerSlot {Buffer ranges{},work{},readback{};std::vector<GpuOwnerRow> rows;uint64_t completion{};bool pending{};};
+struct GpuOwnerState {PostStage reduction{};GpuOwnerSlot slots[2];std::vector<std::pair<uint64_t,GpuOwnerSlot>> retired;bool enabled{};};
 struct HbaoState {SevkHbaoConfig config{};PostImage depth{},normal{},aoz[2]{};Image quarter_depth{},quarter_ao{};VkImageView depth_views[16]{},ao_views[16]{};Buffer constants[2]{};VkSampler border{};uint32_t width{},height{};bool initialized{},jitter_provided{};float jitter[64]{};};
 struct ProbeCube {Image image;std::vector<VkImageView> views;};
 struct ProbeState {uint64_t atmosphere_id{};float atmosphere_intensity{},atmosphere_desaturation{},sun_direction[3]{};Buffer atmosphere[2][6]{},atmosphere_view[2][6]{};VkDescriptorSetLayout material_layout{};VkPipelineLayout material_pipeline_layout{};PostStage stages[4]{};ProbeCube original[2],filtered[2],final[2];Image depth[6]{};Buffer frame[2][6]{},projection[2][6]{},forward_projection[2][6]{},constants[2][6]{};SevkProbeConfig config{};SevkProbeStats stats{sizeof(SevkProbeStats),SEVK_ABI_VERSION};uint32_t resolution{},mips{},skip_levels{},face{},stage{},work_face{},blend_kind{};bool initialized{},ready{};};
@@ -438,7 +441,9 @@ struct Renderer {uint32_t recipe_generation=1;
     ShadowUsageState shadow_usage;
     ProbeState probes;
     HbaoState hbao;
-    PostState post;
+    PostState post;GpuOwnerState gpu_owners;std::mutex gpu_owner_mutex;
+    // Conditional spot scope of the thread recording it; cascade/pass workers record concurrently.
+    inline static thread_local uint32_t gpu_owner_condition=UINT32_MAX;
     FlareState flares;
     DecalState decals;
     ParticleState particles;
@@ -648,7 +653,7 @@ struct Renderer {uint32_t recipe_generation=1;
         uint64_t complete = 0; check_gpu(vkGetSemaphoreCounterValue(device, timeline, &complete), "query GPU timeline");
         ray_collect(complete);
         guest_collect(complete);
-        post_collect(complete);
+        gpu_owner_resolve_generations(complete);post_collect(complete);
         stats.completed_timeline = complete;
         for(uint32_t i=0;i<2;++i)if(slots[i].completion<=complete){sample_timing(i);sample_occlusion(i);sample_shadow_usage(i);if(world.slots[i].material_stale)release_cached_materials(world.slots[i]);else release_dirty_materials(world.slots[i]);}
         for(auto it=retired_views.begin();it!=retired_views.end();){if(it->first<=complete){vkDestroyImageView(device,it->second,nullptr);it=retired_views.erase(it);}else ++it;}
@@ -1797,6 +1802,8 @@ struct Renderer {uint32_t recipe_generation=1;
 #include "shadow_generations.inc"
 #include "oit_generations.inc"
 #include "geometry_generations.inc"
+#include "extended_geometry_generations.inc"
+#include "gpu_owner_production.inc"
 #include "postprocess.inc"
 #include "hbao.inc"
 #include "probes.inc"
@@ -2093,6 +2100,8 @@ int32_t SEVK_CALL sevk_build_voxel_array(void* ctx,uint64_t id,uint32_t size,uin
 int32_t SEVK_CALL sevk_init_environment(void* ctx,uint32_t stage,const void* data,uint64_t bytes){return call(ctx,[&](Renderer& r){r.init_environment(stage,data,bytes);return 0;});}
 int32_t SEVK_CALL sevk_set_shadow_options(void* ctx,uint32_t flags){return call_deferrable(ctx,[flags](Renderer& r){if(r.recording || flags>1)throw std::runtime_error("invalid shadow options");r.shadow_blur_enabled=flags!=0;return 0;});}
 int32_t SEVK_CALL sevk_prepare_postprocess_generation(void* ctx,uint64_t expected,const SevkPostprocessModule* modules,uint32_t count,uint64_t* generation){return call(ctx,[&](Renderer& r){if(!generation)throw std::runtime_error("null postprocess generation output");*generation=r.post_prepare_generation(expected,modules,count);return 0;});}
+int32_t SEVK_CALL sevk_native_owner_capabilities(void* ctx,SevkNativeOwnerCapabilities* state){if(!ctx||!state||state->size!=sizeof(*state)||state->abi_version!=SEVK_ABI_VERSION)return -1;*state={sizeof(*state),SEVK_ABI_VERSION,7,8192,117};return 0;}
+int32_t SEVK_CALL sevk_prepare_native_generation(void* ctx,const SevkNativeGeneration* input,uint64_t* generation){if(!input||!generation||input->size!=sizeof(*input)||input->abi_version!=SEVK_ABI_VERSION||input->flags&~1u)return -1;auto request=*input;return call(ctx,[&](Renderer& r){*generation=r.post_prepare_generation(request.expected_revision,request.modules,request.count,request.flags);return 0;});}
 int32_t SEVK_CALL sevk_activate_postprocess_generation(void* ctx,uint64_t generation){return call(ctx,[&](Renderer& r){r.post_queue_generation(generation);r.post_activate_pending();return 0;});}
 int32_t SEVK_CALL sevk_discard_postprocess_generation(void* ctx,uint64_t generation){return call(ctx,[&](Renderer& r){r.post_discard_generation(generation);return 0;});}
 int32_t SEVK_CALL sevk_get_postprocess_generation(void* ctx,uint32_t stage,SevkPostprocessGenerationStats* result){return call(ctx,[&](Renderer& r){r.post_generation_status(stage,result);return 0;});}

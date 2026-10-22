@@ -51,7 +51,7 @@ public sealed partial class NativeBackend {
     public unsafe void QueueGpuOpaqueFrame(ref NativeGpuOpaqueFrame frame,NativeGpuOpaqueView[] views){gpuRefFrame??=PassFunction<GpuRefFrameFn>("sevk_opaque_reference_frame");fixed(NativeGpuOpaqueView* input=views)Check(gpuRefFrame(context,ref frame,(IntPtr)input,(uint)views.Length),context);}
     public void InitializeGpuStockPipeline(uint id,bool old,VulkanShaderArtifact vertex,VulkanShaderArtifact pixel){
         if(vertex.Layout.SourceTransform!=GpuOpaqueShaderAdapter.Contract||pixel.Layout.SourceTransform!=GpuOpaqueShaderAdapter.Contract||vertex.Layout.BaseSpirvSha256==null||pixel.Layout.BaseSpirvSha256==null)throw new InvalidOperationException("GPU stock pipeline requires authenticated derived shader stages.");
-        gpuStockPipeline??=PassFunction<GpuStockPipelineFn>("sevk_opaque_stock_pipeline");byte[] vs=SpirvRuntimeModule.FromArtifact(vertex),ps=SpirvRuntimeModule.FromArtifact(pixel);Check(gpuStockPipeline(context,id,old?1u:0u,vs,(ulong)vs.Length,ps,(ulong)ps.Length),context);
+        gpuStockPipeline??=PassFunction<GpuStockPipelineFn>("sevk_opaque_stock_pipeline");byte[] vs=SpirvRuntimeModule.FromArtifact(vertex),ps=SpirvRuntimeModule.FromArtifact(pixel);Check(gpuStockPipeline(context,id,old?1u:0u,vs,(ulong)vs.Length,ps,(ulong)ps.Length),context);gpuShaders.Add((old,id));
     }
     public unsafe void SetGpuStockBatches(NativeGpuOpaqueBatch[] batches,ulong[] partMeshes,byte[] objects){
         gpuStockBatches??=PassFunction<GpuStockBatchesFn>("sevk_opaque_stock_batches");fixed(NativeGpuOpaqueBatch* b=batches)fixed(ulong* m=partMeshes)Check(gpuStockBatches(context,(IntPtr)b,(uint)batches.Length,(IntPtr)m,(uint)partMeshes.Length,objects,(uint)objects.Length),context);

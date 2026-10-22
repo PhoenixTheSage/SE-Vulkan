@@ -44,10 +44,12 @@ public sealed partial class NativeBackend
         var state=new NativePostprocessGenerationStats{Size=(uint)Marshal.SizeOf(typeof(NativePostprocessGenerationStats)),AbiVersion=AbiVersion};
         postState??=PostFunction<PostStateFn>("sevk_get_postprocess_generation");Check(postState(context,stage,ref state),context);return state;
     }
-    public ulong PreparePostprocessGeneration(IDictionary<uint,VulkanShaderArtifact> artifacts,string fingerprint)
+    public ulong PreparePostprocessGeneration(IDictionary<uint,VulkanShaderArtifact> artifacts,string fingerprint)=>PrepareNativeGeneration(artifacts,fingerprint,false);
+    ulong PrepareNativeGeneration(IDictionary<uint,VulkanShaderArtifact> artifacts,string fingerprint,bool restoresStock)
     {
         if((GuestFeatures()&524288)==0)throw new NotSupportedException("Update SE-Vulkan native library: postprocess generations require bit19.");
         if(artifacts!=null&&artifacts.Keys.Any(GeometryModule)&&(GuestFeatures()&GeometryGenerationFeature)==0)throw new NotSupportedException("Update SE-Vulkan native library: stock world geometry generations require bit31.");
+        if(artifacts!=null&&artifacts.Keys.Any(id=>ExtendedGeometryModule(id)&&(NativeOwnerFeatures()&ExtendedGeometryFeature(id))==0))throw new NotSupportedException("Update SE-Vulkan: extended native geometry owner capabilities unavailable.");
         if(artifacts==null||artifacts.Count==0)throw new ArgumentException("Native owner generation requires stages.");
         if(artifacts.Keys.Any(id=>id>=256&&id<260)&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
         if(artifacts.Keys.Any(id=>id>=512&&id<515)&&(GuestFeatures()&16777216)==0)throw new NotSupportedException("Update SE-Vulkan native library: atmosphere owner generations require bit24.");
@@ -67,7 +69,9 @@ public sealed partial class NativeBackend
             var fingerprints=ActivePostprocessGeneration==null?new Dictionary<uint,string>():ActivePostprocessGeneration.Fingerprints.ToDictionary(p=>p.Key,p=>p.Value);
             foreach(var entry in artifacts){layouts[entry.Key]=entry.Value.Layout;fingerprints[entry.Key]=fingerprint;}
             preparePost??=PostFunction<PreparePostFn>("sevk_prepare_postprocess_generation");
-            Check(preparePost(context,expected,modules,(uint)modules.Length,out ulong token),context);
+            ulong token;
+            if(NativeOwnerFeatures()!=0){var modulePin=GCHandle.Alloc(modules,GCHandleType.Pinned);pins.Add(modulePin);var request=new NativeGeneration{Size=32,Abi=AbiVersion,Revision=expected,Flags=restoresStock?1u:0u,Count=(uint)modules.Length,Modules=modulePin.AddrOfPinnedObject()};prepareNative??=PostFunction<PrepareNativeFn>("sevk_prepare_native_generation");Check(prepareNative(context,ref request,out token),context);}
+            else Check(preparePost(context,expected,modules,(uint)modules.Length,out token),context);
             try{postprocessCandidates.Add(token,new PostprocessGenerationMetadata(token,GuestEpoch,fingerprint,layouts,fingerprints));}
             catch{DiscardPostprocessGeneration(token);throw;}return token;
         }
@@ -85,7 +89,7 @@ public sealed partial class NativeBackend
         if((GuestFeatures()&268435456)!=0)ids=ids.Concat(Enumerable.Range(1536,10));
         if((GuestFeatures()&536870912)!=0)ids=ids.Concat(Enumerable.Range(1792,2));
         if((GuestFeatures()&1073741824)!=0)ids=ids.Concat(new[]{2048});
-        return ids.Select(index=>{uint id=(uint)index;var artifact=postprocessLibrary.Load(NativeOwnerVariant(id));var dependencies=artifact.Layout.Dependencies.Select(d=>d.Path.Replace('\\','/')).Where(p=>p.StartsWith("root0/",StringComparison.OrdinalIgnoreCase)).Select(p=>p.Substring(6)).Append(artifact.Source).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p=>p,StringComparer.Ordinal).ToArray();return new object[]{id,artifact.Source,artifact.Profile,dependencies};}).Concat(GeometryCatalog()).ToArray();
+        return ids.Select(index=>{uint id=(uint)index;var artifact=postprocessLibrary.Load(NativeOwnerVariant(id));var dependencies=artifact.Layout.Dependencies.Select(d=>d.Path.Replace('\\','/')).Where(p=>p.StartsWith("root0/",StringComparison.OrdinalIgnoreCase)).Select(p=>p.Substring(6)).Append(artifact.Source).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p=>p,StringComparer.Ordinal).ToArray();return new object[]{id,artifact.Source,artifact.Profile,dependencies};}).Concat(GeometryCatalog()).Concat(ExtendedGeometryCatalog()).ToArray();
     }
     static string NativeOwnerVariant(uint id)
     {
@@ -108,7 +112,8 @@ public sealed partial class NativeBackend
         if(state.Active!=0)ActivePostprocessGeneration?.Fingerprints.TryGetValue(id,out fingerprint);
         return new object[]{state.Active,state.Executions,state.LastCompletion,state.Completed,state.LastFrame,pendingPostprocess?.Token??0UL,fingerprint,PostprocessGenerationError,GuestEpoch,state.Format,state.Revision};
     }
-    public object[] CompilePostprocessGeneration(string identity,Dictionary<string,byte[]> sources,Dictionary<string,string> defines,uint[] stages)
+    public object[] CompilePostprocessGeneration(string identity,Dictionary<string,byte[]> sources,Dictionary<string,string> defines,uint[] stages)=>CompileNativeOwnerGeneration(identity,sources,defines,stages,false);
+    public object[] CompileNativeOwnerGeneration(string identity,Dictionary<string,byte[]> sources,Dictionary<string,string> defines,uint[] stages,bool restoresStock)
     {
         if(postprocessLibrary==null)throw new InvalidOperationException("Stock postprocess owner is not initialized.");
         var generation=postprocessLibrary.CaptureSourceGeneration(identity,sources);
@@ -116,7 +121,7 @@ public sealed partial class NativeBackend
         using(var compiler=VulkanShaderCompiler.CreateBundled(System.IO.Path.Combine(resourceCacheDirectory,"PostprocessGenerations")))
         foreach(uint id in stages)
         {
-            string variant=GeometryModule(id)?"native-world-"+id:NativeOwnerVariant(id);
+            string variant=ExtendedGeometryModule(id)?"native-extended-"+id:GeometryModule(id)?"native-world-"+id:NativeOwnerVariant(id);
             if(id==2048&&(GuestFeatures()&1073741824)==0)throw new NotSupportedException("Update SE-Vulkan native library: OIT resolve generations require bit30.");
             if(id>=1792&&id<1794&&(GuestFeatures()&536870912)==0)throw new NotSupportedException("Update SE-Vulkan native library: shadow owner generations require bit29.");
             if(id>=1536&&id<1546&&(GuestFeatures()&268435456)==0)throw new NotSupportedException("Update SE-Vulkan native library: particle owner generations require bit28.");
@@ -125,7 +130,7 @@ public sealed partial class NativeBackend
             if(id>=768&&id<773&&(GuestFeatures()&33554432)==0)throw new NotSupportedException("Update SE-Vulkan native library: foliage owner generations require bit25.");
             if(id>=512&&id<515&&(GuestFeatures()&16777216)==0)throw new NotSupportedException("Update SE-Vulkan native library: atmosphere owner generations require bit24.");
             if(id>=256&&id<260&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
-            var request=GeometryModule(id)?GeometryRequest(id,identity,sources,defines):postprocessLibrary.DerivedRequest(variant,generation,defines);
+            var request=ExtendedGeometryModule(id)?ExtendedGeometryRequest(id,generation,defines):GeometryModule(id)?GeometryRequest(id,identity,sources,defines):postprocessLibrary.DerivedRequest(variant,generation,defines);
             if(id>=128&&id<144)
             {
                 // A replacement without the quarter-depth descriptor has no border
@@ -137,7 +142,7 @@ public sealed partial class NativeBackend
             }
             artifacts.Add(id,VulkanShaderArtifact.FromCompilation(compiler.Compile(request),variant+"/"+generation.Fingerprint));
         }
-        ulong token=PreparePostprocessGeneration(artifacts,generation.Fingerprint);return new object[]{token,generation.Fingerprint};
+        ulong token=PrepareNativeGeneration(artifacts,generation.Fingerprint,restoresStock);return new object[]{token,generation.Fingerprint};
     }
     public void QueuePostprocessGeneration(ulong token,Func<bool> guard=null)
     {

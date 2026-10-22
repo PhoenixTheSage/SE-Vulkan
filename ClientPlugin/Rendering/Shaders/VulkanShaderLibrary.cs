@@ -96,6 +96,10 @@ public sealed class VulkanShaderLibrary
         SpirvMetadataReader.Reflect(File.ReadAllBytes(spirv), layout);
         return new VulkanShaderArtifact { Id = variantId, Source = variant.Source, Profile = variant.Profile, CacheKey = variant.CacheKey, SpirvPath = spirv, Layout = layout };
     }
+    public void EnableGpuOpaqueDerivation(VulkanShaderRequest request,VulkanShaderArtifact original)
+    {
+        request.GpuOpaque=true;request.GpuOpaqueBaseModule=original.Layout.SpirvSha256;request.GpuOpaqueBaseDependencies=sourceHashes.Select(p=>new ShaderDependency{Path=p.Key,Sha256=p.Value}).ToList();
+    }
     public VulkanShaderRequest GpuOpaqueRequest(string variantId)
     {
         var original=Load(variantId);var variant=variants[variantId];

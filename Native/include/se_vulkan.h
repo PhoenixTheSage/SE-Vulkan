@@ -662,6 +662,14 @@ SEVK_API int32_t SEVK_CALL sevk_prepare_postprocess_generation(void*,uint64_t,co
 SEVK_API int32_t SEVK_CALL sevk_activate_postprocess_generation(void*,uint64_t);
 SEVK_API int32_t SEVK_CALL sevk_discard_postprocess_generation(void*,uint64_t);
 SEVK_API int32_t SEVK_CALL sevk_get_postprocess_generation(void*,uint32_t,SevkPostprocessGenerationStats*);
+/* Native owner extensions. Capability flags1/2/4: cells/GPU NEW/GPU OLD generations.
+ * The implementation capability is separate from device admission/initialized owners. */
+typedef struct SevkNativeOwnerCapabilities {uint32_t size,abi_version;uint64_t flags;uint32_t max_modules,max_stage_bindings;} SevkNativeOwnerCapabilities;
+typedef struct SevkNativeGeneration {uint32_t size,abi_version;uint64_t expected_revision;uint32_t flags,count;const SevkPostprocessModule* modules;} SevkNativeGeneration;
+SEVK_API int32_t SEVK_CALL sevk_native_owner_capabilities(void* ctx,SevkNativeOwnerCapabilities* state);
+/* flags1 marks a stock restore: execute stock without pack-only GPU production instrumentation. */
+SEVK_API int32_t SEVK_CALL sevk_prepare_native_generation(void* ctx,const SevkNativeGeneration* request,uint64_t* generation);
+
 #ifdef __cplusplus
 }
 #endif
