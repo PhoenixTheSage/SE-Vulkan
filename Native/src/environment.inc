@@ -68,12 +68,22 @@ void prepare_foliage(WorldSlot& slot){
     for(auto* b:{&objects,&materials})check(vmaFlushAllocation(allocator,b->memory,0,VK_WHOLE_SIZE),"flush foliage constants");
 }
 void render_foliage(VkCommandBuffer cmd,WorldSlot& slot){
-    for(uint32_t i=0;i<environment.foliage_draws.size();++i){auto& d=environment.foliage_draws[i];auto& mesh=world.meshes.at(d.mesh);auto set=world_set(slot,environment.foliage_layout);world_write_buffer(set,0,slot.frame,1280,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,1,slot.projections,64,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,4,environment.foliage_materials[slot_index],4096,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-        VkDescriptorBufferInfo buffer{environment.foliage_objects[slot_index].handle,world_align(128)*i,128};VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=set;w.dstBinding=2;w.descriptorCount=1;w.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;w.pBufferInfo=&buffer;vkUpdateDescriptorSets(device,1,&w,0,nullptr);
-        world_write_image(set,128,world.arrays.at(d.color).view);world_write_image(set,129,world.arrays.at(d.normal).view);world_write_image(set,156,stock.dither.view);world_write_image(set,259,{},sampler,true);
-        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,environment.foliage_pipelines[d.kind]);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,environment.foliage_pipeline_layout,0,1,&set,0,nullptr);VkDeviceSize zero=0;vkCmdBindVertexBuffers(cmd,0,1,&mesh.vertices.handle,&mesh.vertex_offset);vkCmdDraw(cmd,mesh.index_count,1,0,0);++environment.stats.foliage_draws;environment.stats.foliage_points+=mesh.index_count;
+    for(uint32_t i=0;i<environment.foliage_draws.size();++i){auto& d=environment.foliage_draws[i];auto& mesh=world.meshes.at(d.mesh);uint32_t index=d.kind?4:2,id=768+index;
+        auto* generation=post.foliage[index].generation?&post.foliage[index]:nullptr;auto set=world_set(slot,generation?generation->layout:environment.foliage_layout);
+        auto write=[&](uint32_t binding,VkDescriptorType type){
+            if(type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER){if(binding==6){write_stage_extras(set,id);return;}
+                if(binding==2){VkDescriptorBufferInfo buffer{environment.foliage_objects[slot_index].handle,world_align(128)*i,128};VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=set;w.dstBinding=2;w.descriptorCount=1;w.descriptorType=type;w.pBufferInfo=&buffer;vkUpdateDescriptorSets(device,1,&w,0,nullptr);}
+                else if(binding==0)world_write_buffer(set,0,slot.frame,1280,type);else if(binding==1)world_write_buffer(set,1,slot.projections,64,type);else world_write_buffer(set,4,environment.foliage_materials[slot_index],4096,type);
+            }else if(type==VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)world_write_image(set,binding,binding==128?world.arrays.at(d.color).view:binding==129?world.arrays.at(d.normal).view:stock.dither.view);
+            else if(type==VK_DESCRIPTOR_TYPE_SAMPLER)world_write_image(set,binding,{},environment_generation_sampler(binding),true);
+        };
+        if(generation)for(auto b:generation->bindings){auto catalog=std::find_if(generation->catalog.begin(),generation->catalog.end(),[&](auto r){return r.binding==b.first;});if(catalog!=generation->catalog.end())write_stage_catalog(set,id,*catalog);else write(b.first,b.second);}
+        else {for(uint32_t binding:{0u,1u,2u,4u})write(binding,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);for(uint32_t binding:{128u,129u,156u})write(binding,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);write(259,VK_DESCRIPTOR_TYPE_SAMPLER);}
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,environment.foliage_pipelines[d.kind]);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,generation?generation->pipeline_layout:environment.foliage_pipeline_layout,0,1,&set,0,nullptr);VkDeviceSize zero=0;vkCmdBindVertexBuffers(cmd,0,1,&mesh.vertices.handle,&mesh.vertex_offset);
+        post_note_execution(768);post_note_execution(d.kind?771:769);post_note_execution(id);vkCmdDraw(cmd,mesh.index_count,1,0,0);++environment.stats.foliage_draws;environment.stats.foliage_points+=mesh.index_count;
     }
 }
+
 void queue_environment(const SevkEnvironmentDraw* draws,uint32_t count){
     if(recording || count>128 || (count && !draws))throw std::runtime_error("invalid environment packet batch");
     std::vector<SevkEnvironmentDraw> copy;
@@ -85,34 +95,45 @@ void queue_environment(const SevkEnvironmentDraw* draws,uint32_t count){
     }environment.draws=std::move(copy);
 }
 VkDescriptorSet environment_set(WorldSlot& slot,uint32_t kind,uint32_t index){
-    auto set=world_set(slot,environment.layouts[kind]);VkDescriptorBufferInfo buffer{environment.constants[slot_index].handle,world_align(144)*index,144};VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=set;w.dstBinding=1;w.descriptorCount=1;w.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;w.pBufferInfo=&buffer;vkUpdateDescriptorSets(device,1,&w,0,nullptr);
-    if(kind)world_write_buffer(set,0,slot.frame,1280,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);return set;
+    auto* generation=kind<2&&post.atmosphere[kind].generation?&post.atmosphere[kind]:nullptr;
+    auto set=world_set(slot,generation?generation->layout:environment.layouts[kind]);VkDescriptorBufferInfo buffer{environment.constants[slot_index].handle,world_align(144)*index,144};VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=set;w.dstBinding=1;w.descriptorCount=1;w.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;w.pBufferInfo=&buffer;
+    auto has=[&](uint32_t binding){return !generation||std::any_of(generation->bindings.begin(),generation->bindings.end(),[&](auto b){return b.first==binding;});};
+    if(has(1))vkUpdateDescriptorSets(device,1,&w,0,nullptr);
+    if(kind&&has(0))world_write_buffer(set,0,slot.frame,1280,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    if(generation)for(auto b:generation->bindings){
+        auto catalog=std::find_if(generation->catalog.begin(),generation->catalog.end(),[&](auto r){return r.binding==b.first;});
+        if(catalog!=generation->catalog.end()&&(!catalog->owner_input||(stage_binding_row(512+kind)&&(stage_binding_row(512+kind)->requested_mask&(1u<<(b.first-128)))))){write_stage_catalog(set,512+kind,*catalog);continue;}
+        if(b.first==6&&b.second==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)write_stage_extras(set,512+kind);
+        else if(b.second==VK_DESCRIPTOR_TYPE_SAMPLER)world_write_image(set,b.first,{},environment_generation_sampler(b.first),true);
+        else if(b.second==VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE){if(b.first==128)world_write_image(set,128,world.gbuffer[3].view);else if(b.first==133)world_write_image(set,133,environment.luts.at(environment.draws[index].id).image.view);}
+    }
+    return set;
 }
 void prepare_environment(VkCommandBuffer cmd,WorldSlot& slot){
     if(environment.draws.empty())return;
     auto& buffer=environment.constants[slot_index];world_buffer(buffer,world_align(144)*environment.draws.size(),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
     for(uint32_t i=0;i<environment.draws.size();++i)std::memcpy(static_cast<uint8_t*>(buffer.mapped)+world_align(144)*i,environment.draws[i].constants,144);
     check(vmaFlushAllocation(allocator,buffer.memory,0,VK_WHOLE_SIZE),"flush environment constants");
-    for(uint32_t i=0;i<environment.draws.size();++i){auto& d=environment.draws[i];if(d.kind)continue;auto& lut=environment.luts[d.id];if(lut.initialized && !std::memcmp(lut.parameters.data(),d.constants+16,48))continue;
+    for(uint32_t i=0;i<environment.draws.size();++i){auto& d=environment.draws[i];if(d.kind)continue;auto& lut=environment.luts[d.id];if(lut.initialized && !lut.dirty && !std::memcmp(lut.parameters.data(),d.constants+16,48))continue;
         if(!lut.image.handle)lut.image=make_image(512,128,VK_FORMAT_R32G32_SFLOAT,VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
         barrier(cmd,lut.image.handle,lut.initialized?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_ASPECT_COLOR_BIT,lut.initialized?VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT:VK_PIPELINE_STAGE_2_NONE,lut.initialized?VK_ACCESS_2_SHADER_SAMPLED_READ_BIT:0,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
         auto set=environment_set(slot,0,i);VkDescriptorImageInfo image{};image.imageView=lut.image.view;image.imageLayout=VK_IMAGE_LAYOUT_GENERAL;VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=set;w.dstBinding=384;w.descriptorCount=1;w.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;w.pImageInfo=&image;vkUpdateDescriptorSets(device,1,&w,0,nullptr);
-        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,environment.pipelines[0]);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,environment.pipeline_layouts[0],0,1,&set,0,nullptr);vkCmdDispatch(cmd,64,16,1);
-        barrier(cmd,lut.image.handle,VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);std::memcpy(lut.parameters.data(),d.constants+16,48);lut.initialized=true;++environment.stats.lut_dispatches;
+        post_note_execution(512);vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,environment.pipelines[0]);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,(post.atmosphere[0].generation?post.atmosphere[0].pipeline_layout:environment.pipeline_layouts[0]),0,1,&set,0,nullptr);vkCmdDispatch(cmd,64,16,1);
+        barrier(cmd,lut.image.handle,VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);std::memcpy(lut.parameters.data(),d.constants+16,48);lut.initialized=true;lut.dirty=false;++environment.stats.lut_dispatches;
     }
 }
 void render_environment(VkCommandBuffer cmd,WorldSlot& slot){
     if(environment.draws.empty())return;
     for(uint32_t i=0;i<environment.draws.size();++i){auto& d=environment.draws[i];uint32_t kind=d.kind+1;auto set=environment_set(slot,kind,i);
-        if(!d.kind){world_write_image(set,128,world.gbuffer[3].view);world_write_image(set,133,environment.luts.at(d.id).image.view);world_write_image(set,258,{},standard_sampler(258),true);}
-        else {world_write_image(set,128,textures.at(d.color).image.view);world_write_image(set,129,textures.at(d.alpha).image.view);world_write_image(set,256,{},sampler,true);
+        if(!d.kind&&!post.atmosphere[1].generation){world_write_image(set,128,world.gbuffer[3].view);world_write_image(set,133,environment.luts.at(d.id).image.view);world_write_image(set,258,{},standard_sampler(258),true);}
+        else if(d.kind) {world_write_image(set,128,textures.at(d.color).image.view);world_write_image(set,129,textures.at(d.alpha).image.view);world_write_image(set,256,{},sampler,true);
             barrier(cmd,world.gbuffer[3].handle,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT);}
         barrier(cmd,world.hdr.handle,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT|VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
         VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};color.imageView=world.hdr.view;color.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;color.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD;color.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
         VkRenderingAttachmentInfo depth_info{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};depth_info.imageView=world.gbuffer[3].view;depth_info.imageLayout=VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;depth_info.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD;depth_info.storeOp=VK_ATTACHMENT_STORE_OP_NONE;
         VkRenderingInfo r{VK_STRUCTURE_TYPE_RENDERING_INFO};r.renderArea={{0,0},extent};r.layerCount=1;r.colorAttachmentCount=1;r.pColorAttachments=&color;if(d.kind)r.pDepthAttachment=&depth_info;vkCmdBeginRendering(cmd,&r);world_viewport(cmd,extent.width,extent.height);
-        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,environment.pipelines[kind]);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,environment.pipeline_layouts[kind],0,1,&set,0,nullptr);VkDeviceSize zero=0;
-        if(!d.kind){vkCmdBindVertexBuffers(cmd,0,1,&world.quad.handle,&zero);vkCmdDraw(cmd,3,1,0,0);++environment.stats.atmosphere_draws;}
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,environment.pipelines[kind]);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,(kind<2&&post.atmosphere[kind].generation?post.atmosphere[kind].pipeline_layout:environment.pipeline_layouts[kind]),0,1,&set,0,nullptr);VkDeviceSize zero=0;
+        if(!d.kind){post_note_execution(513);vkCmdBindVertexBuffers(cmd,0,1,&world.quad.handle,&zero);vkCmdDraw(cmd,3,1,0,0);++environment.stats.atmosphere_draws;}
         else {auto& mesh=world.meshes.at(d.mesh);vkCmdBindVertexBuffers(cmd,0,1,&mesh.vertices.handle,&mesh.vertex_offset);vkCmdBindIndexBuffer(cmd,mesh.indices.handle,mesh.index_offset,VK_INDEX_TYPE_UINT32);vkCmdDrawIndexed(cmd,mesh.index_count,1,0,0,0);++environment.stats.cloud_draws;}
         vkCmdEndRendering(cmd);
         if(d.kind)barrier(cmd,world.gbuffer[3].handle,VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);

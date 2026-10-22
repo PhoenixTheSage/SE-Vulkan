@@ -48,7 +48,9 @@ public sealed partial class NativeBackend
     {
         if((GuestFeatures()&524288)==0)throw new NotSupportedException("Update SE-Vulkan native library: postprocess generations require bit19.");
         if(artifacts==null||artifacts.Count==0)throw new ArgumentException("Native owner generation requires stages.");
-        if(artifacts.Keys.Any(id=>id>=256)&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
+        if(artifacts.Keys.Any(id=>id>=256&&id<260)&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
+        if(artifacts.Keys.Any(id=>id>=512&&id<515)&&(GuestFeatures()&16777216)==0)throw new NotSupportedException("Update SE-Vulkan native library: atmosphere owner generations require bit24.");
+        if(artifacts.Keys.Any(id=>id>=768&&id<773)&&(GuestFeatures()&33554432)==0)throw new NotSupportedException("Update SE-Vulkan native library: foliage owner generations require bit25.");
         if(artifacts.Values.Any(a=>UsesStageBindings(a.Layout))&&(GuestFeatures()&4194304)==0)
             throw new NotSupportedException("Update SE-Vulkan native library: catalog/extras native stage resources require bit22.");
         ulong expected=GetPostprocessGeneration(13).Revision;var pins=new List<GCHandle>();
@@ -70,10 +72,15 @@ public sealed partial class NativeBackend
         if(postprocessLibrary==null)return Array.Empty<object[]>();
         var ids=Enumerable.Range(0,62).Concat(Enumerable.Range(128,16));
         if((GuestFeatures()&1048576)!=0)ids=ids.Concat(Enumerable.Range(256,4));
+        if((GuestFeatures()&16777216)!=0&&EnvironmentLayouts.ContainsKey(0)&&EnvironmentLayouts.ContainsKey(1))ids=ids.Concat(Enumerable.Range(512,3));
+        if((GuestFeatures()&33554432)!=0&&EnvironmentLayouts.ContainsKey(8))ids=ids.Concat(Enumerable.Range(768,5));
         return ids.Select(index=>{uint id=(uint)index;var artifact=postprocessLibrary.Load(NativeOwnerVariant(id));return new object[]{id,artifact.Source,artifact.Profile};}).ToArray();
     }
     static string NativeOwnerVariant(uint id)
     {
+        if(id>=768&&id<773)return EnvironmentShaderVariants.Stages[id-764];
+        if(id==514)return "1bb6f40fef889661d4a74d17f3dc6c2cdfbc083270382103ff395321ada20f05";
+        if(id>=512&&id<514)return EnvironmentShaderVariants.Stages[id-512];
         if(id>=256&&id<260)return id==259?"7e7f8a00e6cfc94f5e7f149a9a4df82ce433557cf56c91d2a08dfaa598952493":WorldShaderVariants.Lighting[id-255];
         if(id<62||id>=128&&id<144)return PostprocessShaderVariants.Stages[id>=128?id-92:id];
         throw new ArgumentException("Stage is outside the captured native owner catalog.");
@@ -93,7 +100,9 @@ public sealed partial class NativeBackend
         foreach(uint id in stages)
         {
             string variant=NativeOwnerVariant(id);
-            if(id>=256&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
+            if(id>=768&&id<773&&(GuestFeatures()&33554432)==0)throw new NotSupportedException("Update SE-Vulkan native library: foliage owner generations require bit25.");
+            if(id>=512&&id<515&&(GuestFeatures()&16777216)==0)throw new NotSupportedException("Update SE-Vulkan native library: atmosphere owner generations require bit24.");
+            if(id>=256&&id<260&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
             var request=postprocessLibrary.DerivedRequest(variant,generation,defines);
             if(id>=128&&id<144)
             {

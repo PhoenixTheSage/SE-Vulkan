@@ -230,7 +230,7 @@ struct WorldSlot { uint64_t material_epoch=1;Buffer frame,projections,objects,in
     uint32_t tile_list_tiles{},tile_list_points{},tile_list_capacity{}; VkDescriptorPool pool{}, material_pool{}; std::unordered_map<WorldSetKey,VkDescriptorSet,WorldSetHash> material_cache,probe_materials; std::unordered_set<uint64_t> dirty_textures,dirty_arrays,dirty_voxels; bool material_stale=false;std::vector<uint64_t> object_versions;
     Buffer light_tile_gpu,light_tile_readback,light_tile_constants;uint64_t tile_frame{},tile_epoch{};uint32_t tile_count{},tile_points{};bool tile_pending{};
 };
-struct AtmosphereLut { Image image; std::array<uint8_t,48> parameters{}; bool initialized{}; };
+struct AtmosphereLut { Image image; std::array<uint8_t,48> parameters{}; bool initialized{},dirty{}; };
 struct EnvironmentState {
     VkShaderModule stages[10]{}; VkDescriptorSetLayout layouts[4]{}; VkPipelineLayout pipeline_layouts[4]{}; VkPipeline pipelines[4]{},other_hdr[4]{};
     Buffer constants[2]{}; std::unordered_map<uint64_t,AtmosphereLut> luts; std::vector<SevkEnvironmentDraw> draws;
@@ -357,7 +357,7 @@ struct PostStage {uint64_t generation{},executions{},last_completion{};uint32_t 
 struct ShadowUsageView {Buffer gpu,readback,screen;bool pending{};};
 struct ShadowUsageState {PostStage stage;ShadowUsageView views[2][19];uint32_t pixels[19][8]{};uint64_t completion[19]{},latest{};bool enabled{};};
 struct PostCandidate {uint64_t expected{};VkFormat format{};std::vector<std::pair<uint32_t,PostStage>> stages;};
-struct PostState {uint64_t revision{},next_generation{},pending{};std::map<uint64_t,PostCandidate> candidates;std::vector<std::pair<uint64_t,PostStage>> retired;PostStage stages[144]{},lighting[4]{};PostImage shadow_blur{},exposure[2]{},half{},bloom_down[11]{},bloom_up[10]{},tone{},fxaa{},chromatic{},ao{},ao_blur{};PostImage* output{};PostImage* after_tonemap{};Buffer constants[2]{},histogram{};VkSampler point{};VkPipeline compose{};VkFormat compose_format{};uint32_t width{},height{},exposure_index{};SevkPostprocessConfig config{};SevkPostprocessStats stats{sizeof(SevkPostprocessStats),SEVK_ABI_VERSION};};
+struct PostState {uint64_t revision{},next_generation{},pending{};std::map<uint64_t,PostCandidate> candidates;std::vector<std::pair<uint64_t,PostStage>> retired;PostStage stages[144]{},lighting[4]{},atmosphere[3]{},foliage[5]{};PostImage shadow_blur{},exposure[2]{},half{},bloom_down[11]{},bloom_up[10]{},tone{},fxaa{},chromatic{},ao{},ao_blur{};PostImage* output{};PostImage* after_tonemap{};Buffer constants[2]{},histogram{};VkSampler point{};VkPipeline compose{};VkFormat compose_format{};uint32_t width{},height{},exposure_index{};SevkPostprocessConfig config{};SevkPostprocessStats stats{sizeof(SevkPostprocessStats),SEVK_ABI_VERSION};};
 struct HbaoState {SevkHbaoConfig config{};PostImage depth{},normal{},aoz[2]{};Image quarter_depth{},quarter_ao{};VkImageView depth_views[16]{},ao_views[16]{};Buffer constants[2]{};VkSampler border{};uint32_t width{},height{};bool initialized{},jitter_provided{};float jitter[64]{};};
 struct ProbeCube {Image image;std::vector<VkImageView> views;};
 struct ProbeState {uint64_t atmosphere_id{};float atmosphere_intensity{},atmosphere_desaturation{},sun_direction[3]{};Buffer atmosphere[2][6]{},atmosphere_view[2][6]{};VkDescriptorSetLayout material_layout{};VkPipelineLayout material_pipeline_layout{};PostStage stages[4]{};ProbeCube original[2],filtered[2],final[2];Image depth[6]{};Buffer frame[2][6]{},projection[2][6]{},forward_projection[2][6]{},constants[2][6]{};SevkProbeConfig config{};SevkProbeStats stats{sizeof(SevkProbeStats),SEVK_ABI_VERSION};uint32_t resolution{},mips{},skip_levels{},face{},stage{},work_face{},blend_kind{};bool initialized{},ready{};};
@@ -1789,6 +1789,8 @@ struct Renderer {uint32_t recipe_generation=1;
 #include "world_models.inc"
 #include "light_tiles.inc"
 #include "lighting_generations.inc"
+#include "environment_generations.inc"
+#include "foliage_generations.inc"
 #include "postprocess.inc"
 #include "hbao.inc"
 #include "probes.inc"
@@ -2148,7 +2150,7 @@ int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32
     });
 }
 int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.resolution;return 0;},[&](Renderer& r){r.collect();*stats=r.resolution_stats;return 0;});}
-uint32_t SEVK_CALL sevk_guest_features(void){return 16777215u;}
+uint32_t SEVK_CALL sevk_guest_features(void){return 67108863u;}
 int32_t SEVK_CALL sevk_set_stage_bindings(void* ctx,const SevkStageBindings* rows,uint32_t count){
     return call(ctx,[&](Renderer& r){r.set_stage_bindings(rows,count);return 0;});
 }

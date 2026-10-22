@@ -53,10 +53,16 @@ public sealed partial class NativeBackend
     public object[][] StageBindingOwners()
     {
         if(ActivePostprocessGeneration==null||postprocessLibrary==null)return Array.Empty<object[]>();
-        return ActivePostprocessGeneration.Layouts.Where(p=>ActivePostprocessGeneration.Fingerprints.ContainsKey(p.Key)&&UsesStageBindings(p.Value)).Select(p=>{
-            uint mask=0;foreach(var d in p.Value.Descriptors)if(d.Set==0&&d.RegisterClass=='t'&&d.RegisterIndex>=5&&d.RegisterIndex<=9)mask|=1u<<(int)d.RegisterIndex;
-            bool extras=p.Value.Descriptors.Any(d=>d.Set==0&&d.RegisterClass=='b'&&d.RegisterIndex==6);
-            return new object[]{p.Key,postprocessLibrary.Load(NativeOwnerVariant(p.Key)).Source,mask,extras};
-        }).ToArray();
+        var rows=new System.Collections.Generic.List<object[]>();
+        foreach(var pair in ActivePostprocessGeneration.Layouts.Where(p=>ActivePostprocessGeneration.Fingerprints.ContainsKey(p.Key))){
+            uint id=pair.Key;if(id==768||id==769||id==771)continue; // These modules share the actual GS/PS invocation's descriptor set.
+            var members=id==770?new uint[]{768,769,770}:id==772?new uint[]{768,771,772}:new[]{id};
+            var layouts=members.Where(ActivePostprocessGeneration.Layouts.ContainsKey).Select(k=>ActivePostprocessGeneration.Layouts[k]).ToArray();
+            if(!layouts.Any(UsesStageBindings))continue;
+            uint mask=0;foreach(var layout in layouts)foreach(var d in layout.Descriptors)if(d.Set==0&&d.RegisterClass=='t'&&d.RegisterIndex>=5&&d.RegisterIndex<=9)mask|=1u<<(int)d.RegisterIndex;
+            bool extras=layouts.Any(layout=>layout.Descriptors.Any(d=>d.Set==0&&d.RegisterClass=='b'&&d.RegisterIndex==6));
+            rows.Add(new object[]{id,postprocessLibrary.Load(NativeOwnerVariant(id)).Source,mask,extras});
+        }
+        return rows.ToArray();
     }
 }

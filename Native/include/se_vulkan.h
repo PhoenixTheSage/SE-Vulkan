@@ -481,6 +481,10 @@ SEVK_API int32_t SEVK_CALL sevk_guest_reset(void* ctx);
  * Packet ABI is unchanged. Resource pipelines require device nullDescriptor;
  * SevkStageBindingState.flags bit0 reports that device capability. Extended
  * contracts retain required-input validation. */
+/* Feature bit24 extends the native generation transaction to atmosphere
+ * compute/main-view/probe modules 512..514. Feature bit25 adds foliage
+ * modules 768..772 as a required shared-VS/two-GS/two-PS closure.
+ * Existing ABI-1 module/state packets retain their size and version checks. */
 SEVK_API uint32_t SEVK_CALL sevk_guest_features(void);
 /* Feature bit22: frame-stamped, copied catalog reservations for native owners.
  * Register slots use t5..t9; fresh mask bit0 describes the separate velocity ID,
