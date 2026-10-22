@@ -28,7 +28,15 @@ void gather_shadow_usage(VkCommandBuffer cmd,WorldSlot& slot,uint32_t view,Buffe
     vkCmdFillBuffer(cmd,values.gpu.handle,0,32,0);
     shadow_usage_buffer_barrier(cmd,values.gpu,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT|VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     barrier(cmd,depth.handle,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    auto set=world_set(slot,shadow_usage.stage.layout);world_write_buffer(set,0,frame,1280,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,2,values.screen,32,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,4,transparency.shadow_constants[slot_index],1200,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,385,values.gpu,32,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);world_write_image(set,128,depth.view);
+    auto set=world_set(slot,shadow_usage.stage.layout);if(!shadow_usage.stage.generation){world_write_buffer(set,0,frame,1280,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,2,values.screen,32,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,4,transparency.shadow_constants[slot_index],1200,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,385,values.gpu,32,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);world_write_image(set,128,depth.view);}
+    else for(auto [b,type]:shadow_usage.stage.bindings){auto catalog=std::find_if(shadow_usage.stage.catalog.begin(),shadow_usage.stage.catalog.end(),[&](auto r){return r.binding==b;});
+        if(catalog!=shadow_usage.stage.catalog.end())write_stage_catalog(set,1793,*catalog);
+        else if(type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER){if(b==6)write_stage_extras(set,1793);else world_write_buffer(set,b,b==0?frame:b==2?values.screen:transparency.shadow_constants[slot_index],b==0?1280:b==2?32:1200,type);}
+        else if(type==VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)world_write_buffer(set,b,values.gpu,32,type);
+        else if(type==VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)world_write_image(set,b,depth.view);
+        else world_write_image(set,b,{},b==271?shadow_sampler:environment_generation_sampler(b),true);
+    }
+    if(width>=2&&height>=2)post_note_execution(1793);
     vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,shadow_usage.stage.pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,shadow_usage.stage.pipeline_layout,0,1,&set,0,nullptr);vkCmdDispatch(cmd,((width/2)+15)/16,((height/2)+15)/16,1);
     shadow_usage_buffer_barrier(cmd,values.gpu,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferCopy copy{0,0,32};vkCmdCopyBuffer(cmd,values.gpu.handle,values.readback.handle,1,&copy);

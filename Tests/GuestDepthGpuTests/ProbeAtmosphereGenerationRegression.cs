@@ -26,12 +26,12 @@ partial class Program
             Check(backend.BeginFrame(projection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black),"probe atmosphere owner frame begins; pipelined="+pipelined);Check(Call("Backend.GuestFrame","Capture") is true,"probe captures the shared immutable frame");frame=(uint)Call("Backend.GuestFrame","U32",16);Call("Backend.SceneView","Set",64,64,0d,0d,0d,0f,0f,-1f);Call("Backend.GuestPassList","SubmitFrame",submit);
             if(capacity){
                 var method=typeof(NativeBackend).GetMethod("SetStageBindings",BindingFlags.Instance|BindingFlags.NonPublic);
-                var ids=Enumerable.Range(0,62).Concat(Enumerable.Range(128,16)).Concat(Enumerable.Range(256,4)).Concat(Enumerable.Range(512,3)).Concat(new[]{770,772}).Concat(new[]{1025,1027,1029,1031,1033}).Concat(Enumerable.Range(1280,4)).Concat(Enumerable.Range(1536,8)).Concat(new[]{1545}).Select(i=>(uint)i).ToArray();
-                Check(ids.Length==105,"all current native raster/compute owners require105 possible binding rows");
+                var ids=Enumerable.Range(0,62).Concat(Enumerable.Range(128,16)).Concat(Enumerable.Range(256,4)).Concat(Enumerable.Range(512,3)).Concat(new[]{770,772}).Concat(new[]{1025,1027,1029,1031,1033}).Concat(Enumerable.Range(1280,4)).Concat(Enumerable.Range(1536,8)).Concat(new[]{1545}).Concat(new[]{1792,1793}).Select(i=>(uint)i).ToArray();
+                Check(ids.Length==107,"all current native raster/compute owners require107 possible binding rows");
                 object[] Args(uint[] values)=>new object[]{frame,values,new ulong[values.Length*10],new uint[values.Length],new uint[values.Length],new uint[values.Length],0UL};
-                Check(method.Invoke(backend,Args(ids)) is true&&backend.GetStageBindingState().Rows==105,"managed/native transport accepts every current owner in one immutable frame");
-                try{method.Invoke(backend,Args(new uint[115]));throw new Exception("oversized native binding packet accepted");}catch(TargetInvocationException error){Check(error.InnerException is ArgumentException,"binding transport refuses rows beyond its coordinated114-row bound");}
-                Check(backend.GetStageBindingState().Rows==105,"oversized packet cannot alter copied native binding rows");
+                Check(method.Invoke(backend,Args(ids)) is true&&backend.GetStageBindingState().Rows==107,"managed/native transport accepts every current owner in one immutable frame");
+                try{method.Invoke(backend,Args(new uint[117]));throw new Exception("oversized native binding packet accepted");}catch(TargetInvocationException error){Check(error.InnerException is ArgumentException,"binding transport refuses rows beyond its coordinated116-row bound");}
+                Check(backend.GetStageBindingState().Rows==107,"oversized packet cannot alter copied native binding rows");
             }
             if(pipelined)backend.EndFrameAsync();else backend.EndFrame();
             return Enumerable.Range(0,12).Select(i=>{var bytes=backend.ReadbackProbe((uint)(i/6),(uint)(i%6),0,16);return Enumerable.Range(0,bytes.Length/2).Select(j=>(float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(bytes,j*2))).ToArray();}).ToArray();
