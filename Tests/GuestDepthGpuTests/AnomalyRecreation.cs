@@ -125,6 +125,7 @@ partial class Program
         checks+=ProbeProcessingGenerationRegression(core,output,bin,backend,projection,light);
         checks+=ParticleGenerationRegression(core,output,bin,backend,projection,light,library);
         checks+=ShadowGenerationRegression(core,output,backend,projection,light);
+        checks+=SharedDependencyRegression(core,output,bin,backend,projection,light);
         var finalStats=backend.GetStats();
         Check(finalStats.ValidationErrors==0,"entire recreated volume/resize/provider/snapshot lane reports no validation errors");
         Console.WriteLine("recreated volume lane validation enabled="+finalStats.ValidationEnabled);

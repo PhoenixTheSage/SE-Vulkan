@@ -82,7 +82,7 @@ public sealed partial class NativeBackend
         if((GuestFeatures()&134217728)!=0)ids=ids.Concat(Enumerable.Range(1280,4));
         if((GuestFeatures()&268435456)!=0)ids=ids.Concat(Enumerable.Range(1536,10));
         if((GuestFeatures()&536870912)!=0)ids=ids.Concat(Enumerable.Range(1792,2));
-        return ids.Select(index=>{uint id=(uint)index;var artifact=postprocessLibrary.Load(NativeOwnerVariant(id));return new object[]{id,artifact.Source,artifact.Profile};}).ToArray();
+        return ids.Select(index=>{uint id=(uint)index;var artifact=postprocessLibrary.Load(NativeOwnerVariant(id));var dependencies=artifact.Layout.Dependencies.Select(d=>d.Path.Replace('\\','/')).Where(p=>p.StartsWith("root0/",StringComparison.OrdinalIgnoreCase)).Select(p=>p.Substring(6)).Append(artifact.Source).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p=>p,StringComparer.Ordinal).ToArray();return new object[]{id,artifact.Source,artifact.Profile,dependencies};}).ToArray();
     }
     static string NativeOwnerVariant(uint id)
     {

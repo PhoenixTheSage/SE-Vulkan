@@ -9,7 +9,7 @@ using VRageRender;
 partial class Program
 {
     // Focused actual-core gate for native owner work; the full recreation gate remains required.
-    static int NativeStagesOnly(string bin,bool bindingsOnly=false,bool oldBindingHost=false,bool catalogLifecycle=false,bool lateHistory=false,bool classicNulls=false,bool oldClassicHost=false,bool atmosphereOnly=false,bool environmentBatch=false,bool oldEnvironmentHost=false,bool decalsOnly=false,bool probeProcessingOnly=false,bool oldProbeProcessingHost=false,bool particlesOnly=false,bool oldParticleHost=false,bool shadowsOnly=false,bool oldShadowHost=false)
+    static int NativeStagesOnly(string bin,bool bindingsOnly=false,bool oldBindingHost=false,bool catalogLifecycle=false,bool lateHistory=false,bool classicNulls=false,bool oldClassicHost=false,bool atmosphereOnly=false,bool environmentBatch=false,bool oldEnvironmentHost=false,bool decalsOnly=false,bool probeProcessingOnly=false,bool oldProbeProcessingHost=false,bool particlesOnly=false,bool oldParticleHost=false,bool shadowsOnly=false,bool oldShadowHost=false,bool dependenciesOnly=false)
     {
         string root=Directory.GetCurrentDirectory(),output=Path.GetFullPath(oldShadowHost?"TestResults/ShadowOldHostTests":oldParticleHost?"TestResults/ParticleOldHostTests":oldProbeProcessingHost?"TestResults/ProbeProcessingOldHostTests":oldEnvironmentHost?"TestResults/EnvironmentOldHostTests":oldClassicHost?"TestResults/ClassicNullOldHostTests":oldBindingHost?"TestResults/NativeBindingOldHostTests":"TestResults/NativeStagesGpuTests"),stage=Path.Combine(output,"Assets");
         Directory.CreateDirectory(Path.Combine(stage,"Native/win-x64"));Directory.CreateDirectory(Path.Combine(stage,"Shaders/Compiled"));
@@ -29,6 +29,7 @@ partial class Program
         Call("Backend.GuestOwned","Register",assets);Call("Backend.GuestCompiler","CompilePending",assets);
         var projection=MatrixD.CreatePerspectiveFieldOfView(Math.PI/2,1,.1,100);projection.M33=projection.M34-projection.M33;projection.M43=projection.M44-projection.M43;
         var light=MyEnvironmentLightData.Default;light.SunLightDirection=Vector3.Forward;light.SunColorRaw=Vector3.One;light.SunDiffuseFactor=1;light.SunDiscIntensity=0;
+        if(dependenciesOnly){int count=SharedDependencyRegression(core,output,bin,backend,projection,light);Console.WriteLine("PASS "+count+" actual-core shared dependency checks");return 0;}
         if(oldShadowHost){int count=OldShadowHostRegression(core,output,backend);Console.WriteLine("PASS "+count+" actual older-host shadow checks");return 0;}
         if(shadowsOnly&&!environmentBatch){int count=ShadowGenerationRegression(core,output,backend,projection,light);Console.WriteLine("PASS "+count+" actual-core shadow owner checks");return 0;}
         if(oldParticleHost){int count=OldParticleHostRegression(core,output,backend);Console.WriteLine("PASS "+count+" actual older-host particle checks");return 0;}
