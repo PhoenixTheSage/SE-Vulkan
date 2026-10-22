@@ -135,3 +135,13 @@ formats. The native catalog focus105 passes with zero validation errors; the
 actual-core/linked-production DX11 WARP gate passes134 checks on both runtimes.
 The final combined894-check gate passes with zero core/synchronization errors.
 No native ABI change.
+
+
+CPU upload mode changes now reset dimension metadata and release inactive CPU
+payloads. Invalid RGBA sizes, mip chains and structured strides leave the prior
+publication intact; structured strides follow DX11's aligned 2048-byte maximum.
+Volume mip upload copies each logical mip extent and excludes trailing padding,
+so later mip offsets match DX11 subresources and survive device recreation.
+The upload-transition WARP gate passes143 checks on each runtime and the native
+catalog focus passes109 checks with zero validation errors. The combined898-check
+GPU gate passes with zero core/synchronization errors; no native ABI/library change.

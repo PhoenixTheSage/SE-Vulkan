@@ -90,6 +90,14 @@ partial class Program
             volume.GetType().GetMethod("PublishVolumeMips").Invoke(volume,new object[]{new byte[][]{new byte[32],new byte[4]},2});
             Check(Publish(owner,name+".volume",volume)&&Exists(Id(volume)),"mip-volume publication owns a usable native image");
             ulong volumeId=Id(volume);Call("Buffers.BufferCatalog","UnpublishAll",owner);Frame();Check(Id(volume)==0&&!Exists(volumeId),"unpublish-all retires mip-volume allocations");
+            object modes=Activator.CreateInstance(core.GetType("ClientPlugin.Buffers.PublishedBuffer",true));buffers.Add(modes);var modeType=modes.GetType();
+            modeType.GetMethod("PublishVolumeMips").Invoke(modes,new object[]{new byte[][]{new byte[36],new byte[]{201,0,0,255,99,99,99,99}},2});ulong modeId=Id(modes);
+            modeType.GetMethod("PublishStructuredFloats").Invoke(modes,new object[]{new float[]{1,2,3,4,5,6,7,8},16});
+            Check(Id(modes)==modeId&&(int)modeType.GetProperty("Depth").GetValue(modes)==1&&(int)modeType.GetProperty("Width").GetValue(modes)==2&&modeType.GetProperty("IsStructured").GetValue(modes) is true&&BufferExists(modeId),"native mip-volume to structured transition reuses ID with correct metadata and storage kind");
+            Check(modeType.GetProperty("Rgba").GetValue(modes)==null&&modeType.GetField("mipData",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(modes)==null,"native structured transition releases inactive mip payloads");
+            modeType.GetMethod("PublishRgba8").Invoke(modes,new object[]{new byte[]{33,0,0,255},1,1});var modePixels=new byte[4];read.Invoke(backend,new object[]{Id(modes),modePixels});
+            Check(Id(modes)==modeId&&modePixels[0]==33&&modeType.GetProperty("IsStructured").GetValue(modes) is false&&(int)modeType.GetProperty("Stride").GetValue(modes)==0&&modeType.GetField("structured",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(modes)==null,"native structured to raster transition retains correct pixels and releases inactive data");
+            modeType.GetMethod("PublishRgba8").Invoke(modes,new object[]{new byte[3],1,1});read.Invoke(backend,new object[]{Id(modes),modePixels});Check(modePixels[0]==33,"native malformed replacement preserves valid GPU payload");
             object survivor=Make(99);Check(Publish(other,"fixture.catalog.survivor",survivor),"separate owner's survivor registered");
             for(int cycle=0;cycle<8;cycle++){
                 var a=Make((byte)(cycle+1));var b=Make((byte)(cycle+17));string key=name+cycle;

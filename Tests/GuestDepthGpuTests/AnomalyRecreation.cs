@@ -20,7 +20,7 @@ partial class Program
         object Upload(string method,params object[] args){var buffer=Activator.CreateInstance(core.GetType("ClientPlugin.Buffers.PublishedBuffer",true));buffer.GetType().GetMethod(method).Invoke(buffer,args);Call("Buffers.BufferCatalog","Publish","fixture.epoch",method,buffer);return buffer;}
         ulong Id(object buffer)=>(ulong)buffer.GetType().GetProperty("ImageId").GetValue(buffer);
         byte[] tex={37,0,0,255,37,0,0,255,37,0,0,255,37,0,0,255};
-        byte[][] mips={Enumerable.Repeat((byte)12,32).ToArray(),new byte[]{220,0,0,255}};
+        byte[][] mips={Enumerable.Repeat((byte)12,32).Concat(new byte[]{5,5,5,5}).ToArray(),new byte[]{220,0,0,255,99,99,99,99}};
         float[] values={7,8,9,10};byte[] art=Enumerable.Repeat((byte)99,16).ToArray();
         object texture=Upload("PublishRgba8",tex,2,2),volume=Upload("PublishVolumeMips",mips,2),data=Upload("PublishStructuredFloats",values,16);
         Call("Backend.GuestColor","SetCelestialData","fixture.epoch",values);Call("Backend.GuestColor","SetCelestialArt","fixture.epoch",2,1,2,art);
