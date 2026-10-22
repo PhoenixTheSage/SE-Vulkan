@@ -489,6 +489,7 @@ SEVK_API int32_t SEVK_CALL sevk_guest_reset(void* ctx);
  * compute/main-view/probe modules 512..514. Feature bit25 adds foliage
  * modules 768..772 as a required shared-VS/two-GS/two-PS closure.
  * Feature bit26 adds decal VS/PS pairs 1024..1033; each pair is indivisible.
+ * Feature bit30 adds native OIT resolve owner2048 with both HDR formats.
  * Feature bit29 adds screen-space shadow/usage compute owners1792..1793.
  * Feature bit28 adds particle owner closure 1536..1545, including stage-local
  * VS bindings and completed indirect participation.

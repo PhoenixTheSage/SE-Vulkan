@@ -50,6 +50,7 @@ public sealed partial class NativeBackend
         if(artifacts==null||artifacts.Count==0)throw new ArgumentException("Native owner generation requires stages.");
         if(artifacts.Keys.Any(id=>id>=256&&id<260)&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
         if(artifacts.Keys.Any(id=>id>=512&&id<515)&&(GuestFeatures()&16777216)==0)throw new NotSupportedException("Update SE-Vulkan native library: atmosphere owner generations require bit24.");
+        if(artifacts.Keys.Any(id=>id==2048)&&(GuestFeatures()&1073741824)==0)throw new NotSupportedException("Update SE-Vulkan native library: OIT resolve generations require bit30.");
         if(artifacts.Keys.Any(id=>id>=1792&&id<1794)&&(GuestFeatures()&536870912)==0)throw new NotSupportedException("Update SE-Vulkan native library: shadow owner generations require bit29.");
         if(artifacts.Keys.Any(id=>id>=1536&&id<1546)&&(GuestFeatures()&268435456)==0)throw new NotSupportedException("Update SE-Vulkan native library: particle owner generations require bit28.");
         if(artifacts.Keys.Any(id=>id>=1280&&id<1284)&&(GuestFeatures()&134217728)==0)throw new NotSupportedException("Update SE-Vulkan native library: probe processing generations require bit27.");
@@ -82,10 +83,12 @@ public sealed partial class NativeBackend
         if((GuestFeatures()&134217728)!=0)ids=ids.Concat(Enumerable.Range(1280,4));
         if((GuestFeatures()&268435456)!=0)ids=ids.Concat(Enumerable.Range(1536,10));
         if((GuestFeatures()&536870912)!=0)ids=ids.Concat(Enumerable.Range(1792,2));
+        if((GuestFeatures()&1073741824)!=0)ids=ids.Concat(new[]{2048});
         return ids.Select(index=>{uint id=(uint)index;var artifact=postprocessLibrary.Load(NativeOwnerVariant(id));var dependencies=artifact.Layout.Dependencies.Select(d=>d.Path.Replace('\\','/')).Where(p=>p.StartsWith("root0/",StringComparison.OrdinalIgnoreCase)).Select(p=>p.Substring(6)).Append(artifact.Source).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p=>p,StringComparer.Ordinal).ToArray();return new object[]{id,artifact.Source,artifact.Profile,dependencies};}).ToArray();
     }
     static string NativeOwnerVariant(uint id)
     {
+        if(id==2048)return TransparencyShaderVariants.Resolve;
         if(id==1792)return "76fcba14c7221e345e678f03aa4620250f69f7c39d6ea83ed764123721fcbf89";
         if(id==1793)return "e3018f2ed8a28163358b30cf04ed44894f1cd2c8571abdab7256bd0aa4744457";
         if(id>=1536&&id<1546)return TransparencyShaderVariants.Particles[id-1536];
@@ -113,6 +116,7 @@ public sealed partial class NativeBackend
         foreach(uint id in stages)
         {
             string variant=NativeOwnerVariant(id);
+            if(id==2048&&(GuestFeatures()&1073741824)==0)throw new NotSupportedException("Update SE-Vulkan native library: OIT resolve generations require bit30.");
             if(id>=1792&&id<1794&&(GuestFeatures()&536870912)==0)throw new NotSupportedException("Update SE-Vulkan native library: shadow owner generations require bit29.");
             if(id>=1536&&id<1546&&(GuestFeatures()&268435456)==0)throw new NotSupportedException("Update SE-Vulkan native library: particle owner generations require bit28.");
             if(id>=1280&&id<1284&&(GuestFeatures()&134217728)==0)throw new NotSupportedException("Update SE-Vulkan native library: probe processing generations require bit27.");
