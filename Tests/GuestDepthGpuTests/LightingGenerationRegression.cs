@@ -73,7 +73,7 @@ partial class Program
             ulong combined=backend.GetPostprocessGeneration(256).Active;Check(combined!=beforeFailure&&combined==backend.GetPostprocessGeneration(13).Active,"lighting and postprocessing commit one shared native token");
             var final=backend.Readback(64,64);int at=(32*64+32)*4;Check(Math.Abs(final[at]-128)<=2&&Math.Abs(final[at+1]-64)<=2&&Math.Abs(final[at+2]-32)<=2,"combined generation executes the selected native FXAA output");
             // A late invalid lighting descriptor must clean an earlier valid postprocess bundle.
-            string invalid=Path.Combine(output,"BadLightingBinding.hlsl");File.WriteAllText(invalid,"Texture2D T:register(t6);float4 __pixel_shader():SV_Target{return T.Load(int3(0,0,0));}");
+            string invalid=Path.Combine(output,"BadLightingBinding.hlsl");File.WriteAllText(invalid,"Texture2D T:register(t31);float4 __pixel_shader():SV_Target{return T.Load(int3(0,0,0));}");
             using(var compiler=VulkanShaderCompiler.CreateBundled(Path.Combine(output,"LightingGenerationCache")))
             {
                 var artifact=VulkanShaderArtifact.FromCompilation(compiler.Compile(new VulkanShaderRequest{SourcePath=invalid,EntryPoint="__pixel_shader",Profile="ps_5_0"}),"bad-lighting-binding");

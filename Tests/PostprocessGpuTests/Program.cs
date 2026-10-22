@@ -15,8 +15,8 @@ using ClientPlugin.Rendering;
 class Program
 {
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int HbaoJitterCall(IntPtr context,float[] values,uint count);
-    static bool generationMode,hbaoReplacementOnly;
-    static int Main(string[] args){generationMode=args.Contains("--generations");hbaoReplacementOnly=args.Contains("--hbao-replacement-only");string bin=Path.GetFullPath(args[0]);AssemblyLoadContext.Default.Resolving+=(_,n)=>{string path=Path.Combine(bin,n.Name+".dll");return File.Exists(path)?AssemblyLoadContext.Default.LoadFromAssemblyPath(path):null;};try{return Run(bin);}catch(Exception error){Console.Error.WriteLine(error);return 1;}}
+    static bool generationMode,hbaoReplacementOnly,stockHighlightOnly;
+    static int Main(string[] args){stockHighlightOnly=args.Contains("--stock-highlight-only");generationMode=args.Contains("--generations");hbaoReplacementOnly=args.Contains("--hbao-replacement-only");string bin=Path.GetFullPath(args[0]);AssemblyLoadContext.Default.Resolving+=(_,n)=>{string path=Path.Combine(bin,n.Name+".dll");return File.Exists(path)?AssemblyLoadContext.Default.LoadFromAssemblyPath(path):null;};try{return Run(bin);}catch(Exception error){Console.Error.WriteLine(error);return 1;}}
     [MethodImpl(MethodImplOptions.NoInlining)]static int Run(string bin)
     {
         int checks=0;void Check(bool condition,string text){if(!condition)throw new Exception(text);checks++;Console.WriteLine("PASS "+text);}
@@ -116,6 +116,7 @@ class Program
         Check(backend.GetSpotStats().Draws==edgeBefore+1 && backend.GetPerformanceStats().SpotCommands==1,"cone-edge sphere retains intersecting spotlight shadow geometry in the production queue");
         backend.SetLights(Array.Empty<NativeLight>());backend.SetSpots(512,Array.Empty<NativeSpot>());backend.RemoveResource(3,2);
         var plain=Render();highlight=1;var outlined=Render();Check(Changes(plain,outlined)>30,"stock highlight geometry, blur and composition affect pixels");Check(Enumerable.Range(0,width*height).Count(i=>plain[i*4+1]<5 && outlined[i*4+1]>10)>5,"highlight blur expands beyond visible geometry");highlight=2;var overlap=Render();Check(Enumerable.Range(0,width*height).Count(i=>plain[i*4+1]>20 && Math.Abs(plain[i*4+1]-overlap[i*4+1])>2)==0,"overlap mask suppresses interior highlight composition");highlight=1;foreach(int radius in Enumerable.Range(1,32)){thickness=radius;Render();}Check(backend.GetHighlightStats().BlurPasses==68,"all 32 stock exponential blur radii execute");thickness=.5f;Render();Check(backend.GetHighlightStats().BlurPasses==68,"midpoint-to-even subpixel thickness skips the identity blur");thickness=1.5f;Render();Check(backend.GetHighlightStats().BlurPasses==70,"fractional thickness rounds to the stock even radius");highlight=0;Check(Changes(plain,Render())==0,"clearing highlight packets removes the outline");
+        if(stockHighlightOnly){Check(backend.GetStats().ValidationEnabled!=0&&backend.GetStats().ValidationErrors==0,"stock highlight core/synchronization validation remains clean");Console.WriteLine("PASS "+checks+" focused stock highlight checks");return 0;}
         byte[] SharedHighlighted(bool share)
         {
             var bytes=new byte[64];Buffer.BlockCopy(new float[]{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,0},0,bytes,0,64);

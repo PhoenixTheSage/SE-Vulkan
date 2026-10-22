@@ -38,6 +38,10 @@ public static class GuestBridge
     public static object[] CaptureShadowInputs(uint localActor) => scene?.CaptureGuestShadowInputs(localActor);
     public static object[] CaptureCharacter(uint localActor) => scene?.CaptureGuestCharacter(localActor);
 
+    public static object[] StageBindingState()=>current?.StageBindingState();
+    public static object[][] StageBindingOwners()=>current?.StageBindingOwners();
+    public static bool SetStageBindings(uint frame,uint[] ids,ulong[] images,uint[] requested,uint[] fresh,uint[] attachments,ulong velocity)=>
+        current!=null&&current.SetStageBindings(frame,ids,images,requested,fresh,attachments,velocity);
     public static object[][] PostprocessCatalog()=>current?.PostprocessCatalog();
     public static object[] CompilePostprocessGeneration(string identity,System.Collections.Generic.Dictionary<string,byte[]> sources,System.Collections.Generic.Dictionary<string,string> defines,uint[] stages)=>current?.CompilePostprocessGeneration(identity,sources,defines,stages);
     public static void QueuePostprocessGeneration(ulong token,System.Func<bool> guard)=>current?.QueuePostprocessGeneration(token,guard);

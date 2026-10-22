@@ -1,0 +1,100 @@
+# Native Anomaly catalog bindings
+
+Anomaly owns registrations, immutable request snapshots and catalog publication.
+SE-Vulkan owns compiled native programs, descriptor writes, barriers and retirement.
+Native bit22 adds copied resource rows and status queries. It does not advertise
+the remaining geometry/atmosphere/transparency owners or same-draw attachments.
+
+## Wire and frame contract
+
+SevkStageBindings is 120 bytes, ABI1: size/version, owner ID, frame index,
+requested/fresh/attachment masks, reserved zero, global velocity ID and ten image
+IDs. Requested slots are t5..t9. Fresh bit0 applies to global velocity; the other
+fresh bits and attachment bits are subsets of requested. Attachment slots are
+t6..t9. Image IDs outside requested registers must be zero. Size, version,
+reserved fields, duplicate/unknown owners, malformed masks and stale frames
+refuse transactionally. Rows require the open allocation callback and are copied
+before return. Existing ABI1 pass/frame structures remain unchanged.
+
+SevkStageBindingState is 48 bytes. Its flags report device nullDescriptor support;
+frame/row fields describe copied rows, and counters describe catalog descriptor
+resolution, missing resources and mismatched resource types. They are descriptor
+records, not GPU execution/completion. Use the native shader variant generation,
+execution count, last frame and completion status for that distinction.
+
+The core freezes the reservation model and attachment/history metadata before
+portable callbacks. It resolves current publication IDs after queued commands
+have been copied. New registrations made inside callbacks take effect next frame.
+History aliases permit previous-frame reads; ordinary renderer images require
+current catalog-epoch production. Reserved historyColor additionally requires
+the owned producer to have recorded the immediately preceding frame. Device
+epochs prevent old-device references from entering new frame rows.
+
+Persistent catalog targets retain their initialized contents. GuestRendererImage
+exposes RequiresCurrentFrame; its existing constructor defaults to true. The
+additional bool constructor describes explicitly persistent imported resources.
+Catalog target initialization/clear uses private mark0 under bit22, before native
+owners and public phases. Older hosts retain the previous mark1 transport. Explicit
+portable callback commands retain their requested phase. Public replay still
+accepts only marks1..6; synchronous manual replay flushes pending global clears.
+
+## Resource and layout contract
+
+Lighting's directional, point, spot and shadowed-spot owners use independent
+layouts when catalog/extras bindings are present. Base-only generations reuse
+engine layouts and descriptor sets, including after restoration. Pipeline and
+layout generations retire together after their last submission. Legacy diagnostic
+replacement releases the active custom layout and clears generation identity.
+
+Native postprocess/HBAO layouts accept b6 prefixes up to the fixed 320-byte extras
+layout and t5..t9 catalog resources. A stock owner t5 input remains its engine
+input unless an explicit matching reservation overrides it. Attachment
+reservations take precedence over general lighting requests. Engine constants,
+samplers and resource bindings keep their existing slots. Lighting exposes the
+stock s1 point-clamp sampler alongside the existing standard sampler bindings.
+
+Catalog views preserve 2D/3D/array/depth/numeric type checks. Structured buffers use
+the protected frame slot and copied pending data. Missing or mismatched resources
+bind genuine typed null descriptors; mismatch counters expose incompatible
+publications. Published structured storage is not silently treated as a typed
+buffer SRV. Device nullDescriptor capability is required by reserved resource
+programs; unsupported devices refuse the candidate and retain the prior valid
+generation/stock. Enabling nullDescriptor does not enable broader robustness2
+policies for stock rendering.
+
+Extras share one CPU writer with fullscreen commands: actual current velocity
+availability is independent of camera history validity, and native owner dimensions
+are full raster dimensions even for quarter-size HBAO draws. Sun/camera/safety
+fields come from the immutable shared frame environment. Jitter integration remains
+the separate stage7 contract.
+
+Null texel and image-query semantics follow the
+[Khronos image specification](https://docs.vulkan.org/spec/latest/chapters/images.html).
+Independent DX11 WARP probes establish zero dimensions/texels for null 2D, 3D,
+array and typed buffers; structured nulls report zero elements and static stride16.
+DX11 WARP and HAL both store the tested packed-HDR color as (0.5,1,0.625);
+the Vulkan binding gate uses that measured control rather than wider tolerances.
+
+The core ShaderBindRegistry.GetNativeState returns NativeStageBindingStatus with
+transport/device capability, registered reservations, queued owner/frame and
+catalog descriptor counters. Registration, compilation, queued descriptors and GPU
+execution remain separate states. Aggregate named-stage/same-draw capabilities
+remain false until all legal contracts and remaining owners have execution proof.
+
+
+## Automated qualification
+
+The focused resource gate passes194 checks; the combined actual-core gate passes
+664. The separate native family gate passes382, executing all82 catalogued
+postprocess/lighting variants, HBAO replacement/restoration and stock highlight
+geometry, blur and composition, with zero core/synchronization errors. Stock
+highlight blur's engine-owned t5 stays outside catalog classification; the older
+bit21 library independently passes167 focused stock-highlight checks. The native
+suite has16 passes and one configured gpu_opaque_reference skip.
+
+Actual older-host admission passes6 refusal/stock-retention checks. Independent
+DX11 packed/null probes pass on net48 and net10. Use GuestDepthGpuTests with
+--native-bindings-only or its default combined lane, PostprocessGpuTests with
+--generations, and --stock-highlight-only for the maintained stock control.
+Catalog cleanup, remaining stage owners, full same-draw attachments, HDR/jitter
+integration and ecosystem qualification remain separate work.

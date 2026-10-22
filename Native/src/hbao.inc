@@ -12,7 +12,11 @@ void hbao_targets(){
     hbao.width=extent.width;hbao.height=extent.height;
 }
 VkDescriptorSet hbao_set(WorldSlot& slot,uint32_t id,uint32_t slice,const std::array<VkImageView,2>& images){auto& stage=post.stages[id];auto set=world_set(slot,stage.layout);
-    for(auto [binding,type]:stage.bindings){if(type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER){VkDescriptorBufferInfo info{hbao.constants[slot_index].handle,binding==0?0:world_align(208)+world_align(32)*slice,binding==0?208u:32u};VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=set;w.dstBinding=binding;w.descriptorCount=1;w.descriptorType=type;w.pBufferInfo=&info;vkUpdateDescriptorSets(device,1,&w,0,nullptr);}
+    for(auto [binding,type]:stage.bindings){
+        auto catalog=std::find_if(stage.catalog.begin(),stage.catalog.end(),[&](const auto& resource){return resource.binding==binding;});
+        if(catalog!=stage.catalog.end()){write_stage_catalog(set,id,*catalog);continue;}
+        if(binding==6&&type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER){write_stage_extras(set,id);continue;}
+        if(type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER){VkDescriptorBufferInfo info{hbao.constants[slot_index].handle,binding==0?0:world_align(208)+world_align(32)*slice,binding==0?208u:32u};VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=set;w.dstBinding=binding;w.descriptorCount=1;w.descriptorType=type;w.pBufferInfo=&info;vkUpdateDescriptorSets(device,1,&w,0,nullptr);}
         else if(type==VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE){if(!images[binding-128])throw std::runtime_error("missing HBAO texture");world_write_image(set,binding,images[binding-128]);}
         else{VkSampler sample=id>=54 && id<62 && binding==257?standard_sampler(258):post.point;if(id>=36 && id<=51 && !(hbao.config.flags&4) && binding==256)sample=hbao.border;world_write_image(set,binding,{},sample,true);}}
     return set;

@@ -125,6 +125,6 @@ void render_gbuffer_attachments(VkCommandBuffer cmd,WorldSlot& slot){
         if(indexed_ready)record_indexed_attachments(cmd,slot,target);
         vkCmdEndRendering(cmd);
         barrier(cmd,target.image.handle,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        target.sampled=true;
+        target.sampled=true;target.produced_epoch=guest.catalog_epoch;
     }
 }

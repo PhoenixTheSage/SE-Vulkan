@@ -17,14 +17,14 @@ VkShaderModule world_shader(const void* data,uint64_t bytes,VkShaderStageFlagBit
     auto* words=static_cast<const uint32_t*>(data);
     for(uint64_t i=5;i<bytes/4;){uint32_t n=words[i]>>16,op=words[i]&65535;
         if(!n || n>bytes/4-i)throw std::runtime_error("malformed world SPIR-V");
-        bool capability=n==2 && (words[i+1]==1 || words[i+1]==5379 || words[i+1]==50 || (words[i+1]==2 && stage==VK_SHADER_STAGE_GEOMETRY_BIT) || ((words[i+1]==49 || words[i+1]==47 || words[i+1]==46) && stage==VK_SHADER_STAGE_COMPUTE_BIT));
+        bool capability=n==2 && (words[i+1]==1 || words[i+1]==5379 || words[i+1]==50 || (words[i+1]==2 && stage==VK_SHADER_STAGE_GEOMETRY_BIT) || words[i+1]==43 || words[i+1]==44 || words[i+1]==46 || ((words[i+1]==49 || words[i+1]==47) && stage==VK_SHADER_STAGE_COMPUTE_BIT));
         if(op==10 || (op==17 && !capability))throw std::runtime_error("world shader requests an extension/capability not enabled by this pass: "+std::to_string(op==17?words[i+1]:0));i+=n;}
     if(spvReflectCreateShaderModule(bytes,data,&reflected)!=SPV_REFLECT_RESULT_SUCCESS)throw std::runtime_error("world reflection failed");
     if(uint32_t(reflected.shader_stage)!=uint32_t(stage)){spvReflectDestroyShaderModule(&reflected);throw std::runtime_error("world shader stage mismatch");}
     VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};info.codeSize=bytes;info.pCode=words;
     VkShaderModule module{};try{check(vkCreateShaderModule(device,&info,nullptr,&module),"create world shader");}catch(...){spvReflectDestroyShaderModule(&reflected);throw;}return module;
 }
-VkDescriptorSetLayout world_layout(bool material,bool spot=false,bool probe=false,bool highlight=false){
+VkDescriptorSetLayout world_layout(bool material,bool spot=false,bool probe=false,bool highlight=false,const PostStage* stage=nullptr){
     std::vector<VkDescriptorSetLayoutBinding> b;
     auto add=[&](uint32_t id,VkDescriptorType t){b.push_back({id,t,1,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,nullptr});};
     add(0,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
@@ -34,6 +34,7 @@ VkDescriptorSetLayout world_layout(bool material,bool spot=false,bool probe=fals
     add(258,VK_DESCRIPTOR_TYPE_SAMPLER);add(259,VK_DESCRIPTOR_TYPE_SAMPLER);
     if(highlight)add(4,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     if(probe){add(4,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);add(7,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);add(144,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);add(271,VK_DESCRIPTOR_TYPE_SAMPLER);}
+    if(stage){for(const auto& resource:stage->catalog)add(resource.binding,resource.type);for(const auto& binding:stage->bindings)if(binding.first==6)add(6,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);else if(binding.first==257)add(257,VK_DESCRIPTOR_TYPE_SAMPLER);}
     VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};info.bindingCount=static_cast<uint32_t>(b.size());info.pBindings=b.data();
     VkDescriptorSetLayout result{};check(vkCreateDescriptorSetLayout(device,&info,nullptr,&result),"create reflected world layout");return result;
 }
@@ -90,7 +91,7 @@ void init_world_layouts(){
     VkPhysicalDeviceProperties props{};vkGetPhysicalDeviceProperties(physical,&props);world.alignment=props.limits.minUniformBufferOffsetAlignment;
     world.material_layout=world_layout(true);world.light_layout=world_layout(false);world.spot_layout=world_layout(false,true);
     world.material_pipeline_layout=world_pipeline_layout(world.material_layout);world.light_pipeline_layout=world_pipeline_layout(world.light_layout);world.spot_pipeline_layout=world_pipeline_layout(world.spot_layout);
-    for(auto& slot:world.slots){std::array<VkDescriptorPoolSize,7> sizes{{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,480000},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,480000},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,3200000},{VK_DESCRIPTOR_TYPE_SAMPLER,800000},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,4096},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,256},{VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,2048}}};
+    for(auto& slot:world.slots){std::array<VkDescriptorPoolSize,8> sizes{{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,480000},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,480000},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,3200000},{VK_DESCRIPTOR_TYPE_SAMPLER,800000},{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,4096},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,256},{VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,2048},{VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,2048}}};
         VkDescriptorPoolCreateInfo p{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};p.maxSets=208000;p.poolSizeCount=7;p.pPoolSizes=sizes.data();check(vkCreateDescriptorPool(device,&p,nullptr,&slot.pool),"create frame world descriptor pool");
         // One cached set per material, including probe and highlight layouts.
         // A material set holds up to 4 uniforms, 2 dynamic uniforms, 13 sampled images and 3 samplers.

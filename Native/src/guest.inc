@@ -46,12 +46,15 @@ static_assert(sizeof(GuestExtras) == 320, "fullscreen extras are 320 bytes");
 static_assert(sizeof(SevkGuestFrame) == 344, "guest frame is 344 bytes");
 static_assert(sizeof(SevkGuestPass2) == 568, "extended guest packet is 568 bytes");
 struct GuestState {
-    bool resources_open{},has_early_owned{};
+    bool resources_open{},has_early_owned{},has_global_clear{};
     uint32_t depth_count{},depth_ready{};
     bool depth_configured{};
     uint64_t depth_images[3]{};
     float depth_matrices[3][16]{};
     std::vector<GuestPass> passes;
+    std::unordered_map<uint32_t,SevkStageBindings> stage_bindings;
+    uint32_t bindings_frame{UINT32_MAX};
+    uint64_t binding_resolved{},binding_missing{},binding_mismatched{};
     std::unordered_map<uint64_t, GuestPipeline> pipelines;
     std::unordered_map<uint64_t, GuestImage> images;
     std::vector<std::pair<uint64_t, GuestImage>> retired_images;
@@ -101,12 +104,12 @@ void guest_resource_command(const SevkGuestResourceCommand& command) {
     uint64_t completion=next_completion+(recording?1:0);
     if(command.operation==1){auto it=guest.images.find(command.image);if(it!=guest.images.end()){guest.retired_images.emplace_back(completion,std::move(it->second));guest.images.erase(it);}return;}
     if(command.operation==2){auto it=guest.pipelines.find(command.image);if(it!=guest.pipelines.end()){guest.retired_pipelines.emplace_back(completion,std::move(it->second));guest.pipelines.erase(it);}return;}
-    if(command.operation!=3 || command.mark<1 || command.mark>6) throw std::runtime_error("unsupported guest resource command");
+    if(command.operation!=3 || command.mark>6) throw std::runtime_error("unsupported guest resource command");
     auto it=guest.images.find(command.image);
     if(it==guest.images.end() || it->second.is_buffer || it->second.aspect!=VK_IMAGE_ASPECT_COLOR_BIT) throw std::runtime_error("guest clear requires a color image");
     for(float value:command.value)if(!std::isfinite(value))throw std::runtime_error("nonfinite guest clear");
     GuestPass pass{};pass.operation=3;pass.mark=command.mark;pass.storage=command.image;
-    std::memcpy(pass.value,command.value,16);guest.passes.push_back(std::move(pass));
+    std::memcpy(pass.value,command.value,16);guest.passes.push_back(std::move(pass));guest.has_global_clear|=command.mark==0;
 }
 
 void guest_depth_views(const uint64_t* images,const float* matrices,uint32_t count) {
@@ -878,18 +881,9 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
     float width = float(std::max(1u, pass.width ? pass.width : extent.width)), height = float(std::max(1u, pass.height ? pass.height : extent.height));
     float scene_w = float(std::max(1u, guest.frame.width ? guest.frame.width : extent.width));
     float scene_h = float(std::max(1u, guest.frame.height ? guest.frame.height : extent.height));
-    extras.render[0] = width; extras.render[1] = height; extras.scene[0] = scene_w; extras.scene[1] = scene_h;
-    extras.inv_render[0] = 1.f / width; extras.inv_render[1] = 1.f / height; extras.inv_scene[0] = 1.f / scene_w; extras.inv_scene[1] = 1.f / scene_h;
-    extras.camera_pad[0] = guest.frame.far_plane > 1.f ? guest.frame.far_plane : 1000000.f;
-    extras.history_valid = guest.frame.history_valid; extras.has_velocity = extras.history_valid; extras.frame_index = guest.frame.frame_index; extras.safety = guest.frame.safety_scale;
-    extras.air_top=guest.frame.air_top;extras.visual_ceil=guest.frame.visual_ceil;extras.skip_floor=guest.skip_floor;extras.skip_mul=guest.skip_mul;
-    std::memcpy(extras.unjittered, guest.frame.view_proj, 64); std::memcpy(extras.prev, guest.frame.prev_view_proj, 64);
-    std::memcpy(extras.camera, guest.frame.camera_to_world, 48);
-    extras.camera[3] = guest.frame.camera_to_world[12]; extras.camera[7] = guest.frame.camera_to_world[13]; extras.camera[11] = guest.frame.camera_to_world[14];
-    extras.proj_scale[0] = guest.frame.proj_scale_x; extras.proj_scale[1] = guest.frame.proj_scale_y;
-    std::memcpy(extras.sun_color, guest.frame.sun_color, 12); extras.sun_diffuse = guest.frame.sun_diffuse;
-    std::memcpy(extras.sun_toward, guest.frame.sun_toward, 12); extras.sky_luma = guest.frame.sky_luma;
-    std::memcpy(extras.sky_ambient, guest.frame.sky_ambient, 12);
+    VkImageView velocity_view{};VkImage velocity_image{};uint32_t velocity_w{},velocity_h{};
+    fill_guest_extras(extras,width,height,scene_w,scene_h,
+        guest_catalog_view(kGuestCatalogVelocity,velocity_view,velocity_image,velocity_w,velocity_h)?1u:0u,0);
     uint8_t owned[1280]{};
     guest_fill_owned(pass, pipeline, owned);
     if ((pass.flags & (1 | 32)) == 0 && pipeline.owned_bytes >= 208 && pipeline.owned_bytes <= 256) {
@@ -1174,6 +1168,7 @@ bool guest_generate_mips(VkCommandBuffer cmd, const GuestPass& pass, uint32_t ma
 }
 
 void guest_replay(VkCommandBuffer cmd, uint32_t mark) {
+    if(mark==0&&!guest.has_global_clear)return;
     ++guest.replay_count;
     guest_refresh_frame();
     if (guest.passes.empty()) return;
@@ -1233,7 +1228,12 @@ void guest_replay(VkCommandBuffer cmd, uint32_t mark) {
         target.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         ++pipeline->second.executions;pipeline->second.last_frame=guest.frame.frame_index;pipeline->second.last_completion=next_completion+1;
     }
+    if(mark==0){
+        guest.passes.erase(std::remove_if(guest.passes.begin(),guest.passes.end(),[](const auto& pass){return pass.operation==3&&pass.mark==0;}),guest.passes.end());
+        guest.has_global_clear=false;
+    }
 }
+
 
 void guest_readback(uint64_t id, void* rgba, uint64_t bytes) {
     GuestImage borrowed{};GuestImage* selected=nullptr;

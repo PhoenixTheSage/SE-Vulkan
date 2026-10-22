@@ -478,9 +478,26 @@ SEVK_API int32_t SEVK_CALL sevk_guest_create_pipeline2(void* ctx, const void* vs
 SEVK_API int32_t SEVK_CALL sevk_guest_submit2(void* ctx, const SevkGuestPass2* passes, uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_guest_reset(void* ctx);
 SEVK_API uint32_t SEVK_CALL sevk_guest_features(void);
+/* Feature bit22: frame-stamped, copied catalog reservations for native owners.
+ * Register slots use t5..t9; fresh mask bit0 describes the separate velocity ID,
+ * other fresh bits are subsets of requested. Attachment bits use t6..t9.
+ * Null-resource fidelity requires the device's nullDescriptor capability. */
+typedef struct SevkStageBindings {
+    uint32_t size, abi_version, stage, frame_index;
+    uint32_t requested_mask, fresh_mask, attachment_mask, reserved;
+    uint64_t velocity, images[10];
+} SevkStageBindings;
+typedef struct SevkStageBindingState {
+    uint32_t size, abi_version, flags, rows, frame_index, reserved;
+    uint64_t resolved, missing, mismatched;
+} SevkStageBindingState;
+SEVK_API int32_t SEVK_CALL sevk_set_stage_bindings(void* ctx, const SevkStageBindings* rows, uint32_t count);
+SEVK_API int32_t SEVK_CALL sevk_get_stage_binding_state(void* ctx, SevkStageBindingState* state);
+
 /* Feature bit13: idempotent target creation, timeline retirement and queued
  * floating-point clears. No ABI-1 pass layout changes. Operations: 1 release
- * image, 2 release pipeline, 3 clear image at mark (1..6). Commands are copied. */
+ * image, 2 release pipeline, 3 clear image at mark (1..6). Bit22 adds mark0 global
+ * clears before native owners/public phases. Commands are copied. */
 typedef struct SevkGuestResourceCommand {
     uint32_t size, abi_version, operation, mark;
     uint64_t image, source;

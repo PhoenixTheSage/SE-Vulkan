@@ -49,6 +49,8 @@ public sealed partial class NativeBackend
         if((GuestFeatures()&524288)==0)throw new NotSupportedException("Update SE-Vulkan native library: postprocess generations require bit19.");
         if(artifacts==null||artifacts.Count==0)throw new ArgumentException("Native owner generation requires stages.");
         if(artifacts.Keys.Any(id=>id>=256)&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
+        if(artifacts.Values.Any(a=>UsesStageBindings(a.Layout))&&(GuestFeatures()&4194304)==0)
+            throw new NotSupportedException("Update SE-Vulkan native library: catalog/extras native stage resources require bit22.");
         ulong expected=GetPostprocessGeneration(13).Revision;var pins=new List<GCHandle>();
         try
         {

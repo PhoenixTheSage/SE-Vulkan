@@ -9,9 +9,9 @@ using VRageRender;
 partial class Program
 {
     // Focused actual-core gate for native owner work; the full recreation gate remains required.
-    static int NativeStagesOnly(string bin)
+    static int NativeStagesOnly(string bin,bool bindingsOnly=false,bool oldBindingHost=false)
     {
-        string root=Directory.GetCurrentDirectory(),output=Path.GetFullPath("TestResults/NativeStagesGpuTests"),stage=Path.Combine(output,"Assets");
+        string root=Directory.GetCurrentDirectory(),output=Path.GetFullPath(oldBindingHost?"TestResults/NativeBindingOldHostTests":"TestResults/NativeStagesGpuTests"),stage=Path.Combine(output,"Assets");
         Directory.CreateDirectory(Path.Combine(stage,"Native/win-x64"));Directory.CreateDirectory(Path.Combine(stage,"Shaders/Compiled"));
         string native=Environment.GetEnvironmentVariable("ANOMALY_TEST_NATIVE_DLL");
         File.Copy(string.IsNullOrWhiteSpace(native)?Path.Combine(root,"Native/build/Release/se_vulkan_native.dll"):Path.GetFullPath(native),Path.Combine(stage,"Native/win-x64/se_vulkan_native.dll"),true);
@@ -29,11 +29,16 @@ partial class Program
         Call("Backend.GuestOwned","Register",assets);Call("Backend.GuestCompiler","CompilePending",assets);
         var projection=MatrixD.CreatePerspectiveFieldOfView(Math.PI/2,1,.1,100);projection.M33=projection.M34-projection.M33;projection.M43=projection.M44-projection.M43;
         var light=MyEnvironmentLightData.Default;light.SunLightDirection=Vector3.Forward;light.SunColorRaw=Vector3.One;light.SunDiffuseFactor=1;light.SunDiscIntensity=0;
-        int checks=StageBindingFacadeContracts(core);
+        if(oldBindingHost){int refused=OldBindingHostRegression(core,output,backend);Console.WriteLine("PASS "+refused+" actual older-host resource contracts");return 0;}
+        int checks=0;
+        if(!bindingsOnly){
+        checks+=StageBindingFacadeContracts(core);
         checks+=EarlyOwnedRegression(core,assets,output,backend,projection,light);
         checks+=OwnedStageRegression(core,assets,output,backend,projection,light);
         checks+=PostprocessGenerationRegression(core,assets,output,backend,library,projection,light);
         checks+=LightingGenerationRegression(core,assets,output,backend,library,projection,light);
+        }
+        checks+=NativeBindingRegression(core,assets,output,backend,projection,light);
         var stats=backend.GetStats();if(stats.ValidationEnabled==0||stats.ValidationErrors!=0)throw new Exception("Focused native-stage core/synchronization validation failed");
         Console.WriteLine("PASS "+checks+" focused actual-core owned/postprocess/lighting checks; validation enabled="+stats.ValidationEnabled+", errors="+stats.ValidationErrors);return 0;
     }

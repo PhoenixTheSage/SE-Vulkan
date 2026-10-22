@@ -330,7 +330,7 @@ struct WorldState {ModelState models;
     uint32_t motion_w{},motion_h{}; bool motion_sampled{},motion_have_signature{}; uint64_t motion_signature{};
     VkPipeline motion_pipe[4]{}; VkPipelineLayout motion_layout{}; VkDescriptorSetLayout motion_set_layout{};
     VkDescriptorPool motion_pool{}; VkDescriptorSet motion_sets[2]{};
-    struct AttachTarget { Image image{}; uint32_t format=0xFFFFFFFFu,w{},h{}; bool sampled{},live{}; VkPipeline pipe[4]{},indexed_pipe[5]{}; };
+    struct AttachTarget { Image image{};uint64_t produced_epoch{}; uint32_t format=0xFFFFFFFFu,w{},h{}; bool sampled{},live{}; VkPipeline pipe[4]{},indexed_pipe[5]{}; };
     AttachTarget attach[3]{}; VkPipelineLayout attach_layout{}; VkDescriptorSetLayout attach_set_layout{}; VkDescriptorPool attach_pool{}; VkDescriptorSet attach_sets[2]{};
     VkPipelineLayout attach_indexed_layout{};VkDescriptorSetLayout attach_indexed_inputs{};VkDescriptorPool attach_indexed_pool{};VkDescriptorSet attach_indexed_sets[2]{},motion_indexed_sets[2]{};
     std::unordered_map<uint64_t,Mesh> meshes;std::unordered_map<uint64_t,Image> cubes,arrays;std::unordered_map<uint64_t,VoxelMaterial> voxel_materials;
@@ -352,7 +352,8 @@ struct FlareState {VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layo
 struct DecalBatch {uint32_t role{};uint64_t textures[4]{};std::vector<uint32_t> draws;};
 struct DecalState {VkPipeline pipelines[9]{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};Buffer constants[2]{},indices{};Image normals{};uint32_t width{},height{};bool initialized{};std::vector<SevkDecalDraw> draws;std::vector<DecalBatch> batches;};
 struct PostImage {Image image;uint32_t width{},height{};VkImageLayout layout{};VkFormat format{};};
-struct PostStage {uint64_t generation{},executions{},last_completion{};uint32_t last_frame{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{},other_hdr{};std::vector<std::pair<uint32_t,VkDescriptorType>> bindings;bool compute{};};
+struct NativeCatalogResource {uint32_t binding{},dim{},arrayed{},depth{},number{};VkDescriptorType type{};bool owner_input{};};
+struct PostStage {uint64_t generation{},executions{},last_completion{};uint32_t last_frame{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{},other_hdr{};std::vector<std::pair<uint32_t,VkDescriptorType>> bindings;std::vector<NativeCatalogResource> catalog;bool compute{};};
 struct ShadowUsageView {Buffer gpu,readback,screen;bool pending{};};
 struct ShadowUsageState {PostStage stage;ShadowUsageView views[2][19];uint32_t pixels[19][8]{};uint64_t completion[19]{},latest{};bool enabled{};};
 struct PostCandidate {uint64_t expected{};VkFormat format{};std::vector<std::pair<uint32_t,PostStage>> stages;};
@@ -421,7 +422,7 @@ struct Renderer {uint32_t recipe_generation=1;
         std::chrono::steady_clock::time_point last_time{};
     };
     FsrRuntime fsr;
-    uint32_t display_flags{};bool hdr_active{},hdr_denied{},fg_denied{},swap_transfer{};
+    uint32_t display_flags{};bool hdr_active{},hdr_denied{},fg_denied{},swap_transfer{},null_descriptors{};
     std::array<uint64_t,11> opaque_compute_times{};
     SevkResolutionStats resolution_stats{sizeof(SevkResolutionStats),SEVK_ABI_VERSION};
     std::vector<std::pair<uint64_t,VkImageView>> retired_views;
@@ -850,6 +851,12 @@ struct Renderer {uint32_t recipe_generation=1;
         if(opaque_caps.enabled&&has(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME)){VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,&conditional};vkGetPhysicalDeviceFeatures2(physical,&query);opaque_conditional=conditional.conditionalRendering!=0;}
         if(opaque_conditional){conditional.inheritedConditionalRendering=VK_FALSE;device_extensions.push_back(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);}
         void* chain=nullptr;
+        VkPhysicalDeviceRobustness2FeaturesEXT nulls{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+        const char* robustness=has(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME)?VK_EXT_ROBUSTNESS_2_EXTENSION_NAME:has("VK_KHR_robustness2")?"VK_KHR_robustness2":nullptr;
+        if(robustness){VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,&nulls};vkGetPhysicalDeviceFeatures2(physical,&query);
+            null_descriptors=nulls.nullDescriptor!=0;nulls.robustBufferAccess2=nulls.robustImageAccess2=VK_FALSE;
+            if(null_descriptors){device_extensions.push_back(robustness);nulls.pNext=chain;chain=&nulls;}}
+
         gpu_checkpoints=has(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);if(gpu_checkpoints)device_extensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
         VkDeviceDiagnosticsConfigCreateInfoNV diagnostics{VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV};diagnostics.flags=VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV;
         if(has(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME)){VkPhysicalDeviceDiagnosticsConfigFeaturesNV supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV};VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,&supported};vkGetPhysicalDeviceFeatures2(physical,&query);
@@ -1627,6 +1634,7 @@ struct Renderer {uint32_t recipe_generation=1;
         // Full GPU frame timing starts before resident preparation, not after
         // its dispatches/barriers; otherwise preparation stalls are invisible.
         if(world.current().queued&&timing_pool){vkCmdResetQueryPool(slot.command,timing_pool,slot_index*2,2);vkCmdWriteTimestamp2(slot.command,VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,timing_pool,slot_index*2);}
+        if(guest.has_global_clear)guest_replay(slot.command,0);
         if(opaque_stock.ready&&!world.current().queued)prepare_opaque_reference(slot.command);
         ngx_apply_scale();
         fsr_apply_scale();
@@ -1677,7 +1685,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if(world.current().queued&&timing_pool){vkCmdWriteTimestamp2(slot.command,VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,timing_pool,slot_index*2+1);timing_valid[slot_index]=true;}
         frame_mark("frame end");if(profile_label_open){vkCmdEndDebugUtilsLabelEXT(slot.command);profile_label_open=false;}
         check(vkEndCommandBuffer(slot.command), "end frame command"); recording = false;
-        guest.passes.clear();guest.has_early_owned=false; // Frame packets never replay implicitly in a later frame.
+        guest.passes.clear();guest.has_early_owned=guest.has_global_clear=false; // Frame packets never replay implicitly in a later frame.
         performance.finish_us=perf_take();
         VkCommandBufferSubmitInfo command{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO }; command.commandBuffer = slot.command;
         VkSemaphoreSubmitInfo acquired{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO }; acquired.semaphore = slot.acquired; acquired.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1760,6 +1768,7 @@ struct Renderer {uint32_t recipe_generation=1;
     #include "stock_gbuffer.inc"
     #include "world_pipeline.inc"
     #include "guest.inc"
+    #include "stage_bindings.inc"
     #include "display.inc"
     #include "ngx.inc"
     #include "fsr.inc"
@@ -2139,7 +2148,13 @@ int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32
     });
 }
 int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.resolution;return 0;},[&](Renderer& r){r.collect();*stats=r.resolution_stats;return 0;});}
-uint32_t SEVK_CALL sevk_guest_features(void){return 4194303u;}
+uint32_t SEVK_CALL sevk_guest_features(void){return 8388607u;}
+int32_t SEVK_CALL sevk_set_stage_bindings(void* ctx,const SevkStageBindings* rows,uint32_t count){
+    return call(ctx,[&](Renderer& r){r.set_stage_bindings(rows,count);return 0;});
+}
+int32_t SEVK_CALL sevk_get_stage_binding_state(void* ctx,SevkStageBindingState* state){
+    return call(ctx,[&](Renderer& r){r.stage_binding_state(state);return 0;});
+}
 int32_t SEVK_CALL sevk_guest_frame_environment(void* ctx,const SevkGuestEnvironment* environment){
     if(!environment || environment->size!=sizeof(*environment) || environment->abi_version!=SEVK_ABI_VERSION || environment->reserved || environment->pad)return -1;
     const auto copied=*environment;
@@ -2166,7 +2181,7 @@ int32_t SEVK_CALL sevk_guest_depth_views(void* ctx,const uint64_t* images,const 
 uint32_t SEVK_CALL sevk_guest_depth_ready(void* ctx){
     uint32_t ready=0;call(ctx,[&](Renderer& r){ready=r.guest.depth_ready;return 0;});return ready;
 }
-int32_t SEVK_CALL sevk_guest_reset(void* ctx){return call(ctx,[](Renderer& r){r.guest.passes.clear();r.guest.has_early_owned=false;++r.guest.catalog_epoch;return 0;});}
+int32_t SEVK_CALL sevk_guest_reset(void* ctx){return call(ctx,[](Renderer& r){r.guest.passes.clear();r.guest.has_early_owned=r.guest.has_global_clear=false;r.clear_stage_bindings();++r.guest.catalog_epoch;return 0;});}
 uint32_t SEVK_CALL sevk_guest_catalog_mask(void* ctx){uint32_t mask=0;call(ctx,[&](Renderer& r){VkImageView v{};VkImage i{};uint32_t w{},h{};for(uint32_t b=0;b<3;b++)if(r.guest_catalog_view(0xFFFF00000000000Aull+b,v,i,w,h))mask|=1u<<b;return 0;});return mask;}
 int32_t SEVK_CALL sevk_guest_create_pipeline(void* ctx,const void* vs,uint64_t vs_bytes,const char* vs_entry,const void* ps,uint64_t ps_bytes,const char* ps_entry,uint64_t* pipeline){
     return call(ctx,[&](Renderer& r){if(!pipeline)throw std::runtime_error("null guest pipeline");*pipeline=r.guest_create_pipeline(vs,vs_bytes,vs_entry,ps,ps_bytes,ps_entry);return 0;});
@@ -2190,7 +2205,7 @@ int32_t SEVK_CALL sevk_guest_readback(void* ctx,uint64_t id,void* rgba,uint64_t 
     return call(ctx,[&](Renderer& r){r.guest_readback(id,rgba,bytes);return 0;});
 }
 int32_t SEVK_CALL sevk_guest_replay_now(void* ctx,uint32_t mark){
-    return call(ctx,[&](Renderer& r){if(r.recording || mark<1 || mark>6)throw std::runtime_error("guest replay unavailable");r.immediate([&](VkCommandBuffer cmd){r.guest_replay(cmd,mark);});return 0;});
+    return call(ctx,[&](Renderer& r){if(r.recording || mark<1 || mark>6)throw std::runtime_error("guest replay unavailable");r.immediate([&](VkCommandBuffer cmd){if(r.guest.has_global_clear)r.guest_replay(cmd,0);r.guest_replay(cmd,mark);});return 0;});
 }
 uint64_t SEVK_CALL sevk_guest_replay_count(void* ctx){uint64_t count=0;call(ctx,[&](Renderer& r){count=r.guest.replay_count;return 0;});return count;}
 int32_t SEVK_CALL sevk_get_guest_frame(void* ctx, SevkGuestFrame* frame){if(!frame || frame->size < sizeof(SevkGuestFrame) || frame->abi_version != SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){r.guest_refresh_frame();*frame=r.guest.frame;frame->size=sizeof(SevkGuestFrame);frame->abi_version=SEVK_ABI_VERSION;return 0;});}

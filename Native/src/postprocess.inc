@@ -10,6 +10,7 @@ void post_destroy_stage(PostStage& stage){
 }
 bool post_input_supplied(uint32_t id,uint32_t input){
     if(id==0)return false;if(id==2)return input==1;
+    if(id>=62&&id<126)return input==5; // Highlight blur owns t5; it is not a catalog consumer.
     if(id==3||id==4||id==8||id>=36&&id<=61||id>=128)return input<=1;
     if(id==5||id==6)return input==0||input==3;
     if(id>=9&&id<=12)return input<=3;
@@ -38,12 +39,19 @@ PostStage post_build_stage(uint32_t id,const void* data,uint64_t bytes,bool stri
                 if(v.location!=0||v.format!=SPV_REFLECT_FORMAT_R32G32_SFLOAT||v.decoration_flags&SPV_REFLECT_DECORATION_FLAT)throw std::runtime_error("postprocess fullscreen input contract mismatch");}
         }
         for(uint32_t i=0;i<reflection.descriptor_binding_count;++i){auto& b=reflection.descriptor_bindings[i];auto type=VkDescriptorType(b.descriptor_type);
+            // Stock t5 remains an owner input unless explicitly reserved for the
+            // generation; t6..t9 and b6 are the Anomaly catalog/extras contract.
+            bool reserved=native_binding_owner(id)&&(b.binding>=134&&b.binding<=137 || b.binding==133&&(!post_input_supplied(id,5)||strict));
+            bool catalog=reserved&&reflect_catalog_resource(stage,b,b.binding==133&&post_input_supplied(id,5));
+            bool extras=type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER&&b.binding==6&&b.block.size>0&&b.block.size<=320;
+
             bool valid=(type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && ((b.binding==0 && b.block.size==((id>=33 && id<62)||id>=128?208u:1280u)) || (b.binding==1 && b.block.size==(id==14?288u:id>=33?32u:64u)) || (b.binding==5 && b.block.size==16))) ||
                 (type==VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE && b.binding>=128 && b.binding<=133 && b.image.dim==SpvDim2D && b.image.arrayed==(((id>=36 && id<=53)||id>=128) && b.binding==128) && !b.image.ms) ||
                 (type==VK_DESCRIPTOR_TYPE_SAMPLER && b.binding>=256 && b.binding<=259) ||
                 (type==VK_DESCRIPTOR_TYPE_STORAGE_IMAGE && b.binding==384 && compute && id!=3 && id!=4) ||
                 (type==VK_DESCRIPTOR_TYPE_STORAGE_BUFFER && ((b.binding==384 && (id==3 || id==4)) || (b.binding==128 && id==2)));
             if(strict&&type==VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE&&!post_input_supplied(id,b.binding-128))valid=false;
+            valid|=catalog||extras;
             if(!valid || b.set || b.count!=1)throw std::runtime_error("postprocess descriptor mismatch stage "+std::to_string(id)+" binding "+std::to_string(b.binding)+" size "+std::to_string(b.block.size));
             bindings.push_back({b.binding,type,1,VkShaderStageFlags(compute?VK_SHADER_STAGE_COMPUTE_BIT:VK_SHADER_STAGE_FRAGMENT_BIT),nullptr});stage.bindings.push_back({b.binding,type});}
         if(reflection.push_constant_block_count)throw std::runtime_error("unexpected postprocess push constants");
@@ -96,7 +104,7 @@ void post_activate_pending(){
     post.retired.reserve(post.retired.size()+found->second.stages.size());
     for(auto& entry:found->second.stages){
         if(native_lighting_id(entry.first)){
-            uint32_t index=entry.first-256;PostStage retired{};retired.pipeline=world.lights[index];retired.other_hdr=world.other_hdr_lights[index];post.retired.emplace_back(next_completion,std::move(retired));
+            uint32_t index=entry.first-256;PostStage retired=std::move(post.lighting[index]);retired.pipeline=world.lights[index];retired.other_hdr=world.other_hdr_lights[index];post.retired.emplace_back(next_completion,std::move(retired));
             world.lights[index]=entry.second.pipeline;world.other_hdr_lights[index]=entry.second.other_hdr;
             post.lighting[index]=std::move(entry.second);post.lighting[index].pipeline=post.lighting[index].other_hdr=VK_NULL_HANDLE;
         }else{auto& live=post.stages[entry.first];post.retired.emplace_back(next_completion,std::move(live));live=std::move(entry.second);}
@@ -132,6 +140,9 @@ void post_clear(VkCommandBuffer cmd,PostImage& image,float value){post_transitio
 VkDescriptorSet post_set(WorldSlot& slot,uint32_t id,PostImage& dst,const std::array<VkImageView,6>& images){
     auto& stage=post.stages[id];auto set=world_set(slot,stage.layout);
     for(auto [binding,type]:stage.bindings){
+        auto catalog=std::find_if(stage.catalog.begin(),stage.catalog.end(),[&](const auto& resource){return resource.binding==binding;});
+        if(catalog!=stage.catalog.end()&&(!catalog->owner_input||(stage_binding_row(id)&&(stage_binding_row(id)->requested_mask&(1u<<(binding-128)))))){write_stage_catalog(set,id,*catalog);continue;}
+        if(binding==6&&type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER){write_stage_extras(set,id);continue;}
         if(type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER){if(binding==0)world_write_buffer(set,binding,slot.frame,1280,type);
             else{VkDescriptorBufferInfo b{(id>=62 && id<126)?highlights.constants[slot_index].handle:post.constants[slot_index].handle,binding==5?((id>=62 && id<126)?0:world_align(64)+world_align(288)):(id==14?world_align(64):0),binding==5?16u:(id==14?288u:64u)};VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=set;w.dstBinding=binding;w.descriptorCount=1;w.descriptorType=type;w.pBufferInfo=&b;vkUpdateDescriptorSets(device,1,&w,0,nullptr);}}
         else if(type==VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE){auto view=images[binding-128];if(!view)throw std::runtime_error("missing stock postprocess input");world_write_image(set,binding,view);}
@@ -182,6 +193,7 @@ void render_postprocess(VkCommandBuffer cmd,WorldSlot& slot){
 }
 void cleanup_postprocess(){
     for(auto& stage:post.stages)post_destroy_stage(stage);
+    for(auto& stage:post.lighting)post_destroy_stage(stage);
     for(auto& generation:post.candidates)for(auto& entry:generation.second.stages)post_destroy_stage(entry.second);
     for(auto& retired:post.retired)post_destroy_stage(retired.second);
     for(auto* i:{&post.shadow_blur,&post.half,&post.tone,&post.fxaa,&post.chromatic,&post.ao,&post.ao_blur})destroy_image(i->image);for(auto& i:post.exposure)destroy_image(i.image);for(auto& i:post.bloom_down)destroy_image(i.image);for(auto& i:post.bloom_up)destroy_image(i.image);for(auto& b:post.constants)destroy_buffer(b);destroy_buffer(post.histogram);if(post.point)vkDestroySampler(device,post.point,nullptr);if(post.compose)vkDestroyPipeline(device,post.compose,nullptr);post={};
