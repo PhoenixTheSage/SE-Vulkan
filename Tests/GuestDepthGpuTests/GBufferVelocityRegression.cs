@@ -3,6 +3,7 @@ using ClientPlugin.Rendering;
 using ClientPlugin.Rendering.Interop;
 using ClientPlugin.Rendering.Scene;
 using ClientPlugin.Rendering.Shaders;
+using VRage;
 using VRage.Import;
 using VRageMath;
 using VRageRender;
@@ -23,17 +24,18 @@ partial class Program
         object Property(string type,string name)=>core.GetType("ClientPlugin."+type,true).GetProperty(name,stat).GetValue(null);
         Check((backend.NativeOwnerFeatures()&8)!=0,"native owner extension advertises the GBuffer velocity contract on this device");
         var stages=core.GetType("ClientPlugin.Backend.GuestPostprocessStages",true);stages.GetField("PreparationBound",stat).SetValue(null,true);
-        var catalog=backend.PostprocessCatalog().Where(row=>(uint)row[0]>=4096&&(uint)row[0]<4100).ToArray();Check(catalog.Length==4,"fixture selects the rigid (admitted) and skinned (replay) classic GBuffer pairs");
+        var catalog=backend.PostprocessCatalog().Where(row=>(uint)row[0]>=4096&&(uint)row[0]<4106).ToArray();Check(catalog.Length==10,"fixture selects the five classic GBuffer stream pairs: rigid/instanced/cube/deformed admitted, skinned on the replay");
         stages.GetField("catalog",stat).SetValue(null,catalog);stages.GetField("catalogEpoch",stat).SetValue(null,Property("Backend.GuestBridgeClient","ResourceEpoch"));
         var programType=core.GetType("ClientPlugin.Backend.GuestProgram",true);var submit=Delegate.CreateDelegate(typeof(Action<>).MakeGenericType(typeof(IReadOnlyList<>).MakeGenericType(programType)),core.GetType("ClientPlugin.Backend.GuestBridgeClient",true).GetMethod("Submit",stat));
         NativeWorldVertex V(float x,float y){uint n=VF_Packer.PackNormal(Vector3.Backward);return new(){Material=new(){X=x,Y=y,Z=-3,Scale=1,NormalX=n&65535,NormalY=n>>16,TangentX=1,TangentY=.5f,TangentZ=.5f,TangentW=1,U=(x+1)/2,V=(1-y)/2},WeightX=1};}
         backend.UploadWorldMesh(958001,new[]{V(-1,-1),V(1,-1),V(0,1)},new uint[]{0,1,2,2,1,0});backend.UploadTexture(958002,1,1,0,new byte[]{180,180,180,0},true);backend.UploadTexture(958003,1,1,0,new byte[]{128,128,255,100},false);backend.UploadTexture(958004,1,1,0,new byte[]{255,1,0,0},false);
         var post=new VulkanPostprocess();post.Hbao.Enabled=false;post.Ssao.Enabled=false;post.Settings.BloomEnabled=false;post.Settings.EnableEyeAdaptation=false;
         float[] Bones(){var data=new float[960];for(int i=0;i<60;++i)Array.Copy(NativeBackend.MatrixValues(MatrixD.Identity),0,data,i*16,16);return data;}
-        uint frame=0;
+        byte[] Stream(uint type){if(type==2){var bytes=new byte[64];Buffer.BlockCopy(new[]{1f,0f,0f,0f,0f,1f,0f,0f,0f,0f,1f,0f,0f,0f,0f,0f},0,bytes,0,64);return bytes;}if(type<3)return null;var cube=new MyCubeInstanceData{LocalMatrix=Matrix.Identity};if(type==4){cube.EnableSkinning=true;cube.BoneRange=1;for(int b=0;b<9;++b)cube[b]=new Vector3UByte(127,127,127);}var packed=new byte[64];for(int b=0;b<8;++b){var v=cube.GetPackedBone(b);packed[b*4]=v.X;packed[b*4+1]=v.Y;packed[b*4+2]=v.Z;packed[b*4+3]=v.W;}var t=cube.PackedOrthoMatrix;Buffer.BlockCopy(new[]{t.X,t.Y,t.Z,t.W,0f,0f,0f,0f},0,packed,32,32);return packed;}
+        uint[] instanced={2,3,4};uint frame=0;
         (byte[] G,float[] M) Frame(int step,bool pipelined=false,uint pipeline=0){
             Call("Backend.RenderHost","PrepareShaderGenerations");backend.BeginPacketCollection();post.Configure(backend,64,64,false,view:MatrixD.Identity,projection:projection);
-            backend.AddWorldPacket(pipeline,958001,958002,958003,958004,0,WorldConstants.Object(backend.WorldLayouts[pipeline],MatrixD.CreateTranslation(.1*step,0,0),Vector3.One,Vector3.Zero,1,0,pipeline==1?Bones():null),null,1,512|16384,0);
+            backend.AddWorldPacket(pipeline,958001,958002,958003,958004,0,WorldConstants.Object(backend.WorldLayouts[pipeline],MatrixD.CreateTranslation(.1*step,0,0),Vector3.One,Vector3.Zero,1,0,pipeline==1?Bones():null),Stream(pipeline),1,512|16384,0);
             backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,projection,64,64,light,postprocess:post.Settings),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(projection)));
             Check(backend.BeginFrame(projection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black),"velocity frame step="+step+" pipelined="+pipelined+" pipeline="+pipeline);
             Call("Backend.GuestFrame","Capture");frame=(uint)Call("Backend.GuestFrame","U32",16);Call("Backend.SceneView","Set",64,64,0d,0d,0d,0f,0f,-1f);Call("Backend.GuestPassList","SubmitFrame",submit);
@@ -55,20 +57,27 @@ partial class Program
             var stock=Run();Console.WriteLine("VELOCITY analytic="+expected+" stock="+Motion(stock.M,centre));
             Check(Near(stock.M,expected,.02f)&&stock.M[corner]==0&&stock.M[corner+1]==0,"stock replay writes the analytic object motion and leaves uncovered pixels at zero");
             Check(stock.M.SequenceEqual(Run(true).M),"stock replay motion agrees across recording modes");
+            var stockStreams=instanced.ToDictionary(id=>id,id=>Run(pipeline:id));foreach(uint id in instanced){Console.WriteLine("VELOCITY stock stream"+id+"="+Motion(stockStreams[id].M,centre));Check(Near(stockStreams[id].M,expected,.02f)&&stockStreams[id].M[corner]==0,"stock replay writes the analytic motion for instanced/cube stream id"+id);}
             var skinned=Run(pipeline:1);Check(skinned.M[centre]==0&&skinned.M[centre+1]==0,"stock replay does not cover skinned classic draws (control)");
             Register(magenta);var owned=Run(true);Check(Property("Backend.GuestPostprocessStages","Error")==null,"velocity-aware GBuffer owner prepares: "+Property("Backend.GuestPostprocessStages","Error"));
             Console.WriteLine("VELOCITY owned="+Motion(owned.M,centre));Check(Magenta(owned.G),"admitted rigid owner draws the replacement material");
             var state=backend.GetPostprocessGeneration(4097);Check(state.Active!=0&&state.Executions>0&&state.LastFrame==frame&&state.LastCompletion<=state.Completed,"admitted rigid owner pair executes and completes this frame");
             Check(Near(owned.M,expected,.02f)&&Math.Abs(owned.M[centre]-stock.M[centre])<.01f&&Math.Abs(owned.M[centre+1]-stock.M[centre+1])<.01f&&owned.M[corner]==0&&owned.M[corner+1]==0,"owner-emitted Target3 matches the analytic and replay motion; uncovered pixels stay zero");
             Check(owned.M.SequenceEqual(Run().M)&&owned.G.SequenceEqual(Frame(3).G),"owner-emitted motion and material agree across recording modes");
+            foreach(uint id in instanced){var stream=Run(true,id);Console.WriteLine("VELOCITY owned stream"+id+"="+Motion(stream.M,centre));var status=backend.GetPostprocessGeneration(4097+2*id);
+                Check(Magenta(stream.G)&&status.Active==state.Active&&status.Executions>0&&status.LastFrame==frame,"admitted instanced/cube owner pair executes the replacement id"+id);
+                Check(Near(stream.M,expected,.02f)&&Math.Abs(stream.M[centre]-stockStreams[id].M[centre])<.01f&&Math.Abs(stream.M[centre+1]-stockStreams[id].M[centre+1])<.01f&&stream.M[corner]==0,"owner-emitted Target3 matches analytic and replay motion for stream id"+id);
+                Check(stream.M.SequenceEqual(Run(pipeline:id).M),"owner-emitted motion agrees across recording modes id"+id);}
             Register(magenta.Replace("float2 anomaly_velocity = input.anomaly_velocity;","float2 anomaly_velocity = float2(3, -2);"));var custom=Run(true);Console.WriteLine("VELOCITY custom="+Motion(custom.M,centre));
             Check(Property("Backend.GuestPostprocessStages","Error")==null&&custom.M[centre]==3&&custom.M[centre+1]==-2&&custom.M[corner]==0&&Magenta(custom.G),"pack-written velocity reaches Target3 from the owning invocation; replay skips that draw");
+            foreach(uint id in instanced){var stream=Run(true,id);Check(stream.M[centre]==3&&stream.M[centre+1]==-2&&stream.M[corner]==0&&Magenta(stream.G),"pack-written velocity reaches Target3 from the instanced/cube owning invocation id"+id);}
             var skinnedOwned=Run(true,1);Check(Magenta(skinnedOwned.G)&&skinnedOwned.M[centre]==0&&skinnedOwned.M[centre+1]==0,"non-admitted skinned owner keeps the replay contract without Target3");
             Check(Run().M.SequenceEqual(custom.M),"pack-written velocity agrees across recording modes");
             ulong token=backend.GetPostprocessGeneration(4097).Active;Register("BrokenSyntax");var broken=Run();Console.WriteLine("VELOCITY broken="+Motion(broken.M,centre)+" error="+Property("Backend.GuestPostprocessStages","Error")+" active="+backend.GetPostprocessGeneration(4097).Active+" was="+token);
             Check(Property("Backend.GuestPostprocessStages","Error") is string&&backend.GetPostprocessGeneration(4097).Active==token&&broken.M[centre]==3,"failed compilation retains the previous velocity owner generation");
             Call("Backend.GuestPassList","UnregisterRoot",owner);var restored=Run(true);
             Check(restored.M.SequenceEqual(stock.M)&&restored.G.SequenceEqual(stock.G),"unregister restores exact stock material and replay motion bits");
+            foreach(uint id in instanced){var stream=Run(true,id);Check(stream.M.SequenceEqual(stockStreams[id].M)&&stream.G.SequenceEqual(stockStreams[id].G),"unregister restores exact stock material and replay motion id"+id);}
             Run();Check(backend.GetPostprocessGeneration(4097).Retired==0,"velocity owner bundles retire after completed submissions");
             Check(backend.GetStats().ValidationEnabled!=0&&backend.GetStats().ValidationErrors==0,"GBuffer velocity owners have zero core/synchronization errors");
         }finally{Call("Backend.GuestPassList","UnregisterRoot",owner);stages.GetField("catalog",stat).SetValue(null,null);stages.GetField("catalogEpoch",stat).SetValue(null,-1L);}
