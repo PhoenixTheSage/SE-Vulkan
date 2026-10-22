@@ -353,7 +353,7 @@ struct DecalBatch {uint32_t role{};uint64_t textures[4]{};std::vector<uint32_t> 
 struct DecalState {VkPipeline pipelines[9]{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};Buffer constants[2]{},indices{};Image normals{};uint32_t width{},height{};bool initialized{};std::vector<SevkDecalDraw> draws;std::vector<DecalBatch> batches;};
 struct PostImage {Image image;uint32_t width{},height{};VkImageLayout layout{};VkFormat format{};};
 struct NativeCatalogResource {uint32_t binding{},dim{},arrayed{},depth{},number{};VkDescriptorType type{};bool owner_input{};};
-struct PostStage {uint64_t generation{},executions{},last_completion{};uint32_t last_frame{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{},other_hdr{};std::vector<std::pair<uint32_t,VkDescriptorType>> bindings;std::vector<NativeCatalogResource> catalog;bool compute{};};
+struct PostStage {uint64_t generation{},executions{},last_completion{};uint32_t last_frame{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{},other_hdr{};std::vector<std::pair<uint32_t,VkDescriptorType>> bindings;std::vector<NativeCatalogResource> catalog;bool compute{},probe_full_view{};};
 struct ShadowUsageView {Buffer gpu,readback,screen;bool pending{};};
 struct ShadowUsageState {PostStage stage;ShadowUsageView views[2][19];uint32_t pixels[19][8]{};uint64_t completion[19]{},latest{};bool enabled{};};
 struct PostCandidate {uint64_t expected{};VkFormat format{};std::vector<std::pair<uint32_t,PostStage>> stages;};
@@ -1792,6 +1792,7 @@ struct Renderer {uint32_t recipe_generation=1;
 #include "environment_generations.inc"
 #include "foliage_generations.inc"
 #include "decal_generations.inc"
+#include "probe_generations.inc"
 #include "postprocess.inc"
 #include "hbao.inc"
 #include "probes.inc"
@@ -2151,7 +2152,7 @@ int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32
     });
 }
 int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.resolution;return 0;},[&](Renderer& r){r.collect();*stats=r.resolution_stats;return 0;});}
-uint32_t SEVK_CALL sevk_guest_features(void){return 134217727u;}
+uint32_t SEVK_CALL sevk_guest_features(void){return 268435455u;}
 int32_t SEVK_CALL sevk_set_stage_bindings(void* ctx,const SevkStageBindings* rows,uint32_t count){
     return call(ctx,[&](Renderer& r){r.set_stage_bindings(rows,count);return 0;});
 }

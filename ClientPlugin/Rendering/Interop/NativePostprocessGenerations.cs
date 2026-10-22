@@ -50,6 +50,7 @@ public sealed partial class NativeBackend
         if(artifacts==null||artifacts.Count==0)throw new ArgumentException("Native owner generation requires stages.");
         if(artifacts.Keys.Any(id=>id>=256&&id<260)&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
         if(artifacts.Keys.Any(id=>id>=512&&id<515)&&(GuestFeatures()&16777216)==0)throw new NotSupportedException("Update SE-Vulkan native library: atmosphere owner generations require bit24.");
+        if(artifacts.Keys.Any(id=>id>=1280&&id<1284)&&(GuestFeatures()&134217728)==0)throw new NotSupportedException("Update SE-Vulkan native library: probe processing generations require bit27.");
         if(artifacts.Keys.Any(id=>id>=1024&&id<1034)&&(GuestFeatures()&67108864)==0)throw new NotSupportedException("Update SE-Vulkan native library: decal owner generations require bit26.");
         if(artifacts.Keys.Any(id=>id>=768&&id<773)&&(GuestFeatures()&33554432)==0)throw new NotSupportedException("Update SE-Vulkan native library: foliage owner generations require bit25.");
         if(artifacts.Values.Any(a=>UsesStageBindings(a.Layout))&&(GuestFeatures()&4194304)==0)
@@ -76,10 +77,12 @@ public sealed partial class NativeBackend
         if((GuestFeatures()&16777216)!=0&&EnvironmentLayouts.ContainsKey(0)&&EnvironmentLayouts.ContainsKey(1))ids=ids.Concat(Enumerable.Range(512,3));
         if((GuestFeatures()&33554432)!=0&&EnvironmentLayouts.ContainsKey(8))ids=ids.Concat(Enumerable.Range(768,5));
         if((GuestFeatures()&67108864)!=0)ids=ids.Concat(Enumerable.Range(1024,10));
+        if((GuestFeatures()&134217728)!=0)ids=ids.Concat(Enumerable.Range(1280,4));
         return ids.Select(index=>{uint id=(uint)index;var artifact=postprocessLibrary.Load(NativeOwnerVariant(id));return new object[]{id,artifact.Source,artifact.Profile};}).ToArray();
     }
     static string NativeOwnerVariant(uint id)
     {
+        if(id>=1280&&id<1284)return ProbeShaderVariants.Stages[id-1280];
         if(id>=1024&&id<1034){var pair=TransparencyShaderVariants.Decals[(id-1024)/2];return id%2==0?pair.Vertex:pair.Pixel;}
         if(id>=768&&id<773)return EnvironmentShaderVariants.Stages[id-764];
         if(id==514)return "1bb6f40fef889661d4a74d17f3dc6c2cdfbc083270382103ff395321ada20f05";
@@ -103,6 +106,7 @@ public sealed partial class NativeBackend
         foreach(uint id in stages)
         {
             string variant=NativeOwnerVariant(id);
+            if(id>=1280&&id<1284&&(GuestFeatures()&134217728)==0)throw new NotSupportedException("Update SE-Vulkan native library: probe processing generations require bit27.");
             if(id>=1024&&id<1034&&(GuestFeatures()&67108864)==0)throw new NotSupportedException("Update SE-Vulkan native library: decal owner generations require bit26.");
             if(id>=768&&id<773&&(GuestFeatures()&33554432)==0)throw new NotSupportedException("Update SE-Vulkan native library: foliage owner generations require bit25.");
             if(id>=512&&id<515&&(GuestFeatures()&16777216)==0)throw new NotSupportedException("Update SE-Vulkan native library: atmosphere owner generations require bit24.");

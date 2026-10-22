@@ -13,7 +13,7 @@ partial class Program
         Check((GuestBridge.SupportedPacketFlags&8388608)!=0&&(GuestBridge.SupportedPacketFlags&50331648)==0,"real older native host has bit23 but lacks environment owner bits24/25");
         const string owner="fixture.environment.oldhost";
         try {
-            foreach(var item in new[]{("Overlay/Atmosphere/AtmosphereGBuffer.hlsl","bit24"),("Overlay/Foliage/Foliage.hlsl","bit25"),("Overlay/Decals/Decals.hlsl","bit26"),("defines","bit24")}){
+            foreach(var item in new[]{("Overlay/Atmosphere/AtmosphereGBuffer.hlsl","bit24"),("Overlay/Foliage/Foliage.hlsl","bit25"),("Overlay/Decals/Decals.hlsl","bit26"),("Overlay/EnvProbe/ForwardPostprocess.hlsl","bit27"),("defines","bit24")}){
                 string root=Path.Combine(output,Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
                 File.WriteAllText(Path.Combine(root,"anomaly.json"),"{\"id\":\""+owner+"\""+(item.Item1=="defines"?",\"defines\":[\"FIXTURE_ENVIRONMENT\"]":"")+"}");
                 if(item.Item1!="defines"){string file=Path.Combine(root,item.Item1);Directory.CreateDirectory(Path.GetDirectoryName(file));File.WriteAllText(file,"Deliberately invalid: capability refusal must precede compilation");}

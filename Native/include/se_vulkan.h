@@ -485,6 +485,8 @@ SEVK_API int32_t SEVK_CALL sevk_guest_reset(void* ctx);
  * compute/main-view/probe modules 512..514. Feature bit25 adds foliage
  * modules 768..772 as a required shared-VS/two-GS/two-PS closure.
  * Feature bit26 adds decal VS/PS pairs 1024..1033; each pair is indivisible.
+ * Feature bit27 adds probe processing owners 1280..1283. The stock dormant
+ * factor-blend owner retains zero execution until a real invocation exists.
  * Existing ABI-1 module/state packets retain their size and version checks. */
 SEVK_API uint32_t SEVK_CALL sevk_guest_features(void);
 /* Feature bit22: frame-stamped, copied catalog reservations for native owners.

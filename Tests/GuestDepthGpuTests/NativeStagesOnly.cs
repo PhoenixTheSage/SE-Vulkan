@@ -9,9 +9,9 @@ using VRageRender;
 partial class Program
 {
     // Focused actual-core gate for native owner work; the full recreation gate remains required.
-    static int NativeStagesOnly(string bin,bool bindingsOnly=false,bool oldBindingHost=false,bool catalogLifecycle=false,bool lateHistory=false,bool classicNulls=false,bool oldClassicHost=false,bool atmosphereOnly=false,bool environmentBatch=false,bool oldEnvironmentHost=false,bool decalsOnly=false)
+    static int NativeStagesOnly(string bin,bool bindingsOnly=false,bool oldBindingHost=false,bool catalogLifecycle=false,bool lateHistory=false,bool classicNulls=false,bool oldClassicHost=false,bool atmosphereOnly=false,bool environmentBatch=false,bool oldEnvironmentHost=false,bool decalsOnly=false,bool probeProcessingOnly=false,bool oldProbeProcessingHost=false)
     {
-        string root=Directory.GetCurrentDirectory(),output=Path.GetFullPath(oldEnvironmentHost?"TestResults/EnvironmentOldHostTests":oldClassicHost?"TestResults/ClassicNullOldHostTests":oldBindingHost?"TestResults/NativeBindingOldHostTests":"TestResults/NativeStagesGpuTests"),stage=Path.Combine(output,"Assets");
+        string root=Directory.GetCurrentDirectory(),output=Path.GetFullPath(oldProbeProcessingHost?"TestResults/ProbeProcessingOldHostTests":oldEnvironmentHost?"TestResults/EnvironmentOldHostTests":oldClassicHost?"TestResults/ClassicNullOldHostTests":oldBindingHost?"TestResults/NativeBindingOldHostTests":"TestResults/NativeStagesGpuTests"),stage=Path.Combine(output,"Assets");
         Directory.CreateDirectory(Path.Combine(stage,"Native/win-x64"));Directory.CreateDirectory(Path.Combine(stage,"Shaders/Compiled"));
         string native=Environment.GetEnvironmentVariable("ANOMALY_TEST_NATIVE_DLL");
         File.Copy(string.IsNullOrWhiteSpace(native)?Path.Combine(root,"Native/build/Release/se_vulkan_native.dll"):Path.GetFullPath(native),Path.Combine(stage,"Native/win-x64/se_vulkan_native.dll"),true);
@@ -29,9 +29,11 @@ partial class Program
         Call("Backend.GuestOwned","Register",assets);Call("Backend.GuestCompiler","CompilePending",assets);
         var projection=MatrixD.CreatePerspectiveFieldOfView(Math.PI/2,1,.1,100);projection.M33=projection.M34-projection.M33;projection.M43=projection.M44-projection.M43;
         var light=MyEnvironmentLightData.Default;light.SunLightDirection=Vector3.Forward;light.SunColorRaw=Vector3.One;light.SunDiffuseFactor=1;light.SunDiscIntensity=0;
+        if(oldProbeProcessingHost){int count=OldProbeProcessingHostRegression(core,output,backend);Console.WriteLine("PASS "+count+" actual older-host probe processing checks");return 0;}
+        if(probeProcessingOnly&&!environmentBatch){int count=ProbeProcessingGenerationRegression(core,output,bin,backend,projection,light);Console.WriteLine("PASS "+count+" actual-core probe processing checks");return 0;}
         if(decalsOnly){int count=DecalGenerationRegression(core,assets,output,backend,projection,light,library);Console.WriteLine("PASS "+count+" actual-core decal owner checks");return 0;}
         if(oldEnvironmentHost){int count=OldEnvironmentHostRegression(core,output,backend);Console.WriteLine("PASS "+count+" actual older-host environment checks");return 0;}
-        if(environmentBatch){int count=FoliageGenerationRegression(core,assets,output,backend,projection,light,library)+AtmosphereGenerationRegression(core,assets,output,backend,projection,light)+ProbeAtmosphereGenerationRegression(core,assets,output,bin,backend,projection,light);Console.WriteLine("PASS "+count+" actual-core environment owner batch checks");return 0;}
+        if(environmentBatch){int count=FoliageGenerationRegression(core,assets,output,backend,projection,light,library)+AtmosphereGenerationRegression(core,assets,output,backend,projection,light)+ProbeAtmosphereGenerationRegression(core,assets,output,bin,backend,projection,light);if(probeProcessingOnly)count+=ProbeProcessingGenerationRegression(core,output,bin,backend,projection,light);Console.WriteLine("PASS "+count+(probeProcessingOnly?" actual-core environment/probe owner batch checks":" actual-core environment owner batch checks"));return 0;}
         if(atmosphereOnly){int count=AtmosphereGenerationRegression(core,assets,output,backend,projection,light);Console.WriteLine("PASS "+count+" actual-core atmosphere generation checks");return 0;}
         if(oldClassicHost){int count=OldClassicNullHostRegression(core,assets,output,backend);Console.WriteLine("PASS "+count+" actual older-host classic resource checks");return 0;}
         if(classicNulls){int count=ClassicNullRegression(core,assets,output,backend,projection,light);Console.WriteLine("PASS "+count+" actual-core classic null checks");return 0;}

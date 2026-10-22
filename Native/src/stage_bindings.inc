@@ -1,12 +1,12 @@
 // Frame data is copied before recording. Native owners never retain managed memory.
-bool native_binding_owner(uint32_t id){return id<62 || (id>=128&&id<144) || (id>=256&&id<260) || (id>=512&&id<515) || id==770 || id==772 || (id>=1025&&id<1034&&(id%2));}
+bool native_binding_owner(uint32_t id){return id<62 || (id>=128&&id<144) || (id>=256&&id<260) || (id>=512&&id<515) || id==770 || id==772 || (id>=1025&&id<1034&&(id%2)) || (id>=1280&&id<1284);}
 void clear_stage_bindings(){
     guest.stage_bindings.clear();guest.bindings_frame=UINT32_MAX;
     guest.binding_resolved=guest.binding_missing=guest.binding_mismatched=0;
 }
 void set_stage_bindings(const SevkStageBindings* rows,uint32_t count){
     static_assert(sizeof(SevkStageBindings)==120);static_assert(sizeof(SevkStageBindingState)==48);
-    if(!recording||!guest.resources_open||count>100||(!rows&&count))throw std::runtime_error("native stage bindings require the open frame callback");
+    if(!recording||!guest.resources_open||count>104||(!rows&&count))throw std::runtime_error("native stage bindings require the open frame callback");
     guest_refresh_frame();std::unordered_map<uint32_t,SevkStageBindings> next;
     for(uint32_t i=0;i<count;++i){const auto& r=rows[i];
         if(r.size!=sizeof(r)||r.abi_version!=SEVK_ABI_VERSION||r.reserved||r.frame_index!=guest.frame.frame_index||!native_binding_owner(r.stage)||
