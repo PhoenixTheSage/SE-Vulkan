@@ -117,6 +117,7 @@ partial class Program
         checks+=NativeBindingRegression(core,assets,output,backend,projection,light);
         checks+=CatalogLifecycleRegression(core,backend,projection,light);
         checks+=LateColorHistoryRegression(core,assets,output,backend,projection,light);
+        checks+=ClassicNullRegression(core,assets,output,backend,projection,light);
         var finalStats=backend.GetStats();
         Check(finalStats.ValidationErrors==0,"entire recreated volume/resize/provider/snapshot lane reports no validation errors");
         Console.WriteLine("recreated volume lane validation enabled="+finalStats.ValidationEnabled);

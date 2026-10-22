@@ -19,3 +19,24 @@ The recreation phase destroys the initial production scene/backend and creates a
 The snapshot follow-up separates HDR and tone/upscale images, retires replaced snapshots with the existing frame-slot fences (or synchronous replay completion), and uses world render dimensions for HDR at AfterUpscale. The actual-core lane now passes 268 checks, including simultaneous distinct HDR/tone inputs and fractions 1, .5, .75, 1 through real stock tone mapping. Full volume-owner DRS/history, vendor upscale, loaded-world recovery and real multi-pack/topology remain separate gates. Native Release passes 15 tests with one optional reference skip; no validation-layer coverage is claimed.
 Stage/provider follow-up: the lane now passes 268 checks. Shared volume binds remain unavailable through AfterAtmosphere fullscreen work, matching DX11 publication; the actual BeforeTonemap observer sees merged volume motion. Production FinalFrontier Fog and VolumetricClouds sources run with controlled mipmapped noise and 64x64x2 weather: every froxel passes extinction composition, both intervals commit/revoke/recover, and weather updates remove clouds while preserving fog. Texture, mip-volume and structured uploads reuse IDs rather than abandoning allocations. This does not exercise game plugin adapters, live gas topology, full volume-owner DRS/history or loaded-world performance.
 The current lane passes 268 checks with validation_enabled=1 and zero Khronos validation errors. The runner automatically discovers Native/build/validation/Bin when VK_LAYER_PATH is unset and enables synchronization validation when VK_LAYER_ENABLES is also unset; caller choices remain authoritative and no global settings change. Volume-owner tests vary fractions .5/.75/1 and output 95x73, check partial grid dimensions and render-sized playerDepth/litMips, verify automatic history rejection/recovery, and restore the original output. Native guest frame dimensions now use the planned world extent before EndFrame; fresh sampled images clear and transition across all mips/layers, without claiming a produced catalog entry. Postprocess images now support transfer-source snapshot copies. All 16 canonical native tests pass with the private layer enabled. Earlier validation-disabled evidence is historical. Loaded-world/plugin-adapter/vendor-upscale, actual device-loss fault and performance coverage remain separate.
+
+## Current classic fullscreen resource gate (22 October 2026)
+
+Use the private parity build via ANOMALY_TEST_NATIVE_DLL pointing at
+Native/build-anomaly-parity/Release/se_vulkan_native.dll. Build Anomaly and this
+fixture first without deployment. --classic-nulls-only runs100 actual-core checks
+through the production compiler, frame snapshot, submission and GPU readback.
+It covers Texture2D/3D/2DArray, StructuredBuffer, typed Buffer and SampleLevel,
+missing inputs, incompatible types, upload-mode changes, unregister and both
+synchronous/pipelined recording. The independent DX11 null oracle lives in
+Anomaly/Tests/TransparentBindings/CatalogNullProbe.cs. Native bit23 requires
+device nullDescriptor support; ABI-1 packets do not change.
+
+--classic-null-old-host runs against an explicitly selected older native library
+with bit22 but not bit23. It checks actionable refusal before pipeline creation
+and continued compatibility when the compiler optimizes away unused resources.
+The combined recreation lane now includes the focused classic resource gate.
+The final combined998-check gate passes with validation enabled and zero errors.
+Native CTest executes16 passes plus one configured reference skip. Windows live acceptance is waived for the
+active parity goal; plugin adapters/vendor algorithms/performance remain separate
+automated work. No deployment or player-profile changes occur here.

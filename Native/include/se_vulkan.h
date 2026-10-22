@@ -477,6 +477,10 @@ typedef struct SevkGuestPass2 {
 SEVK_API int32_t SEVK_CALL sevk_guest_create_pipeline2(void* ctx, const void* vs, uint64_t vs_bytes, const char* vs_entry, const void* ps, uint64_t ps_bytes, const char* ps_entry, uint32_t contract, uint64_t* pipeline);
 SEVK_API int32_t SEVK_CALL sevk_guest_submit2(void* ctx, const SevkGuestPass2* passes, uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_guest_reset(void* ctx);
+/* Feature bit23: classic fullscreen true-null sampled/structured/typed SRVs.
+ * Packet ABI is unchanged. Resource pipelines require device nullDescriptor;
+ * SevkStageBindingState.flags bit0 reports that device capability. Extended
+ * contracts retain required-input validation. */
 SEVK_API uint32_t SEVK_CALL sevk_guest_features(void);
 /* Feature bit22: frame-stamped, copied catalog reservations for native owners.
  * Register slots use t5..t9; fresh mask bit0 describes the separate velocity ID,

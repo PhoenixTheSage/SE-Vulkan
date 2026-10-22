@@ -9,7 +9,7 @@ struct GuestPipeline {
     uint32_t group_x{8}, group_y{8};
     uint32_t group_z{1}, contract{}, constant_bytes[8]{};
     VkFormat output_formats[5]{};
-    uint32_t input_dims[48]{}, input_arrayed[48]{}, output_dims[5]{};
+    uint32_t input_dims[48]{}, input_arrayed[48]{}, input_depth[48]{}, input_number[48]{}, output_dims[5]{};
     bool bus{}, compute{}, geometry{};
 };
 struct GuestImage {
@@ -200,7 +200,16 @@ bool guest_binding_allowed(const SpvReflectDescriptorBinding& binding, bool comp
         if (binding.binding == 7 && binding.block.size <= 256) { stored.uniform_bytes = binding.block.size; return true; }
         return false;
     }
-    if (type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) return binding.binding >= 128 && binding.binding <= 141;
+    if (type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) {
+        if (!null_descriptors) throw std::runtime_error("classic guest resources require device nullDescriptor support; select a capable Vulkan device/driver");
+    }
+    if (type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE && binding.binding >= 128 && binding.binding <= 141) {
+        uint32_t slot=binding.binding-128;
+        stored.input_dims[slot]=binding.image.dim;stored.input_arrayed[slot]=binding.image.arrayed;stored.input_depth[slot]=binding.image.depth;
+        stored.input_number[slot]=binding.type_description&&(binding.type_description->type_flags&SPV_REFLECT_TYPE_FLAG_INT)?(binding.type_description->traits.numeric.scalar.signedness?1u:2u):0u;
+        return !binding.image.ms&&(binding.image.dim==SpvDim2D||binding.image.dim==SpvDim3D);
+    }
+    if (type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) return binding.binding >= 128 && binding.binding <= 141;
     if (type == VK_DESCRIPTOR_TYPE_SAMPLER) return binding.binding >= 256 && binding.binding <= 258;
     if (type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) return binding.binding == 128 || binding.binding == 129 || (binding.binding >= 135 && binding.binding <= 141);
     return compute && type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE && binding.binding == 384;
@@ -578,9 +587,9 @@ int guest_pool_index() { return recording ? int(slot_index % 2) : 2; }
 VkDescriptorPool guest_pool(int index) {
     uint64_t stamp = recording ? stats.submitted_frames + 1 : guest.replay_count;
     if (!guest.pools[index]) {
-        std::array<VkDescriptorPoolSize, 4> sizes{{ { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4096 }, { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16384 }, { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 256 }, { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2048 } }};
+        std::array<VkDescriptorPoolSize, 5> sizes{{ { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4096 }, { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16384 }, { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 256 }, { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2048 }, { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 2048 } }};
         VkDescriptorPoolCreateInfo info{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        info.maxSets = 1024; info.poolSizeCount = 4; info.pPoolSizes = sizes.data();
+        info.maxSets = 1024; info.poolSizeCount = uint32_t(sizes.size()); info.pPoolSizes = sizes.data();
         check(vkCreateDescriptorPool(device, &info, nullptr, &guest.pools[index]), "create guest descriptor pool");
     }
     if (guest.pool_stamp[index] != stamp) {
@@ -639,28 +648,28 @@ bool guest_anomaly_velocity(VkImageView& view, VkImage& image, uint32_t& width, 
 
 VkImageView guest_source(uint64_t id, bool* hdr) {
     if (hdr) *hdr = false;
-    if (id == kGuestHdr) { if (hdr) *hdr = true; return world.hdr.view ? world.hdr.view : guest_dummy(); }
-    if (id == kGuestDepth) return world.gbuffer[3].view ? world.gbuffer[3].view : guest_dummy();
-    if (id == kGuestG0) return world.gbuffer[0].view ? world.gbuffer[0].view : guest_dummy();
-    if (id == kGuestG1) return world.gbuffer[1].view ? world.gbuffer[1].view : guest_dummy();
-    if (id == kGuestG2) return world.gbuffer[2].view ? world.gbuffer[2].view : guest_dummy();
+    if (id == kGuestHdr) { if (hdr) *hdr = true; return world.hdr.view ? world.hdr.view : VK_NULL_HANDLE; }
+    if (id == kGuestDepth) return world.gbuffer[3].view ? world.gbuffer[3].view : VK_NULL_HANDLE;
+    if (id == kGuestG0) return world.gbuffer[0].view ? world.gbuffer[0].view : VK_NULL_HANDLE;
+    if (id == kGuestG1) return world.gbuffer[1].view ? world.gbuffer[1].view : VK_NULL_HANDLE;
+    if (id == kGuestG2) return world.gbuffer[2].view ? world.gbuffer[2].view : VK_NULL_HANDLE;
     if (id == kGuestUpscale) {
         if (display_state.upscale_ready && display_state.upscale_view) return display_state.upscale_view;
         if (post.after_tonemap && post.after_tonemap->image.view) return post.after_tonemap->image.view;
-        return post.output && post.output->image.view ? post.output->image.view : (world.hdr.view ? world.hdr.view : guest_dummy());
+        return post.output && post.output->image.view ? post.output->image.view : (world.hdr.view ? world.hdr.view : VK_NULL_HANDLE);
     }
-    if (id == kGuestMotion) return world.motion.view ? world.motion.view : guest_dummy();
+    if (id == kGuestMotion) return world.motion.view ? world.motion.view : VK_NULL_HANDLE;
     if(id>=kGuestCatalogVelocity && id<=kGuestCatalogReactiveMask){auto found=guest.images.find(id);if(found!=guest.images.end())return found->second.image.view;}
-    if (id >= kGuestAttach0 && id < kGuestAttach0 + 3) { auto& target = world.attach[id - kGuestAttach0]; return target.image.view ? target.image.view : guest_dummy(); }
+    if (id >= kGuestAttach0 && id < kGuestAttach0 + 3) { auto& target = world.attach[id - kGuestAttach0]; return target.image.view ? target.image.view : VK_NULL_HANDLE; }
     // Preserve old attachment aliases only when no pinned catalog image owns
     // that ID. Updated hosts use the disjoint 0x10..0x12 range above.
-    if(id>=0xFFFF000000000009ull && id<=0xFFFF00000000000Bull){auto& target=world.attach[id-0xFFFF000000000009ull];return target.image.view?target.image.view:guest_dummy();}
+    if(id>=0xFFFF000000000009ull && id<=0xFFFF00000000000Bull){auto& target=world.attach[id-0xFFFF000000000009ull];return target.image.view?target.image.view:VK_NULL_HANDLE;}
     if (id == kGuestDisplay) {
         if (swapchain && image_index < swap_views.size()) return swap_views[image_index];
-        return offscreen.view ? offscreen.view : guest_dummy();
+        return offscreen.view ? offscreen.view : VK_NULL_HANDLE;
     }
     auto found = guest.images.find(id);
-    return found == guest.images.end() ? guest_dummy() : found->second.image.view;
+    return found == guest.images.end() ? VK_NULL_HANDLE : found->second.image.view;
 }
 
 bool guest_snapshot_size(GuestSnapshot& snapshot,uint32_t width,uint32_t height) {
@@ -914,7 +923,8 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
     else if(sample_upscale)upscale_snapshot=guest_copy_hdr(cmd,hdr_layout);
     std::vector<VkDescriptorBufferInfo> buffers;
     std::vector<VkDescriptorImageInfo> images;
-    struct GuestWrite { uint32_t binding; VkDescriptorType type; int buffer{-1}, image{-1}; };
+    std::vector<VkBufferView> texels;
+    struct GuestWrite { uint32_t binding; VkDescriptorType type; int buffer{-1}, image{-1}, texel{-1}; };
     std::vector<GuestWrite> planned;
     for (auto binding : pipeline.bindings) {
         GuestWrite planned_write{ binding.first, binding.second, -1, -1 };
@@ -929,11 +939,23 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
             uint32_t slot = binding.first - 128;
             uint64_t id = slot < 48 ? pass.sampled[slot] : 0;
             if (pass.extended && (!id || (id < kGuestHdr && (guest.images.find(id) == guest.images.end() || guest.images.at(id).is_buffer)))) return false;
-            bool hdr = false; VkImageView view = id ? guest_source(id, &hdr) : guest_dummy();
+            bool hdr = false; VkImageView view = id ? guest_source(id, &hdr) : VK_NULL_HANDLE;
             auto source=guest.images.find(id);
+            if(!pass.extended && view) {
+                bool volume=source!=guest.images.end()&&source->second.depth>1;
+                bool arrayed=source!=guest.images.end()&&source->second.layers>1;
+                bool depth=source!=guest.images.end()?source->second.aspect==VK_IMAGE_ASPECT_DEPTH_BIT:id==kGuestDepth;
+                uint32_t number=0;
+                if(id>=kGuestAttach0&&id<kGuestAttach0+3&&world.attach[id-kGuestAttach0].format==4)number=2;
+                bool compatible=(source==guest.images.end()||!source->second.is_buffer)&&
+                    pipeline.input_dims[slot]==uint32_t(volume?SpvDim3D:SpvDim2D)&&pipeline.input_arrayed[slot]==uint32_t(arrayed)&&
+                    pipeline.input_number[slot]==number&&(pipeline.input_depth[slot]!=1||depth);
+                if(!compatible)view=VK_NULL_HANDLE;
+            }
             if(source!=guest.images.end() && !source->second.is_buffer && view==source->second.image.view)guest_initialize_sampled(cmd,source->second);
-            if (hdr && hdr_snapshot) view = hdr_snapshot;
-            if (id == kGuestUpscale && upscale_snapshot) view = upscale_snapshot;
+            if (view && hdr && hdr_snapshot) view = hdr_snapshot;
+            if (view && id == kGuestUpscale && upscale_snapshot) view = upscale_snapshot;
+            if(pass.extended&&!view)return false; // Extended inputs are required, never optional nulls.
             VkImageLayout layout = id == kGuestDepth && (pass.flags & 1) ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             planned_write.image = int(images.size());
             images.push_back({ nullptr, view, layout });
@@ -947,14 +969,17 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
                 auto& world_slot = world.slots[slot_index];
                 const auto& source = slot == 10 ? world_slot.point_lights
                     : light_tiles.requested ? world_slot.light_tile_gpu : world_slot.tiles;
-                if (!source.handle || !source.bytes) return false;
                 planned_write.buffer = int(buffers.size());
-                buffers.push_back({ source.handle, 0, source.bytes });
+                buffers.push_back({ source.handle, 0, source.handle ? source.bytes : VK_WHOLE_SIZE });
                 planned.push_back(planned_write);
                 continue;
             }
             auto image = guest.images.find(id);
-            if (image == guest.images.end() || !image->second.is_buffer) return false;
+            if (image == guest.images.end() || !image->second.is_buffer) {
+                if(pass.extended)return false;
+                planned_write.buffer=int(buffers.size());buffers.push_back({VK_NULL_HANDLE,0,VK_WHOLE_SIZE});
+                planned.push_back(planned_write);continue;
+            }
             auto& source = image->second;
             auto& buffer = source.storage[pool];
             if (source.uploaded[pool] != source.revision) {
@@ -964,6 +989,9 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
             }
             planned_write.buffer = int(buffers.size());
             buffers.push_back({ buffer.handle, 0, buffer.bytes });
+        } else if (binding.second == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) {
+            // Structured uploads have no typed-buffer view, matching native owner bindings.
+            planned_write.texel=int(texels.size());texels.push_back(VK_NULL_HANDLE);
         } else if (binding.second == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
             auto image = guest.images.find(pass.extended ? pass.outputs[binding.first - 384] : pass.storage);
             if (image == guest.images.end()) return false;
@@ -977,6 +1005,7 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
         writes[i] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET }; writes[i].dstSet = set; writes[i].dstBinding = planned[i].binding; writes[i].descriptorCount = 1; writes[i].descriptorType = planned[i].type;
         if (planned[i].buffer >= 0) writes[i].pBufferInfo = &buffers[planned[i].buffer];
         if (planned[i].image >= 0) writes[i].pImageInfo = &images[planned[i].image];
+        if (planned[i].texel >= 0) writes[i].pTexelBufferView = &texels[planned[i].texel];
     }
     if (!writes.empty()) vkUpdateDescriptorSets(device, uint32_t(writes.size()), writes.data(), 0, nullptr);
     if (pipeline.compute) {
