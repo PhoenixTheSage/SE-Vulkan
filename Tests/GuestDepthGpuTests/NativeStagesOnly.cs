@@ -29,7 +29,9 @@ partial class Program
         Call("Backend.GuestOwned","Register",assets);Call("Backend.GuestCompiler","CompilePending",assets);
         var projection=MatrixD.CreatePerspectiveFieldOfView(Math.PI/2,1,.1,100);projection.M33=projection.M34-projection.M33;projection.M43=projection.M44-projection.M43;
         var light=MyEnvironmentLightData.Default;light.SunLightDirection=Vector3.Forward;light.SunColorRaw=Vector3.One;light.SunDiffuseFactor=1;light.SunDiscIntensity=0;
-        int checks=OwnedStageRegression(core,assets,output,backend,projection,light);
+        int checks=StageBindingFacadeContracts(core);
+        checks+=EarlyOwnedRegression(core,assets,output,backend,projection,light);
+        checks+=OwnedStageRegression(core,assets,output,backend,projection,light);
         checks+=PostprocessGenerationRegression(core,assets,output,backend,library,projection,light);
         checks+=LightingGenerationRegression(core,assets,output,backend,library,projection,light);
         var stats=backend.GetStats();if(stats.ValidationEnabled==0||stats.ValidationErrors!=0)throw new Exception("Focused native-stage core/synchronization validation failed");

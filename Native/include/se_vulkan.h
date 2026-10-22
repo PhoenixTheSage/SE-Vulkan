@@ -442,6 +442,10 @@ SEVK_API int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionSta
  * uint vertex count at 144. Guest image format 6 is RGBA32F. Readback returns
  * owned images' native texel bytes (2/4/8/16 bytes), without color conversion.
  * The HDR sentinel always expands to RGBA16F, including normal-quality R11G11B10.
+ * Feature bit21: reserved flag 4096 queues an Anomaly-owned isolated mark-1
+ * fullscreen producer after opaque GBuffer/decal writes, before AO/lighting.
+ * It requires compose=5, an owned offscreen image and no other packet flags.
+ * Public replay marks and callback phases are unchanged.
  * Query sevk_guest_features before using additive packet flags.
  * Sampled sentinels: HDR ..1, depth ..2, GBuffer0..2 ..3..5, upscale ..6, display ..7,
  * motion ..8, attachment0 ..9. Catalog velocity is ..A, volumeReactive is ..B, reactiveMask is ..C. */

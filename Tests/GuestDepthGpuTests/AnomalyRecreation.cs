@@ -109,6 +109,8 @@ partial class Program
         Call("Shaders.VolumetricMediumRegistry","RequestRenderer",id,false);Call("Shaders.VolumetricMediumRegistry","SetEnabled",id,false);Call("Buffers.BufferCatalog","UnregisterLifetime","fixture.epoch");
         int packChecks=RealPackVolumes(core,root,assets,backend,Frame);checks+=packChecks;
         checks+=SnapshotRegression(core,assets,output,backend,library,projection,light);
+        checks+=StageBindingFacadeContracts(core);
+        checks+=EarlyOwnedRegression(core,assets,output,backend,projection,light);
         checks+=OwnedStageRegression(core,assets,output,backend,projection,light);
         checks+=PostprocessGenerationRegression(core,assets,output,backend,library,projection,light);
         checks+=LightingGenerationRegression(core,assets,output,backend,library,projection,light);

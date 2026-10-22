@@ -1677,7 +1677,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if(world.current().queued&&timing_pool){vkCmdWriteTimestamp2(slot.command,VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,timing_pool,slot_index*2+1);timing_valid[slot_index]=true;}
         frame_mark("frame end");if(profile_label_open){vkCmdEndDebugUtilsLabelEXT(slot.command);profile_label_open=false;}
         check(vkEndCommandBuffer(slot.command), "end frame command"); recording = false;
-        guest.passes.clear(); // Frame packets never replay implicitly in a later frame.
+        guest.passes.clear();guest.has_early_owned=false; // Frame packets never replay implicitly in a later frame.
         performance.finish_us=perf_take();
         VkCommandBufferSubmitInfo command{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO }; command.commandBuffer = slot.command;
         VkSemaphoreSubmitInfo acquired{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO }; acquired.semaphore = slot.acquired; acquired.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -2139,7 +2139,7 @@ int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32
     });
 }
 int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.resolution;return 0;},[&](Renderer& r){r.collect();*stats=r.resolution_stats;return 0;});}
-uint32_t SEVK_CALL sevk_guest_features(void){return 2097151u;}
+uint32_t SEVK_CALL sevk_guest_features(void){return 4194303u;}
 int32_t SEVK_CALL sevk_guest_frame_environment(void* ctx,const SevkGuestEnvironment* environment){
     if(!environment || environment->size!=sizeof(*environment) || environment->abi_version!=SEVK_ABI_VERSION || environment->reserved || environment->pad)return -1;
     const auto copied=*environment;
@@ -2166,7 +2166,7 @@ int32_t SEVK_CALL sevk_guest_depth_views(void* ctx,const uint64_t* images,const 
 uint32_t SEVK_CALL sevk_guest_depth_ready(void* ctx){
     uint32_t ready=0;call(ctx,[&](Renderer& r){ready=r.guest.depth_ready;return 0;});return ready;
 }
-int32_t SEVK_CALL sevk_guest_reset(void* ctx){return call(ctx,[](Renderer& r){r.guest.passes.clear();++r.guest.catalog_epoch;return 0;});}
+int32_t SEVK_CALL sevk_guest_reset(void* ctx){return call(ctx,[](Renderer& r){r.guest.passes.clear();r.guest.has_early_owned=false;++r.guest.catalog_epoch;return 0;});}
 uint32_t SEVK_CALL sevk_guest_catalog_mask(void* ctx){uint32_t mask=0;call(ctx,[&](Renderer& r){VkImageView v{};VkImage i{};uint32_t w{},h{};for(uint32_t b=0;b<3;b++)if(r.guest_catalog_view(0xFFFF00000000000Aull+b,v,i,w,h))mask|=1u<<b;return 0;});return mask;}
 int32_t SEVK_CALL sevk_guest_create_pipeline(void* ctx,const void* vs,uint64_t vs_bytes,const char* vs_entry,const void* ps,uint64_t ps_bytes,const char* ps_entry,uint64_t* pipeline){
     return call(ctx,[&](Renderer& r){if(!pipeline)throw std::runtime_error("null guest pipeline");*pipeline=r.guest_create_pipeline(vs,vs_bytes,vs_entry,ps,ps_bytes,ps_entry);return 0;});

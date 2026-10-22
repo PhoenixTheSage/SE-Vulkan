@@ -544,6 +544,10 @@ void render_world(){
     frame_mark("environment prepare");prepare_environment(cmd,slot);
     frame_mark("CSM copy");prepare_csm(cmd);render_probes(cmd,slot,object_offsets,instance_offsets);work.probe_us=profile_take();
     critical_profile::Scope critical_lighting(critical_profile::LightingPostRecord,true);
+    // Depth/object motion and opaque decal writes are now complete. These
+    // framework-owned products must precede AO and deferred-lighting consumers.
+    // Mark 7 is internal: public Before/AfterFullscreen phases stay unchanged.
+    if(guest.has_early_owned){frame_mark("anomaly early products");guest_replay(cmd,7);}
     frame_mark("postprocess prepare");prepare_postprocess(cmd,slot);
     frame_mark("light tile selection");dispatch_light_tiles(cmd,slot);
     frame_mark("shadow resolve");auto lighting=world_light_set(slot);

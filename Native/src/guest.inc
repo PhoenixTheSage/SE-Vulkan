@@ -46,7 +46,7 @@ static_assert(sizeof(GuestExtras) == 320, "fullscreen extras are 320 bytes");
 static_assert(sizeof(SevkGuestFrame) == 344, "guest frame is 344 bytes");
 static_assert(sizeof(SevkGuestPass2) == 568, "extended guest packet is 568 bytes");
 struct GuestState {
-    bool resources_open{};
+    bool resources_open{},has_early_owned{};
     uint32_t depth_count{},depth_ready{};
     bool depth_configured{};
     uint64_t depth_images[3]{};
@@ -417,12 +417,22 @@ void guest_submit(const SevkGuestPass* passes, uint32_t count) {
     for (uint32_t i = 0; i < count; ++i) {
         if (passes[i].size != sizeof(SevkGuestPass) || passes[i].abi_version != SEVK_ABI_VERSION) throw std::runtime_error("guest pass ABI mismatch");
         if (passes[i].mark < 1 || passes[i].mark > 6) throw std::runtime_error("guest mark out of range");
+        // Feature bit21 is reserved for Anomaly-owned, offscreen producers.
+        // Public callback phases remain on marks 1..6.
+        if(passes[i].reserved&4096u){
+            auto image=guest.images.find(passes[i].storage);auto pipeline=guest.pipelines.find(passes[i].pipeline);
+            if(passes[i].mark!=1 || passes[i].compose!=5 || (passes[i].reserved&~4096u) ||
+                image==guest.images.end() || image->second.is_buffer || image->second.depth!=1 || image->second.layers!=1 || image->second.aspect!=VK_IMAGE_ASPECT_COLOR_BIT ||
+                pipeline==guest.pipelines.end() || pipeline->second.compute || pipeline->second.geometry || pipeline->second.contract)
+                throw std::runtime_error("early owned producer must be an isolated mark-1 fullscreen pass");
+        }
         GuestPass pass{};
         pass.mark = passes[i].mark; pass.compose = passes[i].compose; pass.width = passes[i].width; pass.height = passes[i].height;
         pass.pipeline = passes[i].pipeline; pass.storage = passes[i].storage; pass.uniform_bytes = std::min(passes[i].uniform_bytes, 256u); pass.flags = passes[i].reserved;
         std::memcpy(pass.uniforms, passes[i].uniforms, pass.uniform_bytes);
         std::memcpy(pass.sampled, passes[i].sampled, sizeof(passes[i].sampled));
         guest.passes.push_back(pass);
+        guest.has_early_owned|=(pass.flags&4096u)!=0;
     }
 }
 
@@ -596,8 +606,13 @@ VkImageView guest_dummy() {
     if (guest.dummy.view) return guest.dummy.view;
     guest.dummy = make_image(1, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
     immediate([&](VkCommandBuffer cmd) {
-        barrier(cmd, guest.dummy.handle, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        barrier(cmd, guest.dummy.handle, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkClearColorValue zero{};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+        vkCmdClearColorImage(cmd,guest.dummy.handle,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&zero,1,&range);
+        barrier(cmd, guest.dummy.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     });
     return guest.dummy.view;
 }
@@ -1165,7 +1180,9 @@ void guest_replay(VkCommandBuffer cmd, uint32_t mark) {
     for(uint32_t phase=0;phase<3;phase++)for (const auto& pass : guest.passes) {
         uint32_t selected=pass.extended && (pass.flags&1024u)?0u:pass.extended && (pass.flags&2048u)?2u:1u;
         if(selected!=phase)continue;
-        if (pass.mark != mark) continue;
+        const bool early=(pass.flags&4096u)!=0;
+        if(mark==7 ? !(early&&pass.mark==1) : (pass.mark!=mark||early))continue;
+        const uint32_t effective_mark=mark==7?1u:mark;
         if(pass.operation==3){
             auto found=guest.images.find(pass.storage);if(found==guest.images.end())continue;
             auto& image=found->second;
@@ -1183,11 +1200,11 @@ void guest_replay(VkCommandBuffer cmd, uint32_t mark) {
         if(!pass.pipeline)continue;
         const char* trace=std::getenv("SE_VULKAN_GUEST_TRACE");
         if(trace && std::strcmp(trace,"1")==0){std::fprintf(stderr,"guest mark=%u phase=%u pipe=%llu target=%llu %ux%ux%u\n",mark,phase,(unsigned long long)pass.pipeline,(unsigned long long)pass.storage,pass.width,pass.height,pass.depth);std::fflush(stderr);}
-        if (pass.flags & 8) { guest_generate_mips(cmd, pass, mark); continue; }
+        if (pass.flags & 8) { guest_generate_mips(cmd, pass, effective_mark); continue; }
         auto pipeline = guest.pipelines.find(pass.pipeline);
         if (pipeline == guest.pipelines.end()) continue;
         if (pipeline->second.bus) {
-            bool recorded = guest_draw_bus(cmd, pass, pipeline->second, mark);
+            bool recorded = guest_draw_bus(cmd, pass, pipeline->second, effective_mark);
             if (pass.extended && !recorded) throw std::runtime_error("extended guest replay prerequisites changed");
             if(recorded){++pipeline->second.executions;pipeline->second.last_frame=guest.frame.frame_index;pipeline->second.last_completion=next_completion+1;}
             continue;
