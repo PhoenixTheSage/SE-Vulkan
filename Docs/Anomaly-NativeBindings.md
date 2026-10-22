@@ -85,7 +85,7 @@ remain false until all legal contracts and remaining owners have execution proof
 ## Automated qualification
 
 The focused resource gate passes194 checks; the combined actual-core gate passes
-664. The separate native family gate passes382, executing all82 catalogued
+766 including the separate catalog cleanup change. The separate native family gate passes382, executing all82 catalogued
 postprocess/lighting variants, HBAO replacement/restoration and stock highlight
 geometry, blur and composition, with zero core/synchronization errors. Stock
 highlight blur's engine-owned t5 stays outside catalog classification; the older
@@ -96,5 +96,17 @@ Actual older-host admission passes6 refusal/stock-retention checks. Independent
 DX11 packed/null probes pass on net48 and net10. Use GuestDepthGpuTests with
 --native-bindings-only or its default combined lane, PostprocessGpuTests with
 --generations, and --stock-highlight-only for the maintained stock control.
-Catalog cleanup, remaining stage owners, full same-draw attachments, HDR/jitter
+Remaining stage owners, full same-draw attachments, HDR/jitter
 integration and ecosystem qualification remain separate work.
+
+
+Core publication cleanup now shares target/upload ownership, uses case-insensitive
+names and reserved-name checks, preserves cloned CPU payloads for republish, and
+retires uploaded images on replacement/unpublish/public pack unregister. Legacy
+public target format0/1 aliases match existing RGBA8/FP16 callers. The actual-core
+catalog fixture passes102 checks, including pipelined sampling before replacement,
+structured/mip uploads and eight unregister cycles preserving another owner.
+The combined766-check gate validates this alongside the native binding, recreation,
+provider and shader-generation paths with zero core/synchronization errors.
+Native retirement still uses the existing bit13 completion contract. Broader
+memory/performance qualification and DX11 target integration remain open.
