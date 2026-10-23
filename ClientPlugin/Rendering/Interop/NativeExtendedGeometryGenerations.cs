@@ -39,7 +39,7 @@ public sealed partial class NativeBackend
         // Native-cell and GPU NEW GBuffer owners take DX11's USE_SIMPLE_INSTANCING velocity contract (t15).
         if(velocity&&(CellModule(id)||GpuNewModule(id))&&(pipeline<4||pipeline>=12)&&postprocessLibrary.DerivedRequest(NativePassShaderVariants.Materials.Single(v=>v.Id==pipeline).Vertex,generation,defines).Defines.ContainsKey("USE_SIMPLE_INSTANCING"))defines=new Dictionary<string,string>(defines,StringComparer.Ordinal){["ANOMALY_VELOCITY"]="1"};
         // GPU OLD owners keep the classic per-draw currToPrev contract; the adapter derives it per indirect draw.
-        if(velocity&&GpuOldModule(id)&&GeometryOwners[pipeline].Vertex!=null&&GBufferVelocityOwner(pipeline))defines=new Dictionary<string,string>(defines,StringComparer.Ordinal){["ANOMALY_VELOCITY"]="1"};
+        if(velocity&&GpuOldModule(id)&&WorldShaderVariants.WithoutDistanceFade(pipeline)<20)defines=new Dictionary<string,string>(defines,StringComparer.Ordinal){["ANOMALY_VELOCITY"]="1"};
         if(GpuOldModule(id)){var spec=GeometryOwners[pipeline];request=spec.Vertex!=null?postprocessLibrary.DerivedRequest(pixel?spec.Pixel:spec.Vertex,generation,defines):postprocessLibrary.DerivedExtraRequest(spec.Extra,spec.Material,pixel?"Pixel":"Vertex",spec.Defines,generation,defines);}
         else{var spec=NativePassShaderVariants.Materials.Single(v=>v.Id==pipeline);request=postprocessLibrary.DerivedRequest(pixel?spec.Pixel:spec.Vertex,generation,defines);}
         if(!CellModule(id))postprocessLibrary.EnableGpuOpaqueDerivation(request,ExtendedGeometryArtifact(id));return request;

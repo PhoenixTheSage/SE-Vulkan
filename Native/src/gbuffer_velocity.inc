@@ -4,7 +4,9 @@
 // pass then loads instead of clearing and skips for those draws.
 // Every classic stream takes local_matrix from the object block, so DX11 gives it the per-draw
 // currToPrev rows (skinned motion is rigid-body); t15/t16 belong to USE_SIMPLE_INSTANCING only.
-bool gbuffer_velocity_admitted(uint32_t id,bool decal,bool voxel){return gbuffer_velocity_supported&&!decal&&!voxel&&id<20;}
+// Fade-bank variants share their base stream and blended decals write Target3 as RG replace.
+// Voxel GBuffer shaders are not native owners (they come from the voxel library).
+bool gbuffer_velocity_admitted(uint32_t id,bool decal,bool voxel){return gbuffer_velocity_supported&&!voxel&&(decal||world_unfade(id)<20);}
 void gbuffer_velocity_layouts(){
     if(gbuffer_velocity.pipeline_layout)return;init_world_layouts();
     VkDescriptorSetLayoutCreateInfo empty{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};check(vkCreateDescriptorSetLayout(device,&empty,nullptr,&gbuffer_velocity.empty),"create empty velocity set1 layout");
@@ -48,8 +50,8 @@ bool gbuffer_velocity_begin(VkCommandBuffer cmd,WorldSlot& slot){
     // Positions are camera-relative; a history-less GPU instance keeps DX11's camera-only motion.
     bool gpu_frame=opaque_stock.ready&&opaque_reference.frame_ready;
     if(gpu_frame){for(uint32_t i=0;i<3;++i){gbuffer_velocity.camera_delta[i]=gbuffer_velocity.camera_valid?float(opaque_reference.frame.camera[i]-gbuffer_velocity.camera[i]):0.f;gbuffer_velocity.camera[i]=opaque_reference.frame.camera[i];}gbuffer_velocity.camera_valid=true;}
-    bool live=false,gpu=false;for(uint32_t i=0;i<20&&i<world.pipelines.size();++i)live|=world.pipelines[i].velocity;
-    if(gpu_frame){for(const auto& pipeline:opaque_stock.newer)gpu|=pipeline.velocity;for(uint32_t i=0;i<20;++i)gpu|=opaque_stock.older[i].velocity;}
+    bool live=false,gpu=false;for(const auto& pipeline:world.pipelines)live|=pipeline.velocity;
+    if(gpu_frame){for(const auto& pipeline:opaque_stock.newer)gpu|=pipeline.velocity;for(const auto& pipeline:opaque_stock.older)gpu|=pipeline.velocity;}
     uint32_t cells=0;if(pass_scene.ready){const auto& groups=pass_scene.scene.render_groups();for(const auto& group:groups)if(group.key.view==0&&group.kind==native_pass::Kind::Colour&&group.count()&&pass_scene.pipelines.at(group.key.shader<4?group.key.shader:12+group.key.shader-4).velocity)++cells;}
     if((!live&&!gpu&&!cells)||!extent.width||!extent.height)return false;
     uint32_t draws=cells;if(live)for(const auto& draw:world.current().draws)if(!(draw.packet.flags&(4096|8192))&&world.pipelines[draw.packet.pipeline].velocity)++draws;

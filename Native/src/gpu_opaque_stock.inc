@@ -24,7 +24,7 @@ OpaqueStockState::Pipeline build_opaque_stock_pipeline(uint32_t id,uint32_t old,
     VkShaderModule vs{},ps{};SpvReflectShaderModule vr{},pr{};VkPipeline back{},no_cull{};VkPipelineLayout layout{};
     // GPU NEW GBuffer owners admit DX11's USE_SIMPLE_INSTANCING contract; GPU OLD classic streams (below 20)
     // admit the per-draw currToPrev contract. Both read set 2.
-    bool admitted=gbuffer_velocity_supported&&role==0&&(!old||id<20),velocity_resources=false;
+    bool admitted=gbuffer_velocity_supported&&role==0&&(!old||world_unfade(id)<20),velocity_resources=false;
     try{
         vs=opaque_stock_shader(vertex,vb,VK_SHADER_STAGE_VERTEX_BIT,vr);ps=opaque_stock_shader(pixel,pb,VK_SHADER_STAGE_FRAGMENT_BIT,pr);
         for(auto* module:{&vr,&pr})for(uint32_t n=0;n<module->descriptor_binding_count;n++){auto& b=module->descriptor_bindings[n];
