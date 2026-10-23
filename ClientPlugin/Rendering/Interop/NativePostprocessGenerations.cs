@@ -52,6 +52,7 @@ public sealed partial class NativeBackend
         if(artifacts!=null&&artifacts.Keys.Any(id=>ExtendedGeometryModule(id)&&(NativeOwnerFeatures()&ExtendedGeometryFeature(id))==0))throw new NotSupportedException("Update SE-Vulkan: extended native geometry owner capabilities unavailable.");
         if(artifacts==null||artifacts.Count==0)throw new ArgumentException("Native owner generation requires stages.");
         if(artifacts.Keys.Any(TransparentModule)&&(NativeOwnerFeatures()&TransparentGenerationFeature)==0)throw new NotSupportedException("Update coordinated SE-Vulkan: transparent glass owner generations require native owner flag16.");
+        if(artifacts.Keys.Any(BillboardModule)&&(NativeOwnerFeatures()&BillboardGenerationFeature)==0)throw new NotSupportedException("Update coordinated SE-Vulkan: billboard owner generations require native owner flag32.");
         if(artifacts.Keys.Any(id=>id>=256&&id<260)&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
         if(artifacts.Keys.Any(id=>id>=512&&id<515)&&(GuestFeatures()&16777216)==0)throw new NotSupportedException("Update SE-Vulkan native library: atmosphere owner generations require bit24.");
         if(artifacts.Keys.Any(id=>id==2048)&&(GuestFeatures()&1073741824)==0)throw new NotSupportedException("Update SE-Vulkan native library: OIT resolve generations require bit30.");
@@ -90,7 +91,7 @@ public sealed partial class NativeBackend
         if((GuestFeatures()&268435456)!=0)ids=ids.Concat(Enumerable.Range(1536,10));
         if((GuestFeatures()&536870912)!=0)ids=ids.Concat(Enumerable.Range(1792,2));
         if((GuestFeatures()&1073741824)!=0)ids=ids.Concat(new[]{2048});
-        return ids.Select(index=>{uint id=(uint)index;var artifact=postprocessLibrary.Load(NativeOwnerVariant(id));var dependencies=artifact.Layout.Dependencies.Select(d=>d.Path.Replace('\\','/')).Where(p=>p.StartsWith("root0/",StringComparison.OrdinalIgnoreCase)).Select(p=>p.Substring(6)).Append(artifact.Source).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p=>p,StringComparer.Ordinal).ToArray();return new object[]{id,artifact.Source,artifact.Profile,dependencies};}).Concat(GeometryCatalog()).Concat(ExtendedGeometryCatalog()).Concat(TransparentCatalog()).ToArray();
+        return ids.Select(index=>{uint id=(uint)index;var artifact=postprocessLibrary.Load(NativeOwnerVariant(id));var dependencies=artifact.Layout.Dependencies.Select(d=>d.Path.Replace('\\','/')).Where(p=>p.StartsWith("root0/",StringComparison.OrdinalIgnoreCase)).Select(p=>p.Substring(6)).Append(artifact.Source).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p=>p,StringComparer.Ordinal).ToArray();return new object[]{id,artifact.Source,artifact.Profile,dependencies};}).Concat(GeometryCatalog()).Concat(ExtendedGeometryCatalog()).Concat(TransparentCatalog()).Concat(BillboardCatalog()).ToArray();
     }
     static string NativeOwnerVariant(uint id)
     {
@@ -123,7 +124,7 @@ public sealed partial class NativeBackend
         using(var compiler=VulkanShaderCompiler.CreateBundled(System.IO.Path.Combine(resourceCacheDirectory,"PostprocessGenerations")))
         foreach(uint id in stages)
         {
-            string variant=ExtendedGeometryModule(id)?"native-extended-"+id:GeometryModule(id)?"native-world-"+id:TransparentModule(id)?"native-transparent-"+id:NativeOwnerVariant(id);
+            string variant=ExtendedGeometryModule(id)?"native-extended-"+id:GeometryModule(id)?"native-world-"+id:TransparentModule(id)?"native-transparent-"+id:BillboardModule(id)?BillboardVariant(id):NativeOwnerVariant(id);
             if(id==2048&&(GuestFeatures()&1073741824)==0)throw new NotSupportedException("Update SE-Vulkan native library: OIT resolve generations require bit30.");
             if(id>=1792&&id<1794&&(GuestFeatures()&536870912)==0)throw new NotSupportedException("Update SE-Vulkan native library: shadow owner generations require bit29.");
             if(id>=1536&&id<1546&&(GuestFeatures()&268435456)==0)throw new NotSupportedException("Update SE-Vulkan native library: particle owner generations require bit28.");
@@ -132,7 +133,7 @@ public sealed partial class NativeBackend
             if(id>=768&&id<773&&(GuestFeatures()&33554432)==0)throw new NotSupportedException("Update SE-Vulkan native library: foliage owner generations require bit25.");
             if(id>=512&&id<515&&(GuestFeatures()&16777216)==0)throw new NotSupportedException("Update SE-Vulkan native library: atmosphere owner generations require bit24.");
             if(id>=256&&id<260&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
-            var request=ExtendedGeometryModule(id)?ExtendedGeometryRequest(id,generation,defines,(contracts&1)!=0):TransparentModule(id)?TransparentRequest(id,generation,defines):GeometryModule(id)?GeometryRequest(id,identity,sources,defines,(contracts&1)!=0):postprocessLibrary.DerivedRequest(variant,generation,defines);
+            var request=ExtendedGeometryModule(id)?ExtendedGeometryRequest(id,generation,defines,(contracts&1)!=0):TransparentModule(id)?TransparentRequest(id,generation,defines):BillboardModule(id)?BillboardRequest(id,generation,defines):GeometryModule(id)?GeometryRequest(id,identity,sources,defines,(contracts&1)!=0):postprocessLibrary.DerivedRequest(variant,generation,defines);
             if(id>=128&&id<144)
             {
                 // A replacement without the quarter-depth descriptor has no border
