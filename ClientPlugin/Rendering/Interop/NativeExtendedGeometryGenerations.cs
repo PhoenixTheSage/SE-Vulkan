@@ -16,6 +16,9 @@ public sealed partial class NativeBackend
         try{ownerFeatures??=PostFunction<OwnerFeaturesFn>("sevk_native_owner_capabilities");}catch(EntryPointNotFoundException){ownerFeaturesMissing=true;return 0;}
         var value=new OwnerCapabilities{Size=24,Abi=AbiVersion};Check(ownerFeatures(context,ref value),context);if(value.Size!=24||value.Abi!=AbiVersion||value.MaxModules<8192)throw new NotSupportedException("Update SE-Vulkan: native owner capability transport is incompatible.");return value.Flags;
     }
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int DeclareAttachmentFn(IntPtr ctx,uint slot,uint format);DeclareAttachmentFn declareAttachment;
+    // Pack attachments written by owner GBuffer invocations (SV_Target4..6) need a slot format without a replay shader.
+    public bool DeclareGBufferAttachment(uint slot,uint format){if(slot>2)return false;declareAttachment??=PostFunction<DeclareAttachmentFn>("sevk_declare_gbuffer_attachment");Check(declareAttachment(context,slot,format),context);return true;}
     static bool CellModule(uint id)=>id>=16384&&id<16440;
     static bool GpuNewModule(uint id)=>id>=32768&&id<32824;
     static bool GpuOldModule(uint id)=>id>=49152&&id<54464;

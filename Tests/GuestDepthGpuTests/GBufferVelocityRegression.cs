@@ -217,4 +217,57 @@ partial class Program
         }finally{Call("Backend.GuestPassList","UnregisterRoot",owner);backend.ClearPassFrame();stages.GetField("catalog",stat).SetValue(null,null);stages.GetField("catalogEpoch",stat).SetValue(null,-1L);}
         return checks;
     }
+    // DX11 pack attachments: fields at SV_Target4+slot and packed GBuffer1.a, written by the owning GBuffer invocation.
+    static int AttachmentVelocityRegression(Assembly core,string output,string bin,NativeBackend backend,MatrixD projection,MyEnvironmentLightData light)
+    {
+        const BindingFlags stat=BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static;const string owner="fixture.native.gbuffer-attachments";int checks=0;
+        void Check(bool ok,string text){if(!ok)throw new Exception(text);checks++;Console.WriteLine("PASS "+text);}
+        object Call(string type,string method,params object[] args)=>core.GetType("ClientPlugin."+type,true).GetMethod(method,stat).Invoke(null,args);
+        object Property(string type,string name)=>core.GetType("ClientPlugin."+type,true).GetProperty(name,stat).GetValue(null);
+        Check((backend.NativeOwnerFeatures()&8)!=0,"native owner extension advertises the GBuffer velocity contract");
+        var stages=core.GetType("ClientPlugin.Backend.GuestPostprocessStages",true);stages.GetField("PreparationBound",stat).SetValue(null,true);
+        var catalog=backend.PostprocessCatalog().Where(row=>(uint)row[0]==4096||(uint)row[0]==4097).ToArray();Check(catalog.Length==2,"fixture selects the rigid classic GBuffer owner pair");
+        stages.GetField("catalog",stat).SetValue(null,catalog);stages.GetField("catalogEpoch",stat).SetValue(null,Property("Backend.GuestBridgeClient","ResourceEpoch"));
+        var programType=core.GetType("ClientPlugin.Backend.GuestProgram",true);var submit=Delegate.CreateDelegate(typeof(Action<>).MakeGenericType(typeof(IReadOnlyList<>).MakeGenericType(programType)),core.GetType("ClientPlugin.Backend.GuestBridgeClient",true).GetMethod("Submit",stat));
+        NativeWorldVertex V(float x,float y){uint n=VF_Packer.PackNormal(Vector3.Backward);return new(){Material=new(){X=x,Y=y,Z=-3,Scale=1,NormalX=n&65535,NormalY=n>>16,TangentX=1,TangentY=.5f,TangentZ=.5f,TangentW=1,U=(x+1)/2,V=(1-y)/2},WeightX=1};}
+        backend.UploadWorldMesh(955001,new[]{V(-1,-1),V(1,-1),V(0,1)},new uint[]{0,1,2,2,1,0});backend.UploadTexture(955002,1,1,0,new byte[]{180,180,180,0},true);backend.UploadTexture(955003,1,1,0,new byte[]{128,128,255,100},false);backend.UploadTexture(955004,1,1,0,new byte[]{255,1,0,0},false);
+        var post=new VulkanPostprocess();post.Hbao.Enabled=false;post.Ssao.Enabled=false;post.Settings.BloomEnabled=false;post.Settings.EnableEyeAdaptation=false;
+        uint frame=0;int objectSlot=-1;
+        (byte[] G1,float[] M,byte[] A) Frame(int step,bool pipelined=false){
+            Call("Backend.RenderHost","PrepareShaderGenerations");backend.BeginPacketCollection();post.Configure(backend,64,64,false,view:MatrixD.Identity,projection:projection);
+            backend.AddWorldPacket(0,955001,955002,955003,955004,0,WorldConstants.Object(backend.WorldLayouts[0],MatrixD.CreateTranslation(.1*step,0,0),Vector3.One,Vector3.Zero,1,0),null,1,512|16384,0);
+            backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,projection,64,64,light,postprocess:post.Settings),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(projection)));
+            Check(backend.BeginFrame(projection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black),"attachment frame step="+step+" pipelined="+pipelined);
+            Call("Backend.GuestFrame","Capture");frame=(uint)Call("Backend.GuestFrame","U32",16);Call("Backend.SceneView","Set",64,64,0d,0d,0d,0f,0f,-1f);Call("Backend.GuestPassList","SubmitFrame",submit);
+            if(pipelined)backend.EndFrameAsync();else backend.EndFrame();
+            return(backend.ReadbackWorldGbuffer(1,64,64),backend.ReadbackMotion(64,64),objectSlot>=0?backend.ReadbackAttachment((uint)objectSlot,64,64,4):null);
+        }
+        (byte[] G1,float[] M,byte[] A) Run(bool pipelined=false){(byte[],float[],byte[]) last=default;for(int step=0;step<4;++step)last=Frame(step,pipelined&&step==3);return last;}
+        int centre=32*64+32,corner=2*64+2;
+        string root=Path.Combine(output,"GBufferAttachmentPack-"+Guid.NewGuid().ToString("N")),file=Path.Combine(root,"Overlay/Geometry/Passes/GBuffer/PixelStage.hlsli");Directory.CreateDirectory(Path.GetDirectoryName(file));
+        File.WriteAllText(Path.Combine(root,"anomaly.json"),"{\"id\":\""+owner+"\",\"exclusive\":[\"GBuffer\"],\"attachments\":[{\"name\":\"objectid\",\"format\":\"R32_UINT\"},{\"name\":\"flags\",\"format\":\"GBuffer1.a\"}]}");
+        string patched=VelocityGBufferPixelStage(core,bin);
+        string pack=patched.Replace("#ifdef ANOMALY_PACK_GBUFFER1A\n#ifndef ANOMALY_GBUFFER1A_OVERRIDE","#ifdef ANOMALY_PACK_GBUFFER1A\n#define ANOMALY_GBUFFER1A_OVERRIDE\nfloat AnomalyGBuffer1A(PixelInterface pixel, MaterialOutputInterface material_output)\n{\n\treturn 0.5;\n}\n#endif\n#ifdef ANOMALY_PACK_GBUFFER1A\n#ifndef ANOMALY_GBUFFER1A_OVERRIDE")
+            .Replace("#ifndef STATIC_DECAL\n#ifdef ANOMALY_PACK_GBUFFER1A\n\toutput.gbuffer1.a","#ifdef ANOMALY_ATTACH_OBJECTID\n\toutput.objectid = 777u;\n#endif\n#ifndef STATIC_DECAL\n#ifdef ANOMALY_PACK_GBUFFER1A\n\toutput.gbuffer1.a");
+        Check(pack.Contains("output.objectid = 777u;")&&pack.Contains("#define ANOMALY_GBUFFER1A_OVERRIDE"),"pack writes a named attachment and overrides packed GBuffer1.a in the velocity-aware pixel stage");
+        try{
+            var stock=Run();int stockAlpha=stock.G1[centre*4+3];Console.WriteLine("ATTACH stock gbuffer1.a="+stockAlpha);
+            File.WriteAllText(file,pack);Call("Backend.GuestPassList","RegisterRoot",owner,root,null);
+            var attachments=((System.Collections.IEnumerable)Call("Backend.GuestPassList","SnapshotAttachments")).Cast<object>().ToArray();
+            object Field(object o,string n)=>o.GetType().GetField(n).GetValue(o);
+            var objectid=attachments.SingleOrDefault(a=>(string)Field(a,"Name")=="objectid");Check(objectid!=null&&(int)Field(objectid,"Slot")>=0&&(int)Field(objectid,"NativeFormat")==4,"core admits the R32_UINT attachment to a DX11 SV_Target4..6 slot");objectSlot=(int)Field(objectid,"Slot");
+            var owned=Run(true);Check(Property("Backend.GuestPostprocessStages","Error")==null,"attachment-writing GBuffer owner prepares: "+Property("Backend.GuestPostprocessStages","Error"));
+            uint id=BitConverter.ToUInt32(owned.A,centre*4),outside=BitConverter.ToUInt32(owned.A,corner*4);int alpha=owned.G1[centre*4+3];Console.WriteLine("ATTACH owned objectid="+id+" outside="+outside+" gbuffer1.a="+alpha+" slot="+objectSlot);
+            Check(id==777&&outside==0,"owning GBuffer invocation writes the named attachment at SV_Target"+(4+objectSlot)+"; uncovered pixels stay cleared");
+            Check(Math.Abs(alpha-128)<=1&&owned.G1[corner*4+3]==stock.G1[corner*4+3],"packed GBuffer1.a carries the pack value from the owning invocation; uncovered pixels keep stock alpha");
+            var state=backend.GetPostprocessGeneration(4097);Check(state.Active!=0&&state.Executions>0&&state.LastFrame==frame,"attachment-writing owner pair executes this frame");
+            Check(owned.M[centre*2]<-1&&owned.M[centre*2]>-1.2&&owned.M[corner*2]==0,"velocity Target3 stays correct beside the pack attachments");
+            var sync=Run();Check(sync.A.SequenceEqual(owned.A)&&sync.G1.SequenceEqual(owned.G1)&&sync.M.SequenceEqual(owned.M),"attachment, GBuffer1.a and velocity outputs agree across recording modes");
+            Call("Backend.GuestPassList","UnregisterRoot",owner);objectSlot=-1;var restored=Run(true);
+            Check(restored.G1.SequenceEqual(stock.G1)&&restored.M.SequenceEqual(stock.M),"unregister restores exact stock GBuffer1 and motion bits");
+            Run();Check(backend.GetPostprocessGeneration(4097).Retired==0,"attachment owner bundles retire after completed submissions");
+            Check(backend.GetStats().ValidationEnabled!=0&&backend.GetStats().ValidationErrors==0,"pack attachment owners have zero core/synchronization errors");
+        }finally{Call("Backend.GuestPassList","UnregisterRoot",owner);stages.GetField("catalog",stat).SetValue(null,null);stages.GetField("catalogEpoch",stat).SetValue(null,-1L);}
+        return checks;
+    }
 }

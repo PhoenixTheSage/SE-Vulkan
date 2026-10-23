@@ -111,7 +111,7 @@ void write_stage_extras(VkDescriptorSet set,uint32_t id,uint32_t binding=6){
         uint64_t id=row->images[slot];bool fresh=(row->fresh_mask&(1u<<slot))!=0;
         auto source=stage_catalog_image(id,fresh);
         bool available=source&&!source->is_buffer&&source->image.view;
-        if(id>=kGuestAttach0&&id<kGuestAttach0+3){auto& target=world.attach[id-kGuestAttach0];available=target.live&&target.sampled&&target.image.view&&(!fresh||target.produced_epoch==guest.catalog_epoch);}
+        if(id>=kGuestAttach0&&id<kGuestAttach0+3){auto& target=world.attach[id-kGuestAttach0];available=(target.live||target.declared)&&target.sampled&&target.image.view&&(!fresh||target.produced_epoch==guest.catalog_epoch);}
         if(available)++attachments;
     }
     float width=float(std::max(1u,guest.frame.width)),height=float(std::max(1u,guest.frame.height));

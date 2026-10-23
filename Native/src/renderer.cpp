@@ -330,7 +330,7 @@ struct WorldState {ModelState models;
     uint32_t motion_w{},motion_h{}; bool motion_sampled{},motion_have_signature{}; uint64_t motion_signature{};
     VkPipeline motion_pipe[4]{}; VkPipelineLayout motion_layout{}; VkDescriptorSetLayout motion_set_layout{};
     VkDescriptorPool motion_pool{}; VkDescriptorSet motion_sets[2]{};
-    struct AttachTarget { Image image{};uint64_t produced_epoch{}; uint32_t format=0xFFFFFFFFu,w{},h{}; bool sampled{},live{}; VkPipeline pipe[4]{},indexed_pipe[5]{}; };
+    struct AttachTarget { Image image{};uint64_t produced_epoch{}; uint32_t format=0xFFFFFFFFu,w{},h{}; bool sampled{},live{},declared{}; VkPipeline pipe[4]{},indexed_pipe[5]{}; };
     AttachTarget attach[3]{}; VkPipelineLayout attach_layout{}; VkDescriptorSetLayout attach_set_layout{}; VkDescriptorPool attach_pool{}; VkDescriptorSet attach_sets[2]{};
     VkPipelineLayout attach_indexed_layout{};VkDescriptorSetLayout attach_indexed_inputs{};VkDescriptorPool attach_indexed_pool{};VkDescriptorSet attach_indexed_sets[2]{},motion_indexed_sets[2]{};
     std::unordered_map<uint64_t,Mesh> meshes;std::unordered_map<uint64_t,Image> cubes,arrays;std::unordered_map<uint64_t,VoxelMaterial> voxel_materials;
@@ -363,7 +363,7 @@ struct GpuOwnerSlot {Buffer ranges{},work{},readback{};std::vector<GpuOwnerRow> 
 struct GpuOwnerState {PostStage reduction{};GpuOwnerSlot slots[2];std::vector<std::pair<uint64_t,GpuOwnerSlot>> retired;bool enabled{};};
 struct GBufferVelocityConstants {float view_proj[16],prev_view_proj[16],size[2],inv_size[2];uint32_t prev_count,has_history,has_prev_world,bone_count;float rows[3][4];uint32_t instance_base,probe_mode;float padding[2],camera_delta[3],tail;};
 static_assert(sizeof(GBufferVelocityConstants)==240,"AnomalyVelocity cbuffer layout");
-struct GBufferVelocityState {VkDescriptorSetLayout empty{},layout{};VkPipelineLayout pipeline_layout{};Buffer constants[2]{},probe{},prev_world{},prev_bones{};VkDescriptorSet set{},gpu_set{};uint32_t stride{},cursor{},capacity{},gpu_offset{};bool frame{},history{},indexed_prepared{},indexed_ready{},camera_valid{};double camera[3]{};float camera_delta[3]{};};
+struct GBufferVelocityState {VkDescriptorSetLayout empty{},layout{};VkPipelineLayout pipeline_layout{};Buffer constants[2]{},probe{},prev_world{},prev_bones{};VkDescriptorSet set{},gpu_set{};uint32_t stride{},cursor{},capacity{},gpu_offset{},attachments{};bool frame{},history{},indexed_prepared{},indexed_ready{},camera_valid{};double camera[3]{};float camera_delta[3]{};};
 struct HbaoState {SevkHbaoConfig config{};PostImage depth{},normal{},aoz[2]{};Image quarter_depth{},quarter_ao{};VkImageView depth_views[16]{},ao_views[16]{};Buffer constants[2]{};VkSampler border{};uint32_t width{},height{};bool initialized{},jitter_provided{};float jitter[64]{};};
 struct ProbeCube {Image image;std::vector<VkImageView> views;};
 struct ProbeState {uint64_t atmosphere_id{};float atmosphere_intensity{},atmosphere_desaturation{},sun_direction[3]{};Buffer atmosphere[2][6]{},atmosphere_view[2][6]{};VkDescriptorSetLayout material_layout{};VkPipelineLayout material_pipeline_layout{};PostStage stages[4]{};ProbeCube original[2],filtered[2],final[2];Image depth[6]{};Buffer frame[2][6]{},projection[2][6]{},forward_projection[2][6]{},constants[2][6]{};SevkProbeConfig config{};SevkProbeStats stats{sizeof(SevkProbeStats),SEVK_ABI_VERSION};uint32_t resolution{},mips{},skip_levels{},face{},stage{},work_face{},blend_kind{};bool initialized{},ready{};};
@@ -2080,6 +2080,7 @@ int32_t SEVK_CALL sevk_init_world_pipeline(void* ctx,uint32_t id,const void* vs,
 int32_t SEVK_CALL sevk_init_object_motion(void* ctx,uint32_t kind,const void* vs,uint64_t vb,const void* ps,uint64_t pb){return call(ctx,[&](Renderer& r){r.init_object_motion(kind,vs,vb,ps,pb);return 0;});}
 int32_t SEVK_CALL sevk_init_indexed_attachment(void* ctx,uint32_t slot,uint32_t format,uint32_t kind,const void* vs,uint64_t vb,const void* ps,uint64_t pb){return call(ctx,[&](Renderer& r){r.init_indexed_attachment(slot,format,kind,vs,vb,ps,pb);return 0;});}
 int32_t SEVK_CALL sevk_init_indexed_motion(void* ctx,uint32_t kind,const void* vs,uint64_t vb,const void* ps,uint64_t pb){return call(ctx,[&](Renderer& r){r.init_indexed_motion(kind,vs,vb,ps,pb);return 0;});}
+int32_t SEVK_CALL sevk_declare_gbuffer_attachment(void* ctx,uint32_t slot,uint32_t format){return call(ctx,[&](Renderer& r){r.declare_gbuffer_attachment(slot,format);return 0;});}
 int32_t SEVK_CALL sevk_init_gbuffer_attachment(void* ctx,uint32_t slot,uint32_t format,uint32_t kind,const void* vs,uint64_t vb,const void* ps,uint64_t pb){return call(ctx,[&](Renderer& r){r.init_gbuffer_attachment(slot,format,kind,vs,vb,ps,pb);return 0;});}
 int32_t SEVK_CALL sevk_init_world_lighting(void* ctx,uint32_t kind,const void* spv,uint64_t bytes){return call(ctx,[&](Renderer& r){r.init_world_lighting(kind,spv,bytes);return 0;});}
 int32_t SEVK_CALL sevk_upload_world_mesh(void* ctx,uint64_t id,const SevkWorldVertex* v,uint32_t vc,const uint32_t* i,uint32_t ic){return call(ctx,[&](Renderer& r){r.upload_world_mesh(id,v,vc,i,ic);return 0;});}

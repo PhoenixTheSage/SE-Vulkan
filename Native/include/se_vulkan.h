@@ -256,6 +256,8 @@ SEVK_API int32_t SEVK_CALL sevk_init_indexed_motion(void* context,uint32_t kind,
 /* Extra GBuffer color target. Slot 0..2 is SV_Target4..6. Format 0 RGBA8, 1 RGBA16F,
  * 2 R32F, 3 RG16F, 4 R32_UINT, 5 RG32F. Kind matches object motion. The pixel shader
  * writes SV_Target0 and declares no descriptors. Stock color targets stay three. */
+/* Declares a pack attachment slot's format for owner-emitted SV_Target4..6 without a replay write shader. */
+SEVK_API int32_t SEVK_CALL sevk_declare_gbuffer_attachment(void* context,uint32_t slot,uint32_t format);
 SEVK_API int32_t SEVK_CALL sevk_init_gbuffer_attachment(void* context,uint32_t slot,uint32_t format,uint32_t kind,const void* vertex,uint64_t vertex_bytes,const void* pixel,uint64_t pixel_bytes);
 /* Lighting kind 0 fullscreen VS, 1 LightDir, 2 LightPoint, 3 LightSpot. */
 SEVK_API int32_t SEVK_CALL sevk_init_world_lighting(void* context,uint32_t kind,const void* spirv,uint64_t bytes);

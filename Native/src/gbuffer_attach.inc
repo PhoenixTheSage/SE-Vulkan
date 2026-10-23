@@ -64,8 +64,19 @@ void init_gbuffer_attachment(uint32_t slot,uint32_t format,uint32_t kind,const v
         spvReflectDestroyShaderModule(&vr);spvReflectDestroyShaderModule(&pr);vkDestroyShaderModule(device,vs,nullptr);vkDestroyShaderModule(device,ps,nullptr);
     }catch(...){if(vr._internal)spvReflectDestroyShaderModule(&vr);if(pr._internal)spvReflectDestroyShaderModule(&pr);if(vs)vkDestroyShaderModule(device,vs,nullptr);if(ps)vkDestroyShaderModule(device,ps,nullptr);throw;}
 }
+void declare_gbuffer_attachment(uint32_t slot,uint32_t format){
+    if(recording || slot>2)throw std::runtime_error("invalid GBuffer attachment declaration");attach_vk_format(format);
+    auto& target=world.attach[slot];if((target.live||target.declared)&&target.format!=format)throw std::runtime_error("GBuffer attachment format conflict");
+    ensure_attach_layout();target.format=format;target.declared=true;
+}
+void ensure_attach_image(WorldState::AttachTarget& target){
+    if(target.image.view && target.w==extent.width && target.h==extent.height)return;
+    wait(next_completion);if(target.image.view)destroy_image(target.image);
+    target.image=make_image(extent.width,extent.height,attach_vk_format(target.format),VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
+    target.w=extent.width;target.h=extent.height;target.sampled=false;
+}
 void render_gbuffer_attachments(VkCommandBuffer cmd,WorldSlot& slot){
-    bool ready=false;for(const auto& target:world.attach)ready|=target.live;
+    bool ready=false;for(const auto& target:world.attach)ready|=target.live||target.declared;
     if(!ready || !extent.width || !extent.height || !world.gbuffer[3].view)return;
     barrier(cmd,world.gbuffer[3].handle,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
     if(slot.projections.handle){
@@ -76,15 +87,13 @@ void render_gbuffer_attachments(VkCommandBuffer cmd,WorldSlot& slot){
     }
     bool indexed_ready=prepare_indexed_attachments();
     for(auto& target:world.attach){
-        if(!target.live)continue;
-        VkFormat vk=attach_vk_format(target.format);
-        if(!target.image.view || target.w!=extent.width || target.h!=extent.height){
-            wait(next_completion);if(target.image.view)destroy_image(target.image);
-            target.image=make_image(extent.width,extent.height,vk,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
-            target.w=extent.width;target.h=extent.height;target.sampled=false;
-        }
-        barrier(cmd,target.image.handle,target.sampled?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,target.sampled?VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT:VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,target.sampled?VK_ACCESS_2_SHADER_SAMPLED_READ_BIT:0,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-        VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};color.imageView=target.image.view;color.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;color.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;color.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+        if(!target.live&&!target.declared)continue;
+        // Owner GBuffer draws already wrote this slot in the main scope; replay only the remaining draws.
+        bool written=gbuffer_velocity.frame&&(gbuffer_velocity.attachments&(1u<<uint32_t(&target-world.attach)));
+        ensure_attach_image(target);
+        if(written)barrier(cmd,target.image.handle,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT|VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        else barrier(cmd,target.image.handle,target.sampled?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,target.sampled?VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT:VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,target.sampled?VK_ACCESS_2_SHADER_SAMPLED_READ_BIT:0,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};color.imageView=target.image.view;color.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;color.loadOp=written?VK_ATTACHMENT_LOAD_OP_LOAD:VK_ATTACHMENT_LOAD_OP_CLEAR;color.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
         VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};depth.imageView=world.gbuffer[3].view;depth.imageLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;depth.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD;depth.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
         VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};rendering.renderArea={{0,0},extent};rendering.layerCount=1;rendering.colorAttachmentCount=1;rendering.pColorAttachments=&color;rendering.pDepthAttachment=&depth;
         vkCmdBeginRendering(cmd,&rendering);world_viewport(cmd,extent.width,extent.height);
@@ -93,6 +102,7 @@ void render_gbuffer_attachments(VkCommandBuffer cmd,WorldSlot& slot){
             VkPipeline bound{};WorldRasterCache raster{};
             for(uint32_t i:world.current().order){
                 const auto& draw=world.current().draws[i];const auto& packet=draw.packet;if((packet.flags&(4096|8192)) || world_unfade(packet.pipeline)>=20 || !packet.instance_count || !draw.geometry)continue;
+                if(written&&world.pipelines[packet.pipeline].velocity)continue;
                 uint32_t type=world_unfade(packet.pipeline)%5;if(type==1)continue;uint32_t kind=type==0?0u:type-1;if(!target.pipe[kind])continue;
                 const auto& pipe=world.pipelines[packet.pipeline];
                 float curr[12]{};if(!motion_rows(slot.host_objects,draw.gpu_object_at,pipe.row0,pipe.row1,pipe.row2,curr))continue;
@@ -115,6 +125,7 @@ void render_gbuffer_attachments(VkCommandBuffer cmd,WorldSlot& slot){
             vkCmdPushConstants(cmd,world.attach_layout,VK_SHADER_STAGE_VERTEX_BIT,0,112,push);
             const auto& groups=pass_scene.scene.render_groups();
             for(uint32_t i=0;i<groups.size();++i){const auto& group=groups[i];if(group.key.view!=0 || group.kind!=native_pass::Kind::Colour || !group.count())continue;
+                if(written&&pass_scene.pipelines.at(group.key.shader<4?group.key.shader:12+group.key.shader-4).velocity)continue;
                 const auto& mesh=world.meshes.at(group.key.mesh);
                 world_model_raster(cmd,0,group.key.double_sided?0x10000000u:0x08000000u);
                 VkBuffer buffers[]{mesh.vertices.handle,pass_scene.instances[slot_index].handle,pass_scene.instances[slot_index].handle};VkDeviceSize offsets[]{mesh.vertex_offset,pass_scene.offsets.at(i),pass_scene.offsets.at(i)};
@@ -122,7 +133,7 @@ void render_gbuffer_attachments(VkCommandBuffer cmd,WorldSlot& slot){
                 vkCmdDrawIndexed(cmd,group.key.count,group.count(),group.key.first,0,0);
             }
         }
-        if(indexed_ready)record_indexed_attachments(cmd,slot,target);
+        if(indexed_ready)record_indexed_attachments(cmd,slot,target,written);
         vkCmdEndRendering(cmd);
         barrier(cmd,target.image.handle,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         target.sampled=true;target.produced_epoch=guest.catalog_epoch;

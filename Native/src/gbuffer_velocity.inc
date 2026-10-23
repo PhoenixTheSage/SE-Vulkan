@@ -22,6 +22,17 @@ bool gbuffer_velocity_binding(const SpvReflectDescriptorBinding& b){
     if(b.descriptor_type==SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER)return (b.binding==0&&b.block.size==sizeof(GBufferVelocityConstants))||(b.binding==1&&b.block.size==16);
     return b.descriptor_type==SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_BUFFER&&(b.binding==128||b.binding==129);
 }
+// Owner GBuffer outputs: Target3 velocity plus declared pack attachments at SV_Target4..6 (DX11 slots).
+uint32_t gbuffer_owner_formats(const SpvReflectShaderModule& pr,bool admitted,bool& velocity,std::array<VkFormat,7>& formats){
+    velocity=false;uint32_t extras=0;
+    for(uint32_t i=0;i<pr.output_variable_count;++i){auto& o=*pr.output_variables[i];if(o.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)continue;
+        if(o.location==3)velocity=true;else if(o.location>=4&&o.location<7)extras|=1u<<(o.location-4);else if(o.location>3)throw std::runtime_error("GBuffer owner output exceeds Target6");}
+    if((velocity||extras)&&!admitted)throw std::runtime_error("GBuffer owner writes Target3+ outside the admitted velocity contract");
+    if(extras&&!velocity)throw std::runtime_error("GBuffer owner writes pack attachments without the velocity contract");
+    formats={stock_formats[0],stock_formats[1],stock_formats[2],VK_FORMAT_R16G16_SFLOAT,VK_FORMAT_UNDEFINED,VK_FORMAT_UNDEFINED,VK_FORMAT_UNDEFINED};uint32_t count=velocity?4u:3u;
+    for(uint32_t s=0;s<3;++s)if(extras&(1u<<s)){const auto& target=world.attach[s];if(!(target.live||target.declared))throw std::runtime_error("GBuffer owner writes an undeclared attachment slot");formats[4+s]=attach_vk_format(target.format);count=5+s;}
+    return count;
+}
 void gbuffer_velocity_cleanup() noexcept {
     for(auto& buffer:gbuffer_velocity.constants)destroy_buffer(buffer);destroy_buffer(gbuffer_velocity.probe);destroy_buffer(gbuffer_velocity.prev_world);destroy_buffer(gbuffer_velocity.prev_bones);
     if(gbuffer_velocity.pipeline_layout)vkDestroyPipelineLayout(device,gbuffer_velocity.pipeline_layout,nullptr);
@@ -79,6 +90,11 @@ bool gbuffer_velocity_begin(VkCommandBuffer cmd,WorldSlot& slot){
         VkDescriptorBufferInfo gpu_infos[]{infos[0],infos[1],history?VkDescriptorBufferInfo{previous.handle,0,previous.bytes}:infos[2],history?VkDescriptorBufferInfo{references.handle,0,references.bytes}:infos[3]};
         for(uint32_t i=0;i<4;++i){writes[i].dstSet=gpu_set;writes[i].pBufferInfo=&gpu_infos[i];}vkUpdateDescriptorSets(device,4,writes,0,nullptr);gbuffer_velocity.gpu_set=gpu_set;
     }
+    // Declared pack attachments join the scope at their DX11 slot, Target4+slot.
+    gbuffer_velocity.attachments=0;
+    for(uint32_t s=0;s<3;++s){auto& target=world.attach[s];if(!(target.live||target.declared))continue;ensure_attach_image(target);
+        barrier(cmd,target.image.handle,target.sampled?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,target.sampled?VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT:VK_PIPELINE_STAGE_2_NONE,target.sampled?VK_ACCESS_2_SHADER_SAMPLED_READ_BIT:0,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        gbuffer_velocity.attachments|=1u<<s;}
     ensure_motion_image();
     barrier(cmd,world.motion.handle,world.motion_sampled?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,world.motion_sampled?VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT:VK_PIPELINE_STAGE_2_NONE,world.motion_sampled?VK_ACCESS_2_SHADER_SAMPLED_READ_BIT:0,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     return true;

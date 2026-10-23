@@ -27,11 +27,12 @@ bool prepare_indexed_attachments(){
     auto& slot=r.slots[slot_index];Buffer* buffers[]{&slot.stock_colour,&slot.stock_objects,&r.sources,&slot.stock_draws};VkDescriptorBufferInfo infos[4]{};VkWriteDescriptorSet writes[4]{};
     for(uint32_t i=0;i<4;++i){if(!buffers[i]->handle)throw std::runtime_error("indexed attachment input missing");infos[i]={buffers[i]->handle,0,buffers[i]->bytes};writes[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[i].dstSet=world.attach_indexed_sets[slot_index];writes[i].dstBinding=128+i;writes[i].descriptorCount=1;writes[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;writes[i].pBufferInfo=&infos[i];}vkUpdateDescriptorSets(device,4,writes,0,nullptr);return true;
 }
-void record_indexed_attachments(VkCommandBuffer cmd,WorldSlot& slot,WorldState::AttachTarget& target){
+void record_indexed_attachments(VkCommandBuffer cmd,WorldSlot& slot,WorldState::AttachTarget& target,bool written=false){
     auto& r=opaque_reference;uint32_t view=gpu_resident.published?gpu_resident.view_map[0]:0;if(view>=r.view_count || !(r.views[view].flags&1) || (r.views[view].flags&34))return;
     VkDescriptorSet sets[]{world.attach_sets[slot_index],world.attach_indexed_sets[slot_index]};vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,world.attach_indexed_layout,0,2,sets,0,nullptr);
     uint32_t count=r.view_batches?uint32_t(r.recording_batches.at(view).size()):uint32_t(opaque_stock.batches.size());
     for(uint32_t n=0;n<count;++n){uint32_t b=r.view_batches?r.recording_batches[view][n]:n;const auto& batch=opaque_stock.batches[b];const auto& input=batch.input;const auto range=r.ranges[b];if(!range.capacity)continue;
+        if(written&&(input.old?opaque_stock.older[input.main_pipeline].velocity:opaque_stock.newer[input.main_pipeline].velocity))continue;
         uint32_t type=input.old?world.pipelines.at(input.main_pipeline).type:0,kind=input.old?(type==0?0u:type>=2&&type<=4?type-1:UINT32_MAX):4u;
         if(kind>4 || !target.indexed_pipe[kind])throw std::runtime_error("indexed attachment geometry class unavailable");
         vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,target.indexed_pipe[kind]);world_model_raster(cmd,input.main_pipeline,(input.flags&1)?0x10000000u:0x08000000u);

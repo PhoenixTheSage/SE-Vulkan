@@ -62,6 +62,8 @@ public static class GuestBridge
     public static bool ConfigureSceneDepthViews(ulong[] images,double[] worldMatrices)=>scene!=null && scene.ConfigureGuestSceneDepth(images,worldMatrices);
     public static object[] CaptureSceneDepth()=>scene?.CaptureGuestSceneDepth();
 
+    public static bool DeclareGBufferAttachment(int slot, int format) =>
+        current != null && current.DeclareGBufferAttachment((uint)slot, (uint)format);
     public static bool InitGBufferAttachment(int slot, int format, byte[] pixel) =>
         current != null && current.InitGBufferAttachment((uint)slot, (uint)format, pixel);
 
