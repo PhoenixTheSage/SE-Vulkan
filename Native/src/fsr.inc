@@ -286,9 +286,12 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
         first ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
         first ? 0 : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    // Vertical FOV from the frame block's unjittered projection (Frame.hlsli offset 64); the world
+    // projection array is the view-projection, whose M22 changes with camera rotation.
     float fov = 1.047f;
-    if (world.current().projection.size() >= 16) {
-        float y = world.current().projection[5];
+    if (world.current().frame.size() >= 128) {
+        float y;
+        std::memcpy(&y, world.current().frame.data() + 64 + 5 * sizeof(float), sizeof(float));
         if (std::fabs(y) > 0.01f) fov = 2.f * std::atan(1.f / std::fabs(y));
     }
     auto now = std::chrono::steady_clock::now();
