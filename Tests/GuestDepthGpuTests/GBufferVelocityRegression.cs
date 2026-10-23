@@ -100,27 +100,32 @@ partial class Program
     // GPU NEW owners compile USE_SIMPLE_INSTANCING (t15 per instance); GPU OLD owners keep the classic per-draw currToPrev rows.
     static unsafe int GpuVelocityRegression(Assembly core,string output,string bin,NativeBackend backend,VulkanShaderLibrary library,MatrixD projection,MyEnvironmentLightData light,bool old=false)
     {
-        const BindingFlags stat=BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static;string owner=old?"fixture.native.gpu-old-velocity":"fixture.native.gpu-velocity";uint pixelOwner=old?49153u:32769u;string path=old?"GPU OLD":"GPU NEW";int checks=0;
+        const BindingFlags stat=BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static;string owner=old?"fixture.native.gpu-old-velocity":"fixture.native.gpu-velocity";uint pixelOwner=old?49153u:32769u;
+        // GPU OLD instanced/cube streams read source instances (t-free) and keep the per-draw currToPrev contract.
+        uint[] streams=old?new uint[]{0,2,3,4}:new uint[]{0};string path=old?"GPU OLD":"GPU NEW";int checks=0;
         void Check(bool ok,string text){if(!ok)throw new Exception(text);checks++;Console.WriteLine("PASS "+text);}
         object Call(string type,string method,params object[] args)=>core.GetType("ClientPlugin."+type,true).GetMethod(method,stat).Invoke(null,args);
         object Property(string type,string name)=>core.GetType("ClientPlugin."+type,true).GetProperty(name,stat).GetValue(null);
         Check((backend.NativeOwnerFeatures()&(old?12u:10u))==(old?12u:10u),"native owner extension advertises "+path+" owners and the GBuffer velocity contract");
         typeof(NativeBackend).GetMethod("ConfigureIndexedMotion",BindingFlags.Instance|BindingFlags.NonPublic).Invoke(backend,null);
         backend.ConfigureNativePasses(library);
-        using(var compiler=VulkanShaderCompiler.CreateBundled(Path.Combine(output,"GpuVelocityStockCache")))foreach(uint id in old?new uint[]{0,32}:new uint[]{0,4}){var spec=old?WorldShaderVariants.Materials.Single(v=>v.Id==id):NativePassShaderVariants.Materials.Single(v=>v.Id==id);
+        using(var compiler=VulkanShaderCompiler.CreateBundled(Path.Combine(output,"GpuVelocityStockCache")))foreach(uint id in old?streams.SelectMany(s=>new[]{s,32+s}).ToArray():new uint[]{0,4}){var spec=old?WorldShaderVariants.Materials.Single(v=>v.Id==id):NativePassShaderVariants.Materials.Single(v=>v.Id==id);
             backend.InitializeGpuStockPipeline(id,old,VulkanShaderArtifact.FromCompilation(compiler.Compile(library.GpuOpaqueRequest(spec.Vertex)),"fixture-indexed-vs"),VulkanShaderArtifact.FromCompilation(compiler.Compile(library.GpuOpaqueRequest(spec.Pixel)),"fixture-indexed-ps"));}
         var stages=core.GetType("ClientPlugin.Backend.GuestPostprocessStages",true);stages.GetField("PreparationBound",stat).SetValue(null,true);
-        var catalog=backend.PostprocessCatalog().Where(row=>(uint)row[0]==pixelOwner-1||(uint)row[0]==pixelOwner).ToArray();Check(catalog.Length==2,"fixture selects the initialized "+path+" GBuffer owner pair");
+        var catalog=backend.PostprocessCatalog().Where(row=>streams.Any(id=>((uint)row[0]|1)==pixelOwner+2*id)).ToArray();Check(catalog.Length==2*streams.Length,"fixture selects the initialized "+path+" GBuffer owner pairs: "+string.Join(",",catalog.Select(r=>(uint)r[0])));
         stages.GetField("catalog",stat).SetValue(null,catalog);stages.GetField("catalogEpoch",stat).SetValue(null,Property("Backend.GuestBridgeClient","ResourceEpoch"));
         var programType=core.GetType("ClientPlugin.Backend.GuestProgram",true);var submit=Delegate.CreateDelegate(typeof(Action<>).MakeGenericType(typeof(IReadOnlyList<>).MakeGenericType(programType)),core.GetType("ClientPlugin.Backend.GuestBridgeClient",true).GetMethod("Submit",stat));
         NativeWorldVertex V(float x,float y){uint n=VF_Packer.PackNormal(Vector3.Backward);return new(){Material=new(){X=x,Y=y,Z=0,Scale=1,NormalX=n&65535,NormalY=n>>16,TangentX=1,TangentY=.5f,TangentZ=.5f,TangentW=1,U=(x+1)/2,V=(1-y)/2},WeightX=1};}
         backend.UploadWorldMesh(957001,new[]{V(-1,-1),V(1,-1),V(0,1)},new uint[]{0,1,2,2,1,0});backend.UploadTexture(957002,1,1,0,new byte[]{180,180,180,0},true);backend.UploadTexture(957003,1,1,0,new byte[]{128,128,255,100},false);backend.UploadTexture(957004,1,1,0,new byte[]{255,1,0,0},false);
         var post=new VulkanPostprocess();post.Hbao.Enabled=false;post.Ssao.Enabled=false;post.Settings.BloomEnabled=false;post.Settings.EnableEyeAdaptation=false;
-        NativeGpuOpaqueActor Actor(int step){var a=new NativeGpuOpaqueActor{Owner=10,Family=0,Generation=1,Flags=1|16,Scale=1,SourceCount=1};double x=.1*step;a.Translation[0]=x;a.Translation[2]=-5;a.Minimum[0]=x-1;a.Minimum[1]=-1;a.Minimum[2]=-5;a.Maximum[0]=x+1;a.Maximum[1]=1;a.Maximum[2]=-5;a.Basis[0]=a.Basis[4]=a.Basis[8]=1;a.Colour[0]=a.Colour[1]=a.Colour[2]=1;if(old){a.Flags|=2;a.Inverse[0]=a.Inverse[5]=a.Inverse[10]=1;}return a;}
+        uint sourceFirst=0;NativeGpuOpaqueActor Actor(int step){var a=new NativeGpuOpaqueActor{Owner=10,Family=0,Generation=1,Flags=1|16,Scale=1,SourceFirst=sourceFirst,SourceCount=1};double x=.1*step;a.Translation[0]=x;a.Translation[2]=-5;a.Minimum[0]=x-1;a.Minimum[1]=-1;a.Minimum[2]=-5;a.Maximum[0]=x+1;a.Maximum[1]=1;a.Maximum[2]=-5;a.Basis[0]=a.Basis[4]=a.Basis[8]=1;a.Colour[0]=a.Colour[1]=a.Colour[2]=1;if(old){a.Flags|=2;a.Inverse[0]=a.Inverse[5]=a.Inverse[10]=1;}return a;}
         var part=new NativeGpuOpaquePart{Family=0,IndexCount=6,Material=10,Flags=3,Generation=1};part.Textures[0]=1;part.Textures[1]=2;part.Textures[2]=3;
-        var source=new byte[64];BitConverter.GetBytes(1f).CopyTo(source,0);BitConverter.GetBytes(1f).CopyTo(source,20);BitConverter.GetBytes(1f).CopyTo(source,40);var objects=new byte[128];WorldConstants.Object(old?backend.WorldLayouts[0]:library.Load(NativePassShaderVariants.Materials[0].Vertex).Layout,MatrixD.Identity,Vector3.One,Vector3.Zero,0,0).CopyTo(objects,0);
+        byte[] Cube(bool skinned){var cube=new MyCubeInstanceData{LocalMatrix=Matrix.Identity};if(skinned){cube.EnableSkinning=true;cube.BoneRange=1;for(int b=0;b<9;++b)cube[b]=new Vector3UByte(127,127,127);}var packed=new byte[64];for(int b=0;b<8;++b){var v=cube.GetPackedBone(b);packed[b*4]=v.X;packed[b*4+1]=v.Y;packed[b*4+2]=v.Z;packed[b*4+3]=v.W;}var t=cube.PackedOrthoMatrix;Buffer.BlockCopy(new[]{t.X,t.Y,t.Z,t.W,0f,0f,0f,0f},0,packed,32,32);return packed;}
+        var source=new byte[192];BitConverter.GetBytes(1f).CopyTo(source,0);BitConverter.GetBytes(1f).CopyTo(source,20);BitConverter.GetBytes(1f).CopyTo(source,40);Cube(false).CopyTo(source,64);Cube(true).CopyTo(source,128);var objects=new byte[128];WorldConstants.Object(old?backend.WorldLayouts[0]:library.Load(NativePassShaderVariants.Materials[0].Vertex).Layout,MatrixD.Identity,Vector3.One,Vector3.Zero,0,0).CopyTo(objects,0);
         backend.InitializeGpuOpaqueReference(new[]{Actor(0)},new[]{new NativeGpuOpaqueFamily{Generation=1,FirstPart=0,PartCount=1}},new[]{part},1,new float[]{-1,-1,0,1,-1,0,0,1,0},new uint[]{0,1,2,2,1,0},source,new ulong[]{0,957002,957003,957004},8,16,1);
-        backend.SetGpuStockBatches(new[]{new NativeGpuOpaqueBatch{Mesh=957001,Old=old?1u:0u,MainPipeline=0,DepthPipeline=old?32u:4u,ForwardPipeline=uint.MaxValue,Flags=1}},new[]{957001UL},objects);
+        // Stream 0 is rigid; 2..4 select the generic, cube and deformed-cube source records.
+        void Use(uint id){sourceFirst=id<2?0u:id-2;backend.SetGpuStockBatches(new[]{new NativeGpuOpaqueBatch{Mesh=957001,Old=old?1u:0u,MainPipeline=id,DepthPipeline=old?32+id:4u,ForwardPipeline=uint.MaxValue,Flags=1}},new[]{957001UL},objects);}
+        Use(0);
         uint frame=0,epoch=1;
         (byte[] G,float[] M) Frame(int step,bool pipelined=false){
             Call("Backend.RenderHost","PrepareShaderGenerations");backend.BeginPacketCollection();post.Configure(backend,64,64,false,view:MatrixD.Identity,projection:projection);backend.ClearPassFrame();
@@ -146,6 +151,10 @@ partial class Program
             var stock=Run();var stockG1=backend.ReadbackWorldGbuffer(1,64,64);Console.WriteLine(path+" VELOCITY analytic="+expected+" stock="+Motion(stock.M));
             Check(Near(stock.M,.02f)&&stock.M[corner]==0&&stock.M[corner+1]==0,"stock indexed replay writes the analytic "+path+" motion");
             Check(stock.M.SequenceEqual(Run(true).M),"stock indexed replay agrees across recording modes");
+            var stockStreams=new Dictionary<uint,(byte[] G,float[] M,byte[] G1)>();
+            foreach(uint id in streams.Skip(1)){Use(id);var r=Run();stockStreams[id]=(r.G,r.M,backend.ReadbackWorldGbuffer(1,64,64));Console.WriteLine(path+" VELOCITY stock stream"+id+"="+Motion(r.M));
+                Check(Near(r.M,.02f)&&r.M[corner]==0,"stock indexed replay writes the analytic "+path+" motion for instanced/cube stream id"+id);}
+            Use(0);
             Register(magenta);var owned=Run(true);Check(Property("Backend.GuestPostprocessStages","Error")==null,"velocity-aware "+path+" owner prepares: "+Property("Backend.GuestPostprocessStages","Error"));
             Console.WriteLine(path+" VELOCITY owned="+Motion(owned.M));var state=backend.GetPostprocessGeneration(pixelOwner);
             Check(Magenta(owned.G)&&state.Active!=0&&state.Executions>0&&state.LastFrame==frame,path+" owner pair executes the replacement through indirect draws");
@@ -154,7 +163,18 @@ partial class Program
             Register(magenta.Replace("float2 anomaly_velocity = input.anomaly_velocity;","float2 anomaly_velocity = float2(3, -2);"));var custom=Run(true);Console.WriteLine(path+" VELOCITY custom="+Motion(custom.M));
             Check(Property("Backend.GuestPostprocessStages","Error")==null&&custom.M[centre]==3&&custom.M[centre+1]==-2&&custom.M[corner]==0&&Magenta(custom.G),"pack-written velocity reaches Target3 from the "+path+" owning invocation; replay skips that batch");
             AttachmentOwnerPhase(core,backend,owner,root,file,magenta,path,pixelOwner,stockG1,p=>Run(p).M,m=>Near(m,.02f),Check);
+            int pixel=32*64+32,outside=2*64+2,slot=AttachmentSlot(core,out _);
+            foreach(uint id in streams.Skip(1)){Use(id);var stream=Run(true);var g1=backend.ReadbackWorldGbuffer(1,64,64);var a=backend.ReadbackAttachment((uint)slot,64,64,4);var status=backend.GetPostprocessGeneration(pixelOwner+2*id);var control=stockStreams[id];
+                Console.WriteLine(path+" VELOCITY owned stream"+id+"="+Motion(stream.M)+" objectid="+BitConverter.ToUInt32(a,pixel*4)+" gbuffer1.a="+g1[pixel*4+3]);
+                Check(Magenta(stream.G)&&status.Active!=0&&status.Executions>0&&status.LastFrame==frame,path+" instanced/cube owner pair executes the replacement id"+id);
+                Check(Near(stream.M,.02f)&&Math.Abs(stream.M[centre]-control.M[centre])<.01f&&Math.Abs(stream.M[centre+1]-control.M[centre+1])<.01f&&stream.M[corner]==0,"owner-emitted Target3 from per-draw currToPrev matches analytic and replay motion id"+id);
+                Check(BitConverter.ToUInt32(a,pixel*4)==777&&BitConverter.ToUInt32(a,outside*4)==0&&Math.Abs(g1[pixel*4+3]-128)<=1&&g1[outside*4+3]==control.G1[outside*4+3],path+" instanced/cube owning invocation writes the attachment and packed GBuffer1.a id"+id);
+                var sync=Run();Check(sync.M.SequenceEqual(stream.M)&&sync.G.SequenceEqual(stream.G)&&backend.ReadbackAttachment((uint)slot,64,64,4).SequenceEqual(a),path+" instanced/cube owner outputs agree across recording modes id"+id);}
+            if(streams.Length>1){File.WriteAllText(file,AttachmentPixelStage(magenta.Replace("float2 anomaly_velocity = input.anomaly_velocity;","float2 anomaly_velocity = float2(3, -2);")));Call("Backend.GuestPassList","RegisterRoot",owner,root,null);
+                foreach(uint id in streams.Skip(1)){Use(id);var stream=Run(true);Check(Property("Backend.GuestPostprocessStages","Error")==null&&stream.M[centre]==3&&stream.M[centre+1]==-2&&stream.M[corner]==0&&Magenta(stream.G),"pack-written velocity reaches Target3 from the "+path+" instanced/cube owning invocation id"+id);}}
             Call("Backend.GuestPassList","UnregisterRoot",owner);var restored=Run(true);
+            foreach(uint id in streams.Skip(1)){Use(id);var stream=Run(true);var control=stockStreams[id];Check(stream.M.SequenceEqual(control.M)&&stream.G.SequenceEqual(control.G)&&backend.ReadbackWorldGbuffer(1,64,64).SequenceEqual(control.G1),"unregister restores exact stock "+path+" material, GBuffer1 and replay motion id"+id);}
+            if(streams.Length>1){Use(0);restored=Run(true);}
             Check(restored.M.SequenceEqual(stock.M)&&restored.G.SequenceEqual(stock.G)&&backend.ReadbackWorldGbuffer(1,64,64).SequenceEqual(stockG1),"unregister restores exact stock "+path+" material, GBuffer1 and replay motion");
             Run();Check(backend.GetPostprocessGeneration(pixelOwner).Retired==0,path+" velocity owner bundles retire after completed submissions");
             Check(backend.GetStats().ValidationEnabled!=0&&backend.GetStats().ValidationErrors==0,path+" velocity owners have zero core/synchronization errors");
