@@ -46,7 +46,7 @@ MessageDisposition.Handler, // 41 VoxelCreate
 MessageDisposition.Handler, // 42 CreateRenderVoxelMaterials
 MessageDisposition.Handler, // 43 UpdateRenderVoxelMaterials
 MessageDisposition.Handler, // 44 PreloadVoxelMaterials
-MessageDisposition.Pending, // 45 CreateRenderVoxelDebris
+MessageDisposition.Handler, // 45 CreateRenderVoxelDebris
 MessageDisposition.BaselineNoOp, // 46 RebuildCullingStructure
 MessageDisposition.BaselineNoOp, // 47 CreateEffect
 MessageDisposition.Handler, // 48 CreateRenderLight
@@ -89,7 +89,7 @@ MessageDisposition.OutboundResponse, // 84 Error
 MessageDisposition.Handler, // 85 CreateRenderCharacter
 MessageDisposition.Handler, // 86 SetCharacterSkeleton
 MessageDisposition.Handler, // 87 SetCharacterTransforms
-MessageDisposition.Pending, // 88 DebugDrawLine3D
+MessageDisposition.Handler, // 88 DebugDrawLine3D
 MessageDisposition.Pending, // 89 DebugDrawLine2D
 MessageDisposition.BaselineNoOp, // 90 DebugDrawLine3DBatch
 MessageDisposition.Pending, // 91 DebugDrawPoint
@@ -112,7 +112,7 @@ MessageDisposition.Pending, // 107 DebugDrawCone
 MessageDisposition.Pending, // 108 DebugDrawMesh
 MessageDisposition.Pending, // 109 DebugDraw6FaceConvex
 MessageDisposition.Pending, // 110 DebugWaitForPresent
-MessageDisposition.Pending, // 111 DebugClearPersistentMessages
+MessageDisposition.Handler, // 111 DebugClearPersistentMessages
 MessageDisposition.Pending, // 112 DebugPrintAllFileTexturesIntoLog
 MessageDisposition.Handler, // 113 UpdateDebugOverrides
 MessageDisposition.Handler, // 114 UnloadData

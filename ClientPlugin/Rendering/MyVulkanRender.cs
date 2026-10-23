@@ -63,6 +63,7 @@ public sealed class MyVulkanRender : IMyRender
     private MatrixD cameraProjection = MatrixD.Identity;
     private readonly VulkanShadows shadows = new();
     private Vector3D camera;
+    private readonly Scene.VulkanDebugLines debugLines = new();
     private MyEnvironmentLightData light = MyEnvironmentLightData.Default;
     private MyTextureDebugMultipliers textureMultipliers=MyTextureDebugMultipliers.Defaults;
     private bool drawScene, frameOpen, disposed;
@@ -318,6 +319,7 @@ public sealed class MyVulkanRender : IMyRender
             if (!frameOpen) { shadows.CancelPreparedFrame();FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); return; }
             renderStats.Draw(sprites, BackBufferResolution.X);
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Sprites))backend.DrawSprites(sprites.MainPackets(BackBufferResolution.X, BackBufferResolution.Y));
+            debugLines.Submit(backend, camera);
             FrameProfiler.Lap(FrameProfiler.Section.Sprites);
             previousDraw = CurrentDrawTime;
         }
@@ -484,6 +486,8 @@ public sealed class MyVulkanRender : IMyRender
             case MyRenderMessageEnum.UnloadData:
                 sessionLog?.UnloadSession();textureMultipliers=MyTextureDebugMultipliers.Defaults;
                 decals?.Clear();haveParticleCamera=false;haveCamera=false;particles?.Clear();environment?.Clear(); voxels?.Clear(); scene.Clear(); sprites.Clear(); generated.Clear(); break;
+            case MyRenderMessageEnum.DebugDrawLine3D: debugLines.Add((MyRenderMessageDebugDrawLine3D)message); break;
+            case MyRenderMessageEnum.DebugClearPersistentMessages: debugLines.ClearPersistent(); break;
             case MyRenderMessageEnum.SetFrameTimeStep: animationClock.StepOverride = ((MyRenderMessageSetFrameTimeStep)message).TimeStepInSeconds; break;
             case MyRenderMessageEnum.CollectGarbage: GC.Collect(); break;
             case MyRenderMessageEnum.UpdateGameplayFrame: gameplayFrame = ((MyRenderMessageUpdateGameplayFrame)message).GameplayFrame; break;

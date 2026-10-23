@@ -82,6 +82,8 @@ typedef struct SevkSprite {
                      * Bits1/2 premultiply linear tint RGB by tint alpha, use ONE blending.
                      * Zero retains the straight-alpha ABI default. */
 } SevkSprite;
+/* DebugDrawLine3D vertex: camera-relative position and sRGB-encoded RGBA8 color (stock MyLinesRenderer). */
+typedef struct SevkLineVertex { float position[3]; uint32_t color; } SevkLineVertex;
 typedef struct SevkStats {
     uint32_t size, abi_version, api_version, validation_enabled;
     uint64_t submitted_frames, presented_frames, mesh_draws, sprite_draws;
@@ -158,6 +160,8 @@ SEVK_API int32_t SEVK_CALL sevk_render_texture_mips(void* context, uint64_t id, 
 SEVK_API int32_t SEVK_CALL sevk_begin_frame(void* context, const SevkFrameInfo* frame);
 SEVK_API int32_t SEVK_CALL sevk_draw_mesh(void* context, const SevkDrawMesh* draw);
 SEVK_API int32_t SEVK_CALL sevk_draw_sprites(void* context, const SevkSprite* sprites, uint32_t count);
+/* Line list drawn after the game scene, before sprites. flags bit0: test against scene depth (DepthRead). */
+SEVK_API int32_t SEVK_CALL sevk_draw_lines(void* context, const SevkLineVertex* vertices, uint32_t count, uint32_t flags);
 SEVK_API int32_t SEVK_CALL sevk_end_frame(void* context);
 /* Starts end_frame on a native worker. Later calls wait for it and replay
  * whitelisted void calls (queued with copied arguments) in issue order. */

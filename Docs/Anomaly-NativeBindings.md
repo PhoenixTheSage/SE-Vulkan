@@ -962,3 +962,19 @@ The `--hdr-tenant-only` lane passes 33 checks with zero validation errors:
 
 LDR billboard and highlight FP16 draws, DLSS/FSR on graded input, and the HUD
 transform are build-verified only.
+
+### DebugDrawLine3D replay (audit P7)
+
+`VulkanDebugLines` mirrors MyRender11's debug-message queues:
+- frame messages, ring-capped at 100000;
+- persistent messages, carried into later frames and capped at 1000;
+- DebugClearPersistentMessages, applied after the frame draws.
+
+It makes points camera-relative in double precision and submits them through
+`sevk_draw_lines`. Native draws two line-list batches after the swapchain
+meshes and before sprites, as stock `Primitives/Lines.hlsl` does: the sRGB
+vertex colour is decoded and premultiplied, then blended with BlendAlphaPremult.
+DepthRead lines test the composed scene depth with reversed-Z; the IgnoreDepth
+batch does not. DebugDrawLine3DBatch stays a no-op, as on DX11.
+
+The `--debug-lines-only` lane passes 31 checks with zero validation errors.

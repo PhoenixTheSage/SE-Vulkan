@@ -148,7 +148,7 @@ struct Mesh { Buffer vertices{}, indices{}; uint32_t index_count{}, vertex_strid
 struct GeometryPage {Buffer buffer{};VmaVirtualBlock block{};uint32_t unit{};};
 struct MaterialKey { std::array<uint64_t,4> ids{}; bool operator==(const MaterialKey&) const = default; };
 struct MaterialHash { size_t operator()(const MaterialKey& key) const noexcept { size_t h=0; for(uint64_t id:key.ids) h^=std::hash<uint64_t>{}(id)+0x9e3779b9+(h<<6)+(h>>2);return h; } };
-struct Slot {
+struct Slot { Buffer lines{};
     VkCommandPool pool{}; VkCommandBuffer command{}; VkSemaphore acquired{};
     Buffer uniform{}; VkDescriptorSet descriptor{}; uint64_t completion{};
     std::vector<VkDescriptorSet> draw_descriptors;
@@ -505,6 +505,8 @@ struct Renderer {uint32_t recipe_generation=1;
     VkDescriptorPool descriptors{}; VkDescriptorSetLayout frame_layout{}, texture_layout{}, shadow_layout{};
     VkPipelineLayout pipeline_layout{}; VkPipeline sprite_pipeline{}, additive_pipeline{}, mesh_pipeline{}, transparent_pipeline{}, mesh_additive_pipeline{};
     VkPipeline lcd_pipeline{}, lcd_additive_pipeline{}, shadow_pipeline{}, skybox_pipeline{}, mesh_additive_top_pipeline{};
+    // DebugDrawLine3D replay (stock MyLinesRenderer): [0] depth-read, [1] IgnoreDepth.
+    VkPipeline line_pipelines[2]{}; std::vector<SevkLineVertex> frame_lines[2]; uint64_t debug_line_vertices{};
     VkPipeline sprite_premul_pipeline{}, sprite_premul_additive_pipeline{}, lcd_premul_pipeline{}, lcd_premul_additive_pipeline{};
     std::array<Image,8> shadow_images{}; VkDescriptorSet shadow_descriptor{}; VkSampler shadow_sampler{};
     float shadow_matrices[8][16]{}, shadow_splits[8]{}, saved_shadow_matrices[8][16]{}; uint32_t shadow_count{}, saved_shadow_count{}, shadow_resolution{1024},requested_shadow_resolution{1024};float shadow_bias{.001f};bool shadow_blur_enabled{}, saved_shadows{};uint64_t saved_caster_signature{};
@@ -1075,10 +1077,10 @@ struct Renderer {uint32_t recipe_generation=1;
         VkShaderModuleCreateInfo info{ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO }; info.codeSize = words.size() * 4; info.pCode = words.data();
         VkShaderModule result{}; check(vkCreateShaderModule(device, &info, nullptr, &result), "create SPIR-V shader"); return result;
     }
-    VkPipeline make_pipeline(bool mesh, bool additive, bool transparent = false, bool target_depth = true, VkFormat target_format = VK_FORMAT_UNDEFINED, bool skybox = false, bool shadow = false, bool no_depth_test = false, bool premultiplied = false, bool write_alpha = true) {
-        VkShaderModule vertex = shader(shadow?"shadow_vs":(mesh ? "mesh_vs" : "sprite_vs")), fragment{};
+    VkPipeline make_pipeline(bool mesh, bool additive, bool transparent = false, bool target_depth = true, VkFormat target_format = VK_FORMAT_UNDEFINED, bool skybox = false, bool shadow = false, bool no_depth_test = false, bool premultiplied = false, bool write_alpha = true, bool lines = false) {
+        VkShaderModule vertex = shader(lines?"line_vs":shadow?"shadow_vs":(mesh ? "mesh_vs" : "sprite_vs")), fragment{};
         try {
-            fragment = shader(shadow?"shadow_ps":(mesh ? "mesh_ps" : "sprite_ps"));
+            fragment = shader(lines?"line_ps":shadow?"shadow_ps":(mesh ? "mesh_ps" : "sprite_ps"));
             std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
             stages[0] = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertex, "main", nullptr };
             stages[1] = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragment, "main", nullptr };
@@ -1093,14 +1095,17 @@ struct Renderer {uint32_t recipe_generation=1;
                 VkVertexInputAttributeDescription{ 1,0,VK_FORMAT_R32G32B32_SFLOAT,12 }, VkVertexInputAttributeDescription{ 2,0,VK_FORMAT_R32G32_SFLOAT,24 } };
             VkPipelineVertexInputStateCreateInfo input{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
             if (mesh) { input.vertexBindingDescriptionCount = 1; input.pVertexBindingDescriptions = &binding; input.vertexAttributeDescriptionCount = 3; input.pVertexAttributeDescriptions = attributes.data(); }
-            VkPipelineInputAssemblyStateCreateInfo assembly{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO }; assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+            VkVertexInputBindingDescription line_binding{ 0, sizeof(SevkLineVertex), VK_VERTEX_INPUT_RATE_VERTEX };
+            std::array<VkVertexInputAttributeDescription, 2> line_attributes{ VkVertexInputAttributeDescription{ 0,0,VK_FORMAT_R32G32B32_SFLOAT,0 }, VkVertexInputAttributeDescription{ 1,0,VK_FORMAT_R8G8B8A8_UNORM,12 } };
+            if (lines) { input.vertexBindingDescriptionCount = 1; input.pVertexBindingDescriptions = &line_binding; input.vertexAttributeDescriptionCount = 2; input.pVertexAttributeDescriptions = line_attributes.data(); }
+            VkPipelineInputAssemblyStateCreateInfo assembly{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO }; assembly.topology = lines ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
             VkPipelineViewportStateCreateInfo viewport{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO }; viewport.viewportCount = viewport.scissorCount = 1;
             VkPipelineRasterizationStateCreateInfo raster{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO }; raster.polygonMode = VK_POLYGON_MODE_FILL;
             raster.cullMode = VK_CULL_MODE_NONE; raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; raster.lineWidth = 1;
             raster.depthBiasEnable=shadow; raster.depthBiasConstantFactor=shadow?1.5f:0; raster.depthBiasSlopeFactor=shadow?2.f:0;
             VkPipelineMultisampleStateCreateInfo samples{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO }; samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
             VkPipelineDepthStencilStateCreateInfo depth_state{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
-            depth_state.depthTestEnable = mesh && !no_depth_test; depth_state.depthWriteEnable = mesh && !transparent && !skybox && !no_depth_test; depth_state.depthCompareOp = shadow?VK_COMPARE_OP_LESS_OR_EQUAL:VK_COMPARE_OP_GREATER_OR_EQUAL;
+            depth_state.depthTestEnable = (mesh || lines) && !no_depth_test; depth_state.depthWriteEnable = mesh && !transparent && !skybox && !no_depth_test; depth_state.depthCompareOp = shadow?VK_COMPARE_OP_LESS_OR_EQUAL:VK_COMPARE_OP_GREATER_OR_EQUAL;
             VkPipelineColorBlendAttachmentState attachment{}; attachment.colorWriteMask = write_alpha ? 0xf : 0x7;
             if (!mesh || transparent) {
                 attachment.blendEnable = VK_TRUE; attachment.srcColorBlendFactor = mesh || premultiplied?VK_BLEND_FACTOR_ONE:VK_BLEND_FACTOR_SRC_ALPHA;
@@ -1318,6 +1323,9 @@ struct Renderer {uint32_t recipe_generation=1;
             transparent_pipeline = make_pipeline(true, false, true); mesh_additive_pipeline = make_pipeline(true, true, true);
             skybox_pipeline=make_pipeline(true,false,false,true,VK_FORMAT_UNDEFINED,true);
             mesh_additive_top_pipeline=make_pipeline(true,true,true,true,VK_FORMAT_UNDEFINED,false,false,true);
+            for (auto& line : line_pipelines) { if (line) vkDestroyPipeline(device, line, nullptr); line = {}; }
+            line_pipelines[0] = make_pipeline(false,false,false,true,VK_FORMAT_UNDEFINED,false,false,false,true,true,true);
+            line_pipelines[1] = make_pipeline(false,false,false,true,VK_FORMAT_UNDEFINED,false,false,true,true,true,true);
         }
         if (!lcd_pipeline) {
             // Stock offscreen sprites preserve destination alpha. In a world
@@ -1512,7 +1520,7 @@ struct Renderer {uint32_t recipe_generation=1;
         std::memcpy(slot.uniform.mapped, &constants, sizeof(constants)); check(vmaFlushAllocation(allocator, slot.uniform.memory, 0, sizeof(constants)), "flush frame constants");
         VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }; begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check(vkBeginCommandBuffer(slot.command, &begin), "begin frame command"); frame_mark("frame begin");
-        frame_meshes.clear(); frame_sprites.clear(); recording=true; guest.resources_open=true; return 0;
+        frame_meshes.clear(); frame_sprites.clear(); frame_lines[0].clear(); frame_lines[1].clear(); recording=true; guest.resources_open=true; return 0;
     }
     void begin_main_rendering(const SevkFrameInfo& frame,bool load=false) {
         auto& slot=slots[slot_index];
@@ -1607,6 +1615,29 @@ struct Renderer {uint32_t recipe_generation=1;
             vkCmdDraw(command, 6, 1, 0, 0); ++stats.sprite_draws;
         }
     }
+    // Stock MyLinesRenderer.Draw after the game scene: premultiplied blend, scene depth for DepthRead batches.
+    void draw_lines(const SevkLineVertex* vertices, uint32_t count, uint32_t flags) {
+        if (!recording) throw std::runtime_error("line draw outside frame");
+        if ((!vertices && count) || (count & 1) || flags > 1) throw std::runtime_error("invalid line batch");
+        auto& target = frame_lines[(flags & 1) ? 0 : 1];
+        if (target.size() + count > 200000) throw std::runtime_error("line batch exceeds the stock debug-draw capacity");
+        if (count) target.insert(target.end(), vertices, vertices + count);
+    }
+    void emit_lines(VkCommandBuffer command) {
+        size_t total = frame_lines[0].size() + frame_lines[1].size(); if (!total || !line_pipelines[0]) return;
+        auto& buffer = slots[slot_index].lines; world_buffer(buffer, total * sizeof(SevkLineVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        std::memcpy(buffer.mapped, frame_lines[0].data(), frame_lines[0].size() * sizeof(SevkLineVertex));
+        std::memcpy(static_cast<uint8_t*>(buffer.mapped) + frame_lines[0].size() * sizeof(SevkLineVertex), frame_lines[1].data(), frame_lines[1].size() * sizeof(SevkLineVertex));
+        check(vmaFlushAllocation(allocator, buffer.memory, 0, VK_WHOLE_SIZE), "flush debug lines");
+        VkExtent2D target = present_extent.width ? present_extent : extent;
+        VkViewport viewport{ 0,float(target.height),float(target.width),-float(target.height),0,1 }; vkCmdSetViewport(command, 0, 1, &viewport);
+        VkRect2D scissor{ {0,0},target }; vkCmdSetScissor(command, 0, 1, &scissor);
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &slots[slot_index].descriptor, 0, nullptr);
+        VkDeviceSize offset = 0; vkCmdBindVertexBuffers(command, 0, 1, &buffer.handle, &offset);
+        uint32_t first = 0;
+        for (uint32_t i = 0; i < 2; ++i) { uint32_t count = uint32_t(frame_lines[i].size()); if (!count) continue;
+            vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, line_pipelines[i]); vkCmdDraw(command, count, 1, first, 0); first += count; debug_line_vertices += count; }
+    }
     void draw_sprites(const SevkSprite* sprites, uint32_t count) {
         if (!recording) throw std::runtime_error("sprite draw outside frame");
         if(count) frame_sprites.insert(frame_sprites.end(),sprites,sprites+count);
@@ -1695,6 +1726,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if(world.current().queued) compose_world();
         record_opaque_reference(slot.command);
         frame_mark("meshes");for(const auto& draw:frame_meshes) emit_mesh(draw);
+        frame_mark("debug lines");emit_lines(slot.command);
         if(world.current().queued && has_output_billboards()){prepare_output_billboard_depth(slot.command);begin_main_rendering(*static_cast<SevkFrameInfo*>(slot.uniform.mapped),true);render_output_billboards(slot.command,world.slots[slot_index]);}
         performance.compose_us=perf_take();frame_mark("sprites");emit_sprites(slot.command,output_extent,frame_sprites.data(),static_cast<uint32_t>(frame_sprites.size()),sprite_pipeline,additive_pipeline,sprite_premul_pipeline,sprite_premul_additive_pipeline,sprite_w?float(sprite_w):float(output_extent.width),sprite_h?float(sprite_h):float(output_extent.height),true);
         performance.sprite_us=perf_take();
@@ -1887,7 +1919,8 @@ struct Renderer {uint32_t recipe_generation=1;
             for (auto& item : meshes) destroy_mesh(item.second);
             for (auto& item : retired) { destroy_texture(item.texture); destroy_mesh(item.mesh); }
             if (allocator) destroy_targets();
-            for (auto& slot : slots) { if (allocator) destroy_buffer(slot.uniform); if (slot.acquired) vkDestroySemaphore(device, slot.acquired, nullptr); if (slot.pool) vkDestroyCommandPool(device, slot.pool, nullptr); }
+            for (auto& line : line_pipelines) if (line) vkDestroyPipeline(device, line, nullptr);
+            for (auto& slot : slots) { if (allocator) { destroy_buffer(slot.uniform); destroy_buffer(slot.lines); } if (slot.acquired) vkDestroySemaphore(device, slot.acquired, nullptr); if (slot.pool) vkDestroyCommandPool(device, slot.pool, nullptr); }
             if (sprite_pipeline) vkDestroyPipeline(device, sprite_pipeline, nullptr);
             if (additive_pipeline) vkDestroyPipeline(device, additive_pipeline, nullptr);
             if (sprite_premul_pipeline) vkDestroyPipeline(device, sprite_premul_pipeline, nullptr);
@@ -2050,6 +2083,7 @@ int32_t SEVK_CALL sevk_render_texture_aspect(void* context, uint64_t id, uint32_
 int32_t SEVK_CALL sevk_begin_frame(void* context, const SevkFrameInfo* frame) { return call(context, [&](Renderer& r) { if (!frame) throw std::runtime_error("null frame"); return r.begin_frame(*frame); }); }
 int32_t SEVK_CALL sevk_render_texture_mips(void* context,uint64_t id,uint32_t width,uint32_t height,const float* clear,const SevkSprite* sprites,uint32_t count,float logical_width,float logical_height,uint32_t generate_mips){return call(context,[&](Renderer& r){if(generate_mips>1)throw std::runtime_error("invalid LCD mip option");r.render_texture(id,width,height,clear,sprites,count,logical_width,logical_height,generate_mips!=0);return 0;});}
 int32_t SEVK_CALL sevk_draw_mesh(void* context, const SevkDrawMesh* draw) { return call(context, [&](Renderer& r) { if (!draw) throw std::runtime_error("null draw"); r.draw_mesh(*draw); return 0; }); }
+int32_t SEVK_CALL sevk_draw_lines(void* context, const SevkLineVertex* vertices, uint32_t count, uint32_t flags) { return call(context, [&](Renderer& r) { r.draw_lines(vertices, count, flags); return 0; }); }
 int32_t SEVK_CALL sevk_draw_sprites(void* context, const SevkSprite* sprites, uint32_t count) { return call(context, [&](Renderer& r) { if ((!sprites && count) || count > 1000000) throw std::runtime_error("invalid sprite batch"); r.draw_sprites(sprites,count); return 0; }); }
 int32_t SEVK_CALL sevk_end_frame(void* context) { return call(context, [&](Renderer& r) { return r.end_frame(); }); }
 // Records frame N on a worker while managed frame N+1 runs; see call_deferrable.

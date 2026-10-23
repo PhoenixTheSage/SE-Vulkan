@@ -506,8 +506,9 @@
     {
       "Index": 45,
       "Kind": "CreateRenderVoxelDebris",
-      "Disposition": "Pending",
+      "Disposition": "Handler",
       "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanScene.cs",
         "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageCreateRenderVoxelDebris.cs"
       ],
       "Verified": false,
@@ -974,8 +975,9 @@
     {
       "Index": 88,
       "Kind": "DebugDrawLine3D",
-      "Disposition": "Pending",
+      "Disposition": "Handler",
       "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
         "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugDrawLine3D.cs"
       ],
       "Verified": false,
@@ -1205,8 +1207,9 @@
     {
       "Index": 111,
       "Kind": "DebugClearPersistentMessages",
-      "Disposition": "Pending",
+      "Disposition": "Handler",
       "Sources": [
+        "ClientPlugin/Rendering/MyVulkanRender.cs",
         "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageDebugClearPersistentMessages.cs"
       ],
       "Verified": false,
@@ -1227,6 +1230,7 @@
       "Kind": "UpdateDebugOverrides",
       "Disposition": "Handler",
       "Sources": [
+        "ClientPlugin/Rendering/Scene/VulkanPostprocess.cs",
         "ClientPlugin/Rendering/VulkanShadows.cs",
         "SE-1.210.014/VRage.Render/VRageRender/Messages/MyRenderMessageUpdateDebugOverrides.cs"
       ],
