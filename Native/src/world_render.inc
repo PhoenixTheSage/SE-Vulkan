@@ -29,7 +29,7 @@ void init_world_lighting(uint32_t kind,const void* data,uint64_t bytes){
         if(kind==0)for(uint32_t i=0;i<r.input_variable_count;++i){const auto& v=*r.input_variables[i];if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)continue;
             if(v.location>1)throw std::runtime_error("unsupported stock fullscreen vertex layout");world.fullscreen_attributes.push_back({v.location,0,static_cast<VkFormat>(v.format),v.location==0?0u:16u});}
         const auto& attributes=world.fullscreen_attributes;
-        if(kind==0){if(world.fullscreen)throw std::runtime_error("fullscreen stock shader already initialized");world.fullscreen=module;module={};
+        if(kind==0){if(world.fullscreen)throw std::runtime_error("fullscreen stock shader already initialized");world.fullscreen=module;module={};fullscreen_outputs=stage_outputs(r,"stock fullscreen");
             auto compose=world_file_shader("world_compose_ps"),resolve=VkShaderModule{};
             try{resolve=world_file_shader("world_shadow_ps");VkFormat format=VK_FORMAT_R8_UNORM;
                 world.compose=world_graphics(world.fullscreen,"__vertex_shader",compose,"main",world.light_pipeline_layout,bindings,attributes,&color_format,1,true,false,false,true);
@@ -71,11 +71,11 @@ void begin_next_submission(){
     world.active_submission^=1u;
     world.current().main_owner_orders.clear();
 }
-void set_world_main_owners(const SevkMainOwnerOrder* owners,uint32_t count){
+void set_world_main_owners(const SevkMainOwnerOrder* owners,uint32_t count){settle_cells();
     if(recording||!world.current().queued||(!owners&&count)||count>1000000)throw std::runtime_error("main owner orders must precede frame recording");
     std::unordered_map<uint32_t,uint32_t> next;next.reserve(count);for(uint32_t i=0;i<count;++i)if(!owners[i].group||!next.emplace(owners[i].owner,owners[i].group).second)throw std::runtime_error("invalid or duplicate main owner order");world.current().main_owner_orders=std::move(next);
 }
-void set_world_main_order(const SevkMainDrawOrder* orders,uint32_t count){
+void set_world_main_order(const SevkMainDrawOrder* orders,uint32_t count){settle_cells();
     if(recording||!world.current().queued||count!=world.current().draws.size()||(!orders&&count))throw std::runtime_error("main group metadata must match the queued legacy draws");
     for(uint32_t i=0;i<count;++i)if(!orders[i].group)throw std::runtime_error("main group order must be nonzero");
     for(uint32_t i=0;i<count;++i){world.current().draws[i].main_order=orders[i].group;world.current().draws[i].main_part=orders[i].part;}
@@ -90,7 +90,7 @@ void set_world_old_order(const SevkOldPartOrder* orders,uint32_t count){
     for(uint32_t i=0;i<count;i++){validate_old_order(orders[i]);if(orders[i].valid&&!(world.current().draws[i].packet.flags&0x04000000u))throw std::runtime_error("OLD metadata requires source OLD provenance");}
     for(uint32_t i=0;i<count;i++)world.current().draws[i].old_order=orders[i];
 }
-void queue_world(const void* frame,uint32_t frame_bytes,const float* projection,const float* inverse,const SevkWorldDraw* draws,uint32_t count,const uint64_t* object_ids=nullptr,const uint8_t* objects=nullptr,uint32_t object_bytes=0,const uint8_t* instances=nullptr,uint32_t instance_bytes=0){
+void queue_world(const void* frame,uint32_t frame_bytes,const float* projection,const float* inverse,const SevkWorldDraw* draws,uint32_t count,const uint64_t* object_ids=nullptr,const uint8_t* objects=nullptr,uint32_t object_bytes=0,const uint8_t* instances=nullptr,uint32_t instance_bytes=0){settle_cells();
     critical_profile::Scope critical_queue(critical_profile::QueueOwner,true);
     auto queued_at=std::chrono::steady_clock::now();
     if(recording)throw std::runtime_error("world packets must precede begin_frame");
@@ -531,7 +531,7 @@ void render_world(){
     std::array<VkRenderingAttachmentInfo,7> colors{};for(uint32_t i=0;i<3;++i){colors[i].sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;colors[i].imageView=world.gbuffer[i].view;colors[i].imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;colors[i].loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;colors[i].storeOp=VK_ATTACHMENT_STORE_OP_STORE;}
     colors[0].clearValue.color.float32[3]=1.f;
     // Admitted owners write Target3; stock pipelines leave the unused attachment untouched.
-    bool velocity_frame=gbuffer_velocity_begin(cmd,slot);if(velocity_frame){colors[3].sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;colors[3].imageView=world.motion.view;colors[3].imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;colors[3].loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;colors[3].storeOp=VK_ATTACHMENT_STORE_OP_STORE;}
+    bool velocity_frame=gbuffer_velocity_begin(cmd,slot);if(velocity_frame){colors[3].sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;colors[3].imageView=world.motion.view;colors[3].imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;colors[3].loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;colors[3].storeOp=VK_ATTACHMENT_STORE_OP_STORE;colors[3].clearValue=motion_probe_clear();}
     uint32_t color_count=velocity_frame?4u:3u;
     if(velocity_frame)for(uint32_t s=0;s<3;++s){auto& c=colors[4+s];c.sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;if(!(gbuffer_velocity.attachments&(1u<<s)))continue;c.imageView=world.attach[s].image.view;c.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;c.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;c.storeOp=VK_ATTACHMENT_STORE_OP_STORE;color_count=5+s;}
     VkRenderingAttachmentInfo d{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};d.imageView=world.gbuffer[3].view;d.imageLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;d.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;d.storeOp=VK_ATTACHMENT_STORE_OP_STORE;

@@ -43,7 +43,8 @@ public static class VulkanDiagnostics
     public static void Message(MyRenderMessageEnum type, MessageDisposition disposition)
     {
         int index = (int)type;
-        lock (Sync) { if (index >= 0 && index < messages.Length) { messages[index]++; dispositions[index] = disposition; } }
+        // Called for every render message; readers copy under Sync and tolerate a torn pair.
+        if (index >= 0 && index < messages.Length) { System.Threading.Interlocked.Increment(ref messages[index]); dispositions[index] = disposition; }
     }
     public static void Failure(string reason)
     {

@@ -75,10 +75,20 @@ public sealed class VulkanVoxelMaterials : IDisposable
         }
         return defaults[role];
     }
+    // Prepare is a pure function of the ordered distinct triples and the group
+    // set. A frame that resolved every page to an existing group is recorded;
+    // while neither input changes, later frames only mark those groups used.
+    readonly HashSet<MyVoxelMaterialTriple> distinctSet=new HashSet<MyVoxelMaterialTriple>(MyVoxelMaterialTriple.Comparer);
+    readonly List<MyVoxelMaterialTriple> distinctOrder=new List<MyVoxelMaterialTriple>(),preparedOrder=new List<MyVoxelMaterialTriple>(),preparedKeys=new List<MyVoxelMaterialTriple>();
+    int groupVersion,preparedVersion=-1;
     public void Prepare(IEnumerable<MyVoxelMaterialTriple> triples)
     {
+        distinctSet.Clear();distinctOrder.Clear();foreach(var triple in triples)if(distinctSet.Add(triple))distinctOrder.Add(triple);
+        if(VulkanVoxels.FastPathEnabled&&preparedVersion==groupVersion&&distinctOrder.Count==preparedOrder.Count){bool same=true;for(int i=0;i<distinctOrder.Count&&same;i++)same=MyVoxelMaterialTriple.Comparer.Equals(distinctOrder[i],preparedOrder[i]);
+            if(same){foreach(var key in preparedKeys){groups[key].Used=epoch;used.Add(key);}return;}}
+        int version=groupVersion;preparedKeys.Clear();
         var pages=new List<(HashSet<byte> Ids,MyVoxelMaterialTriple Key)>();
-        foreach(var triple in triples.Distinct(MyVoxelMaterialTriple.Comparer)){
+        foreach(var triple in distinctOrder){
             byte[] ids=new[]{triple.I0,triple.I1,triple.I2}.Where(i=>i!=255).Distinct().ToArray();if(ids.Length==0)continue;
             int page=pages.FindIndex(p=>p.Ids.Union(ids).Count()<=42);
             if(page<0)pages.Add((new HashSet<byte>(ids),triple));else pages[page].Ids.UnionWith(ids);
@@ -86,9 +96,10 @@ public sealed class VulkanVoxelMaterials : IDisposable
         int size=512,total=pages.Sum(p=>p.Ids.Count);while(size>64 && total*6L*size*size*4*4/3*3>512L*1024*1024)size/=2;
         if(total*6L*size*size*4*4/3*3>512L*1024*1024)throw new InvalidOperationException("Visible voxel material pages exceed the bounded atlas budget even at the minimum tier.");
         foreach(var page in pages){byte[] ids=page.Ids.OrderBy(i=>i).ToArray();var cached=groups.FirstOrDefault(p=>p.Value.Size==size && p.Value.Materials.OrderBy(i=>i).SequenceEqual(ids));
-            if(cached.Value!=null){cached.Value.Used=epoch;used.Add(cached.Key);continue;}
+            if(cached.Value!=null){cached.Value.Used=epoch;used.Add(cached.Key);preparedKeys.Add(cached.Key);continue;}
             if(groups.ContainsKey(page.Key))Remove(page.Key);Create(ids,page.Key,size);used.Add(page.Key);
         }
+        if(groupVersion==version){preparedVersion=version;preparedOrder.Clear();preparedOrder.AddRange(distinctOrder);}else preparedVersion=-1;
     }
     public ulong Get(MyVoxelMaterialTriple triple)
     {
@@ -134,7 +145,7 @@ public sealed class VulkanVoxelMaterials : IDisposable
                 var noise=new byte[64*64];new Random(43191).NextBytes(noise);var rgba=new byte[noise.Length*4];for(int i=0;i<noise.Length;++i){rgba[i*4]=noise[i];rgba[i*4+3]=255;}
                 randomTexture=next++;backend.UploadTexture(randomTexture,64,64,0,rgba,false);
             }
-            backend.SetVoxelMaterial(group.Id,constants,group.Arrays,randomTexture);group.Bytes=bytes;group.Used=epoch;groups.Add(triple,group);resolved.Clear();ResidentBytes+=bytes;return group.Id;
+            backend.SetVoxelMaterial(group.Id,constants,group.Arrays,randomTexture);group.Bytes=bytes;group.Used=epoch;groups.Add(triple,group);groupVersion++;resolved.Clear();ResidentBytes+=bytes;return group.Id;
         }
         catch{backend.RemoveResource(6,group.Id);foreach(ulong id in group.Arrays)if(id!=0)backend.RemoveResource(5,id);throw;}
     }
@@ -157,7 +168,7 @@ public sealed class VulkanVoxelMaterials : IDisposable
         result.Set("object_.color_mul",1,1,1);result.Set("object_.emissive",1);result.Set("object_.custom_alpha",dither,0);return result.Bytes;
     }
     private void Remove(MyVoxelMaterialTriple key)
-    {var group=groups[key];backend.RemoveResource(6,group.Id);foreach(ulong id in group.Arrays)backend.RemoveResource(5,id);ResidentBytes-=group.Bytes;groups.Remove(key);resolved.Clear();}
+    {var group=groups[key];backend.RemoveResource(6,group.Id);foreach(ulong id in group.Arrays)backend.RemoveResource(5,id);ResidentBytes-=group.Bytes;groups.Remove(key);groupVersion++;resolved.Clear();}
     public void ClearResident(){DisposeGroups();used.Clear();if(randomTexture!=0){backend.RemoveResource(0,randomTexture);randomTexture=0;}for(int i=0;i<3;++i)if(defaults[i]!=0){backend.RemoveResource(0,defaults[i]);defaults[i]=0;}}
     private void DisposeGroups(){foreach(var key in groups.Keys.ToArray())Remove(key);ResidentBytes=0;}
     public void Dispose(){ClearResident();materials.Clear();}

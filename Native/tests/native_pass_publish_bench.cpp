@@ -17,8 +17,9 @@ static uint64_t signature(Scene& scene){
     h=mix(h,scene.static_spot_updates());return h;
 }
 int main(int argc,char** argv){
-    bool parallel=argc>1&&std::string(argv[1])=="parallel";
-    Scene scene;scene.set_parallel(parallel);std::mt19937 random(0x5EED);std::uniform_real_distribution<double> unit(0,1);
+    bool parallel=argc>1&&std::string(argv[1])=="parallel",async=argc>2&&std::string(argv[2])=="async";
+    // Async packing: the timed span is the synchronous selection; signature() joins packing.
+    Scene scene;scene.set_parallel(parallel);scene.set_async_packing(async);std::mt19937 random(0x5EED);std::uniform_real_distribution<double> unit(0,1);
     std::vector<uint64_t> families;
     for(int f=0;f<48;f++){auto family=scene.register_family({30,90});families.push_back(family);
         for(uint32_t lod=0;lod<3;lod++){Model model;uint32_t parts=2+f%5;for(uint32_t p=0;p<parts;p++){Part part{uint64_t(100+f),uint64_t(1000+f*8+p),uint64_t(2000+p),uint64_t(3000+p),p==parts-1?uint64_t(4000+f):0,p*30,30,p+1,p%3,p==parts-1,p%4==1,true,p%3!=2};model.parts.push_back(part);}
@@ -41,6 +42,6 @@ int main(int argc,char** argv){
         double us=std::chrono::duration<double,std::micro>(end-start).count();if(n>=20){sum+=us;best=std::min(best,us);}total=mix(total,signature(scene));
     }
     scene.profiling=true;scene.profile={};for(int n=0;n<60;n++){frame.selection.camera={std::sin(n*.01)*3,0,std::cos(n*.013)*2};scene.prepare(frame);scene.publish(results);}
-    auto& p=scene.profile;std::printf("profile per frame: prepare=%.1f requests=%.1f publish=%.1f emit=%.1f pack=%.1f spots=%.1f rows=%.1f bytes=%.1f\n",p.prepare_us/60,p.requests_us/60,p.publish_us/60,p.emit_us/60,p.pack_us/60,p.spots_us/60,double(p.emitted_rows)/60,double(p.stream_bytes)/60);
-    std::printf("native pass publish %s: groups=%zu streams=%zu mean=%.1fus best=%.1fus signature=%016llx\n",parallel?"parallel":"serial",scene.render_groups().size(),scene.instance_streams().size(),sum/(frames-20),best,(unsigned long long)total);
+    scene.settle();auto& p=scene.profile;std::printf("profile per frame: prepare=%.1f requests=%.1f publish=%.1f emit=%.1f pack=%.1f spots=%.1f select=%.1f merge=%.1f rows=%.1f bytes=%.1f\n",p.prepare_us/60,p.requests_us/60,p.publish_us/60,p.emit_us/60,p.pack_us/60,p.spots_us/60,p.select_us/60,p.merge_us/60,double(p.emitted_rows)/60,double(p.stream_bytes)/60);
+    std::printf("native pass publish %s%s: groups=%zu streams=%zu mean=%.1fus best=%.1fus signature=%016llx\n",parallel?"parallel":"serial",async?" async":"",scene.render_groups().size(),scene.instance_streams().size(),sum/(frames-20),best,(unsigned long long)total);
 }

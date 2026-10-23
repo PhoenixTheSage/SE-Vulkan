@@ -37,8 +37,7 @@ PostStage post_build_stage(uint32_t id,const void* data,uint64_t bytes,bool stri
                 if(v.location>=count||outputs[v.location]||!floating)throw std::runtime_error("postprocess fragment output contract mismatch");outputs[v.location]=true;
             }
             for(uint32_t i=0;i<count;++i)if(!outputs[i])throw std::runtime_error("postprocess fragment output contract incomplete");
-            for(uint32_t i=0;i<reflection.input_variable_count;++i){auto& v=*reflection.input_variables[i];if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)continue;
-                if(v.location!=0||v.format!=SPV_REFLECT_FORMAT_R32G32_SFLOAT||v.decoration_flags&SPV_REFLECT_DECORATION_FLAT)throw std::runtime_error("postprocess fullscreen input contract mismatch");}
+            validate_fullscreen_inputs(reflection,"postprocess");
         }
         for(uint32_t i=0;i<reflection.descriptor_binding_count;++i){auto& b=reflection.descriptor_bindings[i];auto type=VkDescriptorType(b.descriptor_type);
             // Stock t5 remains an owner input unless explicitly reserved for the

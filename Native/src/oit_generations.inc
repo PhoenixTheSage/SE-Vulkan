@@ -5,7 +5,7 @@ PostStage build_oit_generation(const void* data,uint64_t bytes){
     try{module=world_shader(data,bytes,VK_SHADER_STAGE_FRAGMENT_BIT,reflected);if(reflected.push_constant_block_count)throw std::runtime_error("OIT generation push constants unsupported");
         if(reflected.output_variable_count!=1)throw std::runtime_error("OIT generation requires one HDR output");auto& output=*reflected.output_variables[0];
         if(output.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN||output.location||output.format!=SPV_REFLECT_FORMAT_R32G32B32A32_SFLOAT)throw std::runtime_error("OIT generation HDR output must preserve alpha");
-        for(uint32_t i=0;i<reflected.input_variable_count;++i){auto& v=*reflected.input_variables[i];if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)continue;if(v.location||v.format!=SPV_REFLECT_FORMAT_R32G32_SFLOAT)throw std::runtime_error("OIT generation fullscreen input mismatch");}
+        validate_fullscreen_inputs(reflected,"OIT generation");
         std::vector<VkDescriptorSetLayoutBinding> bindings;
         for(uint32_t i=0;i<reflected.descriptor_binding_count;++i){auto& b=reflected.descriptor_bindings[i];auto type=VkDescriptorType(b.descriptor_type);bool catalog=reflect_catalog_resource(result,b);
             bool extras=type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER&&b.binding==6&&b.block.size>0&&b.block.size<=320;

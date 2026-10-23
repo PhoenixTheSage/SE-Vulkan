@@ -306,6 +306,8 @@ SEVK_API int32_t SEVK_CALL sevk_queue_world_recipes(void* context,const void* fr
 SEVK_API int32_t SEVK_CALL sevk_get_recipe_stats(void* context,SevkRecipeStats* stats);
 typedef struct SevkQueueWorkStats {uint32_t size,abi_version,enabled,workers,draws,validation_us,copy_us,reserved;} SevkQueueWorkStats;
 SEVK_API int32_t SEVK_CALL sevk_set_parallel_world_queue(void* context,uint32_t enabled);
+/* Off-critical-path native work: async pass packing and deferred OLD cell emission. Output is unchanged. */
+SEVK_API int32_t SEVK_CALL sevk_set_async_policy(void* context,uint32_t packing,uint32_t cells);
 SEVK_API int32_t SEVK_CALL sevk_get_queue_work_stats(void* context,SevkQueueWorkStats* stats);
 SEVK_API int32_t SEVK_CALL sevk_upload_world_cube(void* context,uint64_t id,uint32_t width,uint32_t height,uint32_t format,uint32_t srgb,const void* bytes,uint64_t byte_count);
 SEVK_API int32_t SEVK_CALL sevk_upload_world_cube_mips(void* context,uint64_t id,uint32_t width,uint32_t height,uint32_t format,uint32_t srgb,const void* bytes,uint64_t byte_count,uint32_t mip_count);
@@ -668,6 +670,8 @@ SEVK_API int32_t SEVK_CALL sevk_get_postprocess_generation(void*,uint32_t,SevkPo
  * The implementation capability is separate from device admission/initialized owners. */
 typedef struct SevkNativeOwnerCapabilities {uint32_t size,abi_version;uint64_t flags;uint32_t max_modules,max_stage_bindings;} SevkNativeOwnerCapabilities;
 typedef struct SevkNativeGeneration {uint32_t size,abi_version;uint64_t expected_revision;uint32_t flags,count;const SevkPostprocessModule* modules;} SevkNativeGeneration;
+/* DX11 GBuffer velocity developer probe: 0 off, 1 TargetClear, 2 MrtWrite, 3 HistoryCoverage, 4 PassEndClear. */
+SEVK_API int32_t SEVK_CALL sevk_set_gbuffer_velocity_probe(void* ctx,uint32_t mode);
 SEVK_API int32_t SEVK_CALL sevk_native_owner_capabilities(void* ctx,SevkNativeOwnerCapabilities* state);
 /* flags1 marks a stock restore: execute stock without pack-only GPU production instrumentation. */
 SEVK_API int32_t SEVK_CALL sevk_prepare_native_generation(void* ctx,const SevkNativeGeneration* request,uint64_t* generation);

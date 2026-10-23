@@ -27,6 +27,7 @@ public sealed partial class VulkanScene
     private readonly HashSet<ActorData> spatialDirty=new HashSet<ActorData>(),shadowDirty=new HashSet<ActorData>(),skinnedActors=new HashSet<ActorData>(),staticGroups=new HashSet<ActorData>();
     private readonly MyDynamicAABBTreeD actorIndex=new MyDynamicAABBTreeD(Vector3D.Zero);
     private readonly List<ActorData> candidates=new List<ActorData>(),shadowWork=new List<ActorData>();
+    uint candidateStamp;
     private readonly List<(Vector3D Center,float Radius)> removedShadowRegions=new List<(Vector3D,float)>();
     public long TransformUpdates {get;private set;}
     public int CandidateActors=>candidates.Count;
@@ -101,7 +102,7 @@ public sealed partial class VulkanScene
         actorIndex.OverlapAllBoundingBox(ref query,candidates);
         // Static groups historically bypass actor-level main frustum rejection.
         // Preserve that contract even when their imported model bound is small.
-        foreach(var data in staticGroups)if(!candidates.Contains(data))candidates.Add(data);
+        if(staticGroups.Count>0){uint stamp=++candidateStamp;foreach(var data in candidates)data.CandidateStamp=stamp;foreach(var data in staticGroups)if(data.CandidateStamp!=stamp){data.CandidateStamp=stamp;candidates.Add(data);}}
         return candidates;
     }
     private void RefreshShadowPoses()

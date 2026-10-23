@@ -70,7 +70,8 @@ public sealed class MyVulkanRender : IMyRender
     private readonly RenderSessionLog sessionLog;
     private readonly RenderFrameClock animationClock = new();
     private DateTime lastSample;
-    private string annotation = "Bootstrap";
+    // The last message type, formatted only when the host asks (crash reports).
+    private volatile int annotation = -1;
     private long gameplayFrame;
     private long lcdPasses;
     private ulong observedMeshDraws, observedSpriteDraws, billboardEvidenceFrame;
@@ -424,7 +425,7 @@ public sealed class MyVulkanRender : IMyRender
         => RenderFrameProtocol.Retire(frame, dispatchMessage, returnShared ? returnPreFrame : null);
     private void Process(MyRenderMessageBase message)
     {
-        annotation = message.MessageType.ToString();
+        annotation = (int)message.MessageType;
         probes.Process(message);shadows.Process(message);if(message.MessageType==MyRenderMessageEnum.UnloadData)postprocess.Process(message);
         decals?.Observe(message);if(decals!=null&&decals.Process(message)){VulkanDiagnostics.Message(message.MessageType,MessageDisposition.Handler);return;}
         if(particles!=null && particles.Process(message)){VulkanDiagnostics.Message(message.MessageType,MessageDisposition.Handler);return;}
@@ -591,7 +592,7 @@ public sealed class MyVulkanRender : IMyRender
     public bool IsVideoValid(uint id) => media?.IsValid(id) == true;
     public VideoState GetVideoState(uint id) => media?.State(id) ?? VideoState.Stopped;
     public void GenerateShaderCache(bool clean, bool fastBuild, OnShaderCacheProgressDelegate progress) => VulkanDiagnostics.Set("Shaders", SubsystemState.Ready, "Installed stock HLSL catalog is authenticated SPIR-V; runtime integration and reload acceptance are tracked separately.");
-    public string GetLastExecutedAnnotation() => annotation;
+    public string GetLastExecutedAnnotation() { int last = annotation; return last < 0 ? "Bootstrap" : ((MyRenderMessageEnum)last).ToString(); }
     public string GetStatistics() => VulkanDiagnostics.Report();
     public void SetTimings(MyTimeSpan cpuDraw, MyTimeSpan cpuWait) { }
     public Vector2 GetTextureSize(string name) => scene != null && scene.TextureCache.GetSize(name, out int width, out int height) ? new Vector2(width, height) : Vector2.Zero;

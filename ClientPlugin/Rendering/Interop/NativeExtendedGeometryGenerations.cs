@@ -19,6 +19,9 @@ public sealed partial class NativeBackend
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int DeclareAttachmentFn(IntPtr ctx,uint slot,uint format);DeclareAttachmentFn declareAttachment;
     // Pack attachments written by owner GBuffer invocations (SV_Target4..6) need a slot format without a replay shader.
     public bool DeclareGBufferAttachment(uint slot,uint format){if(slot>2)return false;declareAttachment??=PostFunction<DeclareAttachmentFn>("sevk_declare_gbuffer_attachment");Check(declareAttachment(context,slot,format),context);return true;}
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int VelocityProbeFn(IntPtr ctx,uint mode);VelocityProbeFn velocityProbe;bool velocityProbeMissing;
+    // DX11 GBuffer velocity developer probe (0 off, 1 TargetClear, 2 MrtWrite, 3 HistoryCoverage, 4 PassEndClear); false on older hosts.
+    public bool SetGBufferVelocityProbe(uint mode){if(context==IntPtr.Zero||velocityProbeMissing||mode>4)return false;try{velocityProbe??=PostFunction<VelocityProbeFn>("sevk_set_gbuffer_velocity_probe");}catch(EntryPointNotFoundException){velocityProbeMissing=true;return false;}Check(velocityProbe(context,mode),context);return true;}
     static bool CellModule(uint id)=>id>=16384&&id<16440;
     static bool GpuNewModule(uint id)=>id>=32768&&id<32824;
     static bool GpuOldModule(uint id)=>id>=49152&&id<54464;

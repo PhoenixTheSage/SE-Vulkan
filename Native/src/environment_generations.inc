@@ -16,8 +16,7 @@ PostStage build_atmosphere_generation(uint32_t id,const void* data,uint64_t byte
                 bool floating=v.format==SPV_REFLECT_FORMAT_R32_SFLOAT||v.format==SPV_REFLECT_FORMAT_R32G32_SFLOAT||v.format==SPV_REFLECT_FORMAT_R32G32B32_SFLOAT||v.format==SPV_REFLECT_FORMAT_R32G32B32A32_SFLOAT;
                 if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN||v.location>=count||outputs[v.location]||!floating)throw std::runtime_error("atmosphere fragment output contract mismatch");outputs[v.location]=true;}
             for(uint32_t i=0;i<count;++i)if(!outputs[i])throw std::runtime_error("atmosphere output missing");
-            for(uint32_t i=0;i<reflected.input_variable_count;++i){auto& v=*reflected.input_variables[i];if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)continue;
-                if(v.location||v.format!=SPV_REFLECT_FORMAT_R32G32_SFLOAT)throw std::runtime_error("atmosphere fullscreen input mismatch");}
+            validate_fullscreen_inputs(reflected,"atmosphere");
         }
         std::vector<VkDescriptorSetLayoutBinding> bindings;
         for(uint32_t i=0;i<reflected.descriptor_binding_count;++i){auto& b=reflected.descriptor_bindings[i];auto type=VkDescriptorType(b.descriptor_type);

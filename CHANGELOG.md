@@ -1,5 +1,14 @@
 # SE-Vulkan changelog
 
+## 1.4.0 — 2026-10-23
+
+- Include the unpublished 1.3.0 pipelined native recording and native OLD grid-cell work in this branch history.
+- Capture authenticated immutable shader sources and activate transactional native owner generations for raster/postprocess, lighting, atmosphere/foliage, decals, probes, particles, shadows, geometry, OIT, glass/holo and billboards.
+- Execute reserved catalog resources, binding extras, null/format semantics and fenced resource/history lifetimes; emit same-invocation velocity and attachments from admitted classic/native-cell/GPU owners.
+- Pack native publications asynchronously after ordered parallel selection, defer OLD cell emission with reader/mutation joins, and reduce voxel/material/group-owner publication overhead.
+- Expose async policy controls, wait-site diagnostics, strict stage interfaces, celestial probe rendering and the GBuffer velocity developer probe; preserve stock capabilities when extension interfaces fail closed.
+- Expand native contract tests, production GPU owner/probe/feedback regressions, performance harness controls and next-session planning documentation.
+
 ## 1.3.0 — 2026-10-21
 
 - Pipeline native recording: frame N records on a native worker while managed frame N+1 runs. Native calls keep their serial order (30 void calls queue with copied arguments, seven GPU-result reads answer from a launch snapshot with a verified cascade-cache prediction, every other call waits and replays the queue). Private Pertam present cadence measured 13.28 → 10.59 ms in paired runs. `SE_VULKAN_PIPELINED_RECORDING=0` restores serial recording.

@@ -64,6 +64,7 @@ public static class GuestBridge
 
     public static bool DeclareGBufferAttachment(int slot, int format) =>
         current != null && current.DeclareGBufferAttachment((uint)slot, (uint)format);
+    public static bool SetGBufferVelocityProbe(uint mode) => current != null && current.SetGBufferVelocityProbe(mode);
     public static bool InitGBufferAttachment(int slot, int format, byte[] pixel) =>
         current != null && current.InitGBufferAttachment((uint)slot, (uint)format, pixel);
 

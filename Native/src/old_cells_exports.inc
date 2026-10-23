@@ -13,6 +13,6 @@ int32_t SEVK_CALL sevk_cells_preparation(void* ctx,SevkCellQuery* queries,uint32
     for(uint32_t i=0;i<v.size()&&i<visible_capacity;i++)visible[i]=v[i];
     for(uint32_t i=0;i<c.size()&&i<change_capacity;i++)changes[i]={{c[i].centre[0],c[i].centre[1],c[i].centre[2]},c[i].radius};return 0;});}
 int32_t SEVK_CALL sevk_cells_publish(void* ctx,const SevkCellResult* results,uint32_t count){return call(ctx,[&](Renderer& r){r.cells_publish(results,count);return 0;});}
-int32_t SEVK_CALL sevk_cells_cancel(void* ctx){return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("OLD cell cancel during recording");r.cells.scene.cancel();return 0;});}
+int32_t SEVK_CALL sevk_cells_cancel(void* ctx){return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("OLD cell cancel during recording");r.settle_cells();r.cells.scene.cancel();return 0;});}
 int32_t SEVK_CALL sevk_cells_emit(void* ctx){return call(ctx,[&](Renderer& r){r.cells_emit();return 0;});}
-int32_t SEVK_CALL sevk_cells_stats(void* ctx,SevkCellStats* stats){return call(ctx,[&](Renderer& r){if(!stats||stats->size!=sizeof(SevkCellStats))throw std::runtime_error("invalid OLD cell stats");*stats=r.cells.stats;return 0;});}
+int32_t SEVK_CALL sevk_cells_stats(void* ctx,SevkCellStats* stats){return call(ctx,[&](Renderer& r){if(!stats||stats->size!=sizeof(SevkCellStats))throw std::runtime_error("invalid OLD cell stats");r.settle_cells();*stats=r.cells.stats;return 0;});}

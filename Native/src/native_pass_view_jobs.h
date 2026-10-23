@@ -47,6 +47,24 @@ public:
         if(error)std::rethrow_exception(error);
     }
 };
+// One persistent worker for a single deferred task. wait() joins it and
+// rethrows its failure; start() requires the previous task to be joined.
+class Background {
+    std::mutex mutex;std::condition_variable ready,completed;std::thread thread;
+    std::function<void()> work;bool stopping{},queued{},busy{};std::exception_ptr failure;
+    void worker(){for(;;){std::function<void()> task;
+        {std::unique_lock lock(mutex);ready.wait(lock,[&]{return stopping||queued;});if(stopping&&!queued)return;task=std::move(work);work={};queued=false;}
+        std::exception_ptr error;try{task();}catch(...){error=std::current_exception();}
+        {std::lock_guard lock(mutex);failure=error;busy=false;}completed.notify_all();
+    }}
+public:
+    Background(){thread=std::thread([this]{worker();});}
+    Background(const Background&)=delete;Background& operator=(const Background&)=delete;
+    ~Background(){ {std::lock_guard lock(mutex);stopping=true;}ready.notify_all();if(thread.joinable())thread.join(); }
+    bool pending(){std::lock_guard lock(mutex);return busy;}
+    void start(std::function<void()> fn){{std::lock_guard lock(mutex);if(busy||stopping)throw std::runtime_error("background task already pending");work=std::move(fn);queued=busy=true;failure=nullptr;}ready.notify_one();}
+    void wait(){std::exception_ptr error;{std::unique_lock lock(mutex);completed.wait(lock,[&]{return !busy;});error=failure;failure=nullptr;}if(error)std::rethrow_exception(error);}
+};
 struct ViewCpuSample {uint64_t cycles{};double cpu_us{};bool available{};};
 struct ViewJobProfile {
     uint64_t frames{},jobs{},worker_jobs{};double owner_us{},worker_us{},worker_cpu_us{},join_us{};

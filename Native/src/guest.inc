@@ -796,9 +796,14 @@ void guest_fill_owned(const GuestPass& pass, GuestPipeline& pipeline, uint8_t* o
     }
 }
 
+// A celestial pack's probe variant (pass flag 512) draws on every environment-probe face after its
+// ForwardPostprocess, as DX11's CelestialProbePatch does; it never replays at its frame mark.
+struct GuestProbeFace { VkImageView color{}, depth{}; uint32_t size{}; float rows[12]{}, scale[2]{}; };
+const GuestProbeFace* guest_probe_face{};
 void guest_fill_celestial_view(const GuestPass& pass, uint8_t* bytes) {
     float rows[12]{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
-    if (world.current().inverse.size() >= 16) {
+    if (guest_probe_face) std::memcpy(rows, guest_probe_face->rows, 48);
+    else if (world.current().inverse.size() >= 16) {
         const float* m = world.current().inverse.data();
         rows[0] = m[0]; rows[1] = m[4]; rows[2] = m[8];
         rows[4] = m[1]; rows[5] = m[5]; rows[6] = m[9];
@@ -806,6 +811,8 @@ void guest_fill_celestial_view(const GuestPass& pass, uint8_t* bytes) {
     }
     std::memcpy(bytes, rows, 48);
     float view[4]{ float(std::max(1u, pass.width)), float(std::max(1u, pass.height)), guest.frame.proj_scale_x, guest.frame.proj_scale_y };
+    // DX11 CelestialView: face size, then the face projection's M11/M22.
+    if (guest_probe_face) { view[0] = view[1] = float(guest_probe_face->size); view[2] = guest_probe_face->scale[0]; view[3] = guest_probe_face->scale[1]; }
     std::memcpy(bytes + 48, view, 16);
     float count = 0;
     auto data = guest.images.find(pass.sampled[1]);
@@ -940,6 +947,7 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
             uint64_t id = slot < 48 ? pass.sampled[slot] : 0;
             if (pass.extended && (!id || (id < kGuestHdr && (guest.images.find(id) == guest.images.end() || guest.images.at(id).is_buffer)))) return false;
             bool hdr = false; VkImageView view = id ? guest_source(id, &hdr) : VK_NULL_HANDLE;
+            if (guest_probe_face && id == kGuestDepth) { view = guest_probe_face->depth; hdr = false; }
             auto source=guest.images.find(id);
             if(!pass.extended && view) {
                 bool volume=source!=guest.images.end()&&source->second.depth>1;
@@ -1043,7 +1051,10 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
     GuestImage* target = nullptr;
     PostImage* tracked = nullptr;
     VkImageView color = world.hdr.view; uint32_t tw = extent.width, th = extent.height; bool hdr_target = true;
-    if (!to_hdr) {
+    if (guest_probe_face) {
+        if (!depth || geometry || pipeline.contract) return false;
+        return guest_draw_probe_face(cmd, pipeline.draw[5][4], pipeline.layout, set);
+    } else if (!to_hdr) {
         auto image = guest.images.find(pass.storage);
         if (image == guest.images.end() || image->second.depth != 1 || image->second.aspect != VK_IMAGE_ASPECT_COLOR_BIT) return false;
         target = &image->second; color = target->image.view; tw = target->width; th = target->height; hdr_target = false;
@@ -1196,6 +1207,44 @@ bool guest_generate_mips(VkCommandBuffer cmd, const GuestPass& pass, uint32_t ma
     return true;
 }
 
+// Caller keeps the face color in COLOR_ATTACHMENT and its depth in DEPTH_READ_ONLY for the whole face.
+bool guest_draw_probe_face(VkCommandBuffer cmd, VkPipeline pipe, VkPipelineLayout layout, VkDescriptorSet set) {
+    if (!pipe) return false;
+    VkRenderingAttachmentInfo color{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }; color.imageView = guest_probe_face->color; color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingAttachmentInfo depth{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }; depth.imageView = guest_probe_face->depth; depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL; depth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; depth.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+    uint32_t size = guest_probe_face->size; VkRenderingInfo rendering{ VK_STRUCTURE_TYPE_RENDERING_INFO }; rendering.renderArea = { { 0, 0 }, { size, size } }; rendering.layerCount = 1; rendering.colorAttachmentCount = 1; rendering.pColorAttachments = &color; rendering.pDepthAttachment = &depth;
+    VkViewport viewport{ 0, 0, float(size), float(size), 0, 1 }; VkRect2D scissor{ { 0, 0 }, { size, size } };
+    vkCmdBeginRendering(cmd, &rendering); vkCmdSetViewport(cmd, 0, 1, &viewport); vkCmdSetScissor(cmd, 0, 1, &scissor);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe); vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, nullptr);
+    vkCmdDraw(cmd, 3, 1, 0, 0); vkCmdEndRendering(cmd); return true;
+}
+// Draws every probe-flagged celestial pass on one probe face (DX11 RunForwardPostprocess postfix).
+void guest_probe_celestial(VkCommandBuffer cmd, uint32_t face, VkImageView color) {
+    bool any = false; for (const auto& pass : guest.passes) any |= (pass.flags & 512u) && pass.pipeline;
+    if (!any) return;
+    guest_refresh_frame();
+    GuestProbeFace target{ color, probes.depth[face].view, probes.resolution };
+    // DX11 passes the face view's rotation rows (row-vector world-to-view) and its projection scales.
+    const float* view = reinterpret_cast<const float*>(probes.config.frames + face * 1280);
+    for (uint32_t r = 0; r < 3; ++r) for (uint32_t k = 0; k < 3; ++k) target.rows[r * 4 + k] = view[r * 4 + k];
+    const float* projection = probes.config.projections + face * 16; target.scale[0] = projection[0]; target.scale[1] = projection[5];
+    auto& depth_image = probes.depth[face];
+    barrier(cmd, depth_image.handle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    guest_probe_face = &target;
+    try {
+        for (const auto& pass : guest.passes) {
+            if (!(pass.flags & 512u) || !pass.pipeline) continue;
+            auto pipeline = guest.pipelines.find(pass.pipeline);
+            if (pipeline == guest.pipelines.end() || !pipeline->second.bus) continue;
+            if (guest_draw_bus(cmd, pass, pipeline->second, 3)) { ++pipeline->second.executions; pipeline->second.last_frame = guest.frame.frame_index; pipeline->second.last_completion = next_completion + 1; }
+        }
+    } catch (...) { guest_probe_face = nullptr; throw; }
+    guest_probe_face = nullptr;
+    barrier(cmd, depth_image.handle, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT,
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+}
 void guest_replay(VkCommandBuffer cmd, uint32_t mark) {
     if(mark==0&&!guest.has_global_clear)return;
     ++guest.replay_count;
@@ -1205,6 +1254,7 @@ void guest_replay(VkCommandBuffer cmd, uint32_t mark) {
         uint32_t selected=pass.extended && (pass.flags&1024u)?0u:pass.extended && (pass.flags&2048u)?2u:1u;
         if(selected!=phase)continue;
         const bool early=(pass.flags&4096u)!=0;
+        if(pass.flags&512u)continue; // probe-face celestial variants draw only on probe faces
         if(mark==7 ? !(early&&pass.mark==1) : (pass.mark!=mark||early))continue;
         const uint32_t effective_mark=mark==7?1u:mark;
         if(pass.operation==3){

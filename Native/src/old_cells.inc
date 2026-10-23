@@ -1,6 +1,6 @@
 // Native OLD cube grid cells: committed inputs, frame decision and emission
 // of the same recipe world draws the managed retained submission queues.
-void cells_commit(const SevkCell* input,uint32_t count,const uint64_t* handles,uint64_t* output,const SevkCellLevel* levels,uint32_t level_count,const SevkCellPart* parts,uint32_t part_count,const float* thresholds,uint32_t threshold_count,const uint8_t* bytes,uint64_t byte_count){
+void cells_commit(const SevkCell* input,uint32_t count,const uint64_t* handles,uint64_t* output,const SevkCellLevel* levels,uint32_t level_count,const SevkCellPart* parts,uint32_t part_count,const float* thresholds,uint32_t threshold_count,const uint8_t* bytes,uint64_t byte_count){settle_cells();
     if(recording||count>1000000||(count&&(!input||!handles||!output))||(!levels&&level_count)||(!parts&&part_count)||(!thresholds&&threshold_count)||(!bytes&&byte_count))throw std::runtime_error("invalid OLD cell commit");
     for(uint32_t i=0;i<count;++i){const auto& c=input[i];
         if(c.size!=sizeof(SevkCell)||c.flags>511||c.lod.reserved||uint64_t(c.level_offset)+c.level_count>level_count||uint64_t(c.threshold_offset)+c.threshold_count>threshold_count||c.instance_offset+uint64_t(c.instance_count)*64>byte_count)throw std::runtime_error("invalid OLD cell input");
@@ -20,7 +20,7 @@ void cells_commit(const SevkCell* input,uint32_t count,const uint64_t* handles,u
         if(handles[i]){cells.scene.update(handles[i],std::move(cell));output[i]=handles[i];}else output[i]=cells.scene.add(std::move(cell));
     }
 }
-void cells_update_poses(const uint64_t* handles,const SevkCellPose* poses,uint32_t count){
+void cells_update_poses(const uint64_t* handles,const SevkCellPose* poses,uint32_t count){settle_cells();
     if(recording||count>1000000||(count&&(!handles||!poses)))throw std::runtime_error("invalid OLD cell pose commit");
     for(uint32_t i=0;i<count;++i){const auto& p=poses[i];if(p.size!=sizeof(SevkCellPose)||p.flags>511)throw std::runtime_error("invalid OLD cell pose");
         for(double v:p.bounds)if(!std::isfinite(v))throw std::runtime_error("nonfinite OLD cell bounds");for(double v:p.world)if(!std::isfinite(v))throw std::runtime_error("nonfinite OLD cell pose");for(double v:p.inverse)if(!std::isfinite(v))throw std::runtime_error("nonfinite OLD cell inverse");
@@ -30,12 +30,12 @@ void cells_update_poses(const uint64_t* handles,const SevkCellPose* poses,uint32
         std::copy_n(p.world,16,cell.world);std::copy_n(p.inverse,16,cell.inverse);
     }
 }
-SevkCellLod cells_remove(uint64_t handle){
+SevkCellLod cells_remove(uint64_t handle){settle_cells();
     if(recording)throw std::runtime_error("OLD cell removal during recording");
     const auto& cell=cells.scene.cell(handle);SevkCellLod out{cell.lod.current,cell.lod.next,cell.lod.transition,cell.lod.start,cell.lod.initialized,cell.lod.border,cell.shadow_current,cell.shadow_next,cell.shadow_alpha,0};
     cells.scene.remove(handle);return out;
 }
-void cells_prepare(const SevkCellFrame& f){
+void cells_prepare(const SevkCellFrame& f){settle_cells();
     if(recording||f.size!=sizeof(SevkCellFrame)||f.flags>15)throw std::runtime_error("invalid OLD cell frame");
     auto plane_set=[](const double* values,scene_actor::Frustum& frustum){for(uint32_t j=0;j<6;j++){const double* p=values+j*4;for(uint32_t k=0;k<4;k++)if(!std::isfinite(p[k]))throw std::runtime_error("nonfinite OLD cell plane");frustum.planes[j]={p[0],p[1],p[2],p[3]};}frustum.enabled=true;};
     old_cells::Frame frame{};frame.camera={f.camera[0],f.camera[1],f.camera[2]};plane_set(f.main_planes,frame.main);frame.new_views=f.flags&1;frame.stock_far=f.flags&2;
@@ -46,15 +46,25 @@ void cells_prepare(const SevkCellFrame& f){
     if(pass_scene.scene.parallel()&&!cells.jobs)cells.jobs=std::make_unique<native_pass::ViewJobs>();else if(!pass_scene.scene.parallel())cells.jobs.reset();
     cells.scene.prepare(frame,cells.jobs.get());
 }
-void cells_publish(const SevkCellResult* results,uint32_t count){
+void cells_publish(const SevkCellResult* results,uint32_t count){settle_cells();
     if(recording||count>1000000||(!results&&count))throw std::runtime_error("invalid OLD cell visibility publication");
     std::vector<old_cells::Result> values;values.reserve(count);for(uint32_t i=0;i<count;i++){if(results[i].main_hidden>1||results[i].cascades_hidden>255)throw std::runtime_error("invalid OLD cell visibility result");values.push_back({results[i].group,results[i].main_hidden!=0,results[i].cascades_hidden});}
     cells.scene.publish(values);
 }
 // Called after every managed packet and its order metadata are queued, so
 // managed physical indices (highlights, exclusions) are unchanged.
+// With deferred emission (default) the draws are appended when recording
+// starts, or earlier when a call touches the queued world, recipes or cells,
+// so recording sees the same draw list in the same order.
 void cells_emit(){
     if(recording||!world.current().queued)throw std::runtime_error("OLD cells must follow the queued world frame");
+    if(cells_emit_pending)throw std::runtime_error("OLD cells already emitted for this frame");
+    if(deferred_cell_emission){cells_emit_pending=true;return;}
+    emit_cells_now();
+}
+void settle_cells(){if(cells_emit_pending){cells_emit_pending=false;emit_cells_now();}}
+void emit_cells_now(){
+    if(!world.current().queued)throw std::runtime_error("OLD cells must follow the queued world frame");
     cells.stats=SevkCellStats{sizeof(SevkCellStats),cells.scene.live()};if(!cells.scene.ready())return;
     auto& out=world.current();const auto& draws=cells.scene.emitted();auto camera=cells.scene.current_frame().camera;
     if(out.draws.size()+draws.size()>65536)throw std::runtime_error("OLD cell draws exceed the queued frame budget");

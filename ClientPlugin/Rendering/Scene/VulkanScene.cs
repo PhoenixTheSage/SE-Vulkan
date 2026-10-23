@@ -29,6 +29,7 @@ namespace ClientPlugin.Rendering.Scene
         private sealed class ActorData
         {
             public MyActor Actor;
+            public uint CandidateStamp;
             public VulkanModel Model;
             public StockOldModelIdentity OldModel;
             public bool TrackOldIdentity=true;

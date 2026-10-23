@@ -64,9 +64,59 @@ public sealed partial class VulkanVoxels : IDisposable
     }
     public float ProbeDrawDistance,ShadowDrawDistance;
     internal System.Func<BoundingBoxD, Vector3D, uint> CascadeMaskFor;
+    // Single cell pass plus memoized material preparation; the previous two-pass
+    // path stays for same-process parity lanes (VulkanScene.VoxelFastPathEnabled).
+    public static bool FastPathEnabled=System.Environment.GetEnvironmentVariable("SE_VULKAN_VOXEL_FAST_PATH")!="0";
     public void Draw(Vector3D camera,BoundingFrustumD frustum,HashSet<uint> visible)
     {
         RequireOwner();Materials.BeginFrame();Foliage.BeginFrame();
+        if(!FastPathEnabled){DrawTwoPass(camera,frustum,visible);return;}
+        // One cell pass: the material set and the emitted packets both use the
+        // same transform, bounds and cull decision, so survivors are recorded once
+        // and emitted after the materials are prepared, in the same order.
+        frameMaterials.Clear();cellScratch.Clear();
+        foreach(var actor in actors.Values)
+        {
+            if((actor.Flags&(RenderFlags.Visible|RenderFlags.SkipInMainView))!=RenderFlags.Visible)continue;
+            foreach(var cell in actor.Cells)
+            {
+                if(!cell.Visible)continue;
+                MatrixD matrix=MatrixD.CreateScale(1<<cell.Lod)*MatrixD.CreateTranslation(cell.Offset)*actor.Matrix;
+                var bounds=new BoundingBoxD(cell.Bounds.Min,cell.Bounds.Max).TransformFast(matrix);
+                double distance=bounds.DistanceSquared(ref camera);
+                bool outside=frustum!=null&&frustum.Contains(bounds)==ContainmentType.Disjoint;bool outsideProbe=distance>ProbeDrawDistance*ProbeDrawDistance;
+                bool culled=outside && outsideProbe && ((actor.Flags&RenderFlags.CastShadows)==0 || distance>ShadowDrawDistance*ShadowDrawDistance);
+                if(!culled)foreach(var part in cell.Parts)frameMaterials.Add(part.Material);
+                if(cell.Parts.Count==0)continue;
+                if(distance>Foliage.Distance*Foliage.Distance*2.25)foreach(var p in cell.Parts){Foliage.Retire(p.Foliage);p.Foliage=null;}
+                if(!culled)cellScratch.Add(new CellDraw{Actor=actor,Cell=cell,Matrix=matrix,Bounds=bounds,Distance=distance,Outside=outside,OutsideProbe=outsideProbe});
+            }
+        }
+        Materials.Prepare(frameMaterials);
+        Actor seenActor=null;bool seen=false;
+        foreach(var item in cellScratch)
+        {
+            var actor=item.Actor;var cell=item.Cell;MatrixD matrix=item.Matrix;var bounds=item.Bounds;double distance=item.Distance;bool outside=item.Outside,outsideProbe=item.OutsideProbe;
+            if(!ReferenceEquals(actor,seenActor)){if(seen)visible.Add(seenActor.Id);seenActor=actor;seen=false;}
+                matrix.Translation-=camera;
+                bool casts=(actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))==RenderFlags.CastShadows;
+                Vector3 origin=(Vector3)(bounds.Center-camera);float radius=(float)bounds.HalfExtents.Length();
+                uint cascades=casts?(CascadeMaskFor?.Invoke(bounds,camera)??0xFFu):0u;
+                foreach(var part in cell.Parts)
+                {
+                    uint pipeline=part.Material.SingleMaterial?20u:21u;ulong material=Materials.Get(part.Material);
+                    var objectConstants=VulkanVoxelMaterials.Object(backend.WorldLayouts[pipeline],matrix,cell.Offset,cell.Lod,actor.Dither,actor.SpherizeRadius,actor.SpherizeCenter-camera);
+                    if(backend.WorldRecipesEnabled)backend.EnsureWorldRecipe(ref part.Recipe,pipeline,part.Mesh,material,0,0,0,objectConstants.Length);
+                    backend.AddWorldPacket(pipeline,part.Mesh,material,0,0,0,objectConstants,null,1,(casts?0u:512u)|(outside?4096u:0u)|(outsideProbe?16384u:0u),cascades,origin,radius,recipe:part.Recipe);Draws++;
+                    if(!outside && distance<Foliage.Distance*Foliage.Distance && Foliage.Density>0){if(part.Foliage==null || part.FoliageVersion!=Materials.Version || part.Density!=Foliage.Density){Foliage.Retire(part.Foliage);part.Foliage=Foliage.Generate(part.Vertices,part.Indices,part.Material,cell.Lod,actor.Matrix);part.FoliageVersion=Materials.Version;part.Density=Foliage.Density;}Foliage.Draw(part.Foliage,MatrixD.CreateScale(1.0/(1<<cell.Lod))*matrix,actor.Dither);}
+                }
+                seen|=!outside;
+        }
+        if(seen)visible.Add(seenActor.Id);
+        Foliage.EndFrame();
+    }
+    void DrawTwoPass(Vector3D camera,BoundingFrustumD frustum,HashSet<uint> visible)
+    {
         var frameMaterials=new List<MyVoxelMaterialTriple>();foreach(var actor in actors.Values){if((actor.Flags&(RenderFlags.Visible|RenderFlags.SkipInMainView))!=RenderFlags.Visible)continue;foreach(var cell in actor.Cells){if(!cell.Visible)continue;MatrixD transform=MatrixD.CreateScale(1<<cell.Lod)*MatrixD.CreateTranslation(cell.Offset)*actor.Matrix;var bounds=new BoundingBoxD(cell.Bounds.Min,cell.Bounds.Max).TransformFast(transform);if(frustum!=null && frustum.Contains(bounds)==ContainmentType.Disjoint && bounds.DistanceSquared(ref camera)>Math.Pow(Math.Max(ProbeDrawDistance,(actor.Flags&RenderFlags.CastShadows)!=0?ShadowDrawDistance:0),2))continue;foreach(var part in cell.Parts)frameMaterials.Add(part.Material);}}Materials.Prepare(frameMaterials);
         foreach(var actor in actors.Values)
         {
@@ -96,6 +146,8 @@ public sealed partial class VulkanVoxels : IDisposable
             if(seen)visible.Add(actor.Id);
         }Foliage.EndFrame();
     }
+    struct CellDraw {public Actor Actor;public Cell Cell;public MatrixD Matrix;public BoundingBoxD Bounds;public double Distance;public bool Outside,OutsideProbe;}
+    readonly List<CellDraw> cellScratch=new();readonly List<MyVoxelMaterialTriple> frameMaterials=new();
     public void Clear(){RequireOwner();foreach(var actor in actors.Values.ToArray())actor.Dispose();actors.Clear();Foliage.Clear();Materials.ClearResident();}
     public void Dispose(){Clear();Foliage.Dispose();Materials.Dispose();}
     private sealed class Part {public NativeBackend.WorldRecipe Recipe;public ulong Mesh;public MyVoxelMaterialTriple Material;public MyVertexFormatVoxelSingleData[] Vertices;public uint[] Indices;public List<VulkanFoliage.Stream> Foliage;public int FoliageVersion;public float Density;}

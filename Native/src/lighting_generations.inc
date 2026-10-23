@@ -21,8 +21,7 @@ void validate_lighting_generation(const SpvReflectShaderModule& r,uint32_t kind,
         if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN||v.location||output||!floating)throw std::runtime_error("lighting replacement output contract mismatch");output=true;
     }
     if(!output)throw std::runtime_error("lighting replacement output is missing");
-    for(uint32_t i=0;i<r.input_variable_count;++i){auto& v=*r.input_variables[i];if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)continue;
-        if(v.location||v.format!=SPV_REFLECT_FORMAT_R32G32_SFLOAT||v.decoration_flags&SPV_REFLECT_DECORATION_FLAT)throw std::runtime_error("lighting replacement fullscreen input mismatch");}
+    validate_fullscreen_inputs(r,"lighting replacement");
 }
 PostStage build_lighting_generation(uint32_t id,const void* data,uint64_t bytes){
     uint32_t kind=id-255;if(!native_lighting_id(id)||!world.fullscreen||!world.lights[kind-1])throw std::runtime_error("lighting owner is unavailable");

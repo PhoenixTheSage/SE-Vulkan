@@ -6,6 +6,13 @@
 // currToPrev rows (skinned motion is rigid-body); t15/t16 belong to USE_SIMPLE_INSTANCING only.
 // Fade-bank variants share their base stream and blended decals write Target3 as RG replace.
 // Voxel GBuffer shaders are not native owners (they come from the voxel library).
+// DX11 developer probes (Settings/VelocityProbe): 1 TargetClear, 2 MrtWrite, 3 HistoryCoverage, 4 PassEndClear.
+// They replace real motion while enabled. The mode reaches every owner through b0 AnomalyProbeMode; MrtWrite
+// also sets the PS b1 (DX11 b7) payload, and Target3 clear values follow DX11's ClearTarget/ApplySchedulerEndProbe.
+uint32_t gbuffer_velocity_probe{};
+void write_velocity_probe_payload(){if(!gbuffer_velocity.probe.handle)return;const float value[4]{gbuffer_velocity_probe==2?8.f:0.f,0.f,gbuffer_velocity_probe==2?1.f:0.f,0.f};std::memset(gbuffer_velocity.probe.mapped,0,64);std::memcpy(gbuffer_velocity.probe.mapped,value,16);check(vmaFlushAllocation(allocator,gbuffer_velocity.probe.memory,0,64),"flush GBuffer velocity probe");}
+void set_gbuffer_velocity_probe(uint32_t mode){if(recording||mode>4)throw std::runtime_error("invalid GBuffer velocity probe");if(mode==gbuffer_velocity_probe)return;wait(next_completion);gbuffer_velocity_probe=mode;write_velocity_probe_payload();}
+VkClearValue motion_probe_clear(){VkClearValue value{};value.color.float32[0]=gbuffer_velocity_probe==1?8.f:gbuffer_velocity_probe==2?-8.f:0.f;return value;}
 bool gbuffer_velocity_admitted(uint32_t id,bool decal,bool voxel){return gbuffer_velocity_supported&&!voxel&&(decal||world_unfade(id)<20);}
 void gbuffer_velocity_layouts(){
     if(gbuffer_velocity.pipeline_layout)return;init_world_layouts();
@@ -72,6 +79,7 @@ bool gbuffer_velocity_begin(VkCommandBuffer cmd,WorldSlot& slot){
     for(auto* zero:{&gbuffer_velocity.probe,&gbuffer_velocity.prev_world,&gbuffer_velocity.prev_bones})if(!zero->handle){
         // Rigid owners never index t15/t16; PS probe mode zero selects the computed velocity.
         *zero=make_buffer(64,zero==&gbuffer_velocity.probe?VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT:VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,true);std::memset(zero->mapped,0,64);check(vmaFlushAllocation(allocator,zero->memory,0,64),"flush GBuffer velocity defaults");}
+    write_velocity_probe_payload();
     auto set=world_set(slot,gbuffer_velocity.layout);
     // Native-cell owners index t15 in the current slot's per-instance history stream; classic owners ignore it.
     auto& cell_history=pass_scene.history_instances[slot_index];bool cell_rows=cells&&cell_history.handle&&!pass_scene.history_offsets.empty();
@@ -116,7 +124,7 @@ GBufferVelocityConstants gbuffer_velocity_frame_constants(WorldSlot& slot){
     const float* prior_vp=previous.host_projection_valid?reinterpret_cast<const float*>(previous.host_projection.data()):current_vp;
     // Vulkan compiles Keen geometry with -Zpr; Anomaly.hlsli transposes on load.
     for(uint32_t r=0;r<4;++r)for(uint32_t k=0;k<4;++k){c.view_proj[k*4+r]=current_vp[r*4+k];c.prev_view_proj[k*4+r]=prior_vp[r*4+k];}
-    c.size[0]=float(extent.width);c.size[1]=float(extent.height);c.inv_size[0]=1.f/c.size[0];c.inv_size[1]=1.f/c.size[1];return c;
+    c.size[0]=float(extent.width);c.size[1]=float(extent.height);c.inv_size[0]=1.f/c.size[0];c.inv_size[1]=1.f/c.size[1];c.probe_mode=gbuffer_velocity_probe;return c;
 }
 uint32_t gbuffer_velocity_store(const GBufferVelocityConstants& c){
     if(gbuffer_velocity.cursor>=gbuffer_velocity.capacity)throw std::runtime_error("GBuffer velocity draw outside its prepared frame budget");

@@ -19,10 +19,13 @@
 #include <volk.h>
 #if defined(_WIN32)
 #include <windows.h>
+#include <dbghelp.h>
+#pragma comment(lib,"dbghelp.lib")
 #endif
 #define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
 #include <spirv_reflect.h>
+#include "stage_interface.h"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -445,6 +448,8 @@ struct Renderer {uint32_t recipe_generation=1;
     ProbeState probes;
     HbaoState hbao;
     PostState post;GpuOwnerState gpu_owners;std::mutex gpu_owner_mutex;GBufferVelocityState gbuffer_velocity;bool gbuffer_velocity_supported{};
+    // maintenance4 interface widening, and the stock fullscreen VS outputs that fullscreen owners must consume.
+    bool interface_widening{};std::vector<StageSlot> fullscreen_outputs;
     // Conditional spot scope of the thread recording it; cascade/pass workers record concurrently.
     inline static thread_local uint32_t gpu_owner_condition=UINT32_MAX;
     FlareState flares;
@@ -462,6 +467,9 @@ struct Renderer {uint32_t recipe_generation=1;
     std::mutex deferred_mutex;bool record_in_flight{};std::vector<std::function<int32_t(Renderer&)>> deferred;
     struct ReadSnapshot {SevkWorkStats work{};SevkResolutionStats resolution{};SevkShadowFeedback shadow{};uint32_t cache_mask{},cache_count{};bool cache_valid{};std::vector<SevkOcclusionResult> occlusion;uint64_t occlusion_token{};std::vector<SevkFlareResult> flares;float render_fraction=1;};
     std::mutex snapshot_mutex;ReadSnapshot snapshot;uint64_t pipelined_frames{},pipelined_mask_mismatches{},pipelined_waits{},pipelined_wait_us{};
+    // Wait census (only with SE_VULKAN_PIPELINE_REPORT): native frame address -> waits, microseconds.
+    bool pipeline_census=std::getenv("SE_VULKAN_PIPELINE_REPORT")!=nullptr;std::map<void*,std::pair<uint64_t,uint64_t>> pipelined_wait_sites;
+    std::map<void*,std::pair<uint64_t,uint64_t>> packing_wait_sites;uint64_t packing_blocked[2]{},packing_blocked_us[2]{};
     VkSurfaceKHR surface{}; VkSwapchainKHR swapchain{};
     VkPresentModeKHR actual_present_mode=VK_PRESENT_MODE_FIFO_KHR;uint32_t swapchain_generation{};
     bool exclusive_extension{}, exclusive_requested{}, exclusive_swapchain{}, exclusive_held{}, exclusive_denied{}; void* exclusive_monitor{};
@@ -530,6 +538,7 @@ struct Renderer {uint32_t recipe_generation=1;
     LightTileState light_tiles;
     PassGpuState pass_scene;
     struct CellState {old_cells::Scene scene;std::unique_ptr<native_pass::ViewJobs> jobs;SevkCellStats stats{sizeof(SevkCellStats)};} cells;
+    bool deferred_cell_emission{},cells_emit_pending{};
     EnvironmentState environment;
     std::array<UploadSlot,2> upload_slots{}; uint32_t upload_index{};
     bool batching_uploads{}; VkCommandBuffer batch_command{}; uint64_t upload_fence{};
@@ -740,7 +749,15 @@ struct Renderer {uint32_t recipe_generation=1;
         const char* parallel_env=std::getenv("SE_VULKAN_PARALLEL_CASCADES");world.parallel_cascades=parallel_env?std::strcmp(parallel_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* spots_env=std::getenv("SE_VULKAN_PARALLEL_SPOTS");world.parallel_spots=spots_env?std::strcmp(spots_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* pass_env=std::getenv("SE_VULKAN_PARALLEL_PASS");pass_scene.scene.set_parallel(pass_env?std::strcmp(pass_env,"1")==0:std::thread::hardware_concurrency()>=4);
+        const char* cell_emit_env=std::getenv("SE_VULKAN_DEFERRED_CELL_EMISSION");deferred_cell_emission=!cell_emit_env||std::strcmp(cell_emit_env,"0")!=0;
+        const char* selection_env=std::getenv("SE_VULKAN_PARALLEL_SELECTION");pass_scene.scene.parallel_selection=!selection_env||std::strcmp(selection_env,"0")!=0;
         const char* packing_env=std::getenv("SE_VULKAN_ASYNC_PASS_PACKING");pass_scene.scene.set_async_packing(packing_env?std::strcmp(packing_env,"0")!=0:std::thread::hardware_concurrency()>=4);
+        // The worker holds api_mutex while recording, so record_running identifies its joins.
+        if(pipeline_census)pass_scene.scene.on_blocked=[this](double us){int lane=record_running?1:0;++packing_blocked[lane];packing_blocked_us[lane]+=uint64_t(us);
+#if defined(_WIN32)
+            if(!lane){void* frames[12]{};USHORT count=CaptureStackBackTrace(0,12,frames,nullptr);for(USHORT i=0;i<count;++i){auto& site=packing_wait_sites[frames[i]];++site.first;site.second+=uint64_t(us);}}
+#endif
+        };
         const char* upload_env=std::getenv("SE_VULKAN_PARALLEL_UPLOAD");world.parallel_upload=upload_env?std::strcmp(upload_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* queue_env=std::getenv("SE_VULKAN_PARALLEL_QUEUE");world.parallel_queue=queue_env?std::strcmp(queue_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* arena_env=std::getenv("SE_VULKAN_GEOMETRY_ARENA");world.geometry_arena_requested=arena_env && std::strcmp(arena_env,"1")==0;
@@ -838,6 +855,7 @@ struct Renderer {uint32_t recipe_generation=1;
         world.indirect_limit=indirect_properties.limits.maxDrawIndirectCount;
         const char* indirect_env=std::getenv("SE_VULKAN_WORLD_INDIRECT");world.indirect_requested=indirect_env && std::strcmp(indirect_env,"1")==0;
         VkPhysicalDeviceVulkan13Features f13{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES }; f13.dynamicRendering = VK_TRUE; f13.synchronization2 = VK_TRUE; f13.shaderDemoteToHelperInvocation=VK_TRUE;
+        {VkPhysicalDeviceVulkan13Features supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,&supported};vkGetPhysicalDeviceFeatures2(physical,&query);f13.maintenance4=supported.maintenance4;interface_widening=supported.maintenance4!=0;}
         VkPhysicalDeviceVulkan12Features f12{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &f13 }; f12.timelineSemaphore = VK_TRUE; f12.scalarBlockLayout = VK_TRUE;
         VkPhysicalDeviceVulkan11Features f11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,&f12};
         VkPhysicalDeviceFeatures2 features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11 }; features.features.robustBufferAccess=VK_TRUE;features.features.depthClamp=VK_TRUE;features.features.independentBlend=VK_TRUE; features.features.textureCompressionBC = VK_TRUE; features.features.geometryShader=VK_TRUE; features.features.shaderStorageImageExtendedFormats=VK_TRUE;
@@ -1454,7 +1472,7 @@ struct Renderer {uint32_t recipe_generation=1;
         end_uploads();
         if (suspended) return 1;
         performance=SevkPerformanceStats{sizeof(SevkPerformanceStats),SEVK_ABI_VERSION};
-        performance.queue_us=world.current().queue_us;performance.logical_draws=performance.submitted_draws=uint32_t(world.current().draws.size());
+        performance.queue_us=world.current().queue_us;performance.logical_draws=performance.submitted_draws=uint32_t(world.current().draws.size()+(cells_emit_pending&&cells.scene.ready()?cells.scene.emitted().size():0));
         auto& slot = slots[slot_index];
         auto slot_stamp=std::chrono::steady_clock::now();
         auto slot_take=[&](){auto now=std::chrono::steady_clock::now();uint32_t elapsed=(uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(now-slot_stamp).count();slot_stamp=now;return elapsed;};
@@ -1637,6 +1655,7 @@ struct Renderer {uint32_t recipe_generation=1;
         critical_profile::Finish critical_finish{critical};
         critical_profile::Scope critical_record(critical_profile::RecordOwner,true);
         if (!recording) { if (suspended) return 1; throw std::runtime_error("end_frame without begin_frame"); }
+        settle_cells();
         // Host guest callbacks run after BeginFrame and before EndFrame.
         // No guest resource has been referenced by this command buffer yet.
         // Close that allocation window before recording the world/guest draws.
@@ -1905,7 +1924,11 @@ template<class Fn> int32_t call(void* context, Fn&& fn) {
     // records/submits. Timeline allocation, pools and queue access share one owner.
     // A pipelined end_frame completes, and deferred calls replay, before any call.
     std::unique_lock lock(renderer->api_mutex);
-    try { if(renderer->record_pending||renderer->record_running){auto start=std::chrono::steady_clock::now();renderer->await_recording(lock);renderer->pipelined_wait_us+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count());++renderer->pipelined_waits;} renderer->await_recording(lock); renderer->flush_deferred(); return fn(*renderer); }
+    try { if(renderer->record_pending||renderer->record_running){auto start=std::chrono::steady_clock::now();renderer->await_recording(lock);uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count());renderer->pipelined_wait_us+=us;++renderer->pipelined_waits;
+#if defined(_WIN32)
+        if(renderer->pipeline_census){void* frames[3]{};CaptureStackBackTrace(0,3,frames,nullptr);for(void* frame:frames){auto& site=renderer->pipelined_wait_sites[frame];++site.first;site.second+=us;}}
+#endif
+        } renderer->await_recording(lock); renderer->flush_deferred(); return fn(*renderer); }
     catch (const std::exception& e) { renderer->error = e.what(); global_error = renderer->error; return -1; }
     catch (...) { renderer->error = "unknown native Vulkan error"; global_error = renderer->error; return -1; }
 }
@@ -2034,8 +2057,21 @@ int32_t SEVK_CALL sevk_get_stats(void* context, SevkStats* stats) { return call(
 int32_t SEVK_CALL sevk_readback(void* context, void* rgba8, uint64_t bytes) { return call(context, [&](Renderer& r) { r.readback(rgba8,bytes); return 0; }); }
 int32_t SEVK_CALL sevk_request_readback(void* context) {return call(context,[&](Renderer& r) {if(!r.readback_supported) throw std::runtime_error("capture unsupported by presentation surface");r.capture_requested=true;return 0;});}
 void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) active_context = nullptr; if(context){auto* r=static_cast<Renderer*>(context);if(r->record_job.valid())r->record_job.wait();
-    // SE_VULKAN_PIPELINE_REPORT=<file>: pipelined frames, cascade-mask prediction misses and waits.
-    if(const char* path=std::getenv("SE_VULKAN_PIPELINE_REPORT"))if(FILE* f=std::fopen(path,"w")){std::fprintf(f,"{\"PipelinedFrames\":%llu,\"MaskMismatches\":%llu,\"Waits\":%llu,\"WaitUs\":%llu}\n",(unsigned long long)r->pipelined_frames,(unsigned long long)r->pipelined_mask_mismatches,(unsigned long long)r->pipelined_waits,(unsigned long long)r->pipelined_wait_us);std::fclose(f);}} delete static_cast<Renderer*>(context); }
+    // SE_VULKAN_PIPELINE_REPORT=<file>: pipelined frames, cascade-mask prediction misses and waits,
+    // plus native pass packing joins that blocked, split into render thread and recording worker.
+    if(const char* path=std::getenv("SE_VULKAN_PIPELINE_REPORT"))if(FILE* f=std::fopen(path,"w")){std::fprintf(f,"{\"PipelinedFrames\":%llu,\"MaskMismatches\":%llu,\"Waits\":%llu,\"WaitUs\":%llu,\"PackingBlocked\":%llu,\"PackingBlockedUs\":%llu,\"PackingWorkerBlocked\":%llu,\"PackingWorkerBlockedUs\":%llu",(unsigned long long)r->pipelined_frames,(unsigned long long)r->pipelined_mask_mismatches,(unsigned long long)r->pipelined_waits,(unsigned long long)r->pipelined_wait_us,(unsigned long long)r->packing_blocked[0],(unsigned long long)r->packing_blocked_us[0],(unsigned long long)r->packing_blocked[1],(unsigned long long)r->packing_blocked_us[1]);
+#if defined(_WIN32)
+        // Each wait records its innermost frames; only frames resolving to an export are listed.
+        HANDLE process=GetCurrentProcess();bool symbols=SymInitialize(process,nullptr,TRUE);
+        auto sites=[&](const char* label,const std::map<void*,std::pair<uint64_t,uint64_t>>& addresses){std::map<std::string,std::pair<uint64_t,uint64_t>> exports;
+            if(symbols){alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO)+256]{};auto* info=reinterpret_cast<SYMBOL_INFO*>(buffer);
+                for(auto& [address,site]:addresses){info->SizeOfStruct=sizeof(SYMBOL_INFO);info->MaxNameLen=255;DWORD64 offset=0;
+                    if(SymFromAddr(process,DWORD64(address),&offset,info)&&std::strncmp(info->Name,"sevk_",5)==0){auto& e=exports[info->Name];e.first+=site.first;e.second+=site.second;}}}
+            std::fprintf(f,",\"%s\":[",label);bool first=true;for(auto& [name,site]:exports){std::fprintf(f,"%s{\"Export\":\"%s\",\"Waits\":%llu,\"WaitUs\":%llu}",first?"":",",name.c_str(),(unsigned long long)site.first,(unsigned long long)site.second);first=false;}std::fprintf(f,"]");};
+        sites("Sites",r->pipelined_wait_sites);sites("PackingSites",r->packing_wait_sites);
+        if(symbols)SymCleanup(process);
+#endif
+        std::fprintf(f,"}\n");std::fclose(f);}} delete static_cast<Renderer*>(context); }
 const char* SEVK_CALL sevk_last_error(void* context) { return context ? static_cast<Renderer*>(context)->error.c_str() : global_error.c_str(); }
 int32_t SEVK_CALL sevk_init_gbuffer(void* ctx,const void* vs,uint64_t vb,const void* ps,uint64_t pb) {return call(ctx,[&](Renderer& r){r.init_stock(vs,vb,ps,pb);return 0;});}
 int32_t SEVK_CALL sevk_upload_gbuffer_mesh(void* ctx,uint64_t id,const SevkGBufferVertex* v,uint32_t vc,const uint32_t* i,uint32_t ic) {return call(ctx,[&](Renderer& r){r.upload_stock(id,v,vc,i,ic);return 0;});}
@@ -2047,6 +2083,7 @@ int32_t SEVK_CALL sevk_end_uploads(void* ctx){return call(ctx,[&](Renderer& r){r
 int32_t SEVK_CALL sevk_get_work_stats(void* ctx,SevkWorkStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.work;return 0;},[&](Renderer& r){*stats=r.work;return 0;});}
 int32_t SEVK_CALL sevk_get_performance_stats(void* ctx,SevkPerformanceStats* stats){return call(ctx,[&](Renderer& r){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("performance stats ABI mismatch");*stats=r.performance;return 0;});}
 int32_t SEVK_CALL sevk_set_texture_validation_cache(void* ctx,uint32_t enabled){return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("queue policy cannot change during recording");r.world.texture_validation_cache=enabled!=0;return 0;});}
+int32_t SEVK_CALL sevk_set_async_policy(void* ctx,uint32_t packing,uint32_t cells){return call(ctx,[&](Renderer& r){if(r.recording||packing>1||cells>1)throw std::runtime_error("invalid async policy");r.pass_scene.scene.set_async_packing(packing!=0);r.settle_cells();r.deferred_cell_emission=cells!=0;return 0;});}
 int32_t SEVK_CALL sevk_set_parallel_world_queue(void* ctx,uint32_t enabled){return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("queue policy cannot change during recording");r.world.parallel_queue=enabled!=0;return 0;});}
 int32_t SEVK_CALL sevk_register_world_recipe(void* ctx,const SevkWorldRecipe* recipe,uint64_t* handle){return call(ctx,[&](Renderer& r){if(!recipe || !handle)throw std::runtime_error("missing recipe/handle");*handle=r.register_world_recipe(*recipe);return 0;});}
 int32_t SEVK_CALL sevk_queue_world_recipes(void* ctx,const void* frame,uint32_t fb,const float* projection,const float* inverse,const SevkRecipeDraw* draws,uint32_t count,const uint8_t* objects,uint32_t object_bytes,const uint8_t* instances,uint32_t instance_bytes){return call(ctx,[&](Renderer& r){r.queue_world_recipes(frame,fb,projection,inverse,draws,count,objects,object_bytes,instances,instance_bytes);return 0;});}
@@ -2059,7 +2096,7 @@ int32_t SEVK_CALL sevk_world_old_order(void* ctx,const SevkOldPartOrder* orders,
 int32_t SEVK_CALL sevk_world_draw_owners(void* ctx,const uint32_t* owners,uint32_t count){return call(ctx,[&](Renderer& r){r.set_world_draw_owners(owners,count);return 0;});}
 int32_t SEVK_CALL sevk_world_main_owners(void* ctx,const SevkMainOwnerOrder* owners,uint32_t count){return call(ctx,[&](Renderer& r){r.set_world_main_owners(owners,count);return 0;});}
 int32_t SEVK_CALL sevk_get_model_group_stats(void* ctx,SevkModelGroupStats* stats){return call(ctx,[&](Renderer& r){if(!stats||stats->size!=sizeof(*stats)||stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("model group stats ABI mismatch");*stats=r.world.models.stats;return 0;});}
-int32_t SEVK_CALL sevk_get_recipe_stats(void* ctx,SevkRecipeStats* stats){return call(ctx,[&](Renderer& r){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("recipe stats ABI mismatch");*stats=r.world.current().recipe_stats;return 0;});}
+int32_t SEVK_CALL sevk_get_recipe_stats(void* ctx,SevkRecipeStats* stats){return call(ctx,[&](Renderer& r){r.settle_cells();if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("recipe stats ABI mismatch");*stats=r.world.current().recipe_stats;return 0;});}
 int32_t SEVK_CALL sevk_get_queue_work_stats(void* ctx,SevkQueueWorkStats* stats){return call(ctx,[&](Renderer& r){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("queue work stats ABI mismatch");*stats=r.world.current().queue_work;return 0;});}
 int32_t SEVK_CALL sevk_set_world_indirect(void* ctx,uint32_t enabled){return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("indirect policy cannot change during recording");r.world.indirect_requested=enabled!=0;r.saved_shadows=false;return 0;});}
 int32_t SEVK_CALL sevk_set_hdr_quality(void* ctx,uint32_t high_quality){return call(ctx,[&](Renderer& r){r.set_hdr_quality(high_quality);return 0;});}
@@ -2112,7 +2149,8 @@ int32_t SEVK_CALL sevk_build_voxel_array(void* ctx,uint64_t id,uint32_t size,uin
 int32_t SEVK_CALL sevk_init_environment(void* ctx,uint32_t stage,const void* data,uint64_t bytes){return call(ctx,[&](Renderer& r){r.init_environment(stage,data,bytes);return 0;});}
 int32_t SEVK_CALL sevk_set_shadow_options(void* ctx,uint32_t flags){return call_deferrable(ctx,[flags](Renderer& r){if(r.recording || flags>1)throw std::runtime_error("invalid shadow options");r.shadow_blur_enabled=flags!=0;return 0;});}
 int32_t SEVK_CALL sevk_prepare_postprocess_generation(void* ctx,uint64_t expected,const SevkPostprocessModule* modules,uint32_t count,uint64_t* generation){return call(ctx,[&](Renderer& r){if(!generation)throw std::runtime_error("null postprocess generation output");*generation=r.post_prepare_generation(expected,modules,count);return 0;});}
-int32_t SEVK_CALL sevk_native_owner_capabilities(void* ctx,SevkNativeOwnerCapabilities* state){if(!ctx||!state||state->size!=sizeof(*state)||state->abi_version!=SEVK_ABI_VERSION)return -1;*state={sizeof(*state),SEVK_ABI_VERSION,7u|(static_cast<Renderer*>(ctx)->gbuffer_velocity_supported?8u:0u)|16u|32u,8192,137};return 0;}
+int32_t SEVK_CALL sevk_set_gbuffer_velocity_probe(void* ctx,uint32_t mode){return call(ctx,[&](Renderer& r){r.set_gbuffer_velocity_probe(mode);return 0;});}
+int32_t SEVK_CALL sevk_native_owner_capabilities(void* ctx,SevkNativeOwnerCapabilities* state){if(!ctx||!state||state->size!=sizeof(*state)||state->abi_version!=SEVK_ABI_VERSION)return -1;*state={sizeof(*state),SEVK_ABI_VERSION,7u|(static_cast<Renderer*>(ctx)->gbuffer_velocity_supported?8u:0u)|16u|32u|64u,8192,137};return 0;}
 int32_t SEVK_CALL sevk_prepare_native_generation(void* ctx,const SevkNativeGeneration* input,uint64_t* generation){if(!input||!generation||input->size!=sizeof(*input)||input->abi_version!=SEVK_ABI_VERSION||input->flags&~1u)return -1;auto request=*input;return call(ctx,[&](Renderer& r){*generation=r.post_prepare_generation(request.expected_revision,request.modules,request.count,request.flags);return 0;});}
 int32_t SEVK_CALL sevk_activate_postprocess_generation(void* ctx,uint64_t generation){return call(ctx,[&](Renderer& r){r.post_queue_generation(generation);r.post_activate_pending();return 0;});}
 int32_t SEVK_CALL sevk_discard_postprocess_generation(void* ctx,uint64_t generation){return call(ctx,[&](Renderer& r){r.post_discard_generation(generation);return 0;});}

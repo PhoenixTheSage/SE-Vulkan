@@ -33,6 +33,11 @@ public sealed partial class VulkanScene
     // Full resident preparation AND native group recording. This switch never
     // re-enters the prepared color packet producer for supported actors.
     public bool NativePassSceneEnabled {get;set;}=NativePassPolicy.Enabled;
+    // Async pass packing and deferred cell emission (native defaults follow their
+    // environment switches); the setter exists for same-process parity lanes.
+    bool asyncNativeWork=System.Environment.GetEnvironmentVariable("SE_VULKAN_ASYNC_PASS_PACKING")!="0"&&System.Environment.GetEnvironmentVariable("SE_VULKAN_DEFERRED_CELL_EMISSION")!="0";
+    public bool AsyncNativeWorkEnabled {get=>asyncNativeWork;set{asyncNativeWork=value;backend.SetAsyncPolicy(value,value);}}
+    public bool VoxelFastPathEnabled {get=>VulkanVoxels.FastPathEnabled;set=>VulkanVoxels.FastPathEnabled=value;}
     public bool NativeMixedOpaqueEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_NATIVE_MIXED_OPAQUE")!="0";
     public bool GpuHybridPassEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_GPU_OPAQUE_HYBRID")=="1";
     private sealed class PassFamily
@@ -128,6 +133,8 @@ public sealed partial class VulkanScene
         backend.RemovePassResource(2,actor.PassHandle);actor.PassHandle=0;actor.PassOwned=false;actor.PassFamily?.Members.Remove(actor);actor.PassFamily=null;actor.PassBindingDirty=true;actor.PassAppearanceDirty=true;
         if(actor.HaveShadowPose){MarkSpots(actor.ShadowCenter,actor.ShadowRadius,false);MarkSpots(actor.ShadowCenter,actor.ShadowRadius,true);}
     }
+    readonly List<NativePassActor> passUpdates=new();readonly List<NativePassAppearance> passAppearance=new();
+    NativePassActor[] passUpdateArray=Array.Empty<NativePassActor>();NativePassAppearance[] passAppearanceArray=Array.Empty<NativePassAppearance>();
     private void CommitNativePassActors()
     {
         using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassCommits);
@@ -142,7 +149,7 @@ public sealed partial class VulkanScene
         foreach(uint id in previousNativeExclusions)if(!frameExcludedActors.Contains(id)&&actors.TryGetValue(id,out var old))DirtyNativePass(old,appearance:false);
         foreach(uint id in frameExcludedActors)if(!previousNativeExclusions.Contains(id)&&actors.TryGetValue(id,out var current))DirtyNativePass(current,appearance:false);
         previousNativeExclusions.Clear();previousNativeExclusions.UnionWith(frameExcludedActors);
-        var updates=new List<NativePassActor>();var appearance=new List<NativePassAppearance>();
+        var updates=passUpdates;var appearance=passAppearance;updates.Clear();appearance.Clear();
         foreach(var data in nativePassDirty){
             if(data.Actor.IsDestroyed||!actors.ContainsKey(data.Actor.ID))continue;
             // The GPU and native CPU selectors own disjoint actor sets.
@@ -153,7 +160,11 @@ public sealed partial class VulkanScene
             else updates.Add(PassActorInput(data,family,appearance,data.PassAppearanceDirty));
             data.PassAppearanceDirty=false;
         }
-        nativePassDirty.Clear();if(updates.Count!=0){backend.UpdatePassActors(updates.ToArray(),updates.Count,appearance.ToArray(),appearance.Count);nativePassCommits+=updates.Count;}
+        nativePassDirty.Clear();if(updates.Count!=0){
+            // Reused buffers: the native call copies what it needs before returning.
+            if(passUpdateArray.Length<updates.Count)passUpdateArray=new NativePassActor[updates.Count*2];if(passAppearanceArray.Length<appearance.Count)passAppearanceArray=new NativePassAppearance[appearance.Count*2];
+            updates.CopyTo(passUpdateArray);appearance.CopyTo(passAppearanceArray);
+            backend.UpdatePassActors(passUpdateArray,updates.Count,passAppearanceArray,appearance.Count);nativePassCommits+=updates.Count;}
     }
     private static unsafe NativePassView PassView(uint id,uint kind,BoundingFrustumD frustum,MyPassLoddingSetting lod,uint flags=1,uint light=0,double minimum=0,double maximum=0)
     {

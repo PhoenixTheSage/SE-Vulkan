@@ -24,7 +24,7 @@ PostStage build_decal_generation(uint32_t pixel_id,const SevkPostprocessModule* 
                     result.bindings.push_back({b.binding,type});bindings.push_back({b.binding,type,1,VkShaderStageFlags(shader_stage),nullptr});}
             }
         }
-        validate_foliage_link(reflected[0],reflected[1]);
+        validate_stage_link(reflected[0],reflected[1],"decal");
         for(uint32_t i=0;i<reflected[0].input_variable_count;++i)if(!(reflected[0].input_variables[i]->decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN))throw std::runtime_error("decal generation requires SV_VertexID without vertex streams");
         bool outputs[3]{};uint32_t targets=role==8?2u:3u;
         for(uint32_t i=0;i<reflected[1].output_variable_count;++i){auto& v=*reflected[1].output_variables[i];bool floating=v.format==SPV_REFLECT_FORMAT_R32_SFLOAT||v.format==SPV_REFLECT_FORMAT_R32G32_SFLOAT||v.format==SPV_REFLECT_FORMAT_R32G32B32_SFLOAT||v.format==SPV_REFLECT_FORMAT_R32G32B32A32_SFLOAT;

@@ -11,7 +11,7 @@ void update_recipe_dependencies(WorldRecipe& r){
     if(world_voxel(r.packet.pipeline)){add(6,r.packet.color);for(auto id:r.arrays)add(5,id);add(0,r.random);add(0,r.packet.alpha);}
     else for(auto id:{r.packet.color,r.packet.normal,r.packet.extensions,r.packet.alpha})add(0,id);
 }
-void invalidate_world_recipes(uint32_t kind,uint64_t id,bool retire=false){
+void invalidate_world_recipes(uint32_t kind,uint64_t id,bool retire=false){settle_cells();
     pass_scene.scene.invalidate_dependency(kind,id);
     if(kind==0&&opaque_reference.initialized&&std::find(opaque_reference.material_ids.begin(),opaque_reference.material_ids.end(),id)!=opaque_reference.material_ids.end())opaque_reference.materials_dirty={true,true};
     if(kind==0&&opaque_stock.ready&&std::find(opaque_reference.material_ids.begin(),opaque_reference.material_ids.end(),id)!=opaque_reference.material_ids.end())opaque_stock.materials_dirty={true,true};
@@ -28,7 +28,7 @@ void validate_world_recipe(WorldRecipe& r){
     if(world_voxel(packet.pipeline)){const auto& m=world.voxel_materials.at(packet.color);for(uint32_t i=0;i<3;i++)r.arrays[i]=m.arrays[i];r.random=m.random;}
     update_recipe_dependencies(r);r.valid=true;++world.current().recipe_stats.revalidated;
 }
-uint64_t register_world_recipe(const SevkWorldRecipe& source){
+uint64_t register_world_recipe(const SevkWorldRecipe& source){settle_cells();
     if(recording || source.size!=sizeof(source) || source.reserved)throw std::runtime_error("invalid world recipe registration");
     WorldRecipe r{};r.alive=true;r.packet.size=sizeof(SevkWorldDraw);r.packet.pipeline=source.pipeline;r.packet.mesh=source.mesh;r.packet.color=source.color;r.packet.normal=source.normal;r.packet.extensions=source.extensions;r.packet.alpha=source.alpha;r.packet.object_bytes=source.object_bytes;
     validate_world_recipe(r); // Validate before publishing a handle or consuming a reusable slot.
@@ -39,7 +39,7 @@ uint64_t register_world_recipe(const SevkWorldRecipe& source){
     world.recipes[index]=std::move(r);update_recipe_dependencies(world.recipes[index]);++world.recipe_live;++world.recipe_registered;
     return (uint64_t(world.recipes[index].generation)<<32)|(uint64_t(index)+1);
 }
-void queue_world_recipes(const void* frame,uint32_t frame_bytes,const float* projection,const float* inverse,const SevkRecipeDraw* draws,uint32_t count,const uint8_t* objects,uint32_t object_bytes,const uint8_t* instances,uint32_t instance_bytes){
+void queue_world_recipes(const void* frame,uint32_t frame_bytes,const float* projection,const float* inverse,const SevkRecipeDraw* draws,uint32_t count,const uint8_t* objects,uint32_t object_bytes,const uint8_t* instances,uint32_t instance_bytes){settle_cells();
     critical_profile::Scope critical_queue(critical_profile::QueueOwner,true);
     auto queued_at=std::chrono::steady_clock::now();
     if(recording)throw std::runtime_error("world recipe frame/blob contract mismatch");

@@ -67,6 +67,8 @@ param(
     [switch]$NativePassScene,
     [switch]$NativeCells,
     [switch]$PipelinedRecording,
+    [switch]$AsyncPassPacking,
+    [switch]$DeferredCellEmission,
     [switch]$GpuOpaqueScene,
     [switch]$GpuOpaqueTiming,
     [switch]$GpuOpaqueDeviceLocal,
@@ -357,6 +359,8 @@ $changes.SE_VULKAN_PROBE_COVERAGE_AUDIT=if($ProbeCoverageAudit){if(!$SelectionAu
 $changes.SE_VULKAN_STOCK_DEPTH_GEOMETRY=if($StockDepthGeometry){'1'}else{'0'}
 $changes.SE_VULKAN_NATIVE_PASS_SCENE=if($NativePassScene){if($Backend -ne 'Vulkan' -or !$NewActorViews -or !$GroupOcclusion -or !$StockShadowFit -or !$StockDepthGeometry){throw 'NativePassScene requires Vulkan new views, group occlusion, stock fitting and shared depth geometry'};'1'}else{'0'}
 $changes.SE_VULKAN_PIPELINED_RECORDING=if($PipelinedRecording){'1'}else{'0'}
+$changes.SE_VULKAN_ASYNC_PASS_PACKING=if($AsyncPassPacking){if(!$NativePassScene){throw 'AsyncPassPacking requires NativePassScene'};'1'}else{'0'}
+$changes.SE_VULKAN_DEFERRED_CELL_EMISSION=if($DeferredCellEmission){if(!$NativeCells){throw 'DeferredCellEmission requires NativeCells'};'1'}else{'0'}
 $changes.SE_VULKAN_NATIVE_CELLS=if($NativeCells){if(!$NativePassScene){throw 'NativeCells requires NativePassScene'};'1'}else{'0'}
 $changes.SE_VULKAN_NATIVE_MIXED_OPAQUE=if($NativeMixedOpaque){if(!$NativePassScene){throw 'NativeMixedOpaque requires NativePassScene'};'1'}else{'0'}
 $changes.SE_VULKAN_STOCK_LOD_BOUNDS=if($StockLodBounds){if($Backend -ne 'Vulkan'){throw 'StockLodBounds requires Vulkan'};'1'}else{'0'}

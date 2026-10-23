@@ -1,21 +1,8 @@
 // Foliage's shared vertex and two GS/PS pairs activate as one dependency closure.
 bool native_foliage_id(uint32_t id){return id>=768&&id<773;}
-// Reject invalid cross-stage linkage before a candidate can become active,
-// independently of whether runtime validation layers are enabled.
-void validate_foliage_link(const SpvReflectShaderModule& producer,const SpvReflectShaderModule& consumer){
-    std::map<uint32_t,SpvReflectFormat> outputs;
-    std::function<void(const SpvReflectInterfaceVariable&,bool)> visit;
-    visit=[&](const SpvReflectInterfaceVariable& variable,bool input){
-        if(variable.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)return;
-        if(variable.member_count){for(uint32_t i=0;i<variable.member_count;++i)visit(variable.members[i],input);return;}
-        if(variable.location==UINT32_MAX)return;
-        if(variable.format==SPV_REFLECT_FORMAT_UNDEFINED)throw std::runtime_error("foliage stage interface has unsupported aggregate type");
-        if(input){auto found=outputs.find(variable.location);if(found==outputs.end()||found->second!=variable.format)throw std::runtime_error("foliage shader-stage interface mismatch");}
-        else if(!outputs.emplace(variable.location,variable.format).second)throw std::runtime_error("foliage duplicate output location");
-    };
-    for(uint32_t i=0;i<producer.output_variable_count;++i)visit(*producer.output_variables[i],false);
-    for(uint32_t i=0;i<consumer.input_variable_count;++i)visit(*consumer.input_variables[i],true);
-}
+// Cross-stage linkage follows Vulkan interface matching (stage_interface.h), checked before activation.
+void validate_stage_link(const SpvReflectShaderModule& producer,const SpvReflectShaderModule& consumer,const char* role){validate_stage_interface(stage_outputs(producer,role),consumer,interface_widening,role);}
+void validate_fullscreen_inputs(const SpvReflectShaderModule& consumer,const char* role){if(fullscreen_outputs.empty())throw std::runtime_error(std::string(role)+" needs the stock fullscreen vertex shader");validate_stage_interface(fullscreen_outputs,consumer,interface_widening,role);}
 PostStage build_foliage_generation(uint32_t pixel_id,const SevkPostprocessModule* modules,uint32_t count){
     if(pixel_id!=770&&pixel_id!=772)throw std::runtime_error("invalid foliage owner");
     uint32_t ids[]{768,pixel_id-1,pixel_id};VkShaderStageFlagBits stages[]{VK_SHADER_STAGE_VERTEX_BIT,VK_SHADER_STAGE_GEOMETRY_BIT,VK_SHADER_STAGE_FRAGMENT_BIT};
@@ -47,7 +34,7 @@ PostStage build_foliage_generation(uint32_t pixel_id,const SevkPostprocessModule
                 }
             }
         }
-        validate_foliage_link(reflected[0],reflected[1]);validate_foliage_link(reflected[1],reflected[2]);
+        validate_stage_link(reflected[0],reflected[1],"foliage");validate_stage_link(reflected[1],reflected[2],"foliage");
         std::vector<VkVertexInputAttributeDescription> attributes;
         for(uint32_t i=0;i<reflected[0].input_variable_count;++i){auto& v=*reflected[0].input_variables[i];if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)continue;
             std::string name=v.name?v.name:"";name=name.substr(name.find_last_of('.')+1);

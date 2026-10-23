@@ -24,7 +24,7 @@ PostStage build_billboard_generation(uint32_t k,const SevkPostprocessModule* mod
                 else {signatures.emplace(b.binding,signature);result.bindings.push_back({b.binding,type});bindings.push_back({b.binding,type,1,VkShaderStageFlags(shader_stage),nullptr});}
             }
         }
-        validate_foliage_link(reflected[0],reflected[1]);if(ldr_vertex)validate_foliage_link(reflected[2],reflected[1]);
+        validate_stage_link(reflected[0],reflected[1],"billboard");if(ldr_vertex)validate_stage_link(reflected[2],reflected[1],"billboard");
         for(uint32_t i=0;i<reflected[1].output_variable_count;++i){auto& v=*reflected[1].output_variables[i];if(!(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)&&v.location>=(additive?1u:2u))throw std::runtime_error("billboard generation output mismatch");}
         VkDescriptorSetLayoutCreateInfo set{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};set.bindingCount=uint32_t(bindings.size());set.pBindings=bindings.data();check(vkCreateDescriptorSetLayout(device,&set,nullptr,&result.layout),"billboard generation descriptors");result.pipeline_layout=world_pipeline_layout(result.layout);
         // Slots: HDR, other HDR, top, other-HDR top, LDR. Additive variants own all five and a PostPP output program.

@@ -19,7 +19,7 @@ void clear_models(){
     if(recording)throw std::runtime_error("model registration cannot clear during recording");
     auto& m=world.models;m.definitions.clear();m.lookup.clear();m.groups.clear();m.active.clear();m.merged.clear();m.resident_bytes=0;m.stats={sizeof(SevkModelGroupStats),SEVK_ABI_VERSION};
 }
-void append_models(const SevkModelInstance* instances,uint32_t count,const uint32_t* legacy_order,uint32_t legacy_count,uint32_t* remap){
+void append_models(const SevkModelInstance* instances,uint32_t count,const uint32_t* legacy_order,uint32_t legacy_count,uint32_t* remap){settle_cells();
     if(recording || !world.current().queued || world.retained_objects || (!instances&&count) || count>65536 || legacy_count!=world.current().draws.size() || (legacy_count&&(!legacy_order||!remap)))throw std::runtime_error("invalid bulk model frame contract");
     world.current().queued=false; // A failed expansion must never publish a partial frame.
     auto started=std::chrono::steady_clock::now();auto& m=world.models;

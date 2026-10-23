@@ -27,7 +27,7 @@ PostStage build_transparent_generation(uint32_t pixel_id,const SevkPostprocessMo
                     result.bindings.push_back({b.binding,type});bindings.push_back({b.binding,type,1,VkShaderStageFlags(shader_stage),nullptr});}
             }
         }
-        validate_foliage_link(reflected[0],reflected[1]);
+        validate_stage_link(reflected[0],reflected[1],"transparent");
         uint32_t targets=for_decals?1u:2u;
         for(uint32_t i=0;i<reflected[1].output_variable_count;++i){auto& v=*reflected[1].output_variables[i];if(!(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)&&v.location>=targets)throw std::runtime_error("transparent generation output mismatch");}
         // Dynamic offsets follow binding order.

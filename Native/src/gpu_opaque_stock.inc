@@ -33,11 +33,8 @@ OpaqueStockState::Pipeline build_opaque_stock_pipeline(uint32_t id,uint32_t old,
             if(admitted&&gbuffer_velocity_binding(b)){velocity_resources=true;continue;}
             if(!indexed&&!stock)throw std::runtime_error("indexed stock resource layout exceeded: "+std::to_string(b.set)+":"+std::to_string(b.binding)+" count "+std::to_string(b.count));}
         for(auto* module:{&vr,&pr})for(uint32_t n=0;n<module->push_constant_block_count;n++)if(module->push_constant_blocks[n].size!=4)throw std::runtime_error("indexed stock draw-base contract");
-        // Auto-assigned locations must match after adding the flat draw identity.
-        // Reject a derived pair rather than silently changing stock interpolation.
-        for(uint32_t i=0;i<pr.input_variable_count;i++){auto& input=*pr.input_variables[i];if(input.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)continue;bool found=false;
-            for(uint32_t j=0;j<vr.output_variable_count;j++){auto& output=*vr.output_variables[j];if(!(output.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)&&output.location==input.location){if(output.format!=input.format||bool(output.decoration_flags&SPV_REFLECT_DECORATION_FLAT)!=bool(input.decoration_flags&SPV_REFLECT_DECORATION_FLAT))throw std::runtime_error("indexed stock stage interface mismatch");found=true;break;}}
-            if(!found)throw std::runtime_error("indexed stock pixel input has no vertex output");}
+        // Auto-assigned locations must still link after adding the flat draw identity (Vulkan interface matching).
+        validate_stage_link(vr,pr,"indexed stock");
         std::vector<VkVertexInputAttributeDescription> attributes;
         for(uint32_t n=0;n<vr.input_variable_count;n++){auto& v=*vr.input_variables[n];if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)continue;std::string name=v.name?v.name:"";name=name.substr(name.find_last_of('.')+1);VkFormat format{};uint32_t offset{};
             if(name=="POSITION0"){format=VK_FORMAT_R32G32B32A32_SFLOAT;}else if(name=="NORMAL0"){format=VK_FORMAT_R32G32_UINT;offset=16;}else if(name=="TANGENT0"){format=VK_FORMAT_R32G32B32A32_SFLOAT;offset=24;}else if(name=="TEXCOORD0"){format=VK_FORMAT_R32G32_SFLOAT;offset=40;}else if(name=="BLENDWEIGHT0"){format=VK_FORMAT_R32G32B32A32_SFLOAT;offset=48;}else if(name=="BLENDINDICES0"){format=VK_FORMAT_R32G32B32A32_UINT;offset=64;}else throw std::runtime_error("indexed stock retains an unsupported/source instance attribute: "+name);attributes.push_back({v.location,0,format,offset});}

@@ -8,7 +8,7 @@ PostStage build_probe_generation(uint32_t id,const void* data,uint64_t bytes){
         for(uint32_t i=0;i<reflected.output_variable_count;++i){auto& v=*reflected.output_variables[i];bool floating=v.format==SPV_REFLECT_FORMAT_R32_SFLOAT||v.format==SPV_REFLECT_FORMAT_R32G32_SFLOAT||v.format==SPV_REFLECT_FORMAT_R32G32B32_SFLOAT||v.format==SPV_REFLECT_FORMAT_R32G32B32A32_SFLOAT;
             if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN||v.location>=targets||outputs[v.location]||!floating)throw std::runtime_error("probe generation output mismatch");outputs[v.location]=true;}
         for(uint32_t i=0;i<targets;++i)if(!outputs[i])throw std::runtime_error("probe generation output missing");
-        for(uint32_t i=0;i<reflected.input_variable_count;++i){auto& v=*reflected.input_variables[i];if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)continue;if(v.location||v.format!=SPV_REFLECT_FORMAT_R32G32_SFLOAT)throw std::runtime_error("probe generation fullscreen input mismatch");}
+        validate_fullscreen_inputs(reflected,"probe generation");
         std::vector<VkDescriptorSetLayoutBinding> bindings;
         for(uint32_t i=0;i<reflected.descriptor_binding_count;++i){auto& b=reflected.descriptor_bindings[i];auto type=VkDescriptorType(b.descriptor_type);
             bool extras=type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER&&b.binding==6&&b.block.size>0&&b.block.size<=320;
