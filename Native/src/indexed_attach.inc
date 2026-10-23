@@ -34,6 +34,8 @@ void record_indexed_attachments(VkCommandBuffer cmd,WorldSlot& slot,WorldState::
     for(uint32_t n=0;n<count;++n){uint32_t b=r.view_batches?r.recording_batches[view][n]:n;const auto& batch=opaque_stock.batches[b];const auto& input=batch.input;const auto range=r.ranges[b];if(!range.capacity)continue;
         if(written&&(input.old?opaque_stock.older[input.main_pipeline].velocity:opaque_stock.newer[input.main_pipeline].velocity))continue;
         uint32_t type=input.old?world.pipelines.at(input.main_pipeline).type:0,kind=input.old?(type==0?0u:type>=2&&type<=4?type-1:UINT32_MAX):4u;
+        // A declared-only slot has no replay shader; only owner invocations write it.
+        if(kind<=4 && !target.indexed_pipe[kind] && !target.live)continue;
         if(kind>4 || !target.indexed_pipe[kind])throw std::runtime_error("indexed attachment geometry class unavailable");
         vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,target.indexed_pipe[kind]);world_model_raster(cmd,input.main_pipeline,(input.flags&1)?0x10000000u:0x08000000u);
         VkDeviceSize zero=0;vkCmdBindVertexBuffers(cmd,0,1,&batch.vertices,&zero);vkCmdBindIndexBuffer(cmd,batch.indices,0,VK_INDEX_TYPE_UINT32);

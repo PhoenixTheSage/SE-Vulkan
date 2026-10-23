@@ -143,7 +143,7 @@ partial class Program
         string magenta=VelocityGBufferPixelStage(core,bin).Replace("ApplyMultipliers(material_output);","ApplyMultipliers(material_output);material_output.base_color=float3(1,0,1);");
         void Register(string text){File.WriteAllText(file,text);Call("Backend.GuestPassList","RegisterRoot",owner,root,null);}
         try{
-            var stock=Run();Console.WriteLine(path+" VELOCITY analytic="+expected+" stock="+Motion(stock.M));
+            var stock=Run();var stockG1=backend.ReadbackWorldGbuffer(1,64,64);Console.WriteLine(path+" VELOCITY analytic="+expected+" stock="+Motion(stock.M));
             Check(Near(stock.M,.02f)&&stock.M[corner]==0&&stock.M[corner+1]==0,"stock indexed replay writes the analytic "+path+" motion");
             Check(stock.M.SequenceEqual(Run(true).M),"stock indexed replay agrees across recording modes");
             Register(magenta);var owned=Run(true);Check(Property("Backend.GuestPostprocessStages","Error")==null,"velocity-aware "+path+" owner prepares: "+Property("Backend.GuestPostprocessStages","Error"));
@@ -153,8 +153,9 @@ partial class Program
             Check(owned.M.SequenceEqual(Run().M),path+" owner motion agrees across recording modes");
             Register(magenta.Replace("float2 anomaly_velocity = input.anomaly_velocity;","float2 anomaly_velocity = float2(3, -2);"));var custom=Run(true);Console.WriteLine(path+" VELOCITY custom="+Motion(custom.M));
             Check(Property("Backend.GuestPostprocessStages","Error")==null&&custom.M[centre]==3&&custom.M[centre+1]==-2&&custom.M[corner]==0&&Magenta(custom.G),"pack-written velocity reaches Target3 from the "+path+" owning invocation; replay skips that batch");
+            AttachmentOwnerPhase(core,backend,owner,root,file,magenta,path,pixelOwner,stockG1,p=>Run(p).M,m=>Near(m,.02f),Check);
             Call("Backend.GuestPassList","UnregisterRoot",owner);var restored=Run(true);
-            Check(restored.M.SequenceEqual(stock.M)&&restored.G.SequenceEqual(stock.G),"unregister restores exact stock "+path+" material and replay motion");
+            Check(restored.M.SequenceEqual(stock.M)&&restored.G.SequenceEqual(stock.G)&&backend.ReadbackWorldGbuffer(1,64,64).SequenceEqual(stockG1),"unregister restores exact stock "+path+" material, GBuffer1 and replay motion");
             Run();Check(backend.GetPostprocessGeneration(pixelOwner).Retired==0,path+" velocity owner bundles retire after completed submissions");
             Check(backend.GetStats().ValidationEnabled!=0&&backend.GetStats().ValidationErrors==0,path+" velocity owners have zero core/synchronization errors");
         }finally{Call("Backend.GuestPassList","UnregisterRoot",owner);backend.ClearPassFrame();stages.GetField("catalog",stat).SetValue(null,null);stages.GetField("catalogEpoch",stat).SetValue(null,-1L);}
@@ -200,7 +201,7 @@ partial class Program
         string magenta=VelocityGBufferPixelStage(core,bin).Replace("ApplyMultipliers(material_output);","ApplyMultipliers(material_output);material_output.base_color=float3(1,0,1);");
         void Register(string text){File.WriteAllText(file,text);Call("Backend.GuestPassList","RegisterRoot",owner,root,null);}
         try{
-            var stock=Run();Console.WriteLine("CELL VELOCITY analytic="+expected+" stock="+Motion(stock.M));
+            var stock=Run();var stockG1=backend.ReadbackWorldGbuffer(1,64,64);Console.WriteLine("CELL VELOCITY analytic="+expected+" stock="+Motion(stock.M));
             Check(Near(stock.M,.02f)&&stock.M[corner]==0&&stock.M[corner+1]==0,"stock cell replay writes the analytic per-instance motion");
             Check(stock.M.SequenceEqual(Run(true).M),"stock cell replay agrees across recording modes");
             Register(magenta);var owned=Run(true);Check(Property("Backend.GuestPostprocessStages","Error")==null,"velocity-aware native-cell owner prepares: "+Property("Backend.GuestPostprocessStages","Error"));
@@ -210,12 +211,41 @@ partial class Program
             Check(owned.M.SequenceEqual(Run().M),"native-cell owner motion agrees across recording modes");
             Register(magenta.Replace("float2 anomaly_velocity = input.anomaly_velocity;","float2 anomaly_velocity = float2(3, -2);"));var custom=Run(true);Console.WriteLine("CELL VELOCITY custom="+Motion(custom.M));
             Check(Property("Backend.GuestPostprocessStages","Error")==null&&custom.M[centre]==3&&custom.M[centre+1]==-2&&custom.M[corner]==0&&Magenta(custom.G),"pack-written velocity reaches Target3 from the native-cell owning invocation; replay skips that group");
+            AttachmentOwnerPhase(core,backend,owner,root,file,magenta,"native-cell",16385,stockG1,p=>Run(p).M,m=>Near(m,.02f),Check);
             Call("Backend.GuestPassList","UnregisterRoot",owner);var restored=Run(true);
-            Check(restored.M.SequenceEqual(stock.M)&&restored.G.SequenceEqual(stock.G),"unregister restores exact stock native-cell material and replay motion");
+            Check(restored.M.SequenceEqual(stock.M)&&restored.G.SequenceEqual(stock.G)&&backend.ReadbackWorldGbuffer(1,64,64).SequenceEqual(stockG1),"unregister restores exact stock native-cell material, GBuffer1 and replay motion");
             Run();Check(backend.GetPostprocessGeneration(16385).Retired==0,"native-cell velocity owner bundles retire after completed submissions");
             Check(backend.GetStats().ValidationEnabled!=0&&backend.GetStats().ValidationErrors==0,"native-cell velocity owners have zero core/synchronization errors");
         }finally{Call("Backend.GuestPassList","UnregisterRoot",owner);backend.ClearPassFrame();stages.GetField("catalog",stat).SetValue(null,null);stages.GetField("catalogEpoch",stat).SetValue(null,-1L);}
         return checks;
+    }
+    // Shared pack: R32_UINT objectid 777 at SV_Target4+slot and GBuffer1.a 0.5 through ANOMALY_PACK_GBUFFER1A.
+    static string AttachmentManifest(string owner)=>"{\"id\":\""+owner+"\",\"exclusive\":[\"GBuffer\"],\"attachments\":[{\"name\":\"objectid\",\"format\":\"R32_UINT\"},{\"name\":\"flags\",\"format\":\"GBuffer1.a\"}]}";
+    static string AttachmentPixelStage(string patched)=>patched.Replace("#ifdef ANOMALY_PACK_GBUFFER1A\n#ifndef ANOMALY_GBUFFER1A_OVERRIDE","#ifdef ANOMALY_PACK_GBUFFER1A\n#define ANOMALY_GBUFFER1A_OVERRIDE\nfloat AnomalyGBuffer1A(PixelInterface pixel, MaterialOutputInterface material_output)\n{\n\treturn 0.5;\n}\n#endif\n#ifdef ANOMALY_PACK_GBUFFER1A\n#ifndef ANOMALY_GBUFFER1A_OVERRIDE")
+            .Replace("#ifndef STATIC_DECAL\n#ifdef ANOMALY_PACK_GBUFFER1A\n\toutput.gbuffer1.a","#ifdef ANOMALY_ATTACH_OBJECTID\n\toutput.objectid = 777u;\n#endif\n#ifndef STATIC_DECAL\n#ifdef ANOMALY_PACK_GBUFFER1A\n\toutput.gbuffer1.a");
+    static int AttachmentSlot(Assembly core,out int format)
+    {
+        const BindingFlags stat=BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static;
+        object Field(object o,string n)=>o.GetType().GetField(n).GetValue(o);
+        var attachments=((System.Collections.IEnumerable)core.GetType("ClientPlugin.Backend.GuestPassList",true).GetMethod("SnapshotAttachments",stat).Invoke(null,null)).Cast<object>();
+        var objectid=attachments.SingleOrDefault(a=>(string)Field(a,"Name")=="objectid");format=objectid==null?-1:(int)Field(objectid,"NativeFormat");return objectid==null?-1:(int)Field(objectid,"Slot");
+    }
+    // Native-cell and GPU owners record inside the same main GBuffer scope; their invocations must write the pack attachments too.
+    static void AttachmentOwnerPhase(Assembly core,NativeBackend backend,string owner,string root,string file,string magenta,string path,uint pixelOwner,byte[] stockG1,Func<bool,float[]> run,Func<float[],bool> near,Action<bool,string> check)
+    {
+        const BindingFlags stat=BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static;
+        object Error()=>core.GetType("ClientPlugin.Backend.GuestPostprocessStages",true).GetProperty("Error",stat).GetValue(null);
+        File.WriteAllText(Path.Combine(root,"anomaly.json"),AttachmentManifest(owner));File.WriteAllText(file,AttachmentPixelStage(magenta));
+        core.GetType("ClientPlugin.Backend.GuestPassList",true).GetMethod("RegisterRoot",stat).Invoke(null,new object[]{owner,root,null});
+        int slot=AttachmentSlot(core,out int format);check(slot>=0&&format==4,path+" pack admits the R32_UINT attachment to a DX11 SV_Target4..6 slot");
+        (byte[] G1,float[] M,byte[] A) Read(bool pipelined){var m=run(pipelined);return(backend.ReadbackWorldGbuffer(1,64,64),m,backend.ReadbackAttachment((uint)slot,64,64,4));}
+        int centre=32*64+32,corner=2*64+2;var owned=Read(true);check(Error()==null,"attachment-writing "+path+" owner prepares: "+Error());
+        uint id=BitConverter.ToUInt32(owned.A,centre*4),outside=BitConverter.ToUInt32(owned.A,corner*4);int alpha=owned.G1[centre*4+3];Console.WriteLine(path+" ATTACH owned objectid="+id+" outside="+outside+" gbuffer1.a="+alpha+" stock="+stockG1[centre*4+3]+" slot="+slot);
+        var state=backend.GetPostprocessGeneration(pixelOwner);check(state.Active!=0&&state.Executions>0,"attachment-writing "+path+" owner pair executes");
+        check(id==777&&outside==0,path+" owning invocation writes the named attachment at SV_Target"+(4+slot)+"; uncovered pixels stay cleared");
+        check(Math.Abs(alpha-128)<=1&&owned.G1[corner*4+3]==stockG1[corner*4+3],path+" packed GBuffer1.a carries the pack value; uncovered pixels keep stock alpha");
+        check(near(owned.M),path+" velocity Target3 stays correct beside the pack attachments");
+        var sync=Read(false);check(sync.A.SequenceEqual(owned.A)&&sync.G1.SequenceEqual(owned.G1)&&sync.M.SequenceEqual(owned.M),path+" attachment, GBuffer1.a and velocity outputs agree across recording modes");
     }
     // DX11 pack attachments: fields at SV_Target4+slot and packed GBuffer1.a, written by the owning GBuffer invocation.
     static int AttachmentVelocityRegression(Assembly core,string output,string bin,NativeBackend backend,MatrixD projection,MyEnvironmentLightData light)
@@ -245,17 +275,14 @@ partial class Program
         (byte[] G1,float[] M,byte[] A) Run(bool pipelined=false){(byte[],float[],byte[]) last=default;for(int step=0;step<4;++step)last=Frame(step,pipelined&&step==3);return last;}
         int centre=32*64+32,corner=2*64+2;
         string root=Path.Combine(output,"GBufferAttachmentPack-"+Guid.NewGuid().ToString("N")),file=Path.Combine(root,"Overlay/Geometry/Passes/GBuffer/PixelStage.hlsli");Directory.CreateDirectory(Path.GetDirectoryName(file));
-        File.WriteAllText(Path.Combine(root,"anomaly.json"),"{\"id\":\""+owner+"\",\"exclusive\":[\"GBuffer\"],\"attachments\":[{\"name\":\"objectid\",\"format\":\"R32_UINT\"},{\"name\":\"flags\",\"format\":\"GBuffer1.a\"}]}");
+        File.WriteAllText(Path.Combine(root,"anomaly.json"),AttachmentManifest(owner));
         string patched=VelocityGBufferPixelStage(core,bin);
-        string pack=patched.Replace("#ifdef ANOMALY_PACK_GBUFFER1A\n#ifndef ANOMALY_GBUFFER1A_OVERRIDE","#ifdef ANOMALY_PACK_GBUFFER1A\n#define ANOMALY_GBUFFER1A_OVERRIDE\nfloat AnomalyGBuffer1A(PixelInterface pixel, MaterialOutputInterface material_output)\n{\n\treturn 0.5;\n}\n#endif\n#ifdef ANOMALY_PACK_GBUFFER1A\n#ifndef ANOMALY_GBUFFER1A_OVERRIDE")
-            .Replace("#ifndef STATIC_DECAL\n#ifdef ANOMALY_PACK_GBUFFER1A\n\toutput.gbuffer1.a","#ifdef ANOMALY_ATTACH_OBJECTID\n\toutput.objectid = 777u;\n#endif\n#ifndef STATIC_DECAL\n#ifdef ANOMALY_PACK_GBUFFER1A\n\toutput.gbuffer1.a");
+        string pack=AttachmentPixelStage(patched);
         Check(pack.Contains("output.objectid = 777u;")&&pack.Contains("#define ANOMALY_GBUFFER1A_OVERRIDE"),"pack writes a named attachment and overrides packed GBuffer1.a in the velocity-aware pixel stage");
         try{
             var stock=Run();int stockAlpha=stock.G1[centre*4+3];Console.WriteLine("ATTACH stock gbuffer1.a="+stockAlpha);
             File.WriteAllText(file,pack);Call("Backend.GuestPassList","RegisterRoot",owner,root,null);
-            var attachments=((System.Collections.IEnumerable)Call("Backend.GuestPassList","SnapshotAttachments")).Cast<object>().ToArray();
-            object Field(object o,string n)=>o.GetType().GetField(n).GetValue(o);
-            var objectid=attachments.SingleOrDefault(a=>(string)Field(a,"Name")=="objectid");Check(objectid!=null&&(int)Field(objectid,"Slot")>=0&&(int)Field(objectid,"NativeFormat")==4,"core admits the R32_UINT attachment to a DX11 SV_Target4..6 slot");objectSlot=(int)Field(objectid,"Slot");
+            objectSlot=AttachmentSlot(core,out int objectFormat);Check(objectSlot>=0&&objectFormat==4,"core admits the R32_UINT attachment to a DX11 SV_Target4..6 slot");
             var owned=Run(true);Check(Property("Backend.GuestPostprocessStages","Error")==null,"attachment-writing GBuffer owner prepares: "+Property("Backend.GuestPostprocessStages","Error"));
             uint id=BitConverter.ToUInt32(owned.A,centre*4),outside=BitConverter.ToUInt32(owned.A,corner*4);int alpha=owned.G1[centre*4+3];Console.WriteLine("ATTACH owned objectid="+id+" outside="+outside+" gbuffer1.a="+alpha+" slot="+objectSlot);
             Check(id==777&&outside==0,"owning GBuffer invocation writes the named attachment at SV_Target"+(4+objectSlot)+"; uncovered pixels stay cleared");
