@@ -259,7 +259,7 @@ public sealed class MyVulkanRender : IMyRender
             }
             FrameProfiler.Lap(FrameProfiler.Section.Particles);
             }
-            GuestBridge.BeginScene(backend,scene);
+            GuestBridge.BeginScene(backend,scene);GuestBridge.SetPostprocess(postprocess);
             if(drawScene)BackendRuntime.RaiseScene(new[]{camera.X,camera.Y,camera.Z},
                 new[]{-light.SunLightDirection.X,-light.SunLightDirection.Y,-light.SunLightDirection.Z});
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ShadowFit)){

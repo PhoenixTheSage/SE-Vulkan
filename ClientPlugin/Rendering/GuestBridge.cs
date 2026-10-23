@@ -57,6 +57,25 @@ public static class GuestBridge
     public static object[] CaptureVolumeScene()=>scene?.CaptureGuestVolumeScene();
     public static bool ConfigureDepthViews(ulong[] images,float[] matrices)=>current!=null && current.ConfigureGuestDepthViews(images,matrices);
     public static uint DepthViewsReady=>current?.GuestDepthReady??0;
+    static Scene.VulkanPostprocess postprocess;
+    internal static void SetPostprocess(Scene.VulkanPostprocess value)=>postprocess=value;
+    /// <summary>
+    /// Keen MyToneMapping grading inputs for Display tenants, as DX11 reads MyRender11.Postprocess.Data:
+    /// BloomMult, BloomDirtRatio, GrainStrength, GrainAmount, GrainSize, Contrast, Brightness, Saturation,
+    /// BrightnessFactorR/G/B, Vibrance, SepiaStrength, LightColor xyz, DarkColor xyz, enableTonemapping,
+    /// needsAlphaLuminance (FXAA). Null before the first postprocess configuration.
+    /// </summary>
+    public static float[] TonemapValues()
+    {
+        var p=postprocess;if(p==null)return null;var s=p.Settings;var d=s.Data;
+        return new[]{d.BloomMult,d.BloomDirtRatio,d.GrainStrength,d.GrainAmount,d.GrainSize,d.Contrast,d.Brightness,d.Saturation,
+            d.BrightnessFactorR,d.BrightnessFactorG,d.BrightnessFactorB,d.Vibrance,d.SepiaStrength,d.LightColor.X,d.LightColor.Y,d.LightColor.Z,
+            d.DarkColor.X,d.DarkColor.Y,d.DarkColor.Z,s.EnableTonemapping?1f:0f,p.Fxaa?1f:0f};
+    }
+    /// <summary>Render draw time in seconds, the timebase DX11 exposes as MyCommon.FrameTime.</summary>
+    public static double FrameSeconds()=>scene==null?0:scene.Environment.FrameTime.Seconds;
+    /// <summary>Renderer image ids of avgLuminance, bloom and dirt; valid after the frame's tone stage.</summary>
+    public static ulong[] TonemapInputImages()=>current==null?null:new[]{0xFFFF000000000018UL,0xFFFF000000000019UL,0xFFFF00000000001AUL};
     internal static void BeginScene(NativeBackend backend,Scene.VulkanScene currentScene)
     { Bind(backend,currentScene);scene?.BeginGuestDepthFrame();current?.ConfigureGuestDepthViews(System.Array.Empty<ulong>(),null); }
     public static bool ConfigureSceneDepthViews(ulong[] images,double[] worldMatrices)=>scene!=null && scene.ConfigureGuestSceneDepth(images,worldMatrices);

@@ -491,6 +491,10 @@ static constexpr uint64_t kGuestUpscale = 0xFFFF000000000006ull;
 static constexpr uint64_t kGuestDisplay = 0xFFFF000000000007ull;
 static constexpr uint64_t kGuestMotion = 0xFFFF000000000008ull;
 static constexpr uint64_t kGuestAttach0 = 0xFFFF000000000010ull;
+// Keen MyToneMapping inputs (avgLuminance, bloom, dirt) for post-tonemap readers, as DX11 TonemapInputs captures them.
+static constexpr uint64_t kGuestAvgLuminance = 0xFFFF000000000018ull;
+static constexpr uint64_t kGuestBloom = 0xFFFF000000000019ull;
+static constexpr uint64_t kGuestDirt = 0xFFFF00000000001Aull;
 // Anomaly catalog images. CameraVelocity writes RG16F convention-15 motion.
 // volumeReactive is the shared-volume reject mask when a producer publishes it.
 static constexpr uint64_t kGuestCatalogVelocity = 0xFFFF00000000000Aull;
@@ -667,6 +671,14 @@ VkImageView guest_source(uint64_t id, bool* hdr) {
     if (id == kGuestDisplay) {
         if (swapchain && image_index < swap_views.size()) return swap_views[image_index];
         return offscreen.view ? offscreen.view : VK_NULL_HANDLE;
+    }
+    // Valid only once this frame's tone stage ran; otherwise the dummy binds, like DX11's null SRVs.
+    if (id >= kGuestAvgLuminance && id <= kGuestDirt) {
+        if (!post.after_tonemap) return VK_NULL_HANDLE;
+        if (id == kGuestAvgLuminance) return post.exposure[post.exposure_index].image.view;
+        if (id == kGuestBloom) return post.tone_bloom;
+        auto dirt = textures.find(post.config.dirt);
+        return dirt == textures.end() ? VK_NULL_HANDLE : dirt->second.image.view;
     }
     auto found = guest.images.find(id);
     return found == guest.images.end() ? VK_NULL_HANDLE : found->second.image.view;
@@ -855,7 +867,7 @@ void guest_validate_extended(const GuestPass& pass, const GuestPipeline& pipelin
         if (std::find(outputs.begin(), outputs.end(), id) != outputs.end()) throw std::runtime_error("extended guest input aliases output");
         auto image = guest.images.find(id);
         bool buffer = binding.second == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bool sentinel = !buffer && ((id >= kGuestHdr && id <= kGuestCatalogReactiveMask) || (id>=kGuestAttach0 && id<kGuestAttach0+3));
+        bool sentinel = !buffer && ((id >= kGuestHdr && id <= kGuestCatalogReactiveMask) || (id>=kGuestAttach0 && id<kGuestAttach0+3) || (id>=kGuestAvgLuminance && id<=kGuestDirt));
         if (!sentinel && (image == guest.images.end() || image->second.is_buffer != buffer))
             throw std::runtime_error("extended guest required input t" + std::to_string(binding.first - 128) + " unavailable");
         if (!buffer) {

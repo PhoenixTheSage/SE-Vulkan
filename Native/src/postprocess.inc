@@ -247,7 +247,7 @@ void render_postprocess(VkCommandBuffer cmd,WorldSlot& slot){
         for(uint32_t i=1;i<=levels;++i){width=std::max(1u,width/2);height=std::max(1u,height/2);post_image(post.bloom_down[i],width,height,world.hdr_format);post_pass(cmd,slot,7,post.bloom_down[i],{post.bloom_down[i-1].image.view});++post.stats.bloom_passes;}
         auto* low=&post.bloom_down[levels];for(int i=int(levels)-1;i>=1;--i){post_image(post.bloom_up[i],post.bloom_down[i].width,post.bloom_down[i].height,world.hdr_format);post_pass(cmd,slot,8,post.bloom_up[i],{low->image.view,post.bloom_down[i].image.view});low=&post.bloom_up[i];++post.stats.bloom_passes;}bloom=low->image.view;
     }else{post_image(post.bloom_down[0],1,1,world.hdr_format);post_clear(cmd,post.bloom_down[0],0);bloom=post.bloom_down[0].image.view;}
-    uint32_t tone=9+((flags&32)?1:0)+((flags&2048)?2:0);
+    post.tone_bloom=bloom;uint32_t tone=9+((flags&32)?1:0)+((flags&2048)?2:0);
     post_pass(cmd,slot,tone,post.tone,{world.hdr.view,post.exposure[post.exposure_index].image.view,bloom,textures.at(post.config.dirt).image.view});++post.stats.tone_dispatches;post.output=&post.tone;post.after_tonemap=post.output;guest_replay(cmd,5);ngx_from_tonemap(cmd);
     render_billboards(cmd,slot,3);
     if(flags&32){post_pass(cmd,slot,13,post.fxaa,{post.output->image.view});post.output=&post.fxaa;++post.stats.fxaa_passes;}

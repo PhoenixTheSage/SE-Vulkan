@@ -9,6 +9,8 @@ namespace ClientPlugin.Rendering.Scene;
 public sealed class VulkanPostprocess
 {
     public MyPostprocessSettings Settings=MyPostprocessSettings.Default;
+    /// <summary>FXAA state of the last Configure; Keen's needsAlphaLuminance.</summary>
+    public bool Fxaa{get;private set;}
     public MySSAOSettings Ssao=MySSAOSettings.Default;
     public MyHBAOData Hbao=MyHBAOData.Default;
     private bool reset=true,aoDebugEnabled=true;
@@ -23,7 +25,7 @@ public sealed class VulkanPostprocess
     }
     public NativePostprocessConfig Configure(NativeBackend backend,int width,int height,bool fxaa,ulong dirt=0,MatrixD? view=null,MatrixD? projection=null,bool ambientOcclusion=true)
     {
-        backend.ApplyPendingPostprocessGeneration();
+        backend.ApplyPendingPostprocessGeneration();Fxaa=fxaa;
         bool enableAo=ambientOcclusion && aoDebugEnabled;
         var p=Settings;float range=p.HistogramLogMax-p.HistogramLogMin;
         if(!(range>0) || p.HistogramFilterMax<=p.HistogramFilterMin || p.HistogramFilterMin<0 || p.HistogramFilterMax>100)throw new ArgumentException("Invalid histogram range/percentiles.");
