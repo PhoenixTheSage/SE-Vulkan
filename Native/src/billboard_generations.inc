@@ -50,7 +50,7 @@ void billboard_activate(uint32_t id,PostStage& entry){
 // Writes one reflected owner binding with the stock billboard resource it names.
 void write_billboard_owner(VkDescriptorSet set,WorldSlot& slot,const PostStage& stage,const SevkBillboardDraw& d,bool output){
     for(auto [binding,type]:stage.bindings){
-        if(type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER){if(binding==0)world_write_buffer(set,0,slot.frame,1280,type);else if(binding==2)world_write_buffer(set,2,transparency.billboard_projections[slot_index],2048,type);else world_write_buffer(set,4,transparency.shadow_constants[slot_index],1200,type);}
+        if(type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER){if(binding==0)world_write_buffer(set,0,output?jitter_unjittered_frame(slot):slot.frame,1280,type);else if(binding==2)world_write_buffer(set,2,transparency.billboard_projections[slot_index],2048,type);else world_write_buffer(set,4,transparency.shadow_constants[slot_index],1200,type);}
         else if(type==VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)world_write_buffer(set,158,transparency.billboard_data[slot_index],transparency.billboard_data[slot_index].bytes,type);
         else if(type==VK_DESCRIPTOR_TYPE_SAMPLER)world_write_image(set,binding,{},binding==271?shadow_sampler:standard_sampler(binding),true);
         else if(binding==129){VkDescriptorImageInfo image{{},output?transparency.output_depth.view:world.gbuffer[3].view,output?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL};VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=set;w.dstBinding=129;w.descriptorCount=1;w.descriptorType=type;w.pImageInfo=&image;vkUpdateDescriptorSets(device,1,&w,0,nullptr);}

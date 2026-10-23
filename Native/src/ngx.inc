@@ -226,8 +226,8 @@ void ngx_publish(uint32_t in_w, uint32_t in_h, uint32_t out_w, uint32_t out_h, b
     request.debug.ishdr = (ngx.feature && (ngx.flags & 1u)) ? 1 : 0;
     request.debug.swap_hdr = hdr_active ? 1 : 0;
     request.debug.want_hdr = (display_flags & 1) ? 1 : 0;
-    request.debug.jitter_x = static_cast<int>(std::lround(guest.frame.jitter_x * 1000.f));
-    request.debug.jitter_y = static_cast<int>(std::lround(guest.frame.jitter_y * 1000.f));
+    request.debug.jitter_x = static_cast<int>(std::lround(jitter.pixel[0] * 1000.f));
+    request.debug.jitter_y = static_cast<int>(std::lround(jitter.pixel[1] * 1000.f));
     request.debug.history = guest.frame.history_valid ? 1 : 0;
     request.debug.motion_w = world.motion.view ? world.motion_w : 0;
     request.debug.motion_h = world.motion.view ? world.motion_h : 0;
@@ -519,11 +519,11 @@ bool ngx_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
         barrier(cmd, reactive_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        reactive = ngx_resource(reactive_view, reactive_image, VK_FORMAT_R8G8B8A8_UNORM, reactive_w, reactive_h, VK_IMAGE_ASPECT_COLOR_BIT, false);
+        reactive = ngx_resource(reactive_view, reactive_image, guest.images[kGuestCatalogReactiveMask].format, reactive_w, reactive_h, VK_IMAGE_ASPECT_COLOR_BIT, false);
         set_void(params, "DLSS.Input.Bias.Current.Color.Mask", &reactive);
     }
-    set_float(params, "Jitter.Offset.X", guest.frame.jitter_x);
-    set_float(params, "Jitter.Offset.Y", guest.frame.jitter_y);
+    set_float(params, "Jitter.Offset.X", jitter.pixel[0]);
+    set_float(params, "Jitter.Offset.Y", jitter.pixel[1]);
     set_float(params, "Sharpness", 0.f);
     set_int(params, "Reset", guest.frame.history_valid ? 0 : 1);
     set_float(params, "MV.Scale.X", float(in_w) / float(mv_w));

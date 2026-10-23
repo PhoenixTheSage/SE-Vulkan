@@ -1456,7 +1456,7 @@ struct Renderer {uint32_t recipe_generation=1;
         resize_output(caps.currentExtent.width, caps.currentExtent.height, logical_w, logical_h, vsync);
     }
     int begin_frame(const SevkFrameInfo& frame) {
-        submitted_frame=frame;
+        submitted_frame=frame;jitter_begin_frame();
         guest.depth_ready=0;++guest.catalog_epoch;
         join_present();
         match_surface_extent();
@@ -1802,6 +1802,7 @@ struct Renderer {uint32_t recipe_generation=1;
     #include "guest.inc"
     #include "stage_bindings.inc"
     #include "display.inc"
+    #include "jitter.inc"
     #include "ngx.inc"
     #include "fsr.inc"
     #include "voxel_resources.inc"
@@ -1859,7 +1860,7 @@ struct Renderer {uint32_t recipe_generation=1;
             for(auto& item:retired_views)vkDestroyImageView(device,item.second,nullptr);retired_views.clear();
             if(timing_pool)vkDestroyQueryPool(device,timing_pool,nullptr);
             cleanup_stock();
-            cleanup_occlusion();cleanup_spot_copy();for(auto& image:spots.images)destroy_image(image);for(auto& image:spots.frozen)destroy_image(image);cleanup_highlights();cleanup_shadow_usage();cleanup_stock_shadows();cleanup_probes();cleanup_hbao();cleanup_postprocess();cleanup_flares();cleanup_display();cleanup_decals();cleanup_particles();cleanup_transparency();cleanup_environment();
+            cleanup_occlusion();cleanup_spot_copy();for(auto& image:spots.images)destroy_image(image);for(auto& image:spots.frozen)destroy_image(image);cleanup_highlights();cleanup_jitter();cleanup_shadow_usage();cleanup_stock_shadows();cleanup_probes();cleanup_hbao();cleanup_postprocess();cleanup_flares();cleanup_display();cleanup_decals();cleanup_particles();cleanup_transparency();cleanup_environment();
             cleanup_guest();
             cleanup_ray();
             cleanup_opaque_reference();
@@ -2195,7 +2196,10 @@ int32_t SEVK_CALL sevk_set_render_fraction(void* ctx,float fraction){
     return call_deferrable(ctx,[fraction](Renderer& r){if(r.recording || !std::isfinite(fraction) || fraction<.25f || fraction>1)throw std::runtime_error("invalid world render fraction");r.render_fraction=fraction;return 0;});
 }
 int32_t SEVK_CALL sevk_set_view_clip(void* ctx,float far_plane){return call_deferrable(ctx,[far_plane](Renderer& r){if(!std::isfinite(far_plane)||far_plane<1)throw std::runtime_error("invalid view clip");r.view_far=far_plane;return 0;});}
-int32_t SEVK_CALL sevk_invalidate_guest_history(void* ctx){return call(ctx,[&](Renderer& r){r.guest.have_prev=false;r.guest.frame.history_valid=0;return 0;});}
+int32_t SEVK_CALL sevk_invalidate_guest_history(void* ctx){return call(ctx,[&](Renderer& r){r.guest.have_prev=false;r.guest.frame.history_valid=0;r.jitter.reset=true;return 0;});}
+// Temporal jitter owner state: pixel x/y, clip x/y, active, phase count, sequence index, frames. force=1 runs it without an upscaler (diagnostics).
+int32_t SEVK_CALL sevk_force_jitter(void* ctx,uint32_t force){return call(ctx,[&](Renderer& r){if(r.recording||force>1)throw std::runtime_error("invalid jitter override");r.jitter.forced=force!=0;r.jitter.reset=true;return 0;});}
+int32_t SEVK_CALL sevk_get_jitter(void* ctx,float* state,uint32_t count){return call(ctx,[&](Renderer& r){if(!state||count<8)throw std::runtime_error("jitter state needs 8 floats");const auto& j=r.jitter;float values[8]{j.pixel[0],j.pixel[1],j.ndc[0],j.ndc[1],j.active?1.f:0.f,float(j.phases),float(j.index),float(j.frames)};std::memcpy(state,values,sizeof(values));return 0;});}
 int32_t SEVK_CALL sevk_set_display_flags(void* ctx,uint32_t flags){return call(ctx,[&](Renderer& r){uint32_t mask=flags>>16;uint32_t value=flags&0xffffu;if(!mask)r.display_flags=value;else r.display_flags=(r.display_flags&~mask)|(value&mask);return 0;});}
 int32_t SEVK_CALL sevk_set_upscale_owner(void* ctx,const char* id){return call(ctx,[&](Renderer& r){(void)r;return Renderer::ngx_set_owner(id);});}
 int32_t SEVK_CALL sevk_ngx_configure(uint32_t enabled,uint32_t mode,uint32_t preset,const char* directory){return Renderer::ngx_configure(enabled,mode,preset,directory);}

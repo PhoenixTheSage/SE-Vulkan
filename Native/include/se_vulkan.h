@@ -672,6 +672,9 @@ typedef struct SevkNativeOwnerCapabilities {uint32_t size,abi_version;uint64_t f
 typedef struct SevkNativeGeneration {uint32_t size,abi_version;uint64_t expected_revision;uint32_t flags,count;const SevkPostprocessModule* modules;} SevkNativeGeneration;
 /* DX11 GBuffer velocity developer probe: 0 off, 1 TargetClear, 2 MrtWrite, 3 HistoryCoverage, 4 PassEndClear. */
 SEVK_API int32_t SEVK_CALL sevk_set_gbuffer_velocity_probe(void* ctx,uint32_t mode);
+/* Temporal jitter owner: force=1 runs it without a temporal upscaler; state receives pixel x/y, clip x/y, active, phases, index, frames. */
+SEVK_API int32_t SEVK_CALL sevk_force_jitter(void* ctx,uint32_t force);
+SEVK_API int32_t SEVK_CALL sevk_get_jitter(void* ctx,float* state,uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_native_owner_capabilities(void* ctx,SevkNativeOwnerCapabilities* state);
 /* flags1 marks a stock restore: execute stock without pack-only GPU production instrumentation. */
 SEVK_API int32_t SEVK_CALL sevk_prepare_native_generation(void* ctx,const SevkNativeGeneration* request,uint64_t* generation);

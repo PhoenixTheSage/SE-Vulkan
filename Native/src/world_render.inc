@@ -435,6 +435,8 @@ void render_world(){
     auto profile_take=[&](){auto now=std::chrono::steady_clock::now();uint32_t elapsed=(uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(now-profile_stamp).count();profile_stamp=now;return elapsed;};
     prepare_shadow_targets(slots[slot_index].command);world_targets();auto& slot=world.slots[slot_index];auto cmd=slots[slot_index].command;check(vkResetDescriptorPool(device,slot.pool,0),"recycle completed world descriptors");slot.probe_materials.clear();
     std::memcpy(slot.frame.mapped,world.current().frame.data(),1280);std::memcpy(slot.projections.mapped,world.current().projection.data(),64);
+    // Raster sees the jittered main view; host_frame/host_projection keep the unjittered copies for motion and velocity.
+    jitter_frame(static_cast<uint8_t*>(slot.frame.mapped));jitter_matrix(static_cast<float*>(slot.projections.mapped));
     slot.host_frame.assign(world.current().frame.data(),world.current().frame.data()+1280);std::memcpy(slot.host_projection.data(),world.current().projection.data(),64);slot.host_projection_valid=true;for(uint32_t i=0;i<8;++i)std::memcpy(static_cast<uint8_t*>(slot.projections.mapped)+world_align(64)*(i+1),shadow_matrices[i],64);
     for(auto& config:spots.config)std::memcpy(static_cast<uint8_t*>(slot.projections.mapped)+world_align(64)*(9+config.light),config.projection,64);
     if(guest.depth_configured)for(uint32_t i=0;i<guest.depth_count;i++)

@@ -896,3 +896,33 @@ Still open on this contract:
 - attachment fixtures on native-cell/GPU owners (they share the format helper).
 
 Both aggregate capability flags stay false.
+
+### Stage 7: temporal jitter owner and FSR reactive input
+
+**Jitter owner.** Native owns the temporal jitter (`Native/src/jitter.inc`). It is
+active while DLSS or FSR runs, or when forced for diagnostics with
+`sevk_force_jitter`; `sevk_get_jitter` reads the state back.
+
+- The offset is Halton(2,3) minus 0.5 in pixels, with FSR's phase count
+  max(8, ceil(8 * (display / render)^2)).
+- Only raster projections are jittered: the frame block's projection, skybox
+  projection and view-projection (and their inverses), plus the main
+  view-projection.
+- Motion stays unjittered. Replays rasterize with the jittered current matrix and
+  a history matrix jittered by the same offset, so the jitter cancels.
+- Packs see the pixel jitter in the guest frame and extras; `UnjitteredViewProj`
+  and the velocity owner's `AnomalyUnjitteredViewProj` are unchanged.
+- PostPP billboards draw at display size after upscaling and bind the unjittered
+  frame block, as on DX11.
+- DLSS and FSR take their jitter from the owner. A camera cut (invalidated
+  history) restarts the sequence.
+
+The `--jitter-only` lane passes 59 checks with zero validation errors. A still
+scene keeps zero motion while jittered; moving motion is -1.0664 px against an
+analytic -1.0667; disabling the owner restores exact stock bits.
+
+**FSR reactive input.** When Anomaly's `reactiveMask` catalog image matches the
+render size, FSR receives it as the reactive resource, as SE-FRS does on DX11.
+DLSS already took it as its color bias mask. Both now use the image's actual
+format. FSR's status reads `evaluating (reactive anomaly)` when it is bound. No
+GPU lane covers this path, because it needs the FidelityFX runtime.

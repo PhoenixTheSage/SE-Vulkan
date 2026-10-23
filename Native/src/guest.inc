@@ -516,7 +516,7 @@ void guest_refresh_frame() {
     extras.render[0] = extras.scene[0] = width; extras.render[1] = extras.scene[1] = height;
     extras.inv_render[0] = extras.inv_scene[0] = 1.f / width; extras.inv_render[1] = extras.inv_scene[1] = 1.f / height;
     extras.history_valid = guest.have_prev ? 1u : 0u; extras.has_velocity = extras.history_valid;
-    extras.frame_index = uint32_t(stats.submitted_frames); extras.safety = 1.f;
+    extras.frame_index = uint32_t(stats.submitted_frames); extras.safety = 1.f; extras.jitter[0] = jitter.pixel[0]; extras.jitter[1] = jitter.pixel[1]; // unjittered transforms below, pixel offset here
     std::memcpy(extras.unjittered, current, 64);
     std::memcpy(extras.prev, guest.have_prev ? guest.prev_vp : current, 64);
     extras.camera[0] = extras.camera[5] = extras.camera[10] = 1.f;

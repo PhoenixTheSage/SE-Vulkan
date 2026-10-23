@@ -67,6 +67,9 @@ void prepare_world_history(WorldSlot& slot){
     if(!slot.projections.mapped)return;
     world_buffer(slot.history_projection,64,VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
     std::memcpy(slot.history_projection.mapped,previous.host_projection_valid?previous.host_projection.data():slot.host_projection.data(),64);
+    // Replays rasterize with the jittered current matrix; jittering the unjittered previous matrix by the same
+    // offset cancels it, so motion stays unjittered.
+    jitter_matrix(static_cast<float*>(slot.history_projection.mapped));
     check(vmaFlushAllocation(allocator,slot.history_projection.memory,0,64),"flush slot-owned previous projection");
     uint64_t required=0;
     for(const auto& draw:world.current().draws){const auto& packet=draw.packet;uint32_t base=world_unfade(packet.pipeline);

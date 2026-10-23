@@ -89,8 +89,8 @@ void fsr_publish(uint32_t in_w, uint32_t in_h, uint32_t out_w, uint32_t out_h, b
     request.debug.feature = fsr.library ? 1 : 0;
     request.debug.swap_hdr = hdr_active ? 1 : 0;
     request.debug.want_hdr = (display_flags & 1) ? 1 : 0;
-    request.debug.jitter_x = static_cast<int>(std::lround(guest.frame.jitter_x * 1000.f));
-    request.debug.jitter_y = static_cast<int>(std::lround(guest.frame.jitter_y * 1000.f));
+    request.debug.jitter_x = static_cast<int>(std::lround(jitter.pixel[0] * 1000.f));
+    request.debug.jitter_y = static_cast<int>(std::lround(jitter.pixel[1] * 1000.f));
     request.debug.history = guest.frame.history_valid ? 1 : 0;
     request.debug.motion_w = world.motion.handle ? world.motion_w : 0;
     request.debug.motion_h = world.motion.handle ? world.motion_h : 0;
@@ -158,6 +158,21 @@ void* fsr_symbol(const char* name) {
 #else
     return dlsym(fsr.library, name);
 #endif
+}
+
+// FFX API surface format ids for the formats Anomaly catalog images can take; 0 means FSR cannot read it.
+static uint32_t fsr_surface_format(VkFormat format) {
+    switch (format) {
+    case VK_FORMAT_R32G32B32A32_SFLOAT: return 3;
+    case VK_FORMAT_R16G16B16A16_SFLOAT: return 4;
+    case VK_FORMAT_R8G8B8A8_UNORM: return 10;
+    case VK_FORMAT_B10G11R11_UFLOAT_PACK32: return 16;
+    case VK_FORMAT_R16G16_SFLOAT: return 18;
+    case VK_FORMAT_R16_SFLOAT: return 21;
+    case VK_FORMAT_R8_UNORM: return 25;
+    case VK_FORMAT_R32_SFLOAT: return 28;
+    default: return 0;
+    }
 }
 
 static FsrResource fsr_image(VkImage image, uint32_t format, uint32_t width, uint32_t height, uint32_t usage, uint32_t state) {
@@ -291,8 +306,18 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
     work.depth = fsr_image(world.gbuffer[3].handle, 28, in_w, in_h, 4, 12);
     work.motion = fsr_image(mv_image, 18, mv_w, mv_h, 0, 12);
     work.output = fsr_image(dest.handle, 4, out_w, out_h, 2, 2);
-    work.jitter_x = guest.frame.jitter_x;
-    work.jitter_y = guest.frame.jitter_y;
+    // Anomaly's reactiveMask feeds FSR's reactive input when it matches the render size, as SE-FRS does on DX11.
+    VkImageView reactive_view{}; VkImage reactive_image{}; uint32_t reactive_w = 0, reactive_h = 0, reactive_format = 0;
+    if (guest_catalog_view(kGuestCatalogReactiveMask, reactive_view, reactive_image, reactive_w, reactive_h) && reactive_w == in_w && reactive_h == in_h)
+        reactive_format = fsr_surface_format(guest.images[kGuestCatalogReactiveMask].format);
+    if (reactive_format) {
+        barrier(cmd, reactive_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        work.reactive = fsr_image(reactive_image, reactive_format, in_w, in_h, 0, 12);
+    }
+    work.jitter_x = jitter.pixel[0];
+    work.jitter_y = jitter.pixel[1];
     work.mv_x = float(in_w) / float(mv_w);
     work.mv_y = float(in_h) / float(mv_h);
     work.render_w = in_w;
@@ -321,7 +346,7 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
         return false;
     }
     fsr_publish(in_w, in_h, out_w, out_h, true, false, "HDR hdrColor");
-    fsr_set_status(fsr.version + " evaluating");
+    fsr_set_status(fsr.version + (reactive_format ? " evaluating (reactive anomaly)" : " evaluating"));
     return true;
 }
 
