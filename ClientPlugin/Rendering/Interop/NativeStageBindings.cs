@@ -28,7 +28,7 @@ public sealed partial class NativeBackend
     internal bool SetStageBindings(uint frame,uint[] ids,ulong[] images,uint[] requested,uint[] fresh,uint[] attachments,ulong velocity)
     {
         if((GuestFeatures()&4194304)==0)throw new NotSupportedException("Update SE-Vulkan: native stage bindings require bit22.");
-        if(ids==null||images==null||requested==null||fresh==null||attachments==null||ids.Length>117||
+        if(ids==null||images==null||requested==null||fresh==null||attachments==null||ids.Length>137||
             images.Length!=ids.Length*10||requested.Length!=ids.Length||fresh.Length!=ids.Length||attachments.Length!=ids.Length)
             throw new ArgumentException("Native stage binding row lengths differ.");
         var rows=new StageBindingRow[ids.Length];
@@ -56,13 +56,15 @@ public sealed partial class NativeBackend
         var rows=new System.Collections.Generic.List<object[]>();
         foreach(var pair in ActivePostprocessGeneration.Layouts.Where(p=>ActivePostprocessGeneration.Fingerprints.ContainsKey(p.Key))){
             uint id=pair.Key;if(id>=4096)continue; // Geometry reserved inputs are not admitted by the fixed stock layout yet.
-            if(id==1544||id==768||id==769||id==771||(id>=1024&&id<1034&&id%2==0))continue; // These modules share the actual GS/PS invocation's descriptor set.
-            var members=id==1545?new uint[]{1544,1545}:id>=1024&&id<1034?new[]{id-1,id}:id==770?new uint[]{768,769,770}:id==772?new uint[]{768,771,772}:new[]{id};
+            if(id==1544||id==768||id==769||id==771||(id>=1024&&id<1034&&id%2==0)||(TransparentModule(id)&&id%2==0))continue; // These modules share the actual GS/PS invocation's descriptor set.
+            var members=id==1545?new uint[]{1544,1545}:id>=1024&&id<1034||TransparentModule(id)?new[]{id-1,id}:id==770?new uint[]{768,769,770}:id==772?new uint[]{768,771,772}:new[]{id};
             var layouts=members.Where(ActivePostprocessGeneration.Layouts.ContainsKey).Select(k=>ActivePostprocessGeneration.Layouts[k]).ToArray();
             if(!layouts.Any(UsesStageBindings))continue;
             uint mask=0;foreach(var layout in layouts)foreach(var d in layout.Descriptors)if(d.Set==0&&d.RegisterClass=='t'&&d.RegisterIndex>=5&&d.RegisterIndex<=9)mask|=1u<<(int)d.RegisterIndex;
             bool extras=layouts.Any(layout=>layout.Descriptors.Any(d=>d.Set==0&&d.RegisterClass=='b'&&d.RegisterIndex==6));
-            rows.Add(new object[]{id,postprocessLibrary.Load(NativeOwnerVariant(id)).Source,mask,extras});
+            // Glass owners resolve their pass key, as their catalog rows do.
+            string source=TransparentModule(id)?"Geometry/Passes/"+(id<2324?"Transparent":"TransparentForDecals")+"/PixelStage.hlsli":postprocessLibrary.Load(NativeOwnerVariant(id)).Source;
+            rows.Add(new object[]{id,source,mask,extras});
         }
         return rows.ToArray();
     }

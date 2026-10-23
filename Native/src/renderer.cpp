@@ -357,7 +357,7 @@ struct PostStage {uint64_t generation{},executions{},last_completion{};uint32_t 
 struct ShadowUsageView {Buffer gpu,readback,screen;bool pending{};};
 struct ShadowUsageState {PostStage stage;ShadowUsageView views[2][19];uint32_t pixels[19][8]{};uint64_t completion[19]{},latest{};bool enabled{};};
 struct PostCandidate {uint64_t expected{};VkFormat format{};std::vector<std::pair<uint32_t,PostStage>> stages;};
-struct PostState {uint64_t revision{},next_generation{},pending{};std::map<uint64_t,PostCandidate> candidates;std::vector<std::pair<uint64_t,PostStage>> retired;std::vector<PostStage> geometry,cells,gpu_new,gpu_old;PostStage oit{},stages[144]{},lighting[4]{},atmosphere[3]{},foliage[5]{},decals[10]{},particles[10]{};PostImage shadow_blur{},exposure[2]{},half{},bloom_down[11]{},bloom_up[10]{},tone{},fxaa{},chromatic{},ao{},ao_blur{};PostImage* output{};PostImage* after_tonemap{};Buffer constants[2]{},histogram{};VkSampler point{};VkPipeline compose{};VkFormat compose_format{};uint32_t width{},height{},exposure_index{};SevkPostprocessConfig config{};SevkPostprocessStats stats{sizeof(SevkPostprocessStats),SEVK_ABI_VERSION};};
+struct PostState {uint64_t revision{},next_generation{},pending{};std::map<uint64_t,PostCandidate> candidates;std::vector<std::pair<uint64_t,PostStage>> retired;std::vector<PostStage> geometry,cells,gpu_new,gpu_old;PostStage oit{},stages[144]{},lighting[4]{},atmosphere[3]{},foliage[5]{},decals[10]{},particles[10]{},transparent[40]{};PostImage shadow_blur{},exposure[2]{},half{},bloom_down[11]{},bloom_up[10]{},tone{},fxaa{},chromatic{},ao{},ao_blur{};PostImage* output{};PostImage* after_tonemap{};Buffer constants[2]{},histogram{};VkSampler point{};VkPipeline compose{};VkFormat compose_format{};uint32_t width{},height{},exposure_index{};SevkPostprocessConfig config{};SevkPostprocessStats stats{sizeof(SevkPostprocessStats),SEVK_ABI_VERSION};};
 struct GpuOwnerRow {uint32_t module{},first{},capacity{},frame{};uint64_t generation{};uint32_t condition=UINT32_MAX;};
 struct GpuOwnerSlot {Buffer ranges{},work{},readback{};std::vector<GpuOwnerRow> rows;uint64_t completion{};bool pending{};};
 struct GpuOwnerState {PostStage reduction{};GpuOwnerSlot slots[2];std::vector<std::pair<uint64_t,GpuOwnerSlot>> retired;bool enabled{};};
@@ -1805,6 +1805,7 @@ struct Renderer {uint32_t recipe_generation=1;
 #include "environment_generations.inc"
 #include "foliage_generations.inc"
 #include "decal_generations.inc"
+#include "transparent_generations.inc"
 #include "probe_generations.inc"
 #include "particle_generations.inc"
 #include "shadow_generations.inc"
@@ -2110,7 +2111,7 @@ int32_t SEVK_CALL sevk_build_voxel_array(void* ctx,uint64_t id,uint32_t size,uin
 int32_t SEVK_CALL sevk_init_environment(void* ctx,uint32_t stage,const void* data,uint64_t bytes){return call(ctx,[&](Renderer& r){r.init_environment(stage,data,bytes);return 0;});}
 int32_t SEVK_CALL sevk_set_shadow_options(void* ctx,uint32_t flags){return call_deferrable(ctx,[flags](Renderer& r){if(r.recording || flags>1)throw std::runtime_error("invalid shadow options");r.shadow_blur_enabled=flags!=0;return 0;});}
 int32_t SEVK_CALL sevk_prepare_postprocess_generation(void* ctx,uint64_t expected,const SevkPostprocessModule* modules,uint32_t count,uint64_t* generation){return call(ctx,[&](Renderer& r){if(!generation)throw std::runtime_error("null postprocess generation output");*generation=r.post_prepare_generation(expected,modules,count);return 0;});}
-int32_t SEVK_CALL sevk_native_owner_capabilities(void* ctx,SevkNativeOwnerCapabilities* state){if(!ctx||!state||state->size!=sizeof(*state)||state->abi_version!=SEVK_ABI_VERSION)return -1;*state={sizeof(*state),SEVK_ABI_VERSION,7u|(static_cast<Renderer*>(ctx)->gbuffer_velocity_supported?8u:0u),8192,117};return 0;}
+int32_t SEVK_CALL sevk_native_owner_capabilities(void* ctx,SevkNativeOwnerCapabilities* state){if(!ctx||!state||state->size!=sizeof(*state)||state->abi_version!=SEVK_ABI_VERSION)return -1;*state={sizeof(*state),SEVK_ABI_VERSION,7u|(static_cast<Renderer*>(ctx)->gbuffer_velocity_supported?8u:0u)|16u,8192,137};return 0;}
 int32_t SEVK_CALL sevk_prepare_native_generation(void* ctx,const SevkNativeGeneration* input,uint64_t* generation){if(!input||!generation||input->size!=sizeof(*input)||input->abi_version!=SEVK_ABI_VERSION||input->flags&~1u)return -1;auto request=*input;return call(ctx,[&](Renderer& r){*generation=r.post_prepare_generation(request.expected_revision,request.modules,request.count,request.flags);return 0;});}
 int32_t SEVK_CALL sevk_activate_postprocess_generation(void* ctx,uint64_t generation){return call(ctx,[&](Renderer& r){r.post_queue_generation(generation);r.post_activate_pending();return 0;});}
 int32_t SEVK_CALL sevk_discard_postprocess_generation(void* ctx,uint64_t generation){return call(ctx,[&](Renderer& r){r.post_discard_generation(generation);return 0;});}
