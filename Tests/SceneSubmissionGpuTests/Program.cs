@@ -11,6 +11,7 @@ using VRage.Utils;
 using VRageMath;
 using VRageRender;
 using VRageRender.Messages;
+using VRageRender.Import;
 
 partial class Program
 {
@@ -390,6 +391,9 @@ partial class Program
         scene.Process(new MyRenderMessageUpdateModelHighlight{ID=45,Thickness=2,OutlineColor=Color.Yellow,InstanceIndex=-1});Render(true);
         Check(scene.GetViewEligibilityStats().ConservativeActors==1&&scene.GetViewEligibilityStats().SkippedActors==0,"independent highlight preserves offscreen actor ownership");scene.Process(new MyRenderMessageUpdateModelHighlight{ID=45,Thickness=0});
         scene.RenderSettings.User.ShadowQuality=MyShadowsQuality.HIGH;
+        // Production copies MyRenderSettings.Default (DrawNonMergeInstanced=true) into the scene every frame; stock
+        // light culling queries dynamic renderables only under that flag, so the zeroed fixture selected no lights.
+        scene.RenderSettings.DrawNonMergeInstanced=true;
         scene.Process(new MyRenderMessageCreateRenderLight{ID=2000,DebugName="view eligibility spotlight"});
         var spotData=new UpdateRenderLightData{ID=2000,Position=new Vector3D(0,0,10),CastShadows=true,SpotLightOn=true,SpotIntensity=1,SpotLight=new MySpotLightLayout{Direction=Vector3.Forward,Up=Vector3.Up,ApertureCos=.8f,Light=new MyLightLayout{Range=20,Color=Vector3.One,DiffuseFactor=1}}};
         scene.Process(new MyRenderMessageUpdateRenderLight{Data=spotData});Render(true);
@@ -430,6 +434,7 @@ partial class Program
         scene.Process(new MyRenderMessageCreateRenderLight{ID=2001,DebugName="new per-view spotlight"});var newSpotData=new UpdateRenderLightData{ID=2001,Position=new Vector3D(0,0,-20),CastShadows=true,SpotLightOn=true,SpotIntensity=1,SpotLight=new MySpotLightLayout{Direction=Vector3.Forward,Up=Vector3.Up,ApertureCos=.8f,Light=new MyLightLayout{Range=30,Color=Vector3.One,DiffuseFactor=1}}};scene.Process(new MyRenderMessageUpdateRenderLight{Data=newSpotData});Render(true);uint newSpotCommands=backend.GetPerformanceStats().SpotCommands;Render(true);newSpotCommands+=backend.GetPerformanceStats().SpotCommands;Console.WriteLine("NEWSPOT "+JsonSerializer.Serialize(scene.GetNewActorViewStats(),new JsonSerializerOptions{IncludeFields=true})+" commands="+newSpotCommands);
         Check(scene.GetNewActorViewStats().SpotActors==1&&scene.GetNewActorViewStats().Representations==4&&newSpotCommands>0,"actual shadowed spotlight receives its independent current-depth representation");
         Check(queued.Cast<WorldPacket>().Any(p=>p.CascadeMask==0&&(p.Flags&(512|0x2000000))==0&&(p.Flags&4096)!=0),"spot-only packet remains excluded from cascades and main while spot depth draws");
+        scene.RenderSettings.DrawNonMergeInstanced=false; // restore the fixture's later-section settings
         scene.Process(new MyRenderMessageRemoveRenderObject{ID=2001});
         scene.Process(new MyRenderMessageUpdateModelHighlight{ID=61,Thickness=2,OutlineColor=Color.Yellow,InstanceIndex=-1});Render(true);
         Check(scene.GetNewActorViewStats().HighlightActors==1&&queued.Cast<WorldPacket>().Any(p=>(p.Flags&8192)!=0),"new per-view actor retains an independent authored base highlight identity");
@@ -440,7 +445,19 @@ partial class Program
         }
         backend.BulkModelsEnabled=true;Pair("bulk current scene preserves main pixels after LOD and model changes");backend.BulkModelsEnabled=false;
         scene.Process(new MyRenderMessageUpdateRenderObjectVisibility{ID=61,Visible=false});
-        scene.Process(new MyRenderMessageCreateRenderEntity{ID=74,Model=Path.Combine(content,"Models/Cubes/Large/Shelf_1.mwm"),DebugName="bulk per-view scene fixture",WorldMatrix=MatrixD.CreateTranslation(0,0,-5),Flags=RenderFlags.Visible|RenderFlags.CastShadows|RenderFlags.MetalnessColorable});
+        // Bulk models accept only plain/masked mesh families; Shelf_1 carries a DECAL_CUTOUT part (pipelines 22/27),
+        // so the per-view bulk fixture uses a stock model whose parts are all bulk-eligible.
+        // The per-material visibility cases also need two distinct materials, so take the first sorted stock large
+        // cube with at least two materials whose parts are all plain or masked mesh.
+        object LoadModel(string file)=>cache.GetType().GetMethod("Get")!.Invoke(cache,new object[]{file,1f})!;
+        bool BulkEligible(object candidate){var parts=((System.Collections.IList)candidate.GetType().GetField("Parts")!.GetValue(candidate)!).Cast<object>().ToList();
+            var techniques=parts.Select(q=>(MyMeshDrawTechnique)q.GetType().GetField("Technique")!.GetValue(q)!);var names=parts.Select(q=>(string)q.GetType().GetField("MaterialName")!.GetValue(q)!).Distinct().Count();
+            return names>=2&&techniques.All(x=>x==MyMeshDrawTechnique.MESH||x==MyMeshDrawTechnique.ALPHA_MASKED);}
+        string bulkModelPath=null;object bulkModel=null;
+        foreach(var file in Directory.GetFiles(Path.Combine(content,"Models/Cubes/Large"),"*.mwm").OrderBy(f=>f,StringComparer.Ordinal)){var candidate=LoadModel(file);if(BulkEligible(candidate)){bulkModelPath=file;bulkModel=candidate;break;}}
+        Check(bulkModel!=null,"a stock bulk-eligible multi-material fixture model exists: "+bulkModelPath);
+
+        scene.Process(new MyRenderMessageCreateRenderEntity{ID=74,Model=bulkModelPath,DebugName="bulk per-view scene fixture",WorldMatrix=MatrixD.CreateTranslation(0,0,-5),Flags=RenderFlags.Visible|RenderFlags.CastShadows|RenderFlags.MetalnessColorable});
         scene.NewActorViewsEnabled=true;scene.ProbeDrawDistance=100;cascadeField.SetValue(scene,new Func<BoundingBoxD,Vector3D,uint>((_,_)=>3));
         void BulkScenePair(string label,bool requireModels=true){
             backend.BulkModelsEnabled=false;Render(true);Render(true);backend.BeginLogicalSelectionCapture();var expected=Render(true);var logical=backend.EndLogicalSelectionCapture();
@@ -450,11 +467,11 @@ partial class Program
         }
         BulkScenePair("stock new-pipeline independent main/cascade/probe levels");
         scene.Process(new MyRenderMessageUpdateRenderEntity{ID=74,DiffuseColor=new Color(40,220,80),ColorMaskHSV=new Vector3(.2f,.15f,0),Dithering=.15f});BulkScenePair("appearance/Hsv/dither revision");
-        var shelfParts=(System.Collections.IList)shelfModel.GetType().GetField("Parts")!.GetValue(shelfModel)!;string shelfMaterial=(string)shelfParts[0]!.GetType().GetField("MaterialName")!.GetValue(shelfParts[0])!;
+        var shelfParts=(System.Collections.IList)bulkModel.GetType().GetField("Parts")!.GetValue(bulkModel)!;string shelfMaterial=(string)shelfParts[0]!.GetType().GetField("MaterialName")!.GetValue(shelfParts[0])!;
         scene.Process(new MyRenderMessageUpdateColorEmissivity{ID=74,MaterialName=MyStringId.GetOrCompute(shelfMaterial),DiffuseColor=Color.Red,Emissivity=2});BulkScenePair("per-material tint/emission revision");
         scene.Process(new MyRenderMessageUpdateModelProperties{ID=74,MaterialName=MyStringId.GetOrCompute(shelfMaterial),FlagsChange=new RenderFlagsChange{Remove=RenderFlags.Visible}});BulkScenePair("per-material visibility revision");
         scene.Process(new MyRenderMessageUpdateModelProperties{ID=74,MaterialName=MyStringId.GetOrCompute(shelfMaterial),FlagsChange=new RenderFlagsChange()});BulkScenePair("per-material visibility restoration");
-        scene.Process(new MyRenderMessageChangeModel{ID=74,Model=Path.Combine(content,"Models/Cubes/Large/Shelf_1.mwm"),Scale=1});BulkScenePair("production model replacement");
+        scene.Process(new MyRenderMessageChangeModel{ID=74,Model=bulkModelPath,Scale=1});BulkScenePair("production model replacement");
         scene.Process(new MyRenderMessageUpdateModelHighlight{ID=74,Thickness=2,OutlineColor=Color.Yellow,InstanceIndex=-1});BulkScenePair("highlight identity fallback",false);scene.Process(new MyRenderMessageUpdateModelHighlight{ID=74,Thickness=0});
         scene.Process(new MyRenderMessageUpdateRenderObjectVisibility{ID=74,Visible=false});backend.BulkModelsEnabled=true;Render(true);Check(backend.GetModelGroupStats().Instances==0,"hidden bulk actor leaves current native frame");backend.BulkModelsEnabled=false;
         Check(backend.GetStats().ValidationEnabled!=0 && backend.GetStats().ValidationErrors==0,"scene message replay has zero core/synchronization validation errors");
