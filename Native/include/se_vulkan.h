@@ -606,6 +606,8 @@ SEVK_API int32_t SEVK_CALL sevk_set_upscale_owner(void* ctx, const char* id);
  * DLSS quality enum. preset 0 selects preset K. Calls copy the request
  * and return; init and evaluate run on the render thread. */
 SEVK_API int32_t SEVK_CALL sevk_ngx_configure(uint32_t enabled, uint32_t mode, uint32_t preset, const char* feature_directory);
+/* DLSS evaluation sharpness in [0,1], as DX11 SE-DLSS passes it; transformer presets may ignore it. */
+SEVK_API int32_t SEVK_CALL sevk_ngx_set_sharpness(float sharpness);
 SEVK_API int32_t SEVK_CALL sevk_ngx_status(char* text, uint32_t capacity);
 /* Multi-line key=value snapshot for the plugin status panel. Same labels
  * the DX11 Show Status dialog prints: gpu, vendor, ready, supported, ishdr,

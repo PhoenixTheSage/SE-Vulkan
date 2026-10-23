@@ -2203,6 +2203,7 @@ int32_t SEVK_CALL sevk_get_jitter(void* ctx,float* state,uint32_t count){return 
 int32_t SEVK_CALL sevk_set_display_flags(void* ctx,uint32_t flags){return call(ctx,[&](Renderer& r){uint32_t mask=flags>>16;uint32_t value=flags&0xffffu;if(!mask)r.display_flags=value;else r.display_flags=(r.display_flags&~mask)|(value&mask);return 0;});}
 int32_t SEVK_CALL sevk_set_upscale_owner(void* ctx,const char* id){return call(ctx,[&](Renderer& r){(void)r;return Renderer::ngx_set_owner(id);});}
 int32_t SEVK_CALL sevk_ngx_configure(uint32_t enabled,uint32_t mode,uint32_t preset,const char* directory){return Renderer::ngx_configure(enabled,mode,preset,directory);}
+int32_t SEVK_CALL sevk_ngx_set_sharpness(float sharpness){return Renderer::ngx_set_sharpness(sharpness);}
 int32_t SEVK_CALL sevk_ngx_status(char* text,uint32_t capacity){return Renderer::ngx_copy_status(text,capacity);}
 int32_t SEVK_CALL sevk_ngx_debug(char* text,uint32_t capacity){return Renderer::ngx_copy_debug(text,capacity);}
 int32_t SEVK_CALL sevk_fsr_configure(uint32_t enabled,uint32_t mode,float sharpness,const char* directory){return Renderer::fsr_configure(enabled,mode,sharpness,directory);}

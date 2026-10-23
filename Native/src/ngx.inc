@@ -23,6 +23,7 @@ struct NgxRequest {
     std::mutex mu;
     bool enabled{};
     uint32_t mode{}, preset{11};
+    float sharpness{};
     std::string directory;
     std::string owner;
     uint64_t revision{};
@@ -188,6 +189,21 @@ static int ngx_configure(uint32_t enabled, uint32_t mode, uint32_t preset, const
     ++request.revision;
     if (!request.enabled) request.status = "off";
     return 0;
+}
+
+// DX11 SE-DLSS passes Config.Sharpness as the NGX Sharpness evaluation parameter; transformer presets may ignore it.
+static int ngx_set_sharpness(float sharpness) {
+    if (!(sharpness >= 0.f && sharpness <= 1.f)) return -1;
+    auto& request = ngx_request();
+    std::lock_guard<std::mutex> lock(request.mu);
+    request.sharpness = sharpness;
+    return 0;
+}
+
+static float ngx_sharpness() {
+    auto& request = ngx_request();
+    std::lock_guard<std::mutex> lock(request.mu);
+    return request.sharpness;
 }
 
 static int ngx_copy_status(char* text, uint32_t capacity) {
@@ -524,7 +540,7 @@ bool ngx_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
     }
     set_float(params, "Jitter.Offset.X", jitter.pixel[0]);
     set_float(params, "Jitter.Offset.Y", jitter.pixel[1]);
-    set_float(params, "Sharpness", 0.f);
+    set_float(params, "Sharpness", ngx_sharpness());
     set_int(params, "Reset", guest.frame.history_valid ? 0 : 1);
     set_float(params, "MV.Scale.X", float(in_w) / float(mv_w));
     set_float(params, "MV.Scale.Y", float(in_h) / float(mv_h));

@@ -31,7 +31,7 @@ partial class Program
         var projection=MatrixD.CreatePerspectiveFieldOfView(Math.PI/2,1,.1,100);projection.M33=projection.M34-projection.M33;projection.M43=projection.M44-projection.M43;
         var light=MyEnvironmentLightData.Default;light.SunLightDirection=Vector3.Forward;light.SunColorRaw=Vector3.One;light.SunDiffuseFactor=1;light.SunDiscIntensity=0;
         if(oldExtendedGeometry){int count=OldExtendedGeometryHostRegression(core,output,backend);Console.WriteLine("PASS "+count+" actual older-host extended geometry checks");return 0;}
-        if(jitterOwner){int count=JitterRegression(core,output,bin,backend,projection,light);Console.WriteLine("PASS "+count+" actual-core jitter owner checks");return 0;}
+        if(jitterOwner){int count=JitterRegression(core,output,bin,backend,projection,light)+UpscalerServices(core);Console.WriteLine("PASS "+count+" actual-core jitter owner and upscaler service checks");return 0;}
         if(voxelOwners){int count=VoxelOwnerRegression(core,output,bin,backend,projection,light);Console.WriteLine("PASS "+count+" actual-core voxel owner checks");return 0;}
         if(celestialProbe){int count=CelestialProbeRegression(core,output,bin,backend,projection,light);Console.WriteLine("PASS "+count+" actual-core celestial probe checks");return 0;}
         if(velocityProbe){int count=VelocityProbeRegression(core,output,bin,backend,projection,light);Console.WriteLine("PASS "+count+" actual-core velocity probe checks");return 0;}
