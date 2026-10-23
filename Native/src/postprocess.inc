@@ -54,12 +54,23 @@ PostStage post_build_stage(uint32_t id,const void* data,uint64_t bytes,bool stri
             if(strict&&type==VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE&&!post_input_supplied(id,b.binding-128))valid=false;
             valid|=catalog||extras;
             if(!valid || b.set || b.count!=1)throw std::runtime_error("postprocess descriptor mismatch stage "+std::to_string(id)+" binding "+std::to_string(b.binding)+" size "+std::to_string(b.block.size));
+            if(type==VK_DESCRIPTOR_TYPE_STORAGE_IMAGE&&b.binding==384)stage.storage_format=uint32_t(b.image.image_format);
             bindings.push_back({b.binding,type,1,VkShaderStageFlags(compute?VK_SHADER_STAGE_COMPUTE_BIT:VK_SHADER_STAGE_FRAGMENT_BIT),nullptr});stage.bindings.push_back({b.binding,type});}
         if(reflection.push_constant_block_count)throw std::runtime_error("unexpected postprocess push constants");
         VkDescriptorSetLayoutCreateInfo l{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};l.bindingCount=uint32_t(bindings.size());l.pBindings=bindings.data();check(vkCreateDescriptorSetLayout(device,&l,nullptr,&stage.layout),"create stock postprocess layout");stage.pipeline_layout=world_pipeline_layout(stage.layout);stage.compute=compute;
-        if(compute){VkComputePipelineCreateInfo p{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};p.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,VK_SHADER_STAGE_COMPUTE_BIT,shader,"__compute_shader",nullptr};p.layout=stage.pipeline_layout;check(vkCreateComputePipelines(device,pipeline_cache,1,&p,nullptr,&stage.pipeline),"create stock postprocess compute");}
+        if(compute){VkComputePipelineCreateInfo p{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};p.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,nullptr,0,VK_SHADER_STAGE_COMPUTE_BIT,shader,"__compute_shader",nullptr};p.layout=stage.pipeline_layout;check(vkCreateComputePipelines(device,pipeline_cache,1,&p,nullptr,&stage.pipeline),"create stock postprocess compute");
+            // Chromatic (15..30) writes a storage image with a DXC-inferred format (Rgba32f). Its FP16 variant for HDR
+            // display tenancy retargets that OpTypeImage format to Rgba16f (no write-without-format feature needed).
+            if(id>=15&&id<=30&&!post_storage_fp16(stage)){
+                std::vector<uint32_t> words(bytes/4);std::memcpy(words.data(),data,words.size()*4);
+                for(size_t i=5;i<words.size();){uint32_t count=words[i]>>16;if(!count)break;if((words[i]&0xffffu)==25u&&count>=9&&i+8<words.size()&&words[i+7]==2u&&words[i+8]!=uint32_t(SpvImageFormatUnknown))words[i+8]=uint32_t(SpvImageFormatRgba16f);i+=count;}
+                SpvReflectShaderModule other{};auto hdr=world_shader(words.data(),words.size()*4,VK_SHADER_STAGE_COMPUTE_BIT,other);spvReflectDestroyShaderModule(&other);
+                p.stage.module=hdr;VkResult made=vkCreateComputePipelines(device,pipeline_cache,1,&p,nullptr,&stage.other_hdr);vkDestroyShaderModule(device,hdr,nullptr);check(made,"create FP16 postprocess compute");
+            }}
         else if(id==1 || (id>=5 && id<=8)){hdr_pipeline_pair(stage.pipeline,stage.other_hdr,[&](VkFormat format){return world_graphics(world.fullscreen,"__vertex_shader",shader,"__pixel_shader",stage.pipeline_layout,{{0,24,VK_VERTEX_INPUT_RATE_VERTEX}},world.fullscreen_attributes,&format,1,false);});}
-        else{std::array<VkFormat,8> formats{};formats.fill(post_format(id));stage.pipeline=world_graphics(world.fullscreen,"__vertex_shader",shader,"__pixel_shader",stage.pipeline_layout,{{0,24,VK_VERTEX_INPUT_RATE_VERTEX}},world.fullscreen_attributes,formats.data(),id==34?8:1,false);}
+        else{std::array<VkFormat,8> formats{};formats.fill(post_format(id));stage.pipeline=world_graphics(world.fullscreen,"__vertex_shader",shader,"__pixel_shader",stage.pipeline_layout,{{0,24,VK_VERTEX_INPUT_RATE_VERTEX}},world.fullscreen_attributes,formats.data(),id==34?8:1,false);
+            // FXAA also runs on the FP16 graded image under HDR display tenancy.
+            if(id==13){VkFormat hdr=VK_FORMAT_R16G16B16A16_SFLOAT;stage.other_hdr=world_graphics(world.fullscreen,"__vertex_shader",shader,"__pixel_shader",stage.pipeline_layout,{{0,24,VK_VERTEX_INPUT_RATE_VERTEX}},world.fullscreen_attributes,&hdr,1,false);}}
         spvReflectDestroyShaderModule(&reflection);vkDestroyShaderModule(device,shader,nullptr);
     }catch(...){spvReflectDestroyShaderModule(&reflection);vkDestroyShaderModule(device,shader,nullptr);post_destroy_stage(stage);throw;}
     return stage;
@@ -196,7 +207,7 @@ void post_image(PostImage& image,uint32_t width,uint32_t height,VkFormat format)
     if(image.image.handle && image.width==width && image.height==height && image.format==format)return;
     retire_image(image.image);image={};image.width=width;image.height=height;image.format=format;
     VkImageUsageFlags usage=VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    if(format==VK_FORMAT_R8G8B8A8_UNORM)usage|=VK_IMAGE_USAGE_STORAGE_BIT;
+    if(format==VK_FORMAT_R8G8B8A8_UNORM||format==VK_FORMAT_R16G16B16A16_SFLOAT)usage|=VK_IMAGE_USAGE_STORAGE_BIT;
     image.image=make_image(width,height,format,usage,VK_IMAGE_ASPECT_COLOR_BIT);
 }
 void post_clear(VkCommandBuffer cmd,PostImage& image,float value){post_transition(cmd,image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);VkClearColorValue color{{value,value,value,value}};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};vkCmdClearColorImage(cmd,image.image.handle,image.layout,&color,1,&range);post_transition(cmd,image,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);}
@@ -216,8 +227,8 @@ VkDescriptorSet post_set(WorldSlot& slot,uint32_t id,PostImage& dst,const std::a
 }
 void post_pass(VkCommandBuffer cmd,WorldSlot& slot,uint32_t id,PostImage& dst,std::array<VkImageView,6> images={}){
     post_note_execution(id);auto& stage=post.stages[id];post_transition(cmd,dst,stage.compute?VK_IMAGE_LAYOUT_GENERAL:VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);auto set=post_set(slot,id,dst,images);
-    if(stage.compute){vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,stage.pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,stage.pipeline_layout,0,1,&set,0,nullptr);vkCmdDispatch(cmd,(dst.width+7)/8,(dst.height+7)/8,1);}
-    else{VkRenderingAttachmentInfo a{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};a.imageView=dst.image.view;a.imageLayout=dst.layout;a.loadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE;a.storeOp=VK_ATTACHMENT_STORE_OP_STORE;VkRenderingInfo r{VK_STRUCTURE_TYPE_RENDERING_INFO};r.renderArea={{0,0},{dst.width,dst.height}};r.layerCount=1;r.colorAttachmentCount=1;r.pColorAttachments=&a;vkCmdBeginRendering(cmd,&r);vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,stage.pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,stage.pipeline_layout,0,1,&set,0,nullptr);VkDeviceSize zero=0;vkCmdBindVertexBuffers(cmd,0,1,&world.quad.handle,&zero);world_viewport(cmd,dst.width,dst.height);vkCmdDraw(cmd,3,1,0,0);vkCmdEndRendering(cmd);}
+    if(stage.compute){vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,id>=15&&id<=30&&dst.format==VK_FORMAT_R16G16B16A16_SFLOAT&&stage.other_hdr?stage.other_hdr:stage.pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,stage.pipeline_layout,0,1,&set,0,nullptr);vkCmdDispatch(cmd,(dst.width+7)/8,(dst.height+7)/8,1);}
+    else{VkRenderingAttachmentInfo a{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};a.imageView=dst.image.view;a.imageLayout=dst.layout;a.loadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE;a.storeOp=VK_ATTACHMENT_STORE_OP_STORE;VkRenderingInfo r{VK_STRUCTURE_TYPE_RENDERING_INFO};r.renderArea={{0,0},{dst.width,dst.height}};r.layerCount=1;r.colorAttachmentCount=1;r.pColorAttachments=&a;vkCmdBeginRendering(cmd,&r);vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,id==13&&dst.format==VK_FORMAT_R16G16B16A16_SFLOAT&&stage.other_hdr?stage.other_hdr:stage.pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,stage.pipeline_layout,0,1,&set,0,nullptr);VkDeviceSize zero=0;vkCmdBindVertexBuffers(cmd,0,1,&world.quad.handle,&zero);world_viewport(cmd,dst.width,dst.height);vkCmdDraw(cmd,3,1,0,0);vkCmdEndRendering(cmd);}
     post_transition(cmd,dst,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 void post_buffer_barrier(VkCommandBuffer cmd,VkPipelineStageFlags2 src,VkAccessFlags2 access,VkPipelineStageFlags2 dst,VkAccessFlags2 target){VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};b.srcStageMask=src;b.srcAccessMask=access;b.dstStageMask=dst;b.dstAccessMask=target;b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;b.buffer=post.histogram.handle;b.size=VK_WHOLE_SIZE;VkDependencyInfo info{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};info.bufferMemoryBarrierCount=1;info.pBufferMemoryBarriers=&b;vkCmdPipelineBarrier2(cmd,&info);}
@@ -235,6 +246,15 @@ void prepare_postprocess(VkCommandBuffer cmd,WorldSlot& slot){
         if(post.config.flags&128){post_pass(cmd,slot,31,post.ao_blur,{world.gbuffer[3].view,{},{},{},{},post.ao.image.view});post_pass(cmd,slot,32,post.ao,{world.gbuffer[3].view,{},{},{},{},post.ao_blur.image.view});post.stats.ssao_passes+=2;}}
     else post_clear(cmd,post.ao,1);
 }
+// Stage-7 HDR display tenancy: Anomaly requests display bit 16 while a Display-policy AfterUpscale program
+// (packet flag 16384) is ready. On an HDR swapchain that program grades at the tone position into FP16, as
+// DX11 OwnedPassRegistry.CompleteDisplayWithoutUpscale grades LBuffer in MyToneMapping.Run's place.
+bool display_tenant(){
+    if(!(display_flags&16u)||!(hdr_active||hdr_display_forced)||!(post.config.flags&1u))return false;
+    for(const auto& pass:guest.passes)if(pass.mark==6&&(pass.flags&16384u)&&pass.pipeline)return true;
+    return false;
+}
+static bool post_storage_fp16(const PostStage& stage){return stage.storage_format==SpvImageFormatUnknown||stage.storage_format==SpvImageFormatRgba16f;}
 void render_postprocess(VkCommandBuffer cmd,WorldSlot& slot){
     guest_replay(cmd,4);if(!(post.config.flags&1)){guest_replay(cmd,5);return;}auto flags=post.config.flags;auto& exposure=post.exposure[post.exposure_index];
     if(flags&2){post_pass(cmd,slot,1,post.half,{world.hdr.view});post_buffer_barrier(cmd,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_MEMORY_READ_BIT|VK_ACCESS_2_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT);vkCmdFillBuffer(cmd,post.histogram.handle,0,256,0);post_buffer_barrier(cmd,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT|VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
@@ -247,12 +267,26 @@ void render_postprocess(VkCommandBuffer cmd,WorldSlot& slot){
         for(uint32_t i=1;i<=levels;++i){width=std::max(1u,width/2);height=std::max(1u,height/2);post_image(post.bloom_down[i],width,height,world.hdr_format);post_pass(cmd,slot,7,post.bloom_down[i],{post.bloom_down[i-1].image.view});++post.stats.bloom_passes;}
         auto* low=&post.bloom_down[levels];for(int i=int(levels)-1;i>=1;--i){post_image(post.bloom_up[i],post.bloom_down[i].width,post.bloom_down[i].height,world.hdr_format);post_pass(cmd,slot,8,post.bloom_up[i],{low->image.view,post.bloom_down[i].image.view});low=&post.bloom_up[i];++post.stats.bloom_passes;}bloom=low->image.view;
     }else{post_image(post.bloom_down[0],1,1,world.hdr_format);post_clear(cmd,post.bloom_down[0],0);bloom=post.bloom_down[0].image.view;}
-    post.tone_bloom=bloom;uint32_t tone=9+((flags&32)?1:0)+((flags&2048)?2:0);
-    post_pass(cmd,slot,tone,post.tone,{world.hdr.view,post.exposure[post.exposure_index].image.view,bloom,textures.at(post.config.dirt).image.view});++post.stats.tone_dispatches;post.output=&post.tone;post.after_tonemap=post.output;guest_replay(cmd,5);ngx_from_tonemap(cmd);
+    post.tone_bloom=bloom;
+    if(display_tenant()){
+        // The Display program replaces Keen's tonemap: it reads pre-tonemap HDR plus avgLuminance/bloom/dirt and
+        // writes graded scRGB. LDR billboards, FXAA, highlights and chromatic then draw into the same FP16 image.
+        post_image(post.tone_hdr,extent.width,extent.height,VK_FORMAT_R16G16B16A16_SFLOAT);post_clear(cmd,post.tone_hdr,0);
+        post.output=&post.tone_hdr;post.after_tonemap=post.output;post.display_graded=true;post.grading=true;
+        try{guest_replay(cmd,8);}catch(...){post.grading=false;throw;}post.grading=false;++post.stats.tone_dispatches;
+    }else{
+        uint32_t tone=9+((flags&32)?1:0)+((flags&2048)?2:0);
+        post_pass(cmd,slot,tone,post.tone,{world.hdr.view,post.exposure[post.exposure_index].image.view,bloom,textures.at(post.config.dirt).image.view});++post.stats.tone_dispatches;post.output=&post.tone;post.after_tonemap=post.output;
+    }
+    guest_replay(cmd,5);ngx_from_tonemap(cmd);
     render_billboards(cmd,slot,3);
-    if(flags&32){post_pass(cmd,slot,13,post.fxaa,{post.output->image.view});post.output=&post.fxaa;++post.stats.fxaa_passes;}
+    bool graded=post.output->format==VK_FORMAT_R16G16B16A16_SFLOAT;
+    if((flags&32) && (!graded||post.stages[13].other_hdr)){auto& target=graded?post.fxaa_hdr:post.fxaa;if(graded)post_image(post.fxaa_hdr,extent.width,extent.height,VK_FORMAT_R16G16B16A16_SFLOAT);
+        post_pass(cmd,slot,13,target,{post.output->image.view});post.output=&target;++post.stats.fxaa_passes;}
     frame_mark("highlights");render_highlights(cmd,slot);frame_mark("postprocess tail");
-    if(flags&256){post_pass(cmd,slot,14+post.config.chromatic_iterations,post.chromatic,{post.output->image.view});post.output=&post.chromatic;++post.stats.chromatic_dispatches;}++post.stats.frames;
+    uint32_t chromatic=14+post.config.chromatic_iterations;graded=post.output->format==VK_FORMAT_R16G16B16A16_SFLOAT;
+    if((flags&256) && (!graded||post_storage_fp16(post.stages[chromatic])||post.stages[chromatic].other_hdr)){auto& target=graded?post.chromatic_hdr:post.chromatic;if(graded)post_image(post.chromatic_hdr,extent.width,extent.height,VK_FORMAT_R16G16B16A16_SFLOAT);
+        post_pass(cmd,slot,chromatic,target,{post.output->image.view});post.output=&target;++post.stats.chromatic_dispatches;}++post.stats.frames;
 }
 void cleanup_postprocess(){
     gpu_owner_cleanup();for(auto* states:{&post.cells,&post.gpu_new,&post.gpu_old})for(auto& stage:*states)post_destroy_stage(stage);
@@ -265,5 +299,5 @@ void cleanup_postprocess(){
     for(auto& stage:post.particles)post_destroy_stage(stage);
     for(auto& generation:post.candidates)for(auto& entry:generation.second.stages)post_destroy_stage(entry.second);
     for(auto& retired:post.retired)post_destroy_stage(retired.second);
-    for(auto* i:{&post.shadow_blur,&post.half,&post.tone,&post.fxaa,&post.chromatic,&post.ao,&post.ao_blur})destroy_image(i->image);for(auto& i:post.exposure)destroy_image(i.image);for(auto& i:post.bloom_down)destroy_image(i.image);for(auto& i:post.bloom_up)destroy_image(i.image);for(auto& b:post.constants)destroy_buffer(b);destroy_buffer(post.histogram);if(post.point)vkDestroySampler(device,post.point,nullptr);if(post.compose)vkDestroyPipeline(device,post.compose,nullptr);post={};
+    for(auto* i:{&post.shadow_blur,&post.half,&post.tone,&post.fxaa,&post.chromatic,&post.ao,&post.ao_blur,&post.tone_hdr,&post.fxaa_hdr,&post.chromatic_hdr})destroy_image(i->image);for(auto& i:post.exposure)destroy_image(i.image);for(auto& i:post.bloom_down)destroy_image(i.image);for(auto& i:post.bloom_up)destroy_image(i.image);for(auto& b:post.constants)destroy_buffer(b);destroy_buffer(post.histogram);if(post.point)vkDestroySampler(device,post.point,nullptr);if(post.compose)vkDestroyPipeline(device,post.compose,nullptr);post={};
 }

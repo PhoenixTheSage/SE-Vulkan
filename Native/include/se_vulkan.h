@@ -601,6 +601,12 @@ SEVK_API int32_t SEVK_CALL sevk_set_display_flags(void* ctx, uint32_t flags);
 /* Upscale slot owner from Anomaly ClaimUpscale. Empty releases the slot.
  * se-dlss evaluates the AfterTonemap image. Other ids leave stock compose. */
 SEVK_API int32_t SEVK_CALL sevk_set_upscale_owner(void* ctx, const char* id);
+/* HDR UI transform for the presented HUD on an HDR swapchain, matching HdrRender's DX11 UI composite:
+ * paper_white is scene paper white times UI gain in scRGB units (1 = 80 nits), shoulder is the inverse-
+ * Reinhard UI shoulder in [0,0.95), peak caps UI in scRGB units (0 = uncapped). paper_white 0 disables. */
+SEVK_API int32_t SEVK_CALL sevk_set_hdr_ui(void* ctx, float paper_white, float shoulder, float peak);
+/* Diagnostics: lets HDR display tenancy grade without an HDR swapchain (offscreen tests). */
+SEVK_API int32_t SEVK_CALL sevk_force_hdr_display(void* ctx, uint32_t force);
 /* Driver NGX for DLSS. The plugin passes the directory that contains the
  * feature library (nvngx_dlss.dll / libnvidia-ngx-dlss.so). mode is the
  * DLSS quality enum. preset 0 selects preset K. Calls copy the request

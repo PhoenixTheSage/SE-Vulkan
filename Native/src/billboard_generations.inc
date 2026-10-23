@@ -43,7 +43,7 @@ void billboard_activate(uint32_t id,PostStage& entry){
     uint32_t index=id-2560;PostStage retired=std::move(post.billboards[index]);
     if(id<2624&&(index&1)){uint32_t k=index/2;VkPipeline* live[]{&transparency.billboards[k],&transparency.other_hdr_billboards[k],&transparency.top_billboards[k],&transparency.other_hdr_top_billboards[k],&transparency.ldr_billboards[k]};
         retired.pipelines.assign(5,VK_NULL_HANDLE);for(uint32_t i=0;i<5;++i){retired.pipelines[i]=*live[i];*live[i]=entry.pipelines[i];}entry.pipelines.clear();
-        if(k&8){auto& output=transparency.output_billboards[k];retired.pipelines.push_back(output.pipeline);retired.modules={output.vs,output.ps};
+        if(k&8){auto& output=transparency.output_billboards[k];retired.pipelines.push_back(output.pipeline);retired.pipelines.push_back(output.ldr_hdr);output.ldr_hdr=VK_NULL_HANDLE;retired.modules={output.vs,output.ps};
             output.vs=entry.modules[0];output.ps=entry.modules[1];output.attributes=std::move(entry.attributes);output.layout=entry.pipeline_layout;output.pipeline=VK_NULL_HANDLE;output.format=VK_FORMAT_UNDEFINED;entry.modules.clear();}}
     post.retired.emplace_back(next_completion,std::move(retired));post.billboards[index]=std::move(entry);
 }

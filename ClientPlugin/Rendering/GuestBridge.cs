@@ -122,6 +122,9 @@ public static class GuestBridge
 
     public static void SetDisplayFlags(int flags) => current?.SetDisplayFlags(flags);
 
+    /// <summary>HUD transform for an HDR display tenant: paper white x UI gain and peak in scRGB units, shoulder.</summary>
+    public static void SetHdrUi(float paperWhite, float shoulder, float peak) => current?.SetHdrUi(paperWhite, shoulder, peak);
+
     public static void SetUpscaleOwner(string id) => current?.SetUpscaleOwner(id);
 
     public static void SetViewClip(float farPlane) => current?.SetViewClip(farPlane);

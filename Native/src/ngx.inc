@@ -468,8 +468,9 @@ bool ngx_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
     }
     if (!mv_view || !mv_image || !mv_w || !mv_h) { ngx_publish(in_w, in_h, out_w, out_h, false, false); ngx_set_status("NGX waiting for Anomaly velocity"); return false; }
     int quality = ngx_quality(mode);
-    // MVLowRes | DepthInverted | AutoExposure. AfterTonemap color is LDR, so IsHDR stays off.
-    int flags = 2 | 8 | 64;
+    // MVLowRes | DepthInverted | AutoExposure. AfterTonemap color is LDR unless an HDR display tenant graded
+    // it into FP16 scRGB, which sets IsHDR.
+    int flags = 2 | 8 | 64 | (post.display_graded ? 1 : 0);
     using Create = int (*)(VkCommandBuffer, int, void*, void**);
     using Eval = int (*)(VkCommandBuffer, void*, void*, void*);
     if (!ngx.feature || ngx.quality != static_cast<uint32_t>(quality) || ngx.flags != static_cast<uint32_t>(flags) || ngx.in_w != in_w || ngx.in_h != in_h || ngx.out_w != out_w || ngx.out_h != out_h) {

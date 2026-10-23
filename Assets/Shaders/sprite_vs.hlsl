@@ -1,4 +1,4 @@
-struct Push { float4 rect; float4 uv; float4 color; float2 screen; float angle; uint flags; float2 origin; float2 pad; };
+struct Push { float4 rect; float4 uv; float4 color; float2 screen; float angle; uint flags; float2 origin; float2 pad; float4 hdr_ui; };
 [[vk::push_constant]] ConstantBuffer<Push> draw;
 struct Output { float4 position : SV_Position; float2 uv : TEXCOORD0; float4 color : COLOR0; };
 Output main(uint id : SV_VertexID) {

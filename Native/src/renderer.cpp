@@ -156,7 +156,7 @@ struct Slot {
 };
 struct Retired { uint64_t completion{}; Texture texture{}; Mesh mesh{}; };
 struct UploadSlot { VkCommandPool pool{}; VkCommandBuffer command{}; uint64_t completion{}; std::vector<Buffer> pending, reusable; uint64_t cached_bytes{}; };
-struct SpritePush { float rect[4], uv[4], color[4], screen[2], angle; uint32_t flags; float origin[2], pad[2]; };
+struct SpritePush { float rect[4], uv[4], color[4], screen[2], angle; uint32_t flags; float origin[2], pad[2]; float hdr_ui[4]; };
 struct MeshPush { float world[16], tint[4], hsv[4], dither, emissivity; uint32_t flags, pad; };
 struct NativeFrame { SevkFrameInfo frame; uint32_t light_count, reserved[3]; SevkLight lights[64]; float shadow_matrices[4][16], shadow_splits[4]; uint32_t shadow_count, shadow_reserved[3]; };
 struct StockGBuffer {
@@ -342,12 +342,12 @@ struct WorldState {ModelState models;
     bool initialized{};
 };
 static_assert(sizeof(SevkGBufferVertex)==48 && sizeof(SevkGBufferDraw)==168 && sizeof(SevkGBufferStats)==48);
-static_assert(sizeof(SevkVertex) == 32 && sizeof(SpritePush) == 80 && sizeof(MeshPush) == 112);
+static_assert(sizeof(SevkVertex) == 32 && sizeof(SpritePush) == 96 && sizeof(MeshPush) == 112);
 static_assert(sizeof(SevkSprite) == 88 && sizeof(SevkFrameInfo) == 144);
 static_assert(sizeof(SevkDrawMesh) == 152 && sizeof(SevkLight) == 64);
 
 struct TransparentDraw {SevkTransparentDraw packet{};std::vector<uint8_t> object,instances;};
-struct OutputBillboardProgram {VkShaderModule vs{},ps{};std::vector<VkVertexInputAttributeDescription> attributes;VkPipeline pipeline{};VkFormat format{};VkPipelineLayout layout{};};
+struct OutputBillboardProgram {VkShaderModule vs{},ps{};std::vector<VkVertexInputAttributeDescription> attributes;VkPipeline pipeline{},ldr_hdr{};VkFormat format{};VkPipelineLayout layout{};};
 struct TransparencyState { VkDescriptorSetLayout layout{},resolve_layout{};VkPipelineLayout pipeline_layout{},resolve_pipeline_layout{};WorldPipeline glass[10]{},glass_depth[10]{},glass_culled[10]{},glass_depth_culled[10]{},glass_depth_old[10]{};Image glass_layers[2]{};VkSampler point_sampler{};bool layers_initialized[2]{};VkPipeline billboards[32]{},other_hdr_billboards[32]{},top_billboards[32]{},other_hdr_top_billboards[32]{},ldr_billboards[32]{};OutputBillboardProgram output_billboards[32]{};Image output_depth{};uint32_t output_width{},output_height{};bool output_depth_ready{};float custom_projections[512]{};VkImageView ldr_view{};VkImage ldr_image{};VkDescriptorSetLayout billboard_layout{};VkPipelineLayout billboard_pipeline_layout{};Buffer billboard_vertices[2]{},billboard_data[2]{},billboard_projections[2]{},billboard_indices{};std::vector<SevkBillboardDraw> billboard_draws;VkPipeline resolve{},other_hdr_resolve{};Image accum{},coverage{},csm{};Buffer objects[2]{},materials[2]{},instances[2]{},shadow_constants[2]{};std::vector<TransparentDraw> draws;uint32_t width{},height{};bool initialized{};SevkTransparencyStats stats{sizeof(SevkTransparencyStats),SEVK_ABI_VERSION};};
 struct ParticleStage {VkShaderModule module{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{};std::vector<std::pair<uint32_t,VkDescriptorType>> bindings;};
 struct ParticleState {ParticleStage stages[10]{};Buffer particle{},dead{},alive[2]{},counters[4]{},draw_args{},sim_args{},active{};VkBufferView draw_view{},sim_view{};Buffer emitters[2]{},emit_constants[2]{},readback[2]{},indices{};std::vector<uint8_t> packet;uint32_t count{},index{};uint64_t atlas{};uint64_t generation_token[2]{},generation_completion[2]{};uint32_t generation_frame[2]{},generation_sim[2]{};bool generation_pending[2]{},generation_draw[2]{};bool initialized{},reset{},queued{},readback_valid[2]{};SevkParticleStats stats{sizeof(SevkParticleStats),SEVK_ABI_VERSION};};
@@ -356,11 +356,11 @@ struct DecalBatch {uint32_t role{};uint64_t textures[4]{};std::vector<uint32_t> 
 struct DecalState {VkPipeline pipelines[9]{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};Buffer constants[2]{},indices{};Image normals{};uint32_t width{},height{};bool initialized{};std::vector<SevkDecalDraw> draws;std::vector<DecalBatch> batches;};
 struct PostImage {Image image;uint32_t width{},height{};VkImageLayout layout{};VkFormat format{};};
 struct NativeCatalogResource {uint32_t binding{},dim{},arrayed{},depth{},number{};VkDescriptorType type{};bool owner_input{};};
-struct PostStage {uint64_t generation{},executions{},last_completion{};uint32_t last_frame{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{},other_hdr{};std::vector<std::pair<uint32_t,VkDescriptorType>> bindings;std::vector<NativeCatalogResource> catalog;bool compute{},probe_full_view{},track_geometry{true};WorldPipeline geometry{};std::vector<VkPipeline> pipelines;std::vector<VkShaderModule> modules;std::vector<VkVertexInputAttributeDescription> attributes;};
+struct PostStage {uint64_t generation{},executions{},last_completion{};uint32_t last_frame{};VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{},other_hdr{};std::vector<std::pair<uint32_t,VkDescriptorType>> bindings;std::vector<NativeCatalogResource> catalog;uint32_t storage_format{};bool compute{},probe_full_view{},track_geometry{true};WorldPipeline geometry{};std::vector<VkPipeline> pipelines;std::vector<VkShaderModule> modules;std::vector<VkVertexInputAttributeDescription> attributes;};
 struct ShadowUsageView {Buffer gpu,readback,screen;bool pending{};};
 struct ShadowUsageState {PostStage stage;ShadowUsageView views[2][19];uint32_t pixels[19][8]{};uint64_t completion[19]{},latest{};bool enabled{};};
 struct PostCandidate {uint64_t expected{};VkFormat format{};std::vector<std::pair<uint32_t,PostStage>> stages;};
-struct PostState {VkImageView tone_bloom{};uint64_t revision{},next_generation{},pending{};std::map<uint64_t,PostCandidate> candidates;std::vector<std::pair<uint64_t,PostStage>> retired;std::vector<PostStage> geometry,cells,gpu_new,gpu_old;PostStage oit{},stages[144]{},lighting[4]{},atmosphere[3]{},foliage[5]{},decals[10]{},particles[10]{},transparent[40]{},billboards[65]{};PostImage shadow_blur{},exposure[2]{},half{},bloom_down[11]{},bloom_up[10]{},tone{},fxaa{},chromatic{},ao{},ao_blur{};PostImage* output{};PostImage* after_tonemap{};Buffer constants[2]{},histogram{};VkSampler point{};VkPipeline compose{};VkFormat compose_format{};uint32_t width{},height{},exposure_index{};SevkPostprocessConfig config{};SevkPostprocessStats stats{sizeof(SevkPostprocessStats),SEVK_ABI_VERSION};};
+struct PostState {VkImageView tone_bloom{};bool grading{},display_graded{};PostImage tone_hdr{},fxaa_hdr{},chromatic_hdr{};uint64_t revision{},next_generation{},pending{};std::map<uint64_t,PostCandidate> candidates;std::vector<std::pair<uint64_t,PostStage>> retired;std::vector<PostStage> geometry,cells,gpu_new,gpu_old;PostStage oit{},stages[144]{},lighting[4]{},atmosphere[3]{},foliage[5]{},decals[10]{},particles[10]{},transparent[40]{},billboards[65]{};PostImage shadow_blur{},exposure[2]{},half{},bloom_down[11]{},bloom_up[10]{},tone{},fxaa{},chromatic{},ao{},ao_blur{};PostImage* output{};PostImage* after_tonemap{};Buffer constants[2]{},histogram{};VkSampler point{};VkPipeline compose{};VkFormat compose_format{};uint32_t width{},height{},exposure_index{};SevkPostprocessConfig config{};SevkPostprocessStats stats{sizeof(SevkPostprocessStats),SEVK_ABI_VERSION};};
 struct GpuOwnerRow {uint32_t module{},first{},capacity{},frame{};uint64_t generation{};uint32_t condition=UINT32_MAX;};
 struct GpuOwnerSlot {Buffer ranges{},work{},readback{};std::vector<GpuOwnerRow> rows;uint64_t completion{};bool pending{};};
 struct GpuOwnerState {PostStage reduction{};GpuOwnerSlot slots[2];std::vector<std::pair<uint64_t,GpuOwnerSlot>> retired;bool enabled{};};
@@ -370,7 +370,7 @@ struct GBufferVelocityState {VkDescriptorSetLayout empty{},layout{};VkPipelineLa
 struct HbaoState {SevkHbaoConfig config{};PostImage depth{},normal{},aoz[2]{};Image quarter_depth{},quarter_ao{};VkImageView depth_views[16]{},ao_views[16]{};Buffer constants[2]{};VkSampler border{};uint32_t width{},height{};bool initialized{},jitter_provided{};float jitter[64]{};};
 struct ProbeCube {Image image;std::vector<VkImageView> views;};
 struct ProbeState {uint64_t atmosphere_id{};float atmosphere_intensity{},atmosphere_desaturation{},sun_direction[3]{};Buffer atmosphere[2][6]{},atmosphere_view[2][6]{};VkDescriptorSetLayout material_layout{};VkPipelineLayout material_pipeline_layout{};PostStage stages[4]{};ProbeCube original[2],filtered[2],final[2];Image depth[6]{};Buffer frame[2][6]{},projection[2][6]{},forward_projection[2][6]{},constants[2][6]{};SevkProbeConfig config{};SevkProbeStats stats{sizeof(SevkProbeStats),SEVK_ABI_VERSION};uint32_t resolution{},mips{},skip_levels{},face{},stage{},work_face{},blend_kind{};bool initialized{},ready{};};
-struct HighlightState {VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline compose{};PostImage raw{},overlap{},blur[2]{},composed{};Buffer colors[2]{},constants[2]{};std::vector<SevkHighlightDraw> draws;SevkHighlightStats stats{sizeof(SevkHighlightStats),SEVK_ABI_VERSION};};
+struct HighlightState {VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline compose{},compose_hdr{};PostImage raw{},overlap{},blur[2]{},composed{};Buffer colors[2]{},constants[2]{};std::vector<SevkHighlightDraw> draws;SevkHighlightStats stats{sizeof(SevkHighlightStats),SEVK_ABI_VERSION};};
 struct SpotState {uint64_t fade_static[64]{},fade_dynamic[64]{},fade_valid{};VkDescriptorSetLayout copy_set_layout{};VkPipelineLayout copy_layout{};VkDescriptorPool copy_pool{};VkPipeline copy_pipeline{};VkDescriptorSet copy_sets[2][64]{};std::array<std::vector<uint32_t>,64> static_casters,dynamic_casters;std::vector<SevkSpot> config;std::unordered_set<uint64_t> exclusions;Image images[64]{},frozen[64]{};uint32_t sizes[64]{},frozen_sizes[64]{},resolution{512};uint8_t frozen_ready[64]{};VkImageLayout frozen_layout[64]{};uint64_t static_dirty{~0ull},dynamic_dirty{};SevkSpotStats stats{sizeof(SevkSpotStats),SEVK_ABI_VERSION};};
 struct OcclusionState {VkDescriptorSetLayout layout{};VkPipelineLayout pipeline_layout{};VkPipeline pipeline{};VkQueryPool pool{};Buffer boxes[2]{},projections[2]{};std::vector<SevkOcclusionDraw> packet,submitted[2];std::vector<SevkOcclusionResult> completed;uint64_t token{},tokens[2]{},completed_token{};bool valid[2]{};SevkOcclusionStats stats{sizeof(SevkOcclusionStats),SEVK_ABI_VERSION};};
 struct FsrHeader { uint64_t type; FsrHeader* next; };
@@ -431,6 +431,9 @@ struct Renderer {uint32_t recipe_generation=1;
         std::chrono::steady_clock::time_point last_time{};
     };
     FsrRuntime fsr;
+    // HDR UI transform for the presented HUD: scene paper white x UI gain (scRGB), shoulder, peak (scRGB). Zero disables.
+    float hdr_ui[3]{};
+    bool hdr_display_forced{}; // diagnostics: display tenancy without an HDR swapchain
     uint32_t display_flags{};bool hdr_active{},hdr_denied{},fg_denied{},swap_transfer{},null_descriptors{};
     std::array<uint64_t,11> opaque_compute_times{};
     SevkResolutionStats resolution_stats{sizeof(SevkResolutionStats),SEVK_ABI_VERSION};
@@ -1577,7 +1580,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if(!meshes.count(draw.mesh_id)) throw std::runtime_error("draw references missing mesh "+std::to_string(draw.mesh_id));
         frame_meshes.push_back(draw);
     }
-    void emit_sprites(VkCommandBuffer command, VkExtent2D target, const SevkSprite* sprites, uint32_t count, VkPipeline standard, VkPipeline additive, VkPipeline premul, VkPipeline premul_additive, float logical_width = 0, float logical_height = 0) {
+    void emit_sprites(VkCommandBuffer command, VkExtent2D target, const SevkSprite* sprites, uint32_t count, VkPipeline standard, VkPipeline additive, VkPipeline premul, VkPipeline premul_additive, float logical_width = 0, float logical_height = 0, bool display_ui = false) {
         if (logical_width == 0) logical_width = float(target.width);
         if (logical_height == 0) logical_height = float(target.height);
         const double scale_x = double(target.width) / logical_width, scale_y = double(target.height) / logical_height;
@@ -1599,6 +1602,7 @@ struct Renderer {uint32_t recipe_generation=1;
             vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 1, 1, &image.sprite_descriptor, 0, nullptr);
             SpritePush push{}; std::memcpy(push.rect, s.destination, sizeof(push.rect)); std::memcpy(push.uv, s.uv, sizeof(push.uv)); std::memcpy(push.color, s.color, sizeof(push.color));
             push.screen[0] = logical_width; push.screen[1] = logical_height; push.angle = s.angle_radians; push.flags=s.flags; std::memcpy(push.origin, s.origin, sizeof(push.origin));
+            if (display_ui && hdr_active && hdr_ui[0] > 0.f) { push.hdr_ui[0] = hdr_ui[0]; push.hdr_ui[1] = hdr_ui[1]; push.hdr_ui[2] = hdr_ui[2]; push.hdr_ui[3] = 1.f; }
             vkCmdPushConstants(command, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
             vkCmdDraw(command, 6, 1, 0, 0); ++stats.sprite_draws;
         }
@@ -1672,7 +1676,7 @@ struct Renderer {uint32_t recipe_generation=1;
         fsr_apply_scale();
         output_extent = present_extent.width ? present_extent : extent;
         display_state.upscale_ready = false;
-        post.after_tonemap = nullptr;
+        post.after_tonemap = nullptr; post.display_graded = false;
         // The world may render below the selected mode. The swapchain image stays
         // present_extent, and the following pass stretches the world across it.
         if(world.current().queued){auto saved_output=extent;uint32_t logical_w=sprite_w?sprite_w:output_extent.width,logical_h=sprite_h?sprite_h:output_extent.height;extent={std::max(1u,uint32_t(std::lround(logical_w*render_fraction))),std::max(1u,uint32_t(std::lround(logical_h*render_fraction)))};
@@ -1692,7 +1696,7 @@ struct Renderer {uint32_t recipe_generation=1;
         record_opaque_reference(slot.command);
         frame_mark("meshes");for(const auto& draw:frame_meshes) emit_mesh(draw);
         if(world.current().queued && has_output_billboards()){prepare_output_billboard_depth(slot.command);begin_main_rendering(*static_cast<SevkFrameInfo*>(slot.uniform.mapped),true);render_output_billboards(slot.command,world.slots[slot_index]);}
-        performance.compose_us=perf_take();frame_mark("sprites");emit_sprites(slot.command,output_extent,frame_sprites.data(),static_cast<uint32_t>(frame_sprites.size()),sprite_pipeline,additive_pipeline,sprite_premul_pipeline,sprite_premul_additive_pipeline,sprite_w?float(sprite_w):float(output_extent.width),sprite_h?float(sprite_h):float(output_extent.height));
+        performance.compose_us=perf_take();frame_mark("sprites");emit_sprites(slot.command,output_extent,frame_sprites.data(),static_cast<uint32_t>(frame_sprites.size()),sprite_pipeline,additive_pipeline,sprite_premul_pipeline,sprite_premul_additive_pipeline,sprite_w?float(sprite_w):float(output_extent.width),sprite_h?float(sprite_h):float(output_extent.height),true);
         performance.sprite_us=perf_take();
         vkCmdEndRendering(slot.command);
         if(capture_requested) {
@@ -2201,6 +2205,8 @@ int32_t SEVK_CALL sevk_invalidate_guest_history(void* ctx){return call(ctx,[&](R
 int32_t SEVK_CALL sevk_force_jitter(void* ctx,uint32_t force){return call(ctx,[&](Renderer& r){if(r.recording||force>1)throw std::runtime_error("invalid jitter override");r.jitter.forced=force!=0;r.jitter.reset=true;return 0;});}
 int32_t SEVK_CALL sevk_get_jitter(void* ctx,float* state,uint32_t count){return call(ctx,[&](Renderer& r){if(!state||count<8)throw std::runtime_error("jitter state needs 8 floats");const auto& j=r.jitter;float values[8]{j.pixel[0],j.pixel[1],j.ndc[0],j.ndc[1],j.active?1.f:0.f,float(j.phases),float(j.index),float(j.frames)};std::memcpy(state,values,sizeof(values));return 0;});}
 int32_t SEVK_CALL sevk_set_display_flags(void* ctx,uint32_t flags){return call(ctx,[&](Renderer& r){uint32_t mask=flags>>16;uint32_t value=flags&0xffffu;if(!mask)r.display_flags=value;else r.display_flags=(r.display_flags&~mask)|(value&mask);return 0;});}
+int32_t SEVK_CALL sevk_force_hdr_display(void* ctx,uint32_t force){return call(ctx,[&](Renderer& r){if(r.recording||force>1)throw std::runtime_error("invalid HDR display override");r.hdr_display_forced=force!=0;return 0;});}
+int32_t SEVK_CALL sevk_set_hdr_ui(void* ctx,float paper_white,float shoulder,float peak){return call(ctx,[&](Renderer& r){if(!(paper_white>=0.f&&paper_white<=1000.f)||!(shoulder>=0.f&&shoulder<.95f)||!(peak>=0.f&&peak<=1000.f))throw std::runtime_error("invalid HDR UI transform");r.hdr_ui[0]=paper_white;r.hdr_ui[1]=shoulder;r.hdr_ui[2]=peak>0.f?peak:1000.f;return 0;});}
 int32_t SEVK_CALL sevk_set_upscale_owner(void* ctx,const char* id){return call(ctx,[&](Renderer& r){(void)r;return Renderer::ngx_set_owner(id);});}
 int32_t SEVK_CALL sevk_ngx_configure(uint32_t enabled,uint32_t mode,uint32_t preset,const char* directory){return Renderer::ngx_configure(enabled,mode,preset,directory);}
 int32_t SEVK_CALL sevk_ngx_set_sharpness(float sharpness){return Renderer::ngx_set_sharpness(sharpness);}

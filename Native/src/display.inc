@@ -400,7 +400,7 @@ void present_generated_color(VkCommandBuffer cmd, uint32_t index) {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &slots[slot_index].descriptor, 0, nullptr);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 2, 1, &shadow_descriptor, 0, nullptr);
     emit_sprites(cmd, extent, frame_sprites.data(), static_cast<uint32_t>(frame_sprites.size()),
-        sprite_pipeline, additive_pipeline, sprite_premul_pipeline, sprite_premul_additive_pipeline);
+        sprite_pipeline, additive_pipeline, sprite_premul_pipeline, sprite_premul_additive_pipeline, 0, 0, true);
     vkCmdEndRendering(cmd);
     barrier(cmd, image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_ASPECT_COLOR_BIT,
         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
@@ -499,7 +499,7 @@ VkImageView prepare_display(VkCommandBuffer cmd) {
     bool ngx_on = ngx_active();
     bool fsr_on = fsr_active();
     bool guest_output=std::any_of(guest.passes.begin(),guest.passes.end(),[](const auto& pass){
-        if(pass.mark!=6 || !pass.pipeline)return false;
+        if(pass.mark!=6 || !pass.pipeline || (pass.flags&16384u))return false;
         if(pass.storage==kGuestHdr)return true;
         return std::any_of(std::begin(pass.sampled),std::end(pass.sampled),[](auto image){return image==kGuestUpscale;});
     });

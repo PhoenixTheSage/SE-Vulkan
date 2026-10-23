@@ -563,7 +563,7 @@ void guest_refresh_frame() {
     frame.far_plane = view_far > 1.f ? view_far : 1000000.f;
     frame.output_width = float(std::max(1u,output.width));
     frame.output_height = float(std::max(1u,output.height));
-    frame.service_flags = display_flags | (hdr_active ? 8u : 0u);
+    frame.service_flags = display_flags | (hdr_active ? 8u : 0u) | (post.display_graded ? 32u : 0u);
     guest.frame = frame;
     std::memcpy(guest.prev_vp, current, 64); std::memcpy(guest.prev_camera, submitted_frame.camera_position, 12); guest.have_prev = true; guest.frame_stamp = stamp;
     guest.frame.pad0 = std::bit_cast<float>(extras.frame_index);
@@ -935,7 +935,10 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
             if (binding.second == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE && binding.first >= 128 && binding.first < 176 && pass.sampled[binding.first - 128] == kGuestUpscale)
                 sample_upscale = true;
     VkImageView upscale_snapshot=VK_NULL_HANDLE;
-    if (sample_upscale && mark>=6 && display_state.upscale_ready && display_state.upscale_view)
+    // The display grade reads pre-tonemap HDR; its merge (to_hdr) keeps the FP16 tone image as blend base.
+    if (sample_upscale && post.grading && !to_hdr)
+        upscale_snapshot=world.hdr.view;
+    else if (sample_upscale && mark>=6 && display_state.upscale_ready && display_state.upscale_view)
         upscale_snapshot=guest_copy_source(cmd, display_state.upscale_handle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, display_state.upscale_w, display_state.upscale_h);
     else if (sample_upscale && post.after_tonemap && post.after_tonemap->image.view)
         upscale_snapshot=guest_copy_source(cmd, post.after_tonemap->image.handle, post.after_tonemap->layout ? post.after_tonemap->layout : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, post.after_tonemap->width, post.after_tonemap->height);
@@ -1076,7 +1079,7 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
         color = display_state.upscale_view; tw = display_state.upscale_w; th = display_state.upscale_h; hdr_target = false;
     }
     if (!color) return false;
-    int format = hdr_target && world.hdr_format==VK_FORMAT_B10G11R11_UFLOAT_PACK32 ? 5 : draw_tone ? 0 : draw_dlss ? 1 : target && target->format == VK_FORMAT_R16_SFLOAT ? 6 : target && target->format == VK_FORMAT_R32G32B32A32_SFLOAT ? 4 : hdr_target || (target && target->format == VK_FORMAT_R16G16B16A16_SFLOAT) ? 1 : target && target->format == VK_FORMAT_R32_SFLOAT ? 2 : target && target->format == VK_FORMAT_R16G16_SFLOAT ? 3 : 0;
+    int format = hdr_target && world.hdr_format==VK_FORMAT_B10G11R11_UFLOAT_PACK32 ? 5 : draw_tone ? (tracked->format==VK_FORMAT_R16G16B16A16_SFLOAT ? 1 : 0) : draw_dlss ? 1 : target && target->format == VK_FORMAT_R16_SFLOAT ? 6 : target && target->format == VK_FORMAT_R32G32B32A32_SFLOAT ? 4 : hdr_target || (target && target->format == VK_FORMAT_R16G16B16A16_SFLOAT) ? 1 : target && target->format == VK_FORMAT_R32_SFLOAT ? 2 : target && target->format == VK_FORMAT_R16G16_SFLOAT ? 3 : 0;
     VkPipeline pipe = pipeline.contract == 2 ? pipeline.pipeline : pipeline.draw[format][mode];
     if (!pipe) return false;
     GuestImage* second = nullptr;
@@ -1267,8 +1270,13 @@ void guest_replay(VkCommandBuffer cmd, uint32_t mark) {
         if(selected!=phase)continue;
         const bool early=(pass.flags&4096u)!=0;
         if(pass.flags&512u)continue; // probe-face celestial variants draw only on probe faces
-        if(mark==7 ? !(early&&pass.mark==1) : (pass.mark!=mark||early))continue;
-        const uint32_t effective_mark=mark==7?1u:mark;
+        // Mark 8 is the HDR display grade at the tone position: Display-policy AfterUpscale programs (flag 16384)
+        // draw as mark 5 into the FP16 tone image. They never run at mark 6: without an HDR tenant the stock
+        // tonemap stands, since grading the tonemapped LDR image again would be wrong.
+        if(mark==8){if(pass.mark!=6||!(pass.flags&16384u))continue;}
+        else if(mark==7 ? !(early&&pass.mark==1) : (pass.mark!=mark||early))continue;
+        if(mark==6&&(pass.flags&16384u))continue;
+        const uint32_t effective_mark=mark==7?1u:mark==8?5u:mark;
         if(pass.operation==3){
             auto found=guest.images.find(pass.storage);if(found==guest.images.end())continue;
             auto& image=found->second;

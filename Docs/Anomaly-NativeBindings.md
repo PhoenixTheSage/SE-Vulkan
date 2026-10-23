@@ -926,3 +926,39 @@ render size, FSR receives it as the reactive resource, as SE-FRS does on DX11.
 DLSS already took it as its color bias mask. Both now use the image's actual
 format. FSR's status reads `evaluating (reactive anomaly)` when it is bound. No
 GPU lane covers this path, because it needs the FidelityFX runtime.
+
+### Stage 7: HDR display tenancy
+
+Anomaly requests display bit 16 while a Display-policy AfterUpscale program is
+enabled. Those programs and their merges carry packet flag 16384. On an HDR
+swapchain, `render_postprocess` replaces the stock tone pass with mark 8: it
+replays those programs as mark 5 into an FP16 tone image. They read
+pre-tonemap HDR (the `upscaledColor` binding resolves to `world.hdr` during the
+grade) plus avgLuminance, bloom and dirt. This matches DX11
+`OwnedPassRegistry.CompleteDisplayWithoutUpscale`. Guest frame service bit 32
+reports the grade.
+
+**FP16 variants of the later LDR work:**
+- LDR billboards: a lazily built FP16 pipeline from the PostPP modules.
+- FXAA: stage 13 `other_hdr`.
+- Highlights: a `world_highlight_compose_hdr_ps` compose without the sRGB step.
+- Chromatic: a compute variant whose DXC-inferred storage format is retargeted
+  to Rgba16f.
+
+DLSS sets IsHDR and FSR reads the graded image. Compose passes linear scRGB
+through. Display programs never run at mark 6, so without an HDR display the
+stock tonemap stands.
+
+`sevk_set_hdr_ui` applies HdrRender's HUD transform (paper white x gain,
+inverse-Reinhard shoulder, peak) to the presented sprites; LCD targets are
+excluded. `sevk_force_hdr_display` lets the offscreen lane grade.
+
+The `--hdr-tenant-only` lane passes 33 checks with zero validation errors:
+- the grade reads pre-tonemap HDR and holds 4.0 in FP16;
+- avgLuminance is bound;
+- FXAA and chromatic run on FP16;
+- exact stock bits remain without an HDR display or without the program;
+- bit 16 is released when the program is disabled.
+
+LDR billboard and highlight FP16 draws, DLSS/FSR on graded input, and the HUD
+transform are build-verified only.
