@@ -191,7 +191,7 @@ struct OpaqueReferenceState {
     std::vector<gpu_opaque::FamilyBatches> recording_families;
 };
 struct OpaqueStockState {
-    struct Pipeline {VkPipeline back{},no_cull{};VkPipelineLayout layout{};};
+    struct Pipeline {VkPipeline back{},no_cull{};VkPipelineLayout layout{};bool velocity{};};
     std::array<Pipeline,28> newer;std::array<Pipeline,2656> older;
     VkDescriptorSetLayout indexed_layout{};VkDescriptorPool pool{};
     std::array<std::array<VkDescriptorSet,2>,2> indexed_sets{};
@@ -363,7 +363,7 @@ struct GpuOwnerSlot {Buffer ranges{},work{},readback{};std::vector<GpuOwnerRow> 
 struct GpuOwnerState {PostStage reduction{};GpuOwnerSlot slots[2];std::vector<std::pair<uint64_t,GpuOwnerSlot>> retired;bool enabled{};};
 struct GBufferVelocityConstants {float view_proj[16],prev_view_proj[16],size[2],inv_size[2];uint32_t prev_count,has_history,has_prev_world,bone_count;float rows[3][4];uint32_t instance_base,probe_mode;float padding[2],camera_delta[3],tail;};
 static_assert(sizeof(GBufferVelocityConstants)==240,"AnomalyVelocity cbuffer layout");
-struct GBufferVelocityState {VkDescriptorSetLayout empty{},layout{};VkPipelineLayout pipeline_layout{};Buffer constants[2]{},probe{},prev_world{},prev_bones{};VkDescriptorSet set{};uint32_t stride{},cursor{},capacity{};bool frame{},history{};};
+struct GBufferVelocityState {VkDescriptorSetLayout empty{},layout{};VkPipelineLayout pipeline_layout{};Buffer constants[2]{},probe{},prev_world{},prev_bones{};VkDescriptorSet set{},gpu_set{};uint32_t stride{},cursor{},capacity{},gpu_offset{};bool frame{},history{},indexed_prepared{},indexed_ready{},camera_valid{};double camera[3]{};float camera_delta[3]{};};
 struct HbaoState {SevkHbaoConfig config{};PostImage depth{},normal{},aoz[2]{};Image quarter_depth{},quarter_ao{};VkImageView depth_views[16]{},ao_views[16]{};Buffer constants[2]{};VkSampler border{};uint32_t width{},height{};bool initialized{},jitter_provided{};float jitter[64]{};};
 struct ProbeCube {Image image;std::vector<VkImageView> views;};
 struct ProbeState {uint64_t atmosphere_id{};float atmosphere_intensity{},atmosphere_desaturation{},sun_direction[3]{};Buffer atmosphere[2][6]{},atmosphere_view[2][6]{};VkDescriptorSetLayout material_layout{};VkPipelineLayout material_pipeline_layout{};PostStage stages[4]{};ProbeCube original[2],filtered[2],final[2];Image depth[6]{};Buffer frame[2][6]{},projection[2][6]{},forward_projection[2][6]{},constants[2][6]{};SevkProbeConfig config{};SevkProbeStats stats{sizeof(SevkProbeStats),SEVK_ABI_VERSION};uint32_t resolution{},mips{},skip_levels{},face{},stage{},work_face{},blend_kind{};bool initialized{},ready{};};

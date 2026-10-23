@@ -10,7 +10,7 @@ namespace ClientPlugin.Rendering.Shaders;
 // preprocessed snapshot. The material, depth and lighting programs stay stock.
 public static class GpuOpaqueShaderAdapter
 {
-    public const string Contract="GpuOpaqueIndexedStock-5;shared-instance-id";
+    public const string Contract="GpuOpaqueIndexedStock-6;simple-instancing-velocity";
     private const string Varying="nointerpolation uint sevk_draw : SEVK_DRAW;";
     private static string Once(string source,string pattern,Func<Match,string> replacement)
     {
@@ -73,6 +73,18 @@ void sevk_object(uint draw_index){
         // field, interpolation rule or material math is altered.
         string structure=vertex?"VertexStageOutput":Regex.IsMatch(source,@"struct\s+PixelStageInput\b")?"PixelStageInput":Regex.IsMatch(source,@"struct\s+VertexStageOutput\b")?"VertexStageOutput":null;
         if(structure!=null)source=Once(source,@"struct\s+"+structure+@"\s*\{",m=>m.Value+"\n"+Varying+"\n");
+        if(Has("ANOMALY_VELOCITY")){
+            // DX11 indexes t15 by Stage 2 instance order. Indirect GPU instances resolve the same
+            // previous world through the culled reference (instance -> actor) and the replay's actor rows.
+            if(!simple)throw new InvalidDataException("GPU velocity owners require USE_SIMPLE_INSTANCING.");
+            if(vertex){
+                source=Once(source,@"StructuredBuffer\s*<\s*AnomalyPrevInstance\s*>\s*AnomalyPrevWorld\s*:\s*register\s*\(\s*t0\s*,\s*space2\s*\)\s*;",_=>"[[vk::binding(128,2)]] ByteAddressBuffer sevk_previous_actors;\n[[vk::binding(129,2)]] ByteAddressBuffer sevk_instance_references;\n"+
+                    "AnomalyPrevInstance sevk_prev_world(uint instance){uint at=sevk_instance_references.Load(instance*80)*64;AnomalyPrevInstance p;p.col0=asfloat(sevk_previous_actors.Load4(at));p.col1=asfloat(sevk_previous_actors.Load4(at+16));p.col2=asfloat(sevk_previous_actors.Load4(at+32));p.flags=float4((sevk_previous_actors.Load(at+56)&1u)?1:0,0,0,0);return p;}\n");
+                source=Once(source,@"StructuredBuffer\s*<\s*float4x4\s*>\s*AnomalyPrevBones\s*:\s*register\s*\(\s*t1\s*,\s*space2\s*\)\s*;",_=>"");
+                source=Regex.Replace(source,@"\bAnomalyPrevWorld\s*\[([^\[\]]+)\]",m=>"sevk_prev_world("+m.Groups[1].Value+")");
+                if(Regex.IsMatch(source,@"\bAnomalyPrev(World|Bones)\b"))throw new InvalidDataException("Unsupported GPU velocity history access.");
+            }
+        }
         if(vertex){
             string inputs="";
             if(simple){int stride=Has("USE_SIMPLE_INSTANCING_COLORING")?64:48;

@@ -22,11 +22,14 @@ OpaqueStockState::Pipeline build_opaque_stock_pipeline(uint32_t id,uint32_t old,
     if(recording||old>1||id>=(old?2656u:28u) || (old && world_unfade(id)>=96)||!opaque_caps.enabled)throw std::runtime_error("invalid indexed stock pipeline candidate");
     uint32_t role=old?world_unfade(id)/32:id<12?id/4:0;bool depth=role==1,forward=role==2,cutout=old?world_cutout(id):id>=12;
     VkShaderModule vs{},ps{};SpvReflectShaderModule vr{},pr{};VkPipeline back{},no_cull{};VkPipelineLayout layout{};
+    // GPU NEW GBuffer owners admit DX11's USE_SIMPLE_INSTANCING velocity contract in set 2.
+    bool admitted=gbuffer_velocity_supported&&!old&&role==0,velocity_resources=false;
     try{
         vs=opaque_stock_shader(vertex,vb,VK_SHADER_STAGE_VERTEX_BIT,vr);ps=opaque_stock_shader(pixel,pb,VK_SHADER_STAGE_FRAGMENT_BIT,pr);
         for(auto* module:{&vr,&pr})for(uint32_t n=0;n<module->descriptor_binding_count;n++){auto& b=module->descriptor_bindings[n];
             bool indexed=b.set==1&&((b.binding>=128&&b.binding<=131&&b.descriptor_type==SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_BUFFER&&b.count==1)||(b.binding>=132&&b.binding<=133&&b.descriptor_type==SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLED_IMAGE&&b.count==0));
             bool stock=b.set==0&&b.count==1&&((b.descriptor_type==SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER&&((b.binding==0&&b.block.size==1280)||(b.binding==1&&b.block.size==64)||(forward&&((b.binding==4&&b.block.size==1200)||(b.binding==7&&b.block.size==64)))))||(b.descriptor_type==SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLED_IMAGE&&(b.binding==156||(forward&&b.binding==144)))||(b.descriptor_type==SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLER&&(b.binding==258||b.binding==259||(forward&&b.binding==271))));
+            if(admitted&&gbuffer_velocity_binding(b)){velocity_resources=true;continue;}
             if(!indexed&&!stock)throw std::runtime_error("indexed stock resource layout exceeded: "+std::to_string(b.set)+":"+std::to_string(b.binding)+" count "+std::to_string(b.count));}
         for(auto* module:{&vr,&pr})for(uint32_t n=0;n<module->push_constant_block_count;n++)if(module->push_constant_blocks[n].size!=4)throw std::runtime_error("indexed stock draw-base contract");
         // Auto-assigned locations must match after adding the flat draw identity.
@@ -37,13 +40,18 @@ OpaqueStockState::Pipeline build_opaque_stock_pipeline(uint32_t id,uint32_t old,
         std::vector<VkVertexInputAttributeDescription> attributes;
         for(uint32_t n=0;n<vr.input_variable_count;n++){auto& v=*vr.input_variables[n];if(v.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)continue;std::string name=v.name?v.name:"";name=name.substr(name.find_last_of('.')+1);VkFormat format{};uint32_t offset{};
             if(name=="POSITION0"){format=VK_FORMAT_R32G32B32A32_SFLOAT;}else if(name=="NORMAL0"){format=VK_FORMAT_R32G32_UINT;offset=16;}else if(name=="TANGENT0"){format=VK_FORMAT_R32G32B32A32_SFLOAT;offset=24;}else if(name=="TEXCOORD0"){format=VK_FORMAT_R32G32_SFLOAT;offset=40;}else if(name=="BLENDWEIGHT0"){format=VK_FORMAT_R32G32B32A32_SFLOAT;offset=48;}else if(name=="BLENDINDICES0"){format=VK_FORMAT_R32G32B32A32_UINT;offset=64;}else throw std::runtime_error("indexed stock retains an unsupported/source instance attribute: "+name);attributes.push_back({v.location,0,format,offset});}
-        VkDescriptorSetLayout sets[]{forward?probes.material_layout:world.material_layout,opaque_stock.indexed_layout};VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,4};
-        VkPipelineLayoutCreateInfo create{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};create.setLayoutCount=2;create.pSetLayouts=sets;create.pushConstantRangeCount=1;create.pPushConstantRanges=&push;check(vkCreatePipelineLayout(device,&create,nullptr,&layout),"create indexed stock pipeline layout");
+        bool velocity=false;for(uint32_t i=0;i<pr.output_variable_count;++i){auto& o=*pr.output_variables[i];if(!(o.decoration_flags&SPV_REFLECT_DECORATION_BUILT_IN)&&o.location==3)velocity=true;}
+        if(velocity&&!admitted)throw std::runtime_error("indexed stock pipeline writes Target3 outside the admitted GBuffer velocity contract");
+        if(velocity_resources&&!velocity)throw std::runtime_error("indexed stock pipeline binds velocity resources without writing Target3");
+        if(velocity)gbuffer_velocity_layouts();
+        VkDescriptorSetLayout sets[]{forward?probes.material_layout:world.material_layout,opaque_stock.indexed_layout,gbuffer_velocity.layout};VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,4};
+        VkPipelineLayoutCreateInfo create{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};create.setLayoutCount=velocity?3:2;create.pSetLayouts=sets;create.pushConstantRangeCount=1;create.pPushConstantRanges=&push;check(vkCreatePipelineLayout(device,&create,nullptr,&layout),"create indexed stock pipeline layout");
         if(forward)require_probe_format();const VkFormat forward_formats[]{stock_probe_format,stock_probe_format};
-        auto formats=depth?nullptr:forward?forward_formats:stock_formats.data();uint32_t count=depth?0:forward?2:3;
+        const VkFormat velocity_formats[]{stock_formats[0],stock_formats[1],stock_formats[2],VK_FORMAT_R16G16_SFLOAT};
+        auto formats=depth?nullptr:forward?forward_formats:velocity?velocity_formats:stock_formats.data();uint32_t count=depth?0:forward?2:velocity?4:3;
         back=world_graphics(vs,"__vertex_shader",ps,"__pixel_shader",layout,{{0,uint32_t(sizeof(SevkWorldVertex)),VK_VERTEX_INPUT_RATE_VERTEX}},attributes,formats,count,true,depth,false,false,0,cutout,{},false,false,depth,depth,VK_CULL_MODE_BACK_BIT,depth?VK_FRONT_FACE_COUNTER_CLOCKWISE:VK_FRONT_FACE_CLOCKWISE);
         no_cull=world_graphics(vs,"__vertex_shader",ps,"__pixel_shader",layout,{{0,uint32_t(sizeof(SevkWorldVertex)),VK_VERTEX_INPUT_RATE_VERTEX}},attributes,formats,count,true,depth,false,false,0,cutout,{},false,false,depth,false,VK_CULL_MODE_NONE);
-        OpaqueStockState::Pipeline result{back,no_cull,layout};back=no_cull={};layout={};spvReflectDestroyShaderModule(&vr);spvReflectDestroyShaderModule(&pr);vkDestroyShaderModule(device,vs,nullptr);vkDestroyShaderModule(device,ps,nullptr);return result;
+        OpaqueStockState::Pipeline result{back,no_cull,layout,velocity};back=no_cull={};layout={};spvReflectDestroyShaderModule(&vr);spvReflectDestroyShaderModule(&pr);vkDestroyShaderModule(device,vs,nullptr);vkDestroyShaderModule(device,ps,nullptr);return result;
     }catch(...){if(back)vkDestroyPipeline(device,back,nullptr);if(no_cull)vkDestroyPipeline(device,no_cull,nullptr);if(layout)vkDestroyPipelineLayout(device,layout,nullptr);if(vr._internal)spvReflectDestroyShaderModule(&vr);if(pr._internal)spvReflectDestroyShaderModule(&pr);if(vs)vkDestroyShaderModule(device,vs,nullptr);if(ps)vkDestroyShaderModule(device,ps,nullptr);throw;}
 }
 void init_opaque_stock_pipeline(uint32_t id,uint32_t old,const void* vertex,uint64_t vb,const void* pixel,uint64_t pb){
@@ -127,7 +135,7 @@ uint32_t record_opaque_stock_view(VkCommandBuffer cmd,WorldSlot& slot,uint32_t v
         if(id>=(input.old?2656u:28u) || (input.old && world_unfade(id)>=96))throw std::runtime_error("stock batch forward shader unavailable");auto& pipeline=input.old?s.older[id]:s.newer[id];if(!pipeline.back)throw std::runtime_error("stock batch pipeline unavailable");
         auto handle=spot||(!depth&&(input.flags&1))?pipeline.no_cull:pipeline.back;
         if(!r.view_batches||handle!=bound_pipeline){vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,handle);bound_pipeline=handle;}
-        if(!r.view_batches||pipeline.layout!=bound_layout){vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline.layout,0,2,sets,2,offsets);bound_layout=pipeline.layout;}
+        if(!r.view_batches||pipeline.layout!=bound_layout){vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline.layout,0,2,sets,2,offsets);if(pipeline.velocity)gbuffer_velocity_bind_gpu(cmd,pipeline.layout);bound_layout=pipeline.layout;}
         VkDeviceSize vertex_offset=0;if(!r.view_batches||batch.vertices!=bound_vertices){vkCmdBindVertexBuffers(cmd,0,1,&batch.vertices,&vertex_offset);bound_vertices=batch.vertices;}if(!r.view_batches||batch.indices!=bound_indices){vkCmdBindIndexBuffer(cmd,batch.indices,0,VK_INDEX_TYPE_UINT32);bound_indices=batch.indices;}
         uint32_t batch_view=b*r.view_count+view,base=view*r.draw_capacity+range.first;vkCmdPushConstants(cmd,pipeline.layout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,4,&base);
         vkCmdDrawIndexedIndirectCount(cmd,r.slots[slot_index].args.handle,uint64_t(base)*sizeof(SevkOpaqueIndirect),r.slots[slot_index].counts.handle,batch_view*4,range.capacity,sizeof(SevkOpaqueIndirect));gpu_owner_record((input.old?49153u:32769u)+2*id,batch_view,base,range.capacity);commands++;

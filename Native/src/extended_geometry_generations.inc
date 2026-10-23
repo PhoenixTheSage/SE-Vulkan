@@ -13,13 +13,13 @@ PostStage build_extended_geometry_generation(uint32_t id,const SevkPostprocessMo
     for(uint32_t i=0;i<count;++i){if(modules[i].stage==id-1)vertex=&modules[i];if(modules[i].stage==id)pixel=&modules[i];}
     if(!vertex||!pixel)throw std::runtime_error("incomplete extended geometry generation pair");PostStage result{};uint32_t pipeline=(id-extended_geometry_base(id))/2;
     if(native_cell_id(id)){auto p=build_pass_pipeline(pipeline,vertex->spirv,vertex->bytes,pixel->spirv,pixel->bytes);result.pipeline=p.back;result.other_hdr=p.no_cull;}
-    else{auto p=build_opaque_stock_pipeline(pipeline,native_gpu_old_id(id)?1:0,vertex->spirv,vertex->bytes,pixel->spirv,pixel->bytes);result.pipeline=p.back;result.other_hdr=p.no_cull;result.pipeline_layout=p.layout;}
+    else{auto p=build_opaque_stock_pipeline(pipeline,native_gpu_old_id(id)?1:0,vertex->spirv,vertex->bytes,pixel->spirv,pixel->bytes);result.pipeline=p.back;result.other_hdr=p.no_cull;result.pipeline_layout=p.layout;result.geometry.velocity=p.velocity;}
     return result;
 }
 void extended_geometry_activate(uint32_t id,PostStage& candidate){
     auto& current=*extended_geometry_state(id);PostStage retired=std::move(current);uint32_t pipeline=(id-extended_geometry_base(id))/2;
     if(id&1u){if(native_cell_id(id)){auto& live=pass_scene.pipelines[pipeline];retired.pipeline=live.back;retired.other_hdr=live.no_cull;live={candidate.pipeline,candidate.other_hdr};}
-        else{auto& live=native_gpu_new_id(id)?opaque_stock.newer[pipeline]:opaque_stock.older[pipeline];retired.pipeline=live.back;retired.other_hdr=live.no_cull;retired.pipeline_layout=live.layout;live={candidate.pipeline,candidate.other_hdr,candidate.pipeline_layout};}
+        else{auto& live=native_gpu_new_id(id)?opaque_stock.newer[pipeline]:opaque_stock.older[pipeline];retired.pipeline=live.back;retired.other_hdr=live.no_cull;retired.pipeline_layout=live.layout;live={candidate.pipeline,candidate.other_hdr,candidate.pipeline_layout,candidate.geometry.velocity};}
         uint32_t role=native_gpu_old_id(id)?world_unfade(pipeline)/32:pipeline<12?pipeline/4:0;if(role==1)geometry_invalidate_shadows();}
     post.retired.emplace_back(next_completion,std::move(retired));current=std::move(candidate);current.pipeline=current.other_hdr=VK_NULL_HANDLE;current.pipeline_layout=VK_NULL_HANDLE;
 }

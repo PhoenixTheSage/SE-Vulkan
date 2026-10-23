@@ -44,6 +44,7 @@ void record_indexed_motion(VkCommandBuffer cmd,WorldSlot& slot){
     VkDescriptorSet sets[]{world.motion_sets[slot_index],world.motion_indexed_sets[slot_index]};vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,world.attach_indexed_layout,0,2,sets,0,nullptr);
     uint32_t count=r.view_batches?uint32_t(r.recording_batches.at(view).size()):uint32_t(opaque_stock.batches.size());
     for(uint32_t n=0;n<count;++n){uint32_t b=r.view_batches?r.recording_batches[view][n]:n;const auto& batch=opaque_stock.batches[b];const auto& input=batch.input;const auto range=r.ranges[b];if(!range.capacity)continue;
+        if(gbuffer_velocity.frame&&!input.old&&opaque_stock.newer[input.main_pipeline].velocity)continue;
         uint32_t type=input.old?world.pipelines.at(input.main_pipeline).type:0,kind=input.old?(type==0?0u:type>=2&&type<=4?type-1:UINT32_MAX):4u;if(kind>4||!indexed_motion.pipelines[kind])throw std::runtime_error("indexed motion geometry class unavailable");
         vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,indexed_motion.pipelines[kind]);world_model_raster(cmd,input.main_pipeline,(input.flags&1)?0x10000000u:0x08000000u);
         VkDeviceSize zero=0;vkCmdBindVertexBuffers(cmd,0,1,&batch.vertices,&zero);vkCmdBindIndexBuffer(cmd,batch.indices,0,VK_INDEX_TYPE_UINT32);

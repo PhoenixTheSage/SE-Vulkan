@@ -131,7 +131,7 @@ public sealed partial class NativeBackend
             if(id>=768&&id<773&&(GuestFeatures()&33554432)==0)throw new NotSupportedException("Update SE-Vulkan native library: foliage owner generations require bit25.");
             if(id>=512&&id<515&&(GuestFeatures()&16777216)==0)throw new NotSupportedException("Update SE-Vulkan native library: atmosphere owner generations require bit24.");
             if(id>=256&&id<260&&(GuestFeatures()&1048576)==0)throw new NotSupportedException("Update SE-Vulkan native library: lighting owner generations require bit20.");
-            var request=ExtendedGeometryModule(id)?ExtendedGeometryRequest(id,generation,defines):GeometryModule(id)?GeometryRequest(id,identity,sources,defines,(contracts&1)!=0):postprocessLibrary.DerivedRequest(variant,generation,defines);
+            var request=ExtendedGeometryModule(id)?ExtendedGeometryRequest(id,generation,defines,(contracts&1)!=0):GeometryModule(id)?GeometryRequest(id,identity,sources,defines,(contracts&1)!=0):postprocessLibrary.DerivedRequest(variant,generation,defines);
             if(id>=128&&id<144)
             {
                 // A replacement without the quarter-depth descriptor has no border
