@@ -5,7 +5,7 @@
 // Every classic stream takes local_matrix from the object block, so DX11 gives it the per-draw
 // currToPrev rows (skinned motion is rigid-body); t15/t16 belong to USE_SIMPLE_INSTANCING only.
 // Fade-bank variants share their base stream and blended decals write Target3 as RG replace.
-// Voxel GBuffer shaders are not native owners (they come from the voxel library).
+// Voxel GBuffer owners (20, 21) are static: their per-draw currToPrev rows are DX11's camera-only voxel motion.
 // DX11 developer probes (Settings/VelocityProbe): 1 TargetClear, 2 MrtWrite, 3 HistoryCoverage, 4 PassEndClear.
 // They replace real motion while enabled. The mode reaches every owner through b0 AnomalyProbeMode; MrtWrite
 // also sets the PS b1 (DX11 b7) payload, and Target3 clear values follow DX11's ClearTarget/ApplySchedulerEndProbe.
@@ -13,7 +13,7 @@ uint32_t gbuffer_velocity_probe{};
 void write_velocity_probe_payload(){if(!gbuffer_velocity.probe.handle)return;const float value[4]{gbuffer_velocity_probe==2?8.f:0.f,0.f,gbuffer_velocity_probe==2?1.f:0.f,0.f};std::memset(gbuffer_velocity.probe.mapped,0,64);std::memcpy(gbuffer_velocity.probe.mapped,value,16);check(vmaFlushAllocation(allocator,gbuffer_velocity.probe.memory,0,64),"flush GBuffer velocity probe");}
 void set_gbuffer_velocity_probe(uint32_t mode){if(recording||mode>4)throw std::runtime_error("invalid GBuffer velocity probe");if(mode==gbuffer_velocity_probe)return;wait(next_completion);gbuffer_velocity_probe=mode;write_velocity_probe_payload();}
 VkClearValue motion_probe_clear(){VkClearValue value{};value.color.float32[0]=gbuffer_velocity_probe==1?8.f:gbuffer_velocity_probe==2?-8.f:0.f;return value;}
-bool gbuffer_velocity_admitted(uint32_t id,bool decal,bool voxel){return gbuffer_velocity_supported&&!voxel&&(decal||world_unfade(id)<20);}
+bool gbuffer_velocity_admitted(uint32_t id,bool decal,bool voxel){return gbuffer_velocity_supported&&(decal||world_unfade(id)<(voxel?22u:20u));}
 void gbuffer_velocity_layouts(){
     if(gbuffer_velocity.pipeline_layout)return;init_world_layouts();
     VkDescriptorSetLayoutCreateInfo empty{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};check(vkCreateDescriptorSetLayout(device,&empty,nullptr,&gbuffer_velocity.empty),"create empty velocity set1 layout");

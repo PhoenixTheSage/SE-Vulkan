@@ -18,6 +18,8 @@ public sealed partial class NativeBackend
     {
         var result=new Dictionary<uint,GeometryOwnerSpec>();
         foreach(var s in WorldShaderVariants.Materials)result.Add(s.Id,new GeometryOwnerSpec{Pipeline=s.Id,Vertex=s.Vertex,Pixel=s.Pixel});
+        // Voxel GBuffer (20, 21) and depth (52, 53) come from the voxel library but build as world pipelines.
+        foreach(var s in VoxelShaderVariants.Materials)if(!result.ContainsKey(s.Id))result.Add(s.Id,new GeometryOwnerSpec{Pipeline=s.Id,Vertex=s.Vertex,Pixel=s.Pixel});
         void Extras(IEnumerable<(uint Id,string Material,Dictionary<string,string> Defines)> specs,uint offset){foreach(var s in specs){uint id=s.Id-offset;result.Add(id,new GeometryOwnerSpec{Pipeline=id,Extra=s.Id,Material=s.Material,Defines=s.Defines});}}
         Extras(WorldShaderVariants.Extra,0);Extras(ProbeShaderVariants.Extra,192);Extras(HighlightShaderVariants.Extra,416);return result;
     }
@@ -38,9 +40,9 @@ public sealed partial class NativeBackend
         }).ToArray();
     }
     // Native owner extension flag8: classic GBuffer owners emit DX11's velocity contract in set 2,
-    // including fade-bank variants and blended static decals.
+    // including fade-bank variants, blended static decals and voxels (20, 21; static, so their rows give camera-only motion).
     internal const ulong GBufferVelocityFeature=8;
-    internal static bool GBufferVelocityOwner(uint pipeline)=>WorldShaderVariants.WithoutDistanceFade(pipeline)<20||WorldShaderVariants.IsBlendedDecal(pipeline);
+    internal static bool GBufferVelocityOwner(uint pipeline)=>WorldShaderVariants.WithoutDistanceFade(pipeline)<22||WorldShaderVariants.IsBlendedDecal(pipeline);
     VulkanShaderRequest GeometryRequest(uint id,string identity,Dictionary<string,byte[]> sources,Dictionary<string,string> defines,bool velocity=false)
     {
         if((GuestFeatures()&GeometryGenerationFeature)==0)throw new NotSupportedException("Update SE-Vulkan native library: stock world geometry generations require bit31.");

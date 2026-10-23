@@ -56,15 +56,16 @@ partial class Program
             Check(Call("Buffers.CatalogImages","EnsureColorTarget",owner,catalog,1,1,10) is true,"glass catalog target accepted");Call("Shaders.ShaderBindRegistry","RequestSrv","Transparent",catalog,7);Call("Buffers.CatalogImages","ClearColorTarget",catalog,.25f,.125f,.0625f,0f);
             Register(swizzle,null);var swizzled=Frame(true);Check(Property("Backend.GuestPostprocessStages","Error")==null,"glass owner generation prepares: "+Property("Backend.GuestPostprocessStages","Error"));Console.WriteLine("TRANSPARENT swizzled="+Hdr(swizzled));
             Check(Near(swizzled,.75f,.5f,.25f),"glass owner swizzles its OIT color from its own invocation");
-            Register(glass,null);var owned=Frame(true);Check(Property("Backend.GuestPostprocessStages","Error")==null,"glass owner with reserved bindings prepares: "+Property("Backend.GuestPostprocessStages","Error"));Console.WriteLine("TRANSPARENT owned="+Hdr(owned));
-            Check(Near(owned,.75f,.5f,.25f),"catalog SRV (t7) and extras (b6) scale the owner color by exactly one");
+            Register(glass,null);var owned=Frame(true);Check(Property("Backend.GuestPostprocessStages","Error")==null,"glass owner declaring reserved inputs prepares: "+Property("Backend.GuestPostprocessStages","Error"));Console.WriteLine("TRANSPARENT owned="+Hdr(owned));
+            // DX11 binds Transparent reserved inputs only around ResolveOIT, so glass draws read t7 and b6 as unbound (zero).
+            Check(Near(owned,0,0,0),"glass owner reads DX11-unbound reserved inputs (t7, b6) as zero");
             var state=backend.GetPostprocessGeneration(2305);Check(state.Active!=0&&state.Executions>0&&state.LastFrame==frame&&state.LastCompletion<=state.Completed&&backend.GetPostprocessGeneration(2304).Executions==state.Executions,"selected glass VS/PS owner pair executes and completes this frame");
-            Check(backend.GetStageBindingState().Resolved>=1,"glass owner invocation resolves catalog bindings and extras");
+            Check(!backend.StageBindingOwners().Any(r=>(uint)r[0]>=2304&&(uint)r[0]<2344),"glass owners take no stage-binding rows, as on DX11");
             Check(owned.SequenceEqual(Frame()),"glass owner output agrees exactly between recording modes");
-            Call("Buffers.CatalogImages","ClearColorTarget",catalog,.5f,.125f,.0625f,0f);var doubled=Frame(true);Console.WriteLine("TRANSPARENT doubled="+Hdr(doubled));Check(Near(doubled,1.5f,1f,.5f),"glass owner reads the current catalog value");
+            Register(swizzle,null);var swapped=Frame(true);Check(Near(swapped,.75f,.5f,.25f),"re-registering the swizzle owner replaces the reserved-input owner");
             ulong count=backend.GetPostprocessGeneration(2305).Executions;Frame(true,false);Check(backend.GetPostprocessGeneration(2305).Executions==count&&backend.GetPostprocessGeneration(2305).LastFrame!=frame,"active glass owner has no invented execution in a frame without glass");
             ulong previous=backend.GetPostprocessGeneration(2305).Active;Register("BrokenSyntax",null);var broken=Frame(true);
-            Check(Property("Backend.GuestPostprocessStages","Error") is string&&backend.GetPostprocessGeneration(2305).Active==previous&&Near(broken,1.5f,1f,.5f),"failed glass compilation retains the previous owner pair");
+            Check(Property("Backend.GuestPostprocessStages","Error") is string&&backend.GetPostprocessGeneration(2305).Active==previous&&Near(broken,.75f,.5f,.25f),"failed glass compilation retains the previous owner pair");
             Call("Backend.GuestPassList","UnregisterRoot",owner);Check(stock.SequenceEqual(Frame(true)),"unregister restores exact stock glass output");
             // TransparentForDecals: discarding every glass depth fragment leaves the decal depth layer at the opaque copy.
             var decalStock=Frame(false,true,true);Console.WriteLine("TRANSPARENT decal stock="+Hdr(decalStock));Check(decalStock.SequenceEqual(Frame(true,true,true)),"stock glass decal layers agree across recording modes");

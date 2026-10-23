@@ -49,8 +49,9 @@ void transparent_activate(uint32_t id,PostStage& entry){
 // Writes one reflected owner binding with the stock glass resource it names.
 void write_glass_owner(VkDescriptorSet set,WorldSlot& slot,uint32_t owner,const PostStage& stage,uint32_t binding,VkDescriptorType type,const SevkWorldDraw& g,VkImageView depth){
     auto catalog=std::find_if(stage.catalog.begin(),stage.catalog.end(),[&](auto r){return r.binding==binding;});
+    // DX11 binds Transparent reserved inputs only around ResolveOIT: glass draws see null t5-t9 and a zero b6.
     if(catalog!=stage.catalog.end()){write_stage_catalog(set,owner,*catalog);return;}
-    if(binding==6){write_stage_extras(set,owner);return;}
+    if(binding==6){GuestExtras zero{};int pool=guest_pool_index();guest_pool(pool);auto offset=guest_uniform(pool,&zero,sizeof(zero));if(offset==~0u)throw std::runtime_error("native extras uniform arena exhausted");VkDescriptorBufferInfo info{guest.bumps[pool].buffer.handle,offset,sizeof(zero)};VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=set;write.dstBinding=6;write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;write.pBufferInfo=&info;vkUpdateDescriptorSets(device,1,&write,0,nullptr);return;}
     if(type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER||type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC){
         if(binding==0)world_write_buffer(set,0,slot.frame,1280,type);else if(binding==1)world_write_buffer(set,1,slot.projections,64,type);
         else if(binding==2)world_write_buffer(set,2,transparency.objects[slot_index],g.object_bytes,type);else if(binding==3)world_write_buffer(set,3,transparency.materials[slot_index],96,type);
