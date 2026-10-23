@@ -22,8 +22,9 @@ OpaqueStockState::Pipeline build_opaque_stock_pipeline(uint32_t id,uint32_t old,
     if(recording||old>1||id>=(old?2656u:28u) || (old && world_unfade(id)>=96)||!opaque_caps.enabled)throw std::runtime_error("invalid indexed stock pipeline candidate");
     uint32_t role=old?world_unfade(id)/32:id<12?id/4:0;bool depth=role==1,forward=role==2,cutout=old?world_cutout(id):id>=12;
     VkShaderModule vs{},ps{};SpvReflectShaderModule vr{},pr{};VkPipeline back{},no_cull{};VkPipelineLayout layout{};
-    // GPU NEW GBuffer owners admit DX11's USE_SIMPLE_INSTANCING velocity contract in set 2.
-    bool admitted=gbuffer_velocity_supported&&!old&&role==0,velocity_resources=false;
+    // GPU NEW GBuffer owners admit DX11's USE_SIMPLE_INSTANCING contract; GPU OLD classic streams (below 20)
+    // admit the per-draw currToPrev contract. Both read set 2.
+    bool admitted=gbuffer_velocity_supported&&role==0&&(!old||id<20),velocity_resources=false;
     try{
         vs=opaque_stock_shader(vertex,vb,VK_SHADER_STAGE_VERTEX_BIT,vr);ps=opaque_stock_shader(pixel,pb,VK_SHADER_STAGE_FRAGMENT_BIT,pr);
         for(auto* module:{&vr,&pr})for(uint32_t n=0;n<module->descriptor_binding_count;n++){auto& b=module->descriptor_bindings[n];
