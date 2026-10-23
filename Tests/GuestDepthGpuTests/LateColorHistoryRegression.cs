@@ -76,7 +76,9 @@ partial class Program
             foreach(float fraction in new[]{.5f,.75f,1f}){backend.SetRenderFraction(fraction);Frame(.375f,true);Frame(.5f,false);}
         }finally{
             Call("Shaders.OwnedPassRegistry","Unregister",callbackId);Call("Backend.GuestPassList","SetEnabled","anomaly.owned.HistoryCopy",true);
-            foreach(string suffix in new[]{".writer",".early",".late",".reader"})Call("Backend.GuestPassList","UnregisterRoot",owner+suffix);
+            // AddProgram fixtures carry no owner, so UnregisterRoot cannot remove them; disable them so the
+            // BeforeTonemap writer does not keep overwriting HDR in later combined-run sections.
+            foreach(string suffix in new[]{".writer",".early",".late",".reader"}){Call("Backend.GuestPassList","SetEnabled",owner+suffix,false);Call("Backend.GuestPassList","UnregisterRoot",owner+suffix);}
             Call("Buffers.BufferCatalog","UnpublishAll",owner);backend.SetRenderFraction(1);backend.Resize(64,64,0);
         }
         Check(nonzeroHistoryReads>=6,"late history recovers nonzero preceding-frame values across lifecycle changes");
