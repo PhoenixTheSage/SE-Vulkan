@@ -151,4 +151,61 @@ partial class Program
         }finally{Call("Backend.GuestPassList","UnregisterRoot",owner);backend.ClearPassFrame();stages.GetField("catalog",stat).SetValue(null,null);stages.GetField("catalogEpoch",stat).SetValue(null,-1L);}
         return checks;
     }
+    // Native cells draw with firstInstance 0 per group; DX11 indexes t15[SV_InstanceID + InstanceBase].
+    static unsafe int CellVelocityRegression(Assembly core,string output,string bin,NativeBackend backend,VulkanShaderLibrary library,MatrixD projection,MyEnvironmentLightData light)
+    {
+        const BindingFlags stat=BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static;const string owner="fixture.native.cell-velocity";int checks=0;
+        void Check(bool ok,string text){if(!ok)throw new Exception(text);checks++;Console.WriteLine("PASS "+text);}
+        object Call(string type,string method,params object[] args)=>core.GetType("ClientPlugin."+type,true).GetMethod(method,stat).Invoke(null,args);
+        object Property(string type,string name)=>core.GetType("ClientPlugin."+type,true).GetProperty(name,stat).GetValue(null);
+        Check((backend.NativeOwnerFeatures()&9)==9,"native owner extension advertises native-cell owners and the GBuffer velocity contract");
+        backend.ConfigureNativePasses(library);
+        var stages=core.GetType("ClientPlugin.Backend.GuestPostprocessStages",true);stages.GetField("PreparationBound",stat).SetValue(null,true);
+        var catalog=backend.PostprocessCatalog().Where(row=>(uint)row[0]==16384||(uint)row[0]==16385).ToArray();Check(catalog.Length==2,"fixture selects the native-cell GBuffer owner pair");
+        stages.GetField("catalog",stat).SetValue(null,catalog);stages.GetField("catalogEpoch",stat).SetValue(null,Property("Backend.GuestBridgeClient","ResourceEpoch"));
+        var programType=core.GetType("ClientPlugin.Backend.GuestProgram",true);var submit=Delegate.CreateDelegate(typeof(Action<>).MakeGenericType(typeof(IReadOnlyList<>).MakeGenericType(programType)),core.GetType("ClientPlugin.Backend.GuestBridgeClient",true).GetMethod("Submit",stat));
+        NativeWorldVertex V(float x,float y){uint n=VF_Packer.PackNormal(Vector3.Backward);return new(){Material=new(){X=x,Y=y,Z=0,Scale=1,NormalX=n&65535,NormalY=n>>16,TangentX=1,TangentY=.5f,TangentZ=.5f,TangentW=1,U=(x+1)/2,V=(1-y)/2},WeightX=1};}
+        backend.UploadWorldMesh(956001,new[]{V(-1,-1),V(1,-1),V(0,1)},new uint[]{0,1,2,2,1,0});backend.UploadTexture(956002,1,1,0,new byte[]{180,180,180,0},true);backend.UploadTexture(956003,1,1,0,new byte[]{128,128,255,100},false);backend.UploadTexture(956004,1,1,0,new byte[]{255,1,0,0},false);
+        ulong model=backend.RegisterPassModel(new[]{new NativePassPart{Mesh=956001,Color=956002,Normal=956003,Extensions=956004,First=0,Count=6,Material=10,Flags=2}}),family=backend.RegisterPassFamily(Array.Empty<float>());backend.BindPassLevel(family,0,model);
+        NativePassActor Actor(int step){var value=new NativePassActor{Owner=10,Family=family,Group=7,Flags=1|8|16|32,Scale=1,Lod=new(){Previous=-1}};double x=.1*step;value.Translation[0]=x;value.Translation[2]=-5;value.Bounds[0]=x-1;value.Bounds[1]=-1;value.Bounds[2]=-5;value.Bounds[3]=x+1;value.Bounds[4]=1;value.Bounds[5]=-5;value.Basis[0]=value.Basis[4]=value.Basis[8]=1;return value;}
+        var actor=Actor(0);ulong handle=backend.RegisterPassActor(ref actor,Array.Empty<NativePassAppearance>());
+        NativePassFrame CellInput(){var input=new NativePassFrame{Coefficient=1,Delta=.1f,GlobalFlags=3,SmoothDistance=100};input.Global[4]=.25f;input.Global[6]=1;return input;}var cellViews=new[]{new NativePassView{Id=0,Kind=0,Flags=1}};
+        var post=new VulkanPostprocess();post.Hbao.Enabled=false;post.Ssao.Enabled=false;post.Settings.BloomEnabled=false;post.Settings.EnableEyeAdaptation=false;
+        uint frame=0;
+        (byte[] G,float[] M) Frame(int step,bool pipelined=false){
+            Call("Backend.RenderHost","PrepareShaderGenerations");backend.BeginPacketCollection();post.Configure(backend,64,64,false,view:MatrixD.Identity,projection:projection);
+            var current=Actor(step);current.Handle=handle;backend.UpdatePassActors(new[]{current},1,Array.Empty<NativePassAppearance>(),0);var cellFrame=CellInput();backend.PreparePassFrame(ref cellFrame,cellViews,cellViews.Length);backend.PublishPassFrame(Array.Empty<NativePassQueryResult>(),0);
+            backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,projection,64,64,light,postprocess:post.Settings),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(projection)));
+            Check(backend.BeginFrame(projection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black),"cell velocity frame step="+step+" pipelined="+pipelined);
+            Call("Backend.GuestFrame","Capture");frame=(uint)Call("Backend.GuestFrame","U32",16);Call("Backend.SceneView","Set",64,64,0d,0d,0d,0f,0f,-1f);Call("Backend.GuestPassList","SubmitFrame",submit);
+            if(pipelined)backend.EndFrameAsync();else backend.EndFrame();return(backend.ReadbackGbufferColor(64,64),backend.ReadbackMotion(64,64));
+        }
+        (byte[] G,float[] M) Run(bool pipelined=false){(byte[],float[]) last=default;for(int step=0;step<4;++step)last=Frame(step,pipelined&&step==3);return last;}
+        Vector2 Analytic(){Vector4D Clip(double x){var c=Vector4D.Transform(new Vector4D(x,0,-5,1),projection);return c/c.W;}var curr=Clip(.3);var prev=Clip(.2);return new Vector2((float)((prev.X-curr.X)*.5*64),(float)((curr.Y-prev.Y)*.5*64));}
+        int centre=(32*64+32)*2,corner=(2*64+2)*2,colour=(32*64+32)*4;var expected=Analytic();
+        string Motion(float[] m)=>m[centre]+","+m[centre+1];
+        bool Near(float[] m,float tolerance)=>Math.Abs(m[centre]-expected.X)<=tolerance&&Math.Abs(m[centre+1]-expected.Y)<=tolerance;
+        bool Magenta(byte[] g)=>g[colour]==255&&g[colour+1]==0&&g[colour+2]==255;
+        string root=Path.Combine(output,"CellVelocityPack-"+Guid.NewGuid().ToString("N")),file=Path.Combine(root,"Overlay/Geometry/Passes/GBuffer/PixelStage.hlsli");Directory.CreateDirectory(Path.GetDirectoryName(file));
+        File.WriteAllText(Path.Combine(root,"anomaly.json"),"{\"id\":\""+owner+"\",\"exclusive\":[\"GBuffer\"]}");
+        string magenta=VelocityGBufferPixelStage(core,bin).Replace("ApplyMultipliers(material_output);","ApplyMultipliers(material_output);material_output.base_color=float3(1,0,1);");
+        void Register(string text){File.WriteAllText(file,text);Call("Backend.GuestPassList","RegisterRoot",owner,root,null);}
+        try{
+            var stock=Run();Console.WriteLine("CELL VELOCITY analytic="+expected+" stock="+Motion(stock.M));
+            Check(Near(stock.M,.02f)&&stock.M[corner]==0&&stock.M[corner+1]==0,"stock cell replay writes the analytic per-instance motion");
+            Check(stock.M.SequenceEqual(Run(true).M),"stock cell replay agrees across recording modes");
+            Register(magenta);var owned=Run(true);Check(Property("Backend.GuestPostprocessStages","Error")==null,"velocity-aware native-cell owner prepares: "+Property("Backend.GuestPostprocessStages","Error"));
+            Console.WriteLine("CELL VELOCITY owned="+Motion(owned.M));var state=backend.GetPostprocessGeneration(16385);
+            Check(Magenta(owned.G)&&state.Active!=0&&state.Executions>0&&state.LastFrame==frame,"native-cell owner pair executes the replacement");
+            Check(Near(owned.M,.02f)&&Math.Abs(owned.M[centre]-stock.M[centre])<.01f&&Math.Abs(owned.M[centre+1]-stock.M[centre+1])<.01f&&owned.M[corner]==0,"owner-emitted Target3 from the t15 history stream matches analytic and replay motion");
+            Check(owned.M.SequenceEqual(Run().M),"native-cell owner motion agrees across recording modes");
+            Register(magenta.Replace("float2 anomaly_velocity = input.anomaly_velocity;","float2 anomaly_velocity = float2(3, -2);"));var custom=Run(true);Console.WriteLine("CELL VELOCITY custom="+Motion(custom.M));
+            Check(Property("Backend.GuestPostprocessStages","Error")==null&&custom.M[centre]==3&&custom.M[centre+1]==-2&&custom.M[corner]==0&&Magenta(custom.G),"pack-written velocity reaches Target3 from the native-cell owning invocation; replay skips that group");
+            Call("Backend.GuestPassList","UnregisterRoot",owner);var restored=Run(true);
+            Check(restored.M.SequenceEqual(stock.M)&&restored.G.SequenceEqual(stock.G),"unregister restores exact stock native-cell material and replay motion");
+            Run();Check(backend.GetPostprocessGeneration(16385).Retired==0,"native-cell velocity owner bundles retire after completed submissions");
+            Check(backend.GetStats().ValidationEnabled!=0&&backend.GetStats().ValidationErrors==0,"native-cell velocity owners have zero core/synchronization errors");
+        }finally{Call("Backend.GuestPassList","UnregisterRoot",owner);backend.ClearPassFrame();stages.GetField("catalog",stat).SetValue(null,null);stages.GetField("catalogEpoch",stat).SetValue(null,-1L);}
+        return checks;
+    }
 }

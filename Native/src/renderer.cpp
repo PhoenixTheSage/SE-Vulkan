@@ -165,7 +165,7 @@ struct StockGBuffer {
 struct WorldPipeline { VkPipeline handle{}; uint32_t object_bytes{},type{}; bool indirect_safe{};VkPipeline stock_cascade{},stock_spot{}; uint32_t row0=0xFFFFFFFFu,row1=0xFFFFFFFFu,row2=0xFFFFFFFFu; bool velocity{}; };
 struct PassGpuState {
     native_pass::Scene scene;bool ready{};
-    struct Pipeline{VkPipeline back{},no_cull{};};std::array<Pipeline,28> pipelines{};
+    struct Pipeline{VkPipeline back{},no_cull{};bool velocity{};};std::array<Pipeline,28> pipelines{};
     std::array<Buffer,2> instances{},objects{},history_instances{};std::array<uint8_t,128> placeholder{};
     std::unordered_map<uint64_t,std::array<float,12>> history_rows;std::vector<uint32_t> history_offsets;uint64_t history_frame=UINT64_MAX;
     std::vector<uint32_t> offsets;std::vector<VkDescriptorSet> materials;std::array<uint32_t,64> spot_views{};uint64_t static_dirty{};

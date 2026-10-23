@@ -36,8 +36,8 @@ public sealed partial class NativeBackend
     VulkanShaderRequest ExtendedGeometryRequest(uint id,ShaderSourceGeneration generation,Dictionary<string,string> defines,bool velocity=false){
         if((NativeOwnerFeatures()&ExtendedGeometryFeature(id))==0)throw new NotSupportedException("Update coordinated SE-Vulkan: requested native-cell/GPU owner generation capability unavailable.");
         uint pipeline=(id-(CellModule(id)?16384u:GpuNewModule(id)?32768u:49152u))/2;bool pixel=(id&1)!=0;VulkanShaderRequest request;
-        // GPU NEW GBuffer owners take DX11's USE_SIMPLE_INSTANCING velocity contract (t15 via instance references).
-        if(velocity&&GpuNewModule(id)&&(pipeline<4||pipeline>=12)&&postprocessLibrary.DerivedRequest(NativePassShaderVariants.Materials.Single(v=>v.Id==pipeline).Vertex,generation,defines).Defines.ContainsKey("USE_SIMPLE_INSTANCING"))defines=new Dictionary<string,string>(defines,StringComparer.Ordinal){["ANOMALY_VELOCITY"]="1"};
+        // Native-cell and GPU NEW GBuffer owners take DX11's USE_SIMPLE_INSTANCING velocity contract (t15).
+        if(velocity&&(CellModule(id)||GpuNewModule(id))&&(pipeline<4||pipeline>=12)&&postprocessLibrary.DerivedRequest(NativePassShaderVariants.Materials.Single(v=>v.Id==pipeline).Vertex,generation,defines).Defines.ContainsKey("USE_SIMPLE_INSTANCING"))defines=new Dictionary<string,string>(defines,StringComparer.Ordinal){["ANOMALY_VELOCITY"]="1"};
         if(GpuOldModule(id)){var spec=GeometryOwners[pipeline];request=spec.Vertex!=null?postprocessLibrary.DerivedRequest(pixel?spec.Pixel:spec.Vertex,generation,defines):postprocessLibrary.DerivedExtraRequest(spec.Extra,spec.Material,pixel?"Pixel":"Vertex",spec.Defines,generation,defines);}
         else{var spec=NativePassShaderVariants.Materials.Single(v=>v.Id==pipeline);request=postprocessLibrary.DerivedRequest(pixel?spec.Pixel:spec.Vertex,generation,defines);}
         if(!CellModule(id))postprocessLibrary.EnableGpuOpaqueDerivation(request,ExtendedGeometryArtifact(id));return request;

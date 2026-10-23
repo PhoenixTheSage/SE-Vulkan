@@ -129,6 +129,7 @@ void render_object_motion(VkCommandBuffer cmd,WorldSlot& slot){
         vkCmdPushConstants(cmd,world.motion_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(push),&push);
         const auto& groups=pass_scene.scene.render_groups();
         for(uint32_t i=0;i<groups.size();++i){const auto& group=groups[i];if(group.key.view!=0 || group.kind!=native_pass::Kind::Colour || !group.count() || pass_scene.history_offsets.at(i)==UINT32_MAX)continue;
+            if(written&&pass_scene.pipelines.at(group.key.shader<4?group.key.shader:12+group.key.shader-4).velocity)continue;
             const auto& mesh=world.meshes.at(group.key.mesh);world_model_raster(cmd,0,group.key.double_sided?0x10000000u:0x08000000u);
             VkBuffer buffers[]{mesh.vertices.handle,pass_scene.instances[slot_index].handle,pass_scene.history_instances[slot_index].handle};VkDeviceSize offsets[]{mesh.vertex_offset,pass_scene.offsets.at(i),pass_scene.history_offsets[i]};
             vkCmdBindVertexBuffers(cmd,0,3,buffers,offsets);vkCmdBindIndexBuffer(cmd,mesh.indices.handle,mesh.index_offset,VK_INDEX_TYPE_UINT32);

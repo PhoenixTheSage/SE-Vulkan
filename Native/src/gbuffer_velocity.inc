@@ -50,8 +50,9 @@ bool gbuffer_velocity_begin(VkCommandBuffer cmd,WorldSlot& slot){
     if(gpu_frame){for(uint32_t i=0;i<3;++i){gbuffer_velocity.camera_delta[i]=gbuffer_velocity.camera_valid?float(opaque_reference.frame.camera[i]-gbuffer_velocity.camera[i]):0.f;gbuffer_velocity.camera[i]=opaque_reference.frame.camera[i];}gbuffer_velocity.camera_valid=true;}
     bool live=false,gpu=false;for(uint32_t i=0;i<20&&i<world.pipelines.size();++i)live|=world.pipelines[i].velocity;
     if(gpu_frame)for(const auto& pipeline:opaque_stock.newer)gpu|=pipeline.velocity;
-    if((!live&&!gpu)||!extent.width||!extent.height)return false;
-    uint32_t draws=0;if(live)for(const auto& draw:world.current().draws)if(!(draw.packet.flags&(4096|8192))&&world.pipelines[draw.packet.pipeline].velocity)++draws;
+    uint32_t cells=0;if(pass_scene.ready){const auto& groups=pass_scene.scene.render_groups();for(const auto& group:groups)if(group.key.view==0&&group.kind==native_pass::Kind::Colour&&group.count()&&pass_scene.pipelines.at(group.key.shader<4?group.key.shader:12+group.key.shader-4).velocity)++cells;}
+    if((!live&&!gpu&&!cells)||!extent.width||!extent.height)return false;
+    uint32_t draws=cells;if(live)for(const auto& draw:world.current().draws)if(!(draw.packet.flags&(4096|8192))&&world.pipelines[draw.packet.pipeline].velocity)++draws;
     if(!draws&&!gpu)return false;
     gbuffer_velocity.stride=uint32_t((sizeof(GBufferVelocityConstants)+world.alignment-1)/world.alignment*world.alignment);gbuffer_velocity.capacity=draws+(gpu?1u:0u);
     auto& constants=gbuffer_velocity.constants[slot_index];world_buffer(constants,uint64_t(gbuffer_velocity.capacity)*gbuffer_velocity.stride,VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
@@ -59,7 +60,9 @@ bool gbuffer_velocity_begin(VkCommandBuffer cmd,WorldSlot& slot){
         // Rigid owners never index t15/t16; PS probe mode zero selects the computed velocity.
         *zero=make_buffer(64,zero==&gbuffer_velocity.probe?VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT:VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,true);std::memset(zero->mapped,0,64);check(vmaFlushAllocation(allocator,zero->memory,0,64),"flush GBuffer velocity defaults");}
     auto set=world_set(slot,gbuffer_velocity.layout);
-    VkDescriptorBufferInfo infos[]{{constants.handle,0,sizeof(GBufferVelocityConstants)},{gbuffer_velocity.probe.handle,0,16},{gbuffer_velocity.prev_world.handle,0,64},{gbuffer_velocity.prev_bones.handle,0,64}};
+    // Native-cell owners index t15 in the current slot's per-instance history stream; classic owners ignore it.
+    auto& cell_history=pass_scene.history_instances[slot_index];bool cell_rows=cells&&cell_history.handle&&!pass_scene.history_offsets.empty();
+    VkDescriptorBufferInfo infos[]{{constants.handle,0,sizeof(GBufferVelocityConstants)},{gbuffer_velocity.probe.handle,0,16},cell_rows?VkDescriptorBufferInfo{cell_history.handle,0,cell_history.bytes}:VkDescriptorBufferInfo{gbuffer_velocity.prev_world.handle,0,64},{gbuffer_velocity.prev_bones.handle,0,64}};
     const uint32_t bindings[]{0,1,128,129};const VkDescriptorType types[]{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
     VkWriteDescriptorSet writes[4]{};for(uint32_t i=0;i<4;++i){writes[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[i].dstSet=set;writes[i].dstBinding=bindings[i];writes[i].descriptorCount=1;writes[i].descriptorType=types[i];writes[i].pBufferInfo=&infos[i];}
     vkUpdateDescriptorSets(device,4,writes,0,nullptr);gbuffer_velocity.set=set;
@@ -77,6 +80,13 @@ bool gbuffer_velocity_begin(VkCommandBuffer cmd,WorldSlot& slot){
     ensure_motion_image();
     barrier(cmd,world.motion.handle,world.motion_sampled?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,world.motion_sampled?VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT:VK_PIPELINE_STAGE_2_NONE,world.motion_sampled?VK_ACCESS_2_SHADER_SAMPLED_READ_BIT:0,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     return true;
+}
+// DX11 indexes t15[SV_InstanceID + InstanceBase]; each cell group starts at its history offset.
+void gbuffer_velocity_bind_cell(VkCommandBuffer cmd,WorldSlot& slot,uint32_t group){
+    if(!gbuffer_velocity.frame)throw std::runtime_error("native-cell velocity owner drawn outside its prepared GBuffer frame");
+    auto& history=pass_scene.history_instances[slot_index];uint32_t at=group<pass_scene.history_offsets.size()?pass_scene.history_offsets[group]:UINT32_MAX;bool known=at!=UINT32_MAX&&history.handle;
+    auto c=gbuffer_velocity_frame_constants(slot);c.has_history=known?1u:0u;c.prev_count=known?uint32_t(history.bytes/64):0u;c.instance_base=known?at/64:0u;
+    uint32_t offset=gbuffer_velocity_store(c);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,gbuffer_velocity.pipeline_layout,2,1,&gbuffer_velocity.set,1,&offset);
 }
 void gbuffer_velocity_bind_gpu(VkCommandBuffer cmd,VkPipelineLayout layout){
     if(!gbuffer_velocity.gpu_set)throw std::runtime_error("GPU velocity owner drawn outside its prepared GBuffer frame");
