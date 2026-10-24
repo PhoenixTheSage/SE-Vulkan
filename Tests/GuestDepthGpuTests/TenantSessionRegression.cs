@@ -146,10 +146,55 @@ partial class Program
         Check(refused != null && refused.Contains("pipeline"), "an unknown pipeline is refused at record time");
         Frame(null); Check(backend.TenantStats().Frames == before + 2, "a frame without tenant commands runs nothing");
 
+        // Option C: tenant BLAS/TLAS and inline ray query (RayQuery<FORCE_NON_OPAQUE>) with candidate filtering.
+        if (backend.TenantStats().RayQuery)
+        {
+            ulong rejectedBefore = backend.TenantStats().Rejected;
+            var rq = Keep(backend.TenantCreateCompute(Spv("rayquery", "RaytracingAccelerationStructure Scene:register(t0);RWStructuredBuffer<float4> Out:register(u0);" +
+                "[numthreads(4,1,1)]void main(uint3 id:SV_DispatchThreadID){RayDesc r;r.Origin=float3(id.x==3?5:.3,.2,0);r.Direction=float3(0,0,-1);r.TMin=0;r.TMax=100;" +
+                "RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> q;q.TraceRayInline(Scene,0,0xFF,r);float procedural=-1;" +
+                "while(q.Proceed()){if(q.CandidateType()==CANDIDATE_NON_OPAQUE_TRIANGLE){if(id.x!=1||q.CandidateInstanceID()!=7)q.CommitNonOpaqueTriangleHit();}else procedural=q.CandidateInstanceID();}" +
+                "float4 o=float4(-1,-1,-1,procedural);if(q.CommittedStatus()==COMMITTED_TRIANGLE_HIT)o.xyz=float3(q.CommittedRayT(),q.CommittedInstanceID(),q.CommittedPrimitiveIndex());Out[id.x]=o;}", "main", "cs_6_5"), "main"));
+            var verts = Keep(backend.TenantCreateBuffer(4 * 16)); var tris = Keep(backend.TenantCreateBuffer(6 * 4)); var box = Keep(backend.TenantCreateBuffer(24));
+            var quad = Keep(backend.TenantCreateAccel(false)); var unknown = Keep(backend.TenantCreateAccel(false)); var tlas = Keep(backend.TenantCreateAccel(true));
+            var rays = Keep(backend.TenantCreateBuffer(4 * 16)); var unbound = Keep(backend.TenantCreateBuffer(4 * 16));
+            byte[] Floats(params float[] v) => v.SelectMany(BitConverter.GetBytes).ToArray();
+            byte[] Instance(float tx, float ty, float tz, float sx, float sy, float sz, uint custom, ulong blas) =>
+                Floats(sx, 0, 0, tx, 0, sy, 0, ty, 0, 0, sz, tz).Concat(BitConverter.GetBytes(custom)).Concat(BitConverter.GetBytes(0xFFu)).Concat(BitConverter.GetBytes(1u)).Concat(new byte[4])
+                    .Concat(BitConverter.GetBytes(blas)).Concat(new byte[8]).ToArray();
+            for (int frame = 0; frame < 2; frame++)
+                Frame(() =>
+                {
+                    var l = new TenantList();
+                    if (frame == 0)
+                    {
+                        ulong v = l.Data(Floats(-1, -1, 0, 0, 1, -1, 0, 0, 1, 1, 0, 0, -1, 1, 0, 0)); l.Command(7, targets: new[] { verts }, blobOffset: v, bytes: 64);
+                        ulong t = l.Data(new uint[] { 0, 1, 2, 0, 2, 3 }.SelectMany(BitConverter.GetBytes).ToArray()); l.Command(7, targets: new[] { tris }, blobOffset: t, bytes: 24);
+                        ulong b = l.Data(Floats(0, 0, 0, 1, 1, 1)); l.Command(7, targets: new[] { box }, blobOffset: b, bytes: 24);
+                        l.Command(9, targets: new[] { quad, tris }, source: verts, x: 2, value: new uint[] { 16, 4 });
+                        l.Command(9, targets: new[] { unknown }, source: box, x: 1, flags: 1);
+                    }
+                    // A unit AABB scaled into x 4..6, z -3..-2: the procedural candidate for ray 3.
+                    var records = Instance(0, 0, -5, 1, 1, 1, 7, quad).Concat(Instance(0, 0, -10, 1, 1, 1, 9, quad)).Concat(Instance(4, -1, -3, 2, 2, 1, 11, unknown)).ToArray();
+                    ulong at = l.Data(records); l.Command(10, targets: new[] { tlas }, x: 3, blobOffset: at, bytes: (ulong)records.Length);
+                    int first = l.First; l.Bind(128, 8, tlas); l.Bind(384, 2, rays); l.Command(1, first, rq, 1, 1, 1);
+                    first = l.First; l.Bind(384, 2, unbound); l.Command(1, first, rq, 1, 1, 1);
+                    backend.TenantRecord(l.Commands, l.Bindings, l.Blob);
+                });
+            var r = Read(rays, 64);
+            Check(Near(F(r, 0), 5) && F(r, 1) == 7 && F(r, 2) == 0 && Near(F(r, 8), 5), "a ray query hits the nearer TLAS instance with its custom index, primitive and distance");
+            Check(Near(F(r, 4), 10) && F(r, 5) == 9, "rejecting a candidate lets the query commit the farther instance (alpha-test style filtering)");
+            Check(F(r, 12) == -1 && F(r, 15) == 11, "an AABB instance reaches the shader as a procedural candidate and commits nothing");
+            Check(Enumerable.Range(0, 4).All(i => F(Read(unbound, 64), i * 4) == -1), "an unbound acceleration structure binding is an empty TLAS: every ray misses");
+            var st = backend.TenantStats();
+            Check(st.Builds == 2 + 2 && st.Accels == 3 && st.Rejected == rejectedBefore, "two BLAS builds once and a TLAS build per frame");
+        }
+        else Console.WriteLine("SKIP ray query checks: device has no ray query");
+
         foreach (var id in ids) backend.TenantDestroy(id);
         Frame(null); Frame(null);
         var empty = backend.TenantStats();
-        Check(empty.Buffers == 0 && empty.Images == 0 && empty.Pipelines == 0 && empty.Bytes == 0, "destroy retires every tenant resource");
+        Check(empty.Buffers == 0 && empty.Images == 0 && empty.Pipelines == 0 && empty.Accels == 0 && empty.Bytes == 0, "destroy retires every tenant resource");
         Check(backend.GetStats().ValidationEnabled != 0 && backend.GetStats().ValidationErrors == 0, "tenant session lane raises zero validation errors");
         return checks;
     }

@@ -15,9 +15,12 @@ static constexpr uint64_t kTenantFrameConstants=0xFFFF000000000024ull;
 struct TenantImage{Image image{};VkFormat format{};uint32_t width{},height{},layers{1},bpp{4},component{};bool array{},storage{},ready{};std::unordered_map<uint32_t,VkImageView> targets;};
 struct TenantBinding{uint32_t binding{};VkDescriptorType type{};uint32_t shape{},component{},size{};};
 struct TenantPipeline{VkPipeline pipeline{};VkPipelineLayout layout{};VkDescriptorSetLayout set{};std::vector<TenantBinding> bindings;bool compute{};uint32_t targets{};VkFormat formats[3]{};};
-struct TenantRetired{uint64_t completion{};Buffer buffer{};TenantImage image{};TenantPipeline pipeline{};};
+// Ray-query acceleration structures; storage grows on build and is reused while it fits.
+struct TenantAccel{VkAccelerationStructureKHR handle{};Buffer storage{};VkDeviceSize size{};bool top{};};
+struct TenantRetired{uint64_t completion{};Buffer buffer{};TenantImage image{};TenantPipeline pipeline{};TenantAccel accel{};};
 struct TenantState{
     std::unordered_map<uint64_t,Buffer> buffers;std::unordered_map<uint64_t,TenantImage> images;std::unordered_map<uint64_t,TenantPipeline> pipelines;
+    std::unordered_map<uint64_t,TenantAccel> accels;Buffer scratch[2]{};TenantAccel dummy_tlas{};
     std::vector<uint64_t> fresh_buffers;std::vector<TenantRetired> retired;uint64_t next_id{1};
     std::vector<SevkTenantCommand> commands;std::vector<SevkTenantBinding> bindings;std::vector<uint8_t> blob;
     VkDescriptorPool pools[2]{};Buffer stream[2]{};VkSampler samplers[3]{};
@@ -49,7 +52,8 @@ void tenant_destroy_pipeline(TenantPipeline& p){
     if(p.pipeline)vkDestroyPipeline(device,p.pipeline,nullptr);if(p.layout)vkDestroyPipelineLayout(device,p.layout,nullptr);
     if(p.set)vkDestroyDescriptorSetLayout(device,p.set,nullptr);p={};
 }
-void tenant_destroy_retired(TenantRetired& r){destroy_buffer(r.buffer);tenant_destroy_image(r.image);tenant_destroy_pipeline(r.pipeline);}
+void tenant_destroy_accel(TenantAccel& a){if(a.handle && vkDestroyAccelerationStructureKHR)vkDestroyAccelerationStructureKHR(device,a.handle,nullptr);destroy_buffer(a.storage);a={};}
+void tenant_destroy_retired(TenantRetired& r){destroy_buffer(r.buffer);tenant_destroy_image(r.image);tenant_destroy_pipeline(r.pipeline);tenant_destroy_accel(r.accel);}
 void tenant_collect(uint64_t complete){
     for(auto it=tenant.retired.begin();it!=tenant.retired.end();)if(it->completion<=complete){tenant_destroy_retired(*it);it=tenant.retired.erase(it);}else ++it;
 }
@@ -57,7 +61,8 @@ void cleanup_tenant(){
     for(auto& r:tenant.retired)tenant_destroy_retired(r);
     for(auto& b:tenant.buffers)destroy_buffer(b.second);for(auto& i:tenant.images)tenant_destroy_image(i.second);for(auto& p:tenant.pipelines)tenant_destroy_pipeline(p.second);
     for(auto& d:tenant.dummies)destroy_image(d.second);destroy_buffer(tenant.dummy_buffer);
-    for(uint32_t i=0;i<2;++i){if(tenant.pools[i])vkDestroyDescriptorPool(device,tenant.pools[i],nullptr);destroy_buffer(tenant.stream[i]);}
+    for(auto& a:tenant.accels)tenant_destroy_accel(a.second);tenant_destroy_accel(tenant.dummy_tlas);
+    for(uint32_t i=0;i<2;++i){if(tenant.pools[i])vkDestroyDescriptorPool(device,tenant.pools[i],nullptr);destroy_buffer(tenant.stream[i]);destroy_buffer(tenant.scratch[i]);}
     for(auto s:tenant.samplers)if(s)vkDestroySampler(device,s,nullptr);
     bool without_format=tenant.without_format;tenant=TenantState{};tenant.without_format=without_format;
 }
@@ -71,8 +76,8 @@ void tenant_ensure(){
     }
     for(uint32_t i=0;i<2;++i){
         VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_SAMPLER,4096},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,32768},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,8192},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,16384},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,4096}};
-        VkDescriptorPoolCreateInfo p{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};p.maxSets=2048;p.poolSizeCount=5;p.pPoolSizes=sizes;
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,16384},{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,4096},{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,1024}};
+        VkDescriptorPoolCreateInfo p{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};p.maxSets=2048;p.poolSizeCount=ray.supported?6:5;p.pPoolSizes=sizes;
         check(vkCreateDescriptorPool(device,&p,nullptr,&tenant.pools[i]),"create tenant descriptor pool");
     }
     tenant.dummy_buffer=make_buffer(65536,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,false);
@@ -81,8 +86,17 @@ void tenant_ensure(){
 uint64_t tenant_create_buffer(uint64_t bytes){
     if(!bytes || bytes>(1ull<<31) || bytes%4)throw std::runtime_error("tenant buffer size must be a nonzero multiple of 4 up to 2 GiB");
     tenant_ensure();uint64_t id=tenant.next_id++;
-    tenant.buffers[id]=make_buffer(bytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,false);
+    tenant.buffers[id]=make_buffer(bytes,tenant_buffer_usage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT),false);
     tenant.fresh_buffers.push_back(id);return id;
+}
+// With ray query, tenant buffers can also be acceleration-structure build inputs.
+VkBufferUsageFlags tenant_buffer_usage(VkBufferUsageFlags usage)const{
+    return ray.supported?usage|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT|VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR:usage;
+}
+uint64_t tenant_create_accel(uint32_t top){
+    if(!ray.supported)throw std::runtime_error("tenant acceleration structures need ray query support");
+    if(top>1)throw std::runtime_error("tenant acceleration structure kind is 0 bottom or 1 top");
+    tenant_ensure();uint64_t id=tenant.next_id++;TenantAccel a{};a.top=top!=0;tenant.accels[id]=a;return id;
 }
 uint64_t tenant_create_image(uint32_t width,uint32_t height,uint32_t layers,uint32_t format_value,uint32_t flags){
     auto format=VkFormat(format_value);uint32_t component=0,bpp=tenant_texel(format,component);
@@ -110,8 +124,11 @@ std::vector<uint32_t> tenant_spirv(const void* data,uint64_t bytes){
     size_t first=0;bool storage=false,read=false,write=false;std::vector<size_t> images;
     for(size_t i=5;i<words.size();){uint32_t n=words[i]>>16,op=words[i]&65535;
         if(!n || n>words.size()-i)throw std::runtime_error("malformed tenant SPIR-V");
-        if(op==10)throw std::runtime_error("tenant shader requests a SPIR-V extension");
-        if(op==17 && n==2){uint32_t c=words[i+1];if(std::find(std::begin(allowed),std::end(allowed),c)==std::end(allowed))throw std::runtime_error("tenant shader requests capability "+std::to_string(c));
+        // Inline ray tracing is the one extension a tenant may use, on ray-query devices.
+        if(op==10){std::string name(reinterpret_cast<const char*>(&words[i+1]),strnlen(reinterpret_cast<const char*>(&words[i+1]),(n-1)*4));
+            if(name!="SPV_KHR_ray_query" || !ray.supported)throw std::runtime_error("tenant shader requests SPIR-V extension "+name);}
+        if(op==17 && n==2){uint32_t c=words[i+1];bool query=c==4472 && ray.supported;
+            if(!query && std::find(std::begin(allowed),std::end(allowed),c)==std::end(allowed))throw std::runtime_error("tenant shader requests capability "+std::to_string(c));
             if(!first)first=i;read|=c==55;write|=c==56;}
         if(op==25 && n>=9)images.push_back(i);
         i+=n;}
@@ -139,7 +156,8 @@ VkShaderModule tenant_module(const std::vector<uint32_t>& words,VkShaderStageFla
         if(r.push_constant_block_count)throw std::runtime_error("tenant shaders bind no push constants");
         for(uint32_t i=0;i<r.descriptor_binding_count;++i){auto& b=r.descriptor_bindings[i];auto type=VkDescriptorType(b.descriptor_type);
             if(b.set!=0 || b.count!=1)throw std::runtime_error("tenant shaders use single descriptors in set 0");
-            if(type!=VK_DESCRIPTOR_TYPE_SAMPLER && type!=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE && type!=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE && type!=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && type!=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+            if(type!=VK_DESCRIPTOR_TYPE_SAMPLER && type!=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE && type!=VK_DESCRIPTOR_TYPE_STORAGE_IMAGE && type!=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && type!=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+                && !(type==VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR && ray.supported))
                 throw std::runtime_error("unsupported tenant descriptor type at binding "+std::to_string(b.binding));
             TenantBinding t{b.binding,type};
             if(type==VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || type==VK_DESCRIPTOR_TYPE_STORAGE_IMAGE){
@@ -207,9 +225,14 @@ uint64_t tenant_create_raster(const void* vs,uint64_t vs_bytes,const char* vs_en
     }catch(...){vkDestroyShaderModule(device,vm,nullptr);if(pm)vkDestroyShaderModule(device,pm,nullptr);tenant_destroy_pipeline(p);throw;}
     vkDestroyShaderModule(device,vm,nullptr);vkDestroyShaderModule(device,pm,nullptr);uint64_t id=tenant.next_id++;tenant.pipelines[id]=std::move(p);return id;
 }
+// TLAS instance record in the blob: VkTransformMatrixKHR rows, custom index (24 bits), mask, flags, BLAS id.
+struct TenantInstance{float transform[12];uint32_t custom,mask,flags,pad;uint64_t blas,reserved;};
+static_assert(sizeof(TenantInstance)==80,"tenant TLAS instance record is 80 bytes");
+TenantInstance tenant_instance(const SevkTenantCommand& c,uint32_t k)const{TenantInstance r{};std::memcpy(&r,tenant.blob.data()+c.blob_offset+uint64_t(k)*80,80);return r;}
 bool tenant_pending_uses(uint64_t id)const{
     for(const auto& c:tenant.commands){if(c.pipeline==id || c.source==id)return true;for(uint32_t i=0;i<c.target_count && i<3;++i)if(c.targets[i]==id)return true;}
-    for(const auto& b:tenant.bindings)if((b.kind==1 || b.kind==2) && b.id==id)return true;
+    for(const auto& b:tenant.bindings)if((b.kind==1 || b.kind==2 || b.kind==8) && b.id==id)return true;
+    for(const auto& c:tenant.commands)if(c.op==10)for(uint32_t k=0;k<c.x;++k)if(tenant_instance(c,k).blas==id)return true;
     return false;
 }
 void tenant_destroy(uint64_t id){
@@ -218,6 +241,7 @@ void tenant_destroy(uint64_t id){
     if(auto b=tenant.buffers.find(id);b!=tenant.buffers.end()){r.buffer=b->second;tenant.buffers.erase(b);}
     else if(auto i=tenant.images.find(id);i!=tenant.images.end()){r.image=std::move(i->second);tenant.images.erase(i);}
     else if(auto p=tenant.pipelines.find(id);p!=tenant.pipelines.end()){r.pipeline=std::move(p->second);tenant.pipelines.erase(p);}
+    else if(auto a=tenant.accels.find(id);a!=tenant.accels.end()){r.accel=a->second;tenant.accels.erase(a);}
     else throw std::runtime_error("unknown tenant id");
     tenant.retired.push_back(std::move(r));
 }
@@ -231,7 +255,7 @@ void tenant_record(const SevkTenantCommand* commands,uint32_t count,const SevkTe
     auto buffer=[&](uint64_t id)->const Buffer&{auto f=tenant.buffers.find(id);if(f==tenant.buffers.end())throw std::runtime_error("unknown tenant buffer");return f->second;};
     auto image=[&](uint64_t id)->const TenantImage&{auto f=tenant.images.find(id);if(f==tenant.images.end())throw std::runtime_error("unknown tenant image");return f->second;};
     for(uint32_t i=0;i<binding_count;++i){const auto& b=bindings[i];
-        if(b.kind>7 || (b.kind==1 && !tenant.images.count(b.id)) || (b.kind==2 && !tenant.buffers.count(b.id)) || (b.kind==3 && (b.offset+b.bytes>blob_bytes || !b.bytes || b.bytes>65536)) || (b.kind==7 && b.id>2))
+        if(b.kind>8 || (b.kind==8 && (!tenant.accels.count(b.id) || !tenant.accels.at(b.id).top)) || (b.kind==1 && !tenant.images.count(b.id)) || (b.kind==2 && !tenant.buffers.count(b.id)) || (b.kind==3 && (b.offset+b.bytes>blob_bytes || !b.bytes || b.bytes>65536)) || (b.kind==7 && b.id>2))
             throw std::runtime_error("invalid tenant binding "+std::to_string(i));
         if(b.kind==2 && b.offset+b.bytes>buffer(b.id).bytes)throw std::runtime_error("tenant buffer binding range exceeds the buffer");}
     for(uint32_t i=0;i<count;++i){const auto& c=commands[i];
@@ -246,6 +270,16 @@ void tenant_record(const SevkTenantCommand* commands,uint32_t count,const SevkTe
         else if(c.op==4)image(c.targets[0]);
         else if(c.op==5){const auto& src=buffer(c.source);const auto& dst=buffer(c.targets[0]);if(!c.bytes || c.offset+c.bytes>dst.bytes || c.bytes>src.bytes)throw std::runtime_error("tenant buffer copy range");}
         else if(c.op==6){const auto& src=image(c.source);const auto& dst=image(c.targets[0]);if(src.width!=dst.width || src.height!=dst.height || src.layers!=dst.layers || src.bpp!=dst.bpp || c.source==c.targets[0])throw std::runtime_error("tenant image copy shape");}
+        else if(c.op==9){auto a=tenant.accels.find(c.targets[0]);if(a==tenant.accels.end() || a->second.top)throw std::runtime_error("tenant BLAS build needs a bottom-level id");
+            const auto& src=buffer(c.source);
+            if(c.flags&1){if(c.offset%8 || c.offset+uint64_t(c.x)*24>src.bytes)throw std::runtime_error("tenant AABB range exceeds its buffer");}
+            else{const auto& index=buffer(c.targets[1]);if(c.value[0]<12 || c.value[0]%4 || !c.value[1] || uint64_t(c.value[1])*c.value[0]>src.bytes || c.offset%4 || c.offset+uint64_t(c.x)*12>index.bytes)
+                throw std::runtime_error("tenant BLAS vertex/index range");}}
+        else if(c.op==10){auto a=tenant.accels.find(c.targets[0]);if(a==tenant.accels.end() || !a->second.top)throw std::runtime_error("tenant TLAS build needs a top-level id");
+            if(c.bytes!=uint64_t(c.x)*80 || c.blob_offset+c.bytes>blob_bytes || c.x>(1u<<24))throw std::runtime_error("tenant TLAS instance records are 80 bytes each");
+            for(uint32_t k=0;k<c.x;++k){TenantInstance r{};std::memcpy(&r,static_cast<const uint8_t*>(blob)+c.blob_offset+uint64_t(k)*80,80);
+                auto b=tenant.accels.find(r.blas);if(b==tenant.accels.end() || b->second.top)throw std::runtime_error("tenant TLAS instance names no bottom-level id");
+                for(float v:r.transform)if(!std::isfinite(v))throw std::runtime_error("nonfinite tenant TLAS transform");}}
         else if(c.op==8){const auto& dst=image(c.targets[0]);if(c.layers[0]>=dst.layers || c.bytes!=uint64_t(dst.width)*dst.height*dst.bpp || c.blob_offset+c.bytes>blob_bytes)throw std::runtime_error("tenant image upload shape");}
         else throw std::runtime_error("unknown tenant command "+std::to_string(c.op));}
     for(uint32_t i=0;i<binding_count;++i){auto b=bindings[i];if(b.kind==3)b.offset+=blob_base;tenant.bindings.push_back(b);}
@@ -295,6 +329,7 @@ bool tenant_renderer_view(VkCommandBuffer cmd,uint64_t id,uint32_t shape,VkImage
 VkDescriptorSet tenant_set(VkCommandBuffer cmd,const TenantPipeline& p,const SevkTenantCommand& c,const std::vector<VkDeviceSize>& offsets,VkImageView& hdr,uint32_t s){
     std::unordered_map<uint32_t,uint32_t> provided;for(uint32_t i=0;i<c.binding_count;++i)provided[tenant.bindings[c.binding_first+i].binding]=c.binding_first+i;
     std::vector<VkDescriptorImageInfo> images(p.bindings.size());std::vector<VkDescriptorBufferInfo> buffers(p.bindings.size());std::vector<VkWriteDescriptorSet> writes;
+    std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accels(p.bindings.size(),{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR});std::vector<VkAccelerationStructureKHR> handles(p.bindings.size());
     for(size_t i=0;i<p.bindings.size();++i){const auto& t=p.bindings[i];auto f=provided.find(t.binding);const SevkTenantBinding* b=f==provided.end()?nullptr:&tenant.bindings[f->second];
         uint32_t kind=b?b->kind:0;VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstBinding=t.binding;w.descriptorCount=1;w.descriptorType=t.type;
         if(t.type==VK_DESCRIPTOR_TYPE_SAMPLER){if(kind!=0 && kind!=7)return VK_NULL_HANDLE;images[i].sampler=tenant.samplers[kind==7?b->id:1];w.pImageInfo=&images[i];}
@@ -306,6 +341,10 @@ VkDescriptorSet tenant_set(VkCommandBuffer cmd,const TenantPipeline& p,const Sev
             else if(kind!=0)return VK_NULL_HANDLE;
             if(!view)view=tenant_dummy(cmd,storage,t.component,t.shape);
             images[i]={VK_NULL_HANDLE,view,layout};w.pImageInfo=&images[i];}
+        else if(t.type==VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR){
+            if(kind==8)handles[i]=tenant.accels.at(b->id).handle;else if(kind!=0)return VK_NULL_HANDLE;
+            if(!handles[i])handles[i]=tenant_dummy_tlas(cmd,s);
+            accels[i].accelerationStructureCount=1;accels[i].pAccelerationStructures=&handles[i];w.pNext=&accels[i];}
         else if(t.type==VK_DESCRIPTOR_TYPE_STORAGE_BUFFER){
             if(kind==2){const auto& buffer=tenant.buffers.at(b->id);buffers[i]={buffer.handle,b->offset,b->bytes?b->bytes:VK_WHOLE_SIZE};}
             else if(kind==0)buffers[i]={tenant.dummy_buffer.handle,0,VK_WHOLE_SIZE};else return VK_NULL_HANDLE;
@@ -321,6 +360,34 @@ VkDescriptorSet tenant_set(VkCommandBuffer cmd,const TenantPipeline& p,const Sev
     VkDescriptorSet set{};if(vkAllocateDescriptorSets(device,&allocate,&set)!=VK_SUCCESS)return VK_NULL_HANDLE;
     for(auto& w:writes)w.dstSet=set;vkUpdateDescriptorSets(device,uint32_t(writes.size()),writes.data(),0,nullptr);return set;
 }
+// Builds into the accel, growing its storage; scratch is per slot and serialized by the command barriers.
+void tenant_build(VkCommandBuffer cmd,TenantAccel& a,const VkAccelerationStructureGeometryKHR& geometry,uint32_t count,uint32_t s){
+    VkAccelerationStructureBuildGeometryInfoKHR build{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+    build.type=a.top?VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR:VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;build.flags=VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    build.mode=VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;build.geometryCount=1;build.pGeometries=&geometry;
+    VkAccelerationStructureBuildSizesInfoKHR sizes{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    vkGetAccelerationStructureBuildSizesKHR(device,VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,&build,&count,&sizes);
+    if(!a.handle || a.size<sizes.accelerationStructureSize){
+        if(a.handle || a.storage.handle){TenantRetired r{};r.completion=tenant_retire_completion();r.accel=a;tenant.retired.push_back(std::move(r));}
+        bool top=a.top;a={};a.top=top;
+        a.storage=make_buffer(sizes.accelerationStructureSize,VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,false);
+        VkAccelerationStructureCreateInfoKHR info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};info.buffer=a.storage.handle;info.size=sizes.accelerationStructureSize;info.type=build.type;
+        check(vkCreateAccelerationStructureKHR(device,&info,nullptr,&a.handle),"create tenant acceleration structure");a.size=sizes.accelerationStructureSize;
+    }
+    auto& scratch=tenant.scratch[s];VkDeviceSize need=sizes.buildScratchSize+ray.scratch_alignment;
+    if(scratch.bytes<need){if(scratch.handle){TenantRetired r{};r.completion=tenant_retire_completion();r.buffer=scratch;tenant.retired.push_back(std::move(r));}
+        scratch=make_buffer(std::max<VkDeviceSize>(need,1ull<<20),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,false);}
+    build.dstAccelerationStructure=a.handle;build.scratchData.deviceAddress=(ray_address(scratch.handle)+ray.scratch_alignment-1)&~(ray.scratch_alignment-1);
+    VkAccelerationStructureBuildRangeInfoKHR range{count,0,0,0};const VkAccelerationStructureBuildRangeInfoKHR* ranges=&range;
+    vkCmdBuildAccelerationStructuresKHR(cmd,1,&build,&ranges);++tenant.stats.builds;
+}
+// An empty TLAS answers unbound acceleration-structure bindings (every ray misses).
+VkAccelerationStructureKHR tenant_dummy_tlas(VkCommandBuffer cmd,uint32_t s){
+    if(tenant.dummy_tlas.handle)return tenant.dummy_tlas.handle;
+    tenant.dummy_tlas.top=true;VkAccelerationStructureGeometryKHR g{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};g.geometryType=VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    g.geometry.instances={VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};g.geometry.instances.data.deviceAddress=ray_address(tenant.stream[s].handle);
+    tenant_build(cmd,tenant.dummy_tlas,g,0,s);--tenant.stats.builds;tenant_barrier(cmd);return tenant.dummy_tlas.handle;
+}
 // Runs this frame's tenant list. The caller has ended the lighting pass; HDR stays COLOR_ATTACHMENT.
 void tenant_execute(VkCommandBuffer cmd){
     if(tenant.commands.empty())return;
@@ -331,14 +398,16 @@ void tenant_execute(VkCommandBuffer cmd){
         for(const auto& t:p->second.bindings)if(t.binding==binding && t.type==VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)return t.size;return 0;};
     for(size_t i=0;i<tenant.commands.size();++i){const auto& c=tenant.commands[i];
         if(c.op==7 || c.op==8){used=(used+15)&~VkDeviceSize(15);uploads[i]=used;used+=c.bytes;}
+        if(c.op==10){used=(used+15)&~VkDeviceSize(15);uploads[i]=used;used+=VkDeviceSize(c.x)*sizeof(VkAccelerationStructureInstanceKHR);}
         for(uint32_t j=0;j<c.binding_count;++j){const auto& b=tenant.bindings[c.binding_first+j];if(b.kind!=3)continue;
             used=(used+255)&~VkDeviceSize(255);offsets[c.binding_first+j]=used;used+=std::max<VkDeviceSize>(b.bytes,size_of(c,b.binding));}}
     auto& stream=tenant.stream[s];
     if(stream.bytes<used){if(stream.handle){TenantRetired r{};r.completion=tenant_retire_completion();r.buffer=stream;tenant.retired.push_back(std::move(r));stream={};}
-        stream=make_buffer(std::max<VkDeviceSize>(used*2,4ull<<20),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT,true);}
+        stream=make_buffer(std::max<VkDeviceSize>(used*2,4ull<<20),tenant_buffer_usage(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT),true);}
     auto* mapped=static_cast<uint8_t*>(stream.mapped);std::memset(mapped,0,65536);
     for(size_t i=0;i<tenant.commands.size();++i){const auto& c=tenant.commands[i];
         if(c.op==7 || c.op==8)std::memcpy(mapped+uploads[i],tenant.blob.data()+c.blob_offset,c.bytes);
+
         for(uint32_t j=0;j<c.binding_count;++j){const auto& b=tenant.bindings[c.binding_first+j];if(b.kind!=3)continue;
             VkDeviceSize span=std::max<VkDeviceSize>(b.bytes,size_of(c,b.binding));std::memset(mapped+offsets[c.binding_first+j],0,span);
             std::memcpy(mapped+offsets[c.binding_first+j],tenant.blob.data()+b.offset,b.bytes);}}
@@ -363,6 +432,27 @@ void tenant_execute(VkCommandBuffer cmd){
             region.srcSubresource=region.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,src.layers};region.extent={src.width,src.height,1};
             vkCmdCopyImage(cmd,src.image.handle,VK_IMAGE_LAYOUT_GENERAL,dst.image.handle,VK_IMAGE_LAYOUT_GENERAL,1,&region);}
         else if(c.op==7){VkBufferCopy region{uploads[i],c.offset,c.bytes};vkCmdCopyBuffer(cmd,stream.handle,tenant.buffers.at(c.targets[0]).handle,1,&region);}
+        else if(c.op==9){VkAccelerationStructureGeometryKHR g{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};g.flags=VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR;
+            const auto& src=tenant.buffers.at(c.source);
+            if(c.flags&1){g.geometryType=VK_GEOMETRY_TYPE_AABBS_KHR;g.geometry.aabbs={VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR};
+                g.geometry.aabbs.data.deviceAddress=ray_address(src.handle,c.offset);g.geometry.aabbs.stride=24;}
+            else{g.geometryType=VK_GEOMETRY_TYPE_TRIANGLES_KHR;g.geometry.triangles={VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR};
+                g.geometry.triangles.vertexFormat=VK_FORMAT_R32G32B32_SFLOAT;g.geometry.triangles.vertexData.deviceAddress=ray_address(src.handle);
+                g.geometry.triangles.vertexStride=c.value[0];g.geometry.triangles.maxVertex=c.value[1]-1;g.geometry.triangles.indexType=VK_INDEX_TYPE_UINT32;
+                g.geometry.triangles.indexData.deviceAddress=ray_address(tenant.buffers.at(c.targets[1]).handle,c.offset);}
+            tenant_build(cmd,tenant.accels.at(c.targets[0]),g,c.x,s);}
+        else if(c.op==10){
+            // BLAS ids become addresses when the TLAS command runs, after this list's earlier BLAS builds created them.
+            // A BLAS never built is an inactive instance (reference 0). Host writes before submission need only a flush.
+            for(uint32_t k=0;k<c.x;++k){auto r=tenant_instance(c,k);VkAccelerationStructureInstanceKHR v{};std::memcpy(&v.transform,r.transform,48);
+                v.instanceCustomIndex=r.custom&0xFFFFFF;v.mask=r.mask&0xFF;v.flags=r.flags&0xFF;const auto& b=tenant.accels.at(r.blas);
+                if(b.handle){VkAccelerationStructureDeviceAddressInfoKHR address{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};address.accelerationStructure=b.handle;
+                    v.accelerationStructureReference=vkGetAccelerationStructureDeviceAddressKHR(device,&address);}
+                std::memcpy(mapped+uploads[i]+uint64_t(k)*sizeof(v),&v,sizeof(v));}
+            if(c.x)check(vmaFlushAllocation(allocator,stream.memory,uploads[i],VkDeviceSize(c.x)*sizeof(VkAccelerationStructureInstanceKHR)),"flush tenant TLAS instances");
+            VkAccelerationStructureGeometryKHR g{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};g.geometryType=VK_GEOMETRY_TYPE_INSTANCES_KHR;
+            g.geometry.instances={VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};g.geometry.instances.data.deviceAddress=ray_address(stream.handle,uploads[i]);
+            tenant_build(cmd,tenant.accels.at(c.targets[0]),g,c.x,s);}
         else if(c.op==8){const auto& dst=tenant.images.at(c.targets[0]);VkBufferImageCopy region{};region.bufferOffset=uploads[i];
             region.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,c.layers[0],1};region.imageExtent={dst.width,dst.height,1};
             vkCmdCopyBufferToImage(cmd,stream.handle,dst.image.handle,VK_IMAGE_LAYOUT_GENERAL,1,&region);}
@@ -391,5 +481,6 @@ void tenant_readback(uint64_t id,uint32_t layer,uint64_t offset,void* data,uint6
 }
 SevkTenantStats tenant_stats()const{
     SevkTenantStats s=tenant.stats;s.size=sizeof(s);s.buffers=uint32_t(tenant.buffers.size());s.images=uint32_t(tenant.images.size());s.pipelines=uint32_t(tenant.pipelines.size());s.bytes=0;
+    s.accels=uint32_t(tenant.accels.size());s.features=ray.supported?1u:0u;
     for(const auto& b:tenant.buffers)s.bytes+=b.second.bytes;for(const auto& i:tenant.images)s.bytes+=uint64_t(i.second.width)*i.second.height*i.second.layers*i.second.bpp;return s;
 }

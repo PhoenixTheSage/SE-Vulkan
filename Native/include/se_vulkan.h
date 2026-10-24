@@ -630,10 +630,15 @@ SEVK_API int32_t SEVK_CALL sevk_readback_hdr(void* ctx, void* rgba16f, uint64_t 
  * Command ops: 1 dispatch (x,y,z groups), 2 fullscreen draw (x,y viewport, 1-3 targets with layers),
  * 3 fill buffer (value[0] over offset/bytes, bytes 0 = rest), 4 clear image (value bits; flags 1 integer),
  * 5 copy buffer (source -> targets[0], offset/bytes), 6 copy image (source -> targets[0], equal shape),
- * 7 upload buffer (blob[blob_offset, +bytes] -> targets[0] at offset), 8 upload image layer (layers[0]).
+ * 7 upload buffer (blob[blob_offset, +bytes] -> targets[0] at offset), 8 upload image layer (layers[0]),
+ * 9 build BLAS targets[0] (ray query): x triangles of uint32 index triples from buffer targets[1] at offset over float3
+ *   positions in buffer source (value[0] stride, value[1] vertex count); flags 1 builds x 24-byte AABBs from source at offset.
+ *   Geometry is non-opaque, so ray queries see every candidate,
+ * 10 build TLAS targets[0] from x 80-byte blob records {VkTransformMatrixKHR rows, custom index, mask, flags, pad, BLAS id, 0}.
  * Binding kinds: 0 null (zero dummy), 1 tenant image (sampled or storage per shader), 2 tenant buffer,
  * 3 uniform from blob (blob_offset as offset, bytes), 4 renderer image id (guest sentinels), 5 world texture id,
- * 6 world frame block (b0, 1280 bytes), 7 sampler (id 0 linear wrap, 1 linear clamp, 2 point clamp). */
+ * 6 world frame block (b0, 1280 bytes), 7 sampler (id 0 linear wrap, 1 linear clamp, 2 point clamp),
+ * 8 top-level acceleration structure (unbound or unbuilt: an empty TLAS). SPV_KHR_ray_query is accepted on ray-query devices. */
 typedef struct SevkTenantCommand {
     uint32_t op, binding_first, binding_count, target_count;
     uint32_t x, y, z, flags;
@@ -646,7 +651,8 @@ typedef struct SevkTenantCommand {
 typedef struct SevkTenantBinding { uint32_t binding, kind; uint64_t id, offset, bytes; } SevkTenantBinding;
 typedef struct SevkTenantStats {
     uint32_t size, buffers, images, pipelines;
-    uint64_t bytes, frames, commands, dispatches, draws, rejected;
+    uint64_t bytes, frames, commands, dispatches, draws, rejected, builds;
+    uint32_t accels, features; /* features bit0: ray query */
 } SevkTenantStats;
 /* Image formats are VkFormat values; raster target format 0 means the renderer HDR format. flags bit0: array view. */
 SEVK_API int32_t SEVK_CALL sevk_tenant_create_buffer(void* ctx, uint64_t bytes, uint64_t* id);
@@ -655,6 +661,8 @@ SEVK_API int32_t SEVK_CALL sevk_tenant_create_compute(void* ctx, const void* spi
 SEVK_API int32_t SEVK_CALL sevk_tenant_create_raster(void* ctx, const void* vs, uint64_t vs_bytes, const char* vs_entry, const void* ps, uint64_t ps_bytes, const char* ps_entry, uint32_t target_count, const uint32_t* formats, uint64_t* id);
 /* Retires a resource or pipeline once the GPU finishes with it; refused while this frame's commands use it. */
 SEVK_API int32_t SEVK_CALL sevk_tenant_destroy(void* ctx, uint64_t id);
+/* Acceleration structure id (top 0 bottom, 1 top); storage is allocated by its builds. Needs ray query. */
+SEVK_API int32_t SEVK_CALL sevk_tenant_create_accel(void* ctx, uint32_t top, uint64_t* id);
 /* Appends to this frame's list (between begin and end frame); the blob is copied. */
 SEVK_API int32_t SEVK_CALL sevk_tenant_record(void* ctx, const SevkTenantCommand* commands, uint32_t count, const SevkTenantBinding* bindings, uint32_t binding_count, const void* blob, uint64_t blob_bytes);
 /* Diagnostics: waits for the GPU and copies a buffer range or one image layer (bytes = width*height*texel). */

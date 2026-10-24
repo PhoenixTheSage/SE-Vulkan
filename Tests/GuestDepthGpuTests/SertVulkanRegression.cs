@@ -25,6 +25,15 @@ partial class Program
             catch(Exception e){failures.Add(name+": "+e.Message);Console.WriteLine("PIPELINE "+name+": "+e.Message);}
         Check(failures.Count==0,"the tenant session builds every SE-RT pipeline");
         foreach(var id in pipelines)backend.TenantDestroy(id);
+        if(backend.TenantStats().RayQuery){
+            // Option C: profile 4 compiles the SERT_RAY_QUERY variants (cs_6_5, SPV_KHR_ray_query) for the tenant session.
+            var query=new List<ulong>();
+            foreach(var name in new[]{"IdentifyRayQuery","TraceRayQuery","RefineRayQuery"})
+                try{var bytes=(byte[])scene.GetMethod("CompileShader",BindingFlags.Public|BindingFlags.Static)!.Invoke(null,new object[]{Path.Combine(shaders,name+".hlsl"),4})!;query.Add(backend.TenantCreateCompute(bytes,"__compute_shader"));}
+                catch(Exception e){failures.Add(name+": "+(e.InnerException??e).Message);Console.WriteLine("RAYQUERY "+name+": "+(e.InnerException??e).Message);}
+            Check(failures.Count==0,"RayScene.CompileShader profile 4 builds SE-RT's ray-query Identify, Trace and Refine pipelines");
+            foreach(var id in query)backend.TenantDestroy(id);
+        }
 
         // SoftwareVulkan end to end: Anomaly delivers v1 frames, SE-RT builds the scene and records its whole stack.
         object Call(string type,string method,params object[] args)=>core.GetType("ClientPlugin."+type,true)!.GetMethod(method,stat)!.Invoke(null,args)!;

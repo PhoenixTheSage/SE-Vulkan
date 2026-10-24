@@ -18,10 +18,10 @@ partial class Program
         // The compile Anomaly's RayScene.CompileShader performs on Vulkan: game shaders as the first include root.
         var compiler=VulkanShaderCompiler.CreateBundled(Path.Combine(output,"SertSpirv"));
         byte[] Compile(string path,int profile)=>SpirvRuntimeModule.Prepare(File.ReadAllBytes(compiler.Compile(new VulkanShaderRequest{SourcePath=path,
-            EntryPoint=profile==0?"__vertex_shader":profile==1?"__pixel_shader":"__compute_shader",Profile=profile==0?"vs_5_0":profile==1?"ps_5_0":"cs_5_0",
+            EntryPoint=profile==0?"__vertex_shader":profile==1?"__pixel_shader":"__compute_shader",Profile=profile==0?"vs_5_0":profile==1?"ps_5_0":profile==4?"cs_6_5":"cs_5_0",
             ContentDirectory=shaders,IncludeDirectories=new List<string>{Path.GetDirectoryName(path)!,shaders}}).SpirvPath));
         var hostType=sert.GetType("SERT.Integration.AnomalyHost",true)!;var host=Activator.CreateInstance(hostType,new object[]{(Func<string,int,byte[]>)Compile})!;
-        var softwareType=sert.GetType("SERT.Rendering.SoftwareVulkan",true)!;var software=Activator.CreateInstance(softwareType,host,(Func<string>)(()=>assets),false)!;
+        var softwareType=sert.GetType("SERT.Rendering.SoftwareVulkan",true)!;var software=Activator.CreateInstance(softwareType,host,(Func<string>)(()=>assets),false,false)!;
         var settingsType=sert.GetType("SERT.Core.ShadowSettings",true)!;var debugType=sert.GetType("SERT.Core.ShadowDebugView",true)!;
         void View(string name){var s=settingsType.GetProperty("Default")!.GetValue(null)!;settingsType.GetField("DebugView")!.SetValue(s,Enum.Parse(debugType,name));softwareType.GetMethod("SetShadowSettings")!.Invoke(software,new[]{s});}
         var assembler=sert.GetType("SERT.Core.SceneAssembler",true)!;var capture=typeof(VulkanScene).GetMethod("CaptureRayScene",BindingFlags.Instance|BindingFlags.NonPublic)!;
@@ -66,6 +66,23 @@ partial class Program
             Console.WriteLine("SERT lighting: differs="+differs+" center="+lit[armor]+","+lit[armor+1]+","+lit[armor+2]+" baseline="+baseline[armor]+","+baseline[armor+1]+","+baseline[armor+2]);
             Check(rendered&&differs>0&&lit[armor]+lit[armor+1]+lit[armor+2]>0,"traced lighting replaces native lighting on the armor and stays lit");
             var stats=backend.TenantStats();Check(stats.Rejected==0&&stats.Frames>=7,"every traced frame runs its whole tenant list");
+
+            // Option C: the same stack traced through tenant BLAS/TLAS ray queries matches the software BVH.
+            if(!stats.RayQuery){Console.WriteLine("SKIP ray query scene checks: device has no ray query");return checks;}
+            softwareType.GetMethod("Dispose")!.Invoke(software,null);software=Activator.CreateInstance(softwareType,host,(Func<string>)(()=>assets),false,true)!;rendered=false;
+            ulong builds=backend.TenantStats().Builds;
+            View("RayCoverage");watch.Restart();byte[] hardware=baseline;
+            while(!rendered&&watch.Elapsed.TotalSeconds<300){hardware=Frame(true);if(!rendered)Thread.Sleep(50);}
+            Console.WriteLine("SERT ray query status: "+softwareType.GetProperty("Status")!.GetValue(software));
+            Check(rendered&&backend.TenantStats().Rejected==0&&backend.TenantStats().Builds>builds,"the ray-query stack builds its BLAS/TLAS and renders with no rejected commands");
+            for(int i=0;i<2;i++)hardware=Frame(true);
+            int hardwareGreen=0;for(int at=0;at<hardware.Length;at+=4)if(Green(hardware,at))hardwareGreen++;
+            Console.WriteLine("SERT ray query coverage: green="+hardwareGreen+" software green="+green);
+            Check(hardwareGreen>=covered*9/10&&Math.Abs(hardwareGreen-green)<=covered/20,"ray-query coverage traces the armor like the software BVH (within 5% of its pixels)");
+            View("Lighting");byte[] hardwareLit=hardware;for(int i=0;i<4;i++)hardwareLit=Frame(true);
+            double error=0;int surface=0;for(int at=0;at<lit.Length;at+=4)if(lit[at]!=baseline[at]||lit[at+1]!=baseline[at+1]||lit[at+2]!=baseline[at+2]){surface++;for(int c=0;c<3;c++)error+=Math.Abs(lit[at+c]-hardwareLit[at+c]);}
+            error/=Math.Max(1,surface*3);Console.WriteLine("SERT ray query lighting: mean abs diff="+error.ToString("F2")+" over "+surface+" traced pixels; center="+hardwareLit[armor]+","+hardwareLit[armor+1]+","+hardwareLit[armor+2]);
+            Check(error<=6,"ray-query traced lighting matches the software BVH result (mean difference at most 6/255)");
         }finally{softwareType.GetMethod("Dispose")!.Invoke(software,null);compiler.Dispose();}
         return checks;
     }

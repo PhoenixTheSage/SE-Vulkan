@@ -8,7 +8,9 @@ namespace ClientPlugin.Rendering.Interop;
 public struct NativeTenantStats
 {
     public uint Size, Buffers, Images, Pipelines;
-    public ulong Bytes, Frames, Commands, Dispatches, Draws, Rejected;
+    public ulong Bytes, Frames, Commands, Dispatches, Draws, Rejected, Builds;
+    public uint Accels, Features;
+    public bool RayQuery => (Features & 1) != 0;
 }
 
 /// <summary>
@@ -24,11 +26,12 @@ public sealed partial class NativeBackend
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int TenantCreateRasterFn(IntPtr ctx, byte[] vs, ulong vsBytes, [MarshalAs(UnmanagedType.LPStr)] string vsEntry,
         byte[] ps, ulong psBytes, [MarshalAs(UnmanagedType.LPStr)] string psEntry, uint targetCount, [In] uint[] formats, out ulong id);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int TenantDestroyFn(IntPtr ctx, ulong id);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int TenantCreateAccelFn(IntPtr ctx, uint top, out ulong id);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int TenantRecordFn(IntPtr ctx, byte[] commands, uint count, byte[] bindings, uint bindingCount, byte[] blob, ulong blobBytes);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int TenantReadbackFn(IntPtr ctx, ulong id, uint layer, ulong offset, [Out] byte[] data, ulong bytes);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int TenantStatsFn(IntPtr ctx, out NativeTenantStats stats);
     TenantCreateBufferFn tenantCreateBuffer; TenantCreateImageFn tenantCreateImage; TenantCreateComputeFn tenantCreateCompute; TenantCreateRasterFn tenantCreateRaster;
-    TenantDestroyFn tenantDestroy; TenantRecordFn tenantRecord; TenantReadbackFn tenantReadback; TenantStatsFn tenantStats;
+    TenantDestroyFn tenantDestroy; TenantCreateAccelFn tenantCreateAccel; TenantRecordFn tenantRecord; TenantReadbackFn tenantReadback; TenantStatsFn tenantStats;
     Dictionary<string, Delegate> tenantSession;
 
     public const int TenantCommandBytes = 128, TenantBindingBytes = 32;
@@ -56,6 +59,11 @@ public sealed partial class NativeBackend
         tenantCreateRaster ??= PostFunction<TenantCreateRasterFn>("sevk_tenant_create_raster");
         Check(tenantCreateRaster(context, vs, (ulong)vs.Length, vsEntry, ps, (ulong)ps.Length, psEntry, (uint)native.Length, native, out ulong id), context); return id;
     }
+    /// <summary>Acceleration structure for ray query: bottom (false) or top (true); built by commands 9 and 10.</summary>
+    public ulong TenantCreateAccel(bool top)
+    {
+        tenantCreateAccel ??= PostFunction<TenantCreateAccelFn>("sevk_tenant_create_accel"); Check(tenantCreateAccel(context, top ? 1u : 0u, out ulong id), context); return id;
+    }
     public void TenantDestroy(ulong id) { tenantDestroy ??= PostFunction<TenantDestroyFn>("sevk_tenant_destroy"); Check(tenantDestroy(context, id), context); }
     public void TenantRecord(byte[] commands, byte[] bindings, byte[] blob)
     {
@@ -78,7 +86,8 @@ public sealed partial class NativeBackend
     /// (width, height, layers, VkFormat, flags); CreateCompute: Func&lt;byte[],string,ulong&gt;;
     /// CreateRaster: Func&lt;byte[],string,byte[],string,int[],ulong&gt;; Destroy: Action&lt;ulong&gt;;
     /// Record: Action&lt;byte[],byte[],byte[]&gt; (commands, bindings, blob); Readback: Action&lt;ulong,int,long,byte[]&gt;;
-    /// Stats: Func&lt;ulong[]&gt; {buffers, images, pipelines, bytes, frames, commands, dispatches, draws, rejected}.
+    /// Stats: Func&lt;ulong[]&gt; {buffers, images, pipelines, bytes, frames, commands, dispatches, draws, rejected, builds, accels};
+    /// RayQuery: Func&lt;bool&gt;; CreateAccel: Func&lt;bool,ulong&gt; (top level when true).
     /// </summary>
     public IReadOnlyDictionary<string, Delegate> TenantSession()
     {
@@ -90,9 +99,11 @@ public sealed partial class NativeBackend
             ["CreateCompute"] = (Func<byte[], string, ulong>)TenantCreateCompute,
             ["CreateRaster"] = (Func<byte[], string, byte[], string, int[], ulong>)TenantCreateRaster,
             ["Destroy"] = (Action<ulong>)TenantDestroy,
+            ["RayQuery"] = (Func<bool>)(() => TenantStats().RayQuery),
+            ["CreateAccel"] = (Func<bool, ulong>)TenantCreateAccel,
             ["Record"] = (Action<byte[], byte[], byte[]>)TenantRecord,
             ["Readback"] = (Action<ulong, int, long, byte[]>)TenantReadback,
-            ["Stats"] = (Func<ulong[]>)(() => { var s = TenantStats(); return new[] { s.Buffers, s.Images, s.Pipelines, s.Bytes, s.Frames, s.Commands, s.Dispatches, s.Draws, s.Rejected }; }),
+            ["Stats"] = (Func<ulong[]>)(() => { var s = TenantStats(); return new[] { s.Buffers, s.Images, s.Pipelines, s.Bytes, s.Frames, s.Commands, s.Dispatches, s.Draws, s.Rejected, s.Builds, s.Accels }; }),
         };
     }
 }
