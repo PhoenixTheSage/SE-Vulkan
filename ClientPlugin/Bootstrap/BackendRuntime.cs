@@ -9,7 +9,9 @@ public static class BackendRuntime
     private static readonly object Sync = new object();
     private static BackendConfiguration configuration = new BackendConfiguration();
     private static BootstrapConfigStore store;
-    private static bool startupVerified;
+    private static AttemptJournal journal;
+    private static string environmentFingerprint = "";
+    private static bool crashHandlerInstalled;
     private static readonly Queue<string> failures = new Queue<string>();
     public static bool HookReady { get; private set; }
     public static string HookFingerprint { get; private set; } = "Not inspected";
@@ -25,6 +27,7 @@ public static class BackendRuntime
     public static RendererBackend RequestedBackend { get { lock (Sync) return configuration.RequestedBackend; } }
     public static bool RestartRequired => RequestedBackend != ActiveBackend;
     public static bool RecoveryRequired { get { lock (Sync) return configuration.RecoveryRequired; } }
+    public static bool RecoveryPromptPending { get { lock (Sync) return configuration.RecoveryPromptPending; } }
     public static BackendConfiguration Configuration { get { lock (Sync) return configuration.Copy(); } }
     public static string[] RecentFailures { get { lock (Sync) return failures.ToArray(); } }
     public static void SetHook(bool ready, string fingerprint, string reason)
@@ -43,6 +46,15 @@ public static class BackendRuntime
             if (store.RecoverIncompleteAttempt(configuration)) RecordFailure(configuration.LastFailure);
         }
     }
+    public static void ApplyEnvironmentFingerprint(string fingerprint)
+    {
+        lock (Sync)
+        {
+            if (store == null) return;
+            environmentFingerprint = fingerprint ?? "";
+            if (store.ReleaseChangedRecovery(configuration, environmentFingerprint)) RecordFailure(configuration.LastFailure);
+        }
+    }
     public static void SaveConfiguration(BackendConfiguration updated)
     {
         lock (Sync)
@@ -53,6 +65,10 @@ public static class BackendRuntime
             updated.RecoveryRequired = configuration.RecoveryRequired;
             updated.RetryGeneration = configuration.RetryGeneration;
             updated.LastFailure = configuration.LastFailure;
+            updated.UncleanExits = configuration.UncleanExits;
+            updated.RendererFaultSeen = configuration.RendererFaultSeen;
+            updated.RecoveryPromptPending = configuration.RecoveryPromptPending;
+            updated.FailureFingerprint = configuration.FailureFingerprint;
             store.Save(updated);
             configuration = updated;
         }
@@ -75,17 +91,44 @@ public static class BackendRuntime
             SelectionSummary = "Retry acknowledged; restart required";
         }
     }
+    // The recovery prompt's answers: dismiss it (keeping the current renderer plan) or fall back to DX11 at the next launch.
+    public static void DismissRecoveryPrompt(bool forgiveUncleanExits)
+    {
+        lock (Sync)
+        {
+            if (store == null || !configuration.RecoveryPromptPending) return;
+            configuration.RecoveryPromptPending = false;
+            if (forgiveUncleanExits) { configuration.UncleanExits = 0; configuration.RendererFaultSeen = false; }
+            store.Save(configuration);
+        }
+    }
+    public static void FallBackNextLaunch()
+    {
+        lock (Sync)
+        {
+            if (store == null) return;
+            configuration.RecoveryPromptPending = false; configuration.RecoveryRequired = true;
+            configuration.FailureFingerprint = environmentFingerprint;
+            configuration.LastFailure = "DX11 chosen after repeated unclean Vulkan exits.";
+            store.Save(configuration);
+        }
+    }
     public static void BeginVulkanAttempt()
     {
-        lock (Sync) { if (store == null) throw new InvalidOperationException("Configuration not initialized."); startupVerified = false; store.BeginAttempt(configuration.RetryGeneration); }
+        lock (Sync)
+        {
+            if (store == null) throw new InvalidOperationException("Configuration not initialized.");
+            journal = new AttemptJournal { Generation = configuration.RetryGeneration }; store.WriteAttempt(journal);
+            if (!crashHandlerInstalled) { crashHandlerInstalled = true; AppDomain.CurrentDomain.UnhandledException += (_, args) => ReportUnhandled(args.ExceptionObject as Exception); }
+        }
     }
     public static void MarkStartupSuccessful()
     {
         lock (Sync)
         {
-            if (startupVerified) return;
+            if (journal == null || journal.Verified) return;
             // Retain the sentinel until healthy renderer disposal: a later native crash must also recover.
-            startupVerified = true;
+            journal.Verified = true; store?.WriteAttempt(journal);
             SelectionSummary = "Vulkan startup healthy; presented UI frame evidence observed; Creative acceptance remains separate";
         }
     }
@@ -93,7 +136,11 @@ public static class BackendRuntime
     {
         lock (Sync)
         {
-            if (startupVerified && !configuration.RecoveryRequired) store?.MarkStartupSuccessful();
+            if (store == null || journal == null || !journal.Verified || journal.Fault == SessionFault.Renderer) return;
+            store.MarkStartupSuccessful(); journal = null;
+            if (configuration.UncleanExits == 0 && !configuration.RendererFaultSeen) return;
+            configuration.UncleanExits = 0; configuration.RendererFaultSeen = false;
+            store.Save(configuration);
         }
     }
     public static void AddGuestListener(Action<int> listener)
@@ -159,9 +206,37 @@ public static class BackendRuntime
     {
         lock (Sync)
         {
-            configuration.RecoveryRequired = true; configuration.LastFailure = reason;
-            store?.Save(configuration); RecordFailure(reason);
+            // The next launch counts this as a renderer-attributed unclean exit.
+            RecordFault(SessionFault.Renderer, reason);
+            configuration.LastFailure = reason; store?.Save(configuration); RecordFailure(reason);
         }
+    }
+    internal static void ReportUnhandled(Exception error)
+    {
+        try
+        {
+            if (error == null) return;
+            bool ours = IsRendererFault(error);
+            lock (Sync) RecordFault(ours ? SessionFault.Renderer : SessionFault.Game, error.GetType().Name + ": " + error.Message);
+        }
+        catch { }
+    }
+    // Only frames from this assembly (including its P/Invoke calls into the native renderer and driver) blame Vulkan.
+    public static bool IsRendererFault(Exception error)
+    {
+        var own = typeof(BackendRuntime).Assembly;
+        for (var current = error; current != null; current = current.InnerException)
+            foreach (var frame in new System.Diagnostics.StackTrace(current, false).GetFrames() ?? Array.Empty<System.Diagnostics.StackFrame>())
+                if (frame.GetMethod()?.DeclaringType?.Assembly == own) return true;
+        return false;
+    }
+    private static void RecordFault(SessionFault fault, string detail)
+    {
+        if (store == null) return;
+        journal ??= new AttemptJournal { Generation = configuration.RetryGeneration };
+        if (journal.Fault == SessionFault.Renderer) return;
+        journal.Fault = fault; journal.Detail = detail ?? "";
+        store.WriteAttempt(journal);
     }
     public static void RecordFailure(string reason)
     {

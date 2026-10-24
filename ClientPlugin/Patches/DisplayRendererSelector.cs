@@ -59,7 +59,7 @@ internal static class DisplayRendererSelector
     private static void UpdateNotice(ScreenState state)
     {
         state.Notice.Text = state.Transaction.Draft != BackendRuntime.ActiveBackend
-            ? "Restart required" + (state.Transaction.Draft == RendererBackend.Vulkan && BackendRuntime.RecoveryRequired ? " — acknowledge recovery in Pulsar config" : "")
+            ? "Restart required"
             : "Active renderer: " + (BackendRuntime.ActiveBackend == RendererBackend.Dx11 ? "DX11" : "Vulkan");
     }
     internal static void BeginOk(MyGuiScreenOptionsDisplay screen) => State(screen).Transaction.BeginOk();
@@ -92,13 +92,8 @@ internal static class DisplayRendererSelector
     private static void PromptRestart(RendererBackend draft)
     {
         if (draft == BackendRuntime.ActiveBackend) return;
-        if (draft == RendererBackend.Vulkan && BackendRuntime.RecoveryRequired)
-        {
-            MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(MyMessageBoxStyleEnum.Info, MyMessageBoxButtonsType.OK,
-                messageText: new StringBuilder("Vulkan is saved for the next launch, but startup recovery is still active. In the Vulkan plugin config, choose Retry Vulkan next launch, then restart the game."),
-                messageCaption: new StringBuilder("Restart required")));
-            return;
-        }
+        // Choosing Vulkan again from DX11 recovery is the player's retry.
+        if (draft == RendererBackend.Vulkan && BackendRuntime.RecoveryRequired) { BackendRuntime.RetryVulkan(); Config.Current.ReplaceValues(BackendRuntime.Configuration); }
         string renderer = draft == RendererBackend.Vulkan ? "Vulkan" : "DX11";
         MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(MyMessageBoxStyleEnum.Info, MyMessageBoxButtonsType.YES_NO,
             messageText: new StringBuilder(renderer + " is saved for the next launch. " + RestartPromptMarker + " now?"),

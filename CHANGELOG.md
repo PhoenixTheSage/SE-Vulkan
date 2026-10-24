@@ -1,5 +1,9 @@
 # SE-Vulkan changelog
 
+## Unreleased
+
+- Replace the sticky startup-recovery latch: unclean exits are attributed to the renderer or the game, the main menu prompts after the second counted exit, DX11 fallback happens only for renderer-attributed crashes, and driver/plugin changes release a fallback automatically.
+
 ## 1.5.0 — 2026-10-24
 
 - Add voxel geometry owners and align glass reserved inputs with DX11.

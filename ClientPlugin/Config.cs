@@ -36,7 +36,7 @@ public sealed class Config : INotifyPropertyChanged
     public void ShowProfiler() => ProfilerScreen.Show();
     [Button("Write report to log", "Write the same status snapshot into the game log.")]
     public void WriteReport() => VulkanDiagnostics.WriteReportToLog();
-    [Button("Retry Vulkan next launch", "Explicitly acknowledge startup recovery and retry your requested Vulkan renderer after restarting.")]
+    [Button("Retry Vulkan next launch", "Clear DX11 recovery now instead of waiting for the main-menu prompt or a driver/plugin update; Vulkan is used after restarting.")]
     public void RetryVulkan()
     {
         if (RequestedBackend != RendererBackend.Vulkan || !BackendRuntime.RecoveryRequired || BackendRuntime.ActiveBackend == RendererBackend.Vulkan) return;

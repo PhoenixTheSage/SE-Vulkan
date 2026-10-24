@@ -20,6 +20,7 @@ public static class BackendFactory
             EarlyBootstrapHooks.Install();
             if (BackendRuntime.RequestedBackend == RendererBackend.Vulkan)
             {
+                BackendRuntime.ApplyEnvironmentFingerprint(RecoveryFingerprint.Compute());
                 if (!BackendRuntime.HookReady || !BackendRuntime.LazyCacheDisabled) reason = "Early renderer hook or preloader cache guard is unavailable.";
                 else if (BackendRuntime.RecoveryRequired) reason = BackendRuntime.Configuration.LastFailure;
                 else if (PulsarCompatibility.Check(out reason) && VulkanWindowHost.CheckPlatform(out reason) &&

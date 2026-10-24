@@ -87,7 +87,23 @@ internal static class Program
             Check(WindowModeChoice.DropdownKey(2, true, true) == WindowModeChoice.ExclusiveKey && WindowModeChoice.DropdownKey(2, true, false) == 2 && WindowModeChoice.DropdownKey(2, false, true) == 2, "DX11 hides exclusive fullscreen and shows regular Fullscreen");
             Check(Directory.GetFiles(Path.GetDirectoryName(store.FilePath), "*.tmp").Length == 0, "atomic save leaves no temporary files");
             store.BeginAttempt(2);
-            Check(store.RecoverIncompleteAttempt(restored) && restored.RecoveryRequired && restored.RequestedBackend == RendererBackend.Vulkan, "incomplete startup preserves request and requires recovery");
+            Check(store.RecoverIncompleteAttempt(restored) && restored.UncleanExits == 1 && !restored.RecoveryRequired && !restored.RecoveryPromptPending && !File.Exists(store.AttemptPath), "first startup crash keeps Vulkan and consumes the journal");
+            store.BeginAttempt(2);
+            Check(store.RecoverIncompleteAttempt(restored) && restored.UncleanExits == 2 && restored.RecoveryRequired && restored.RecoveryPromptPending && restored.RequestedBackend == RendererBackend.Vulkan, "second startup crash falls back to DX11 and raises the prompt");
+            Check(!store.ReleaseChangedRecovery(restored, "env-a") && restored.FailureFingerprint == "env-a" && restored.RecoveryRequired, "first fingerprint is recorded against the fallback");
+            Check(!store.ReleaseChangedRecovery(restored, "env-a") && restored.RecoveryRequired, "unchanged environment keeps the fallback");
+            Check(store.ReleaseChangedRecovery(restored, "env-b") && !restored.RecoveryRequired && restored.UncleanExits == 0 && !restored.RecoveryPromptPending, "driver or plugin change releases the fallback");
+            for (int i = 0; i < 2; i++) { store.WriteAttempt(new AttemptJournal { Generation = 2, Verified = true }); store.RecoverIncompleteAttempt(restored); }
+            Check(restored.UncleanExits == 2 && restored.RecoveryPromptPending && !restored.RecoveryRequired, "untraced in-session crashes prompt without falling back");
+            restored.ClearRecovery();
+            for (int i = 0; i < 3; i++) { store.WriteAttempt(new AttemptJournal { Generation = 2, Verified = true, Fault = SessionFault.Game, Detail = "game" }); store.RecoverIncompleteAttempt(restored); }
+            Check(restored.UncleanExits == 0 && !restored.RecoveryPromptPending && !restored.RecoveryRequired, "game-attributed crashes never count against Vulkan");
+            store.WriteAttempt(new AttemptJournal { Generation = 2, Verified = true, Fault = SessionFault.Renderer, Detail = "line\r\nbreak" });
+            var written = store.ReadAttempt();
+            Check(written.Fault == SessionFault.Renderer && written.Verified && written.Detail == "line  break" && written.RendererAttributed, "journal round trips fault attribution on one line");
+            File.WriteAllText(store.AttemptPath, "7");
+            written = store.ReadAttempt();
+            Check(written.Generation == 7 && !written.Verified && written.RendererAttributed, "legacy generation-only journal reads as an unverified startup");
             store.Retry(restored);
             Check(!restored.RecoveryRequired && restored.RetryGeneration == 3 && !File.Exists(store.AttemptPath), "explicit retry clears recovery and advances generation");
             store.BeginAttempt(3); store.MarkStartupSuccessful();
@@ -101,18 +117,23 @@ internal static class Program
             var stalePreferenceSnapshot = BackendRuntime.Configuration;
             BackendRuntime.FailStartup("simulated render-thread failure");
             stalePreferenceSnapshot.EnableValidation = true; BackendRuntime.SaveConfiguration(stalePreferenceSnapshot);
-            Check(BackendRuntime.RecoveryRequired && BackendRuntime.Configuration.LastFailure == "simulated render-thread failure", "delayed preference save cannot erase render-thread recovery");
-            BackendRuntime.RetryVulkan(); BackendRuntime.BeginVulkanAttempt(); BackendRuntime.MarkStartupSuccessful();
-            Check(File.Exists(store.AttemptPath), "healthy startup retains active-session crash sentinel");
+            Check(!BackendRuntime.RecoveryRequired && BackendRuntime.Configuration.LastFailure == "simulated render-thread failure" && store.ReadAttempt().Fault == SessionFault.Renderer, "render-thread failure blames the renderer in the journal and survives a delayed preference save");
+            store.MarkStartupSuccessful(); BackendRuntime.BeginVulkanAttempt(); BackendRuntime.MarkStartupSuccessful();
+            Check(File.Exists(store.AttemptPath) && store.ReadAttempt().Verified, "healthy startup retains a verified active-session crash sentinel");
             BackendRuntime.SetActive(RendererBackend.Vulkan, "Test active session");
             long healthyGeneration = BackendRuntime.Configuration.RetryGeneration; BackendRuntime.RetryVulkan();
             Check(File.Exists(store.AttemptPath) && BackendRuntime.Configuration.RetryGeneration == healthyGeneration, "healthy active Vulkan retry cannot clear its crash sentinel");
             BackendRuntime.EndSession(); Check(!File.Exists(store.AttemptPath), "healthy renderer disposal clears session sentinel");
             BackendRuntime.BeginVulkanAttempt(); BackendRuntime.MarkStartupSuccessful(); BackendRuntime.FailStartup("simulated post-activation failure"); BackendRuntime.EndSession();
-            Check(File.Exists(store.AttemptPath) && BackendRuntime.RecoveryRequired, "post-activation failure preserves crash sentinel through disposal");
-            BackendRuntime.RetryVulkan(); Check(File.Exists(store.AttemptPath) && BackendRuntime.RecoveryRequired, "failed active Vulkan cannot acknowledge recovery before DX11 restart");
+            Check(File.Exists(store.AttemptPath) && store.ReadAttempt().Fault == SessionFault.Renderer, "post-activation failure preserves crash sentinel through disposal");
+            BackendRuntime.ReportUnhandled(new InvalidOperationException("later game crash"));
+            Check(store.ReadAttempt().Fault == SessionFault.Renderer, "a later game crash cannot clear the renderer's blame");
+            store.MarkStartupSuccessful(); BackendRuntime.BeginVulkanAttempt(); BackendRuntime.MarkStartupSuccessful();
+            BackendRuntime.ReportUnhandled(new InvalidOperationException("game crash without plugin frames"));
+            Check(store.ReadAttempt().Fault == SessionFault.Game, "a crash without frames from this plugin is the game's");
+            try { throw new InvalidOperationException("thrown here"); } catch (Exception error) { Check(BackendRuntime.IsRendererFault(error), "a crash with frames from this plugin is the renderer's"); }
+            BackendRuntime.EndSession(); Check(!File.Exists(store.AttemptPath), "orderly shutdown after a game-attributed fault clears the sentinel");
             BackendRuntime.SetActive(RendererBackend.Dx11, "Test DX11 recovery");
-            BackendRuntime.RetryVulkan();
             var draft = new DisplaySelectionTransaction(RendererBackend.Dx11) { Draft = RendererBackend.Vulkan };
             Check(!draft.AcceptClose(false), "unaccepted draft does not commit");
             draft.BeginOk(); Check(draft.AcceptClose(false), "OK without resolution change commits"); draft.EndOk();

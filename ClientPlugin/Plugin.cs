@@ -43,6 +43,7 @@ public class Plugin : IPlugin
     {
         PluginStatusPage.TryInstall("Vulkan", Config.Current.ShowStatus, PopulateStatusPage);
         VulkanDiagnostics.Refresh();
+        RecoveryPrompt.TryShow();
     }
 
     static void PopulateStatusPage(object page)
