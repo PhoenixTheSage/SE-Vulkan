@@ -102,7 +102,7 @@ void fsr_publish(uint32_t in_w, uint32_t in_h, uint32_t out_w, uint32_t out_h, b
     }
     if (!fsr.version.empty()) request.debug.version = fsr.version;
     if (path) request.debug.path = path;
-    if (path && path[0]) request.debug.ishdr = 1;
+    if (path && path[0]) request.debug.ishdr = std::strncmp(path, "HDR", 3) == 0 ? 1 : 0;
     if (fsr.ready) request.debug.supported = 1;
     if (failed) request.debug.failed = 1;
     else if (count) request.debug.failed = 0;
@@ -213,8 +213,14 @@ static FsrResource fsr_image(VkImage image, uint32_t format, uint32_t width, uin
     return resource;
 }
 
-bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in_h, uint32_t out_w, uint32_t out_h) {
-    if (!cmd || !in_w || !in_h || !out_w || !out_h || !world.hdr.handle || !world.gbuffer[3].handle) return false;
+bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in_h, uint32_t out_w, uint32_t out_h, PostImage* tonemap) {
+    // Like DLSS and DX11 SE-FRS, FSR upscales the AfterTonemap image: Keen's LDR tonemap output, or the graded
+    // FP16 image under an HDR display tenant. Compose shows the result as-is, so pre-tonemap world.hdr is wrong here.
+    if (!tonemap || !tonemap->image.view || !tonemap->image.handle || tonemap->width != in_w || tonemap->height != in_h) return false;
+    if (!cmd || !in_w || !in_h || !out_w || !out_h || !world.gbuffer[3].handle) return false;
+    bool graded = tonemap->format == VK_FORMAT_R16G16B16A16_SFLOAT;
+    uint32_t color_format = fsr_surface_format(tonemap->format);
+    if (!color_format) return false;
     std::string directory;
     uint32_t mode = 0;
     float sharpness = 0.f;
@@ -264,7 +270,9 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
     auto create = reinterpret_cast<Create>(fsr.create);
     auto destroy = reinterpret_cast<Destroy>(fsr.destroy);
     auto dispatch = reinterpret_cast<Dispatch>(fsr.dispatch);
-    if (!fsr.ready || fsr.out_w != out_w || fsr.out_h != out_h) {
+    // DepthInverted | DepthInfinite | AutoExposure | DynamicResolution, plus HDR only for graded FP16 input (DX11 FrsHost).
+    uint32_t flags = 8u | 16u | 32u | 64u | (graded ? 1u : 0u);
+    if (!fsr.ready || fsr.out_w != out_w || fsr.out_h != out_h || fsr.flags != flags) {
         if (fsr.context && destroy) destroy(&fsr.context, nullptr);
         fsr.context = nullptr;
         fsr.ready = false;
@@ -276,7 +284,7 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
         fsr.created = {};
         fsr.created.type = 0x00010000ull;
         fsr.created.next = reinterpret_cast<FsrHeader*>(&fsr.backend);
-        fsr.created.flags = 1u | 8u | 16u | 32u | 64u;
+        fsr.created.flags = flags;
         fsr.created.max_render_w = out_w;
         fsr.created.max_render_h = out_h;
         fsr.created.max_upscale_w = out_w;
@@ -296,6 +304,7 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
         fsr.ready = true;
         fsr.out_w = out_w;
         fsr.out_h = out_h;
+        fsr.flags = flags;
         fsr.version = "FSR 3.1.4";
         if (fsr.query) {
             FsrVersionQuery query{};
@@ -330,10 +339,10 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
     FsrDispatch work{};
     work.type = 0x00010001ull;
     work.command = cmd;
-    // Under HDR display tenancy FSR upscales the graded FP16 image (with its LDR overlays), as DLSS does.
-    bool graded = post.display_graded && post.output && post.output->image.handle && post.output->format == VK_FORMAT_R16G16B16A16_SFLOAT;
-    work.color = graded ? fsr_image(post.output->image.handle, 4u, in_w, in_h, 0, 12)
-        : fsr_image(world.hdr.handle, world.hdr_format==VK_FORMAT_B10G11R11_UFLOAT_PACK32?16u:4u, in_w, in_h, 0, 12);
+    barrier(cmd, tonemap->image.handle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    work.color = fsr_image(tonemap->image.handle, color_format, in_w, in_h, 0, 12);
     // gbuffer[3] is an R32 color image; DEPTHTARGET usage would make FFX build a D32 depth-aspect view of it.
     work.depth = fsr_image(world.gbuffer[3].handle, 28, in_w, in_h, 0, 12);
     work.motion = fsr_image(mv_image, 18, mv_w, mv_h, 0, 12);
@@ -372,14 +381,40 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
     if (result != 0) {
         char text[96];
         std::snprintf(text, sizeof(text), "FSR evaluate failed (%u)", result);
-        fsr_publish(in_w, in_h, out_w, out_h, false, true, "HDR hdrColor");
+        fsr_publish(in_w, in_h, out_w, out_h, false, true, graded ? "HDR graded" : "LDR AfterTonemap");
         fsr_set_status(text);
         fsr.fail_frames = 60;
         return false;
     }
-    fsr_publish(in_w, in_h, out_w, out_h, true, false, "HDR hdrColor");
+    fsr_publish(in_w, in_h, out_w, out_h, true, false, graded ? "HDR graded" : "LDR AfterTonemap");
     fsr_set_status(fsr.version + (reactive_format ? " evaluating (reactive anomaly)" : " evaluating"));
     return true;
+}
+
+// Runs right after ngx_from_tonemap, which clears upscale_ready; the guest AfterUpscale compose then samples
+// display_state.upscale_view exactly as it does for DLSS.
+void fsr_from_tonemap(VkCommandBuffer cmd) {
+    if (display_state.upscale_ready || ngx_active() || !fsr_active()) return;
+    auto* tone = post.after_tonemap;
+    if (!cmd || !tone || !tone->image.view || !tone->width || !tone->height) return;
+    uint32_t out_w = std::max(1u, output_extent.width ? output_extent.width : extent.width);
+    uint32_t out_h = std::max(1u, output_extent.height ? output_extent.height : extent.height);
+    bool resized = display_state.width != out_w || display_state.height != out_h;
+    display_state.color[0] = display_target(display_state.color[0], out_w, out_h);
+    display_state.color[1] = display_target(display_state.color[1], out_w, out_h);
+    if (resized) {
+        display_state.ready = false;
+        display_state.visited[0] = display_state.visited[1] = display_state.visited[2] = 0;
+    }
+    display_state.width = out_w;
+    display_state.height = out_h;
+    uint32_t write = display_state.index & 1u;
+    if (!fsr_evaluate(cmd, write, tone->width, tone->height, out_w, out_h, tone)) return;
+    display_state.upscale_view = display_state.color[write].view;
+    display_state.upscale_handle = display_state.color[write].handle;
+    display_state.upscale_w = out_w;
+    display_state.upscale_h = out_h;
+    display_state.upscale_ready = true;
 }
 
 void cleanup_fsr() noexcept {

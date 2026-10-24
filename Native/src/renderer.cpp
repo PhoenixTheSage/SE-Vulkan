@@ -424,7 +424,7 @@ struct Renderer {uint32_t recipe_generation=1;
     struct FsrRuntime {
         bool ready{}, have_time{};
         uint64_t revision{};
-        uint32_t out_w{}, out_h{}, fail_frames{};
+        uint32_t out_w{}, out_h{}, flags{}, fail_frames{};
         void* library{}, *context{}, *create{}, *destroy{}, *dispatch{}, *query{};
         FsrBackend backend{};
         FsrCreate created{};

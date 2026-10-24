@@ -531,9 +531,9 @@ VkImageView prepare_display(VkCommandBuffer cmd) {
     uint32_t write = display_state.index & 1;
     bool motion_ok = world.motion.view && world.motion_w == in_w && world.motion_h == in_h;
     VkImageView motion = motion_ok ? world.motion.view : display_state.zero.view;
+    // DLSS or FSR already upscaled the AfterTonemap image (ngx_from_tonemap / fsr_from_tonemap).
     bool ngx = display_state.upscale_ready;
-    bool fsr_ok = !ngx && fsr_on && fsr_evaluate(cmd, write, in_w, in_h, out_w, out_h);
-    if (!ngx && !fsr_ok && !upscale && guest_output) {
+    if (!ngx && !upscale && guest_output) {
         // Ordinary AfterUpscale packs get the same bilinear output that the
         // stock compose samples. Do not enable a temporal/filtering algorithm.
         auto& target=display_state.color[write];
@@ -551,13 +551,13 @@ VkImageView prepare_display(VkCommandBuffer cmd) {
             VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_MEMORY_READ_BIT);
         display_state.visited[write]=1;
     }
-    else if (!ngx && !fsr_ok) display_dispatch(cmd, display_state.upscale, display_state.color[write], int(write), source_view, source,
+    else if (!ngx) display_dispatch(cmd, display_state.upscale, display_state.color[write], int(write), source_view, source,
         display_state.ready ? display_state.color[write ^ 1].view : display_state.zero.view, motion,
         upscale && display_state.ready ? 0.9f : 0.f, display_state.constants[0], in_w, in_h, out_w, out_h);
     if (generated) display_try_warp(cmd, write, motion_ok ? motion : display_state.zero.view, in_w, in_h, out_w, out_h);
     display_state.index ^= 1;
     display_state.ready = true;
-    display_state.compose = (upscale || ngx || fsr_ok || guest_output) ? display_state.color[write].view : VkImageView{};
+    display_state.compose = (upscale || ngx || guest_output) ? display_state.color[write].view : VkImageView{};
     if(display_state.compose){display_state.upscale_ready=true;display_state.upscale_view=display_state.color[write].view;
         display_state.upscale_handle=display_state.color[write].handle;display_state.upscale_w=out_w;display_state.upscale_h=out_h;}
     return display_state.compose;

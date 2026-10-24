@@ -278,7 +278,7 @@ void render_postprocess(VkCommandBuffer cmd,WorldSlot& slot){
         uint32_t tone=9+((flags&32)?1:0)+((flags&2048)?2:0);
         post_pass(cmd,slot,tone,post.tone,{world.hdr.view,post.exposure[post.exposure_index].image.view,bloom,textures.at(post.config.dirt).image.view});++post.stats.tone_dispatches;post.output=&post.tone;post.after_tonemap=post.output;
     }
-    guest_replay(cmd,5);ngx_from_tonemap(cmd);
+    guest_replay(cmd,5);ngx_from_tonemap(cmd);fsr_from_tonemap(cmd);
     render_billboards(cmd,slot,3);
     bool graded=post.output->format==VK_FORMAT_R16G16B16A16_SFLOAT;
     if((flags&32) && (!graded||post.stages[13].other_hdr)){auto& target=graded?post.fxaa_hdr:post.fxaa;if(graded)post_image(post.fxaa_hdr,extent.width,extent.height,VK_FORMAT_R16G16B16A16_SFLOAT);
