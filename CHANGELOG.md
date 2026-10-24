@@ -1,5 +1,15 @@
 # SE-Vulkan changelog
 
+## 1.5.0 — 2026-10-24
+
+- Add voxel geometry owners and align glass reserved inputs with DX11.
+- Add native temporal jitter ownership, FSR reactive input, projection-derived FSR FOV and DLSS sharpness configuration.
+- Publish tonemap inputs, grading values and the render clock; grade HDR display tenants into FP16 at the tone position.
+- Replay DebugDrawLine3D and expose display state, live tearing/latency controls and HDR screenshots.
+- Produce RayScene v1 frames and add a native tenant compute session with software tracing lanes, BLAS/TLAS acceleration structures and inline ray query.
+- Measure tenant lists with GPU timestamps and expose completed measurements to adaptive budgets.
+- Update portable ray ownership, upscaler and scene-submission fixtures; clean up late color-history fixtures after execution.
+
 ## 1.4.0 — 2026-10-23
 
 - Include the unpublished 1.3.0 pipelined native recording and native OLD grid-cell work in this branch history.
