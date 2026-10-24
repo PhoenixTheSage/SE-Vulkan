@@ -623,6 +623,43 @@ typedef struct SevkDisplayInfo {
 SEVK_API int32_t SEVK_CALL sevk_get_display_info(void* ctx, SevkDisplayInfo* info);
 /* Raw RGBA16F scRGB presentation capture (after sevk_request_readback on an FP16 swapchain). */
 SEVK_API int32_t SEVK_CALL sevk_readback_hdr(void* ctx, void* rgba16f, uint64_t bytes);
+/* Tenant compute session (Anomaly RayScene v1 on Vulkan). A tenant owns storage buffers, 2D/array images
+ * and compute/fullscreen pipelines (SPIR-V, set 0, guest register bands) and records one command list per
+ * frame. The renderer runs it after deferred lighting and before AfterLighting guest passes; renderer HDR is
+ * the only renderer draw target. Tenant images stay in GENERAL layout and start zeroed.
+ * Command ops: 1 dispatch (x,y,z groups), 2 fullscreen draw (x,y viewport, 1-3 targets with layers),
+ * 3 fill buffer (value[0] over offset/bytes, bytes 0 = rest), 4 clear image (value bits; flags 1 integer),
+ * 5 copy buffer (source -> targets[0], offset/bytes), 6 copy image (source -> targets[0], equal shape),
+ * 7 upload buffer (blob[blob_offset, +bytes] -> targets[0] at offset), 8 upload image layer (layers[0]).
+ * Binding kinds: 0 null (zero dummy), 1 tenant image (sampled or storage per shader), 2 tenant buffer,
+ * 3 uniform from blob (blob_offset as offset, bytes), 4 renderer image id (guest sentinels), 5 world texture id,
+ * 6 world frame block (b0, 1280 bytes), 7 sampler (id 0 linear wrap, 1 linear clamp, 2 point clamp). */
+typedef struct SevkTenantCommand {
+    uint32_t op, binding_first, binding_count, target_count;
+    uint32_t x, y, z, flags;
+    uint64_t pipeline, source;
+    uint64_t targets[3];
+    uint32_t layers[3], reserved;
+    uint64_t offset, blob_offset, bytes;
+    uint32_t value[4];
+} SevkTenantCommand;
+typedef struct SevkTenantBinding { uint32_t binding, kind; uint64_t id, offset, bytes; } SevkTenantBinding;
+typedef struct SevkTenantStats {
+    uint32_t size, buffers, images, pipelines;
+    uint64_t bytes, frames, commands, dispatches, draws, rejected;
+} SevkTenantStats;
+/* Image formats are VkFormat values; raster target format 0 means the renderer HDR format. flags bit0: array view. */
+SEVK_API int32_t SEVK_CALL sevk_tenant_create_buffer(void* ctx, uint64_t bytes, uint64_t* id);
+SEVK_API int32_t SEVK_CALL sevk_tenant_create_image(void* ctx, uint32_t width, uint32_t height, uint32_t layers, uint32_t format, uint32_t flags, uint64_t* id);
+SEVK_API int32_t SEVK_CALL sevk_tenant_create_compute(void* ctx, const void* spirv, uint64_t bytes, const char* entry, uint64_t* id);
+SEVK_API int32_t SEVK_CALL sevk_tenant_create_raster(void* ctx, const void* vs, uint64_t vs_bytes, const char* vs_entry, const void* ps, uint64_t ps_bytes, const char* ps_entry, uint32_t target_count, const uint32_t* formats, uint64_t* id);
+/* Retires a resource or pipeline once the GPU finishes with it; refused while this frame's commands use it. */
+SEVK_API int32_t SEVK_CALL sevk_tenant_destroy(void* ctx, uint64_t id);
+/* Appends to this frame's list (between begin and end frame); the blob is copied. */
+SEVK_API int32_t SEVK_CALL sevk_tenant_record(void* ctx, const SevkTenantCommand* commands, uint32_t count, const SevkTenantBinding* bindings, uint32_t binding_count, const void* blob, uint64_t blob_bytes);
+/* Diagnostics: waits for the GPU and copies a buffer range or one image layer (bytes = width*height*texel). */
+SEVK_API int32_t SEVK_CALL sevk_tenant_readback(void* ctx, uint64_t id, uint32_t layer, uint64_t offset, void* data, uint64_t bytes);
+SEVK_API int32_t SEVK_CALL sevk_tenant_stats(void* ctx, SevkTenantStats* stats);
 /* Driver NGX for DLSS. The plugin passes the directory that contains the
  * feature library (nvngx_dlss.dll / libnvidia-ngx-dlss.so). mode is the
  * DLSS quality enum. preset 0 selects preset K. Calls copy the request

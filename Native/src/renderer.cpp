@@ -672,6 +672,7 @@ struct Renderer {uint32_t recipe_generation=1;
         uint64_t complete = 0; check_gpu(vkGetSemaphoreCounterValue(device, timeline, &complete), "query GPU timeline");
         ray_collect(complete);
         guest_collect(complete);
+        tenant_collect(complete);
         gpu_owner_resolve_generations(complete);post_collect(complete);
         stats.completed_timeline = complete;
         for(uint32_t i=0;i<2;++i)if(slots[i].completion<=complete){sample_timing(i);sample_occlusion(i);sample_shadow_usage(i);if(world.slots[i].material_stale)release_cached_materials(world.slots[i]);else release_dirty_materials(world.slots[i]);}
@@ -866,6 +867,9 @@ struct Renderer {uint32_t recipe_generation=1;
         VkPhysicalDeviceVulkan12Features f12{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &f13 }; f12.timelineSemaphore = VK_TRUE; f12.scalarBlockLayout = VK_TRUE;
         VkPhysicalDeviceVulkan11Features f11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,&f12};
         VkPhysicalDeviceFeatures2 features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11 }; features.features.robustBufferAccess=VK_TRUE;features.features.depthClamp=VK_TRUE;features.features.independentBlend=VK_TRUE; features.features.textureCompressionBC = VK_TRUE; features.features.geometryShader=VK_TRUE; features.features.shaderStorageImageExtendedFormats=VK_TRUE;
+        // Tenant storage images are typed Unknown so DX11-compatible UAV formats bind (tenant.inc).
+        tenant.without_format=optional.features.shaderStorageImageReadWithoutFormat && optional.features.shaderStorageImageWriteWithoutFormat;
+        features.features.shaderStorageImageReadWithoutFormat=features.features.shaderStorageImageWriteWithoutFormat=tenant.without_format?VK_TRUE:VK_FALSE;
         if(opaque_caps.enabled){features.features.shaderFloat64=VK_TRUE;f11.shaderDrawParameters=VK_TRUE;
             f12.drawIndirectCount=VK_TRUE;f12.runtimeDescriptorArray=VK_TRUE;f12.shaderSampledImageArrayNonUniformIndexing=VK_TRUE;}
         float priority = 1;
@@ -1763,7 +1767,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if(world.current().queued&&timing_pool){vkCmdWriteTimestamp2(slot.command,VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,timing_pool,slot_index*2+1);timing_valid[slot_index]=true;}
         frame_mark("frame end");if(profile_label_open){vkCmdEndDebugUtilsLabelEXT(slot.command);profile_label_open=false;}
         check(vkEndCommandBuffer(slot.command), "end frame command"); recording = false;
-        guest.passes.clear();guest.has_early_owned=guest.has_global_clear=false; // Frame packets never replay implicitly in a later frame.
+        guest.passes.clear();guest.has_early_owned=guest.has_global_clear=false;tenant_end_frame(); // Frame packets never replay implicitly in a later frame.
         performance.finish_us=perf_take();
         VkCommandBufferSubmitInfo command{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO }; command.commandBuffer = slot.command;
         VkSemaphoreSubmitInfo acquired{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO }; acquired.semaphore = slot.acquired; acquired.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1846,6 +1850,7 @@ struct Renderer {uint32_t recipe_generation=1;
     #include "stock_gbuffer.inc"
     #include "world_pipeline.inc"
     #include "guest.inc"
+    #include "tenant.inc"
     #include "stage_bindings.inc"
     #include "display.inc"
     #include "jitter.inc"
@@ -1909,6 +1914,7 @@ struct Renderer {uint32_t recipe_generation=1;
             cleanup_stock();
             cleanup_occlusion();cleanup_spot_copy();for(auto& image:spots.images)destroy_image(image);for(auto& image:spots.frozen)destroy_image(image);cleanup_highlights();cleanup_jitter();cleanup_shadow_usage();cleanup_stock_shadows();cleanup_probes();cleanup_hbao();cleanup_postprocess();cleanup_flares();cleanup_display();cleanup_decals();cleanup_particles();cleanup_transparency();cleanup_environment();
             cleanup_guest();
+            cleanup_tenant();
             cleanup_ray();
             cleanup_opaque_reference();
             cleanup_opaque_stock();
@@ -2253,6 +2259,14 @@ int32_t SEVK_CALL sevk_set_display_flags(void* ctx,uint32_t flags){return call(c
 int32_t SEVK_CALL sevk_force_hdr_display(void* ctx,uint32_t force){return call(ctx,[&](Renderer& r){if(r.recording||force>1)throw std::runtime_error("invalid HDR display override");r.hdr_display_forced=force!=0;return 0;});}
 int32_t SEVK_CALL sevk_get_display_info(void* ctx,SevkDisplayInfo* info){return call(ctx,[&](Renderer& r){if(!info||info->size!=sizeof(*info)||info->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("display info ABI mismatch");*info=r.display_info();return 0;});}
 int32_t SEVK_CALL sevk_readback_hdr(void* ctx,void* rgba16f,uint64_t bytes){return call(ctx,[&](Renderer& r){r.readback_hdr(rgba16f,bytes);return 0;});}
+int32_t SEVK_CALL sevk_tenant_create_buffer(void* ctx,uint64_t bytes,uint64_t* id){if(!id){global_error="null tenant id";return -1;}return call(ctx,[&](Renderer& r){*id=r.tenant_create_buffer(bytes);return 0;});}
+int32_t SEVK_CALL sevk_tenant_create_image(void* ctx,uint32_t width,uint32_t height,uint32_t layers,uint32_t format,uint32_t flags,uint64_t* id){if(!id){global_error="null tenant id";return -1;}return call(ctx,[&](Renderer& r){*id=r.tenant_create_image(width,height,layers,format,flags);return 0;});}
+int32_t SEVK_CALL sevk_tenant_create_compute(void* ctx,const void* spirv,uint64_t bytes,const char* entry,uint64_t* id){if(!id){global_error="null tenant id";return -1;}return call(ctx,[&](Renderer& r){*id=r.tenant_create_compute(spirv,bytes,entry);return 0;});}
+int32_t SEVK_CALL sevk_tenant_create_raster(void* ctx,const void* vs,uint64_t vs_bytes,const char* vs_entry,const void* ps,uint64_t ps_bytes,const char* ps_entry,uint32_t target_count,const uint32_t* formats,uint64_t* id){if(!id){global_error="null tenant id";return -1;}return call(ctx,[&](Renderer& r){*id=r.tenant_create_raster(vs,vs_bytes,vs_entry,ps,ps_bytes,ps_entry,target_count,formats);return 0;});}
+int32_t SEVK_CALL sevk_tenant_destroy(void* ctx,uint64_t id){return call(ctx,[&](Renderer& r){r.tenant_destroy(id);return 0;});}
+int32_t SEVK_CALL sevk_tenant_record(void* ctx,const SevkTenantCommand* commands,uint32_t count,const SevkTenantBinding* bindings,uint32_t binding_count,const void* blob,uint64_t blob_bytes){return call(ctx,[&](Renderer& r){r.tenant_record(commands,count,bindings,binding_count,blob,blob_bytes);return 0;});}
+int32_t SEVK_CALL sevk_tenant_readback(void* ctx,uint64_t id,uint32_t layer,uint64_t offset,void* data,uint64_t bytes){return call(ctx,[&](Renderer& r){r.tenant_readback(id,layer,offset,data,bytes);return 0;});}
+int32_t SEVK_CALL sevk_tenant_stats(void* ctx,SevkTenantStats* stats){if(!stats){global_error="null tenant stats";return -1;}return call(ctx,[&](Renderer& r){*stats=r.tenant_stats();return 0;});}
 int32_t SEVK_CALL sevk_set_hdr_ui(void* ctx,float paper_white,float shoulder,float peak){return call(ctx,[&](Renderer& r){if(!(paper_white>=0.f&&paper_white<=1000.f)||!(shoulder>=0.f&&shoulder<.95f)||!(peak>=0.f&&peak<=1000.f))throw std::runtime_error("invalid HDR UI transform");r.hdr_ui[0]=paper_white;r.hdr_ui[1]=shoulder;r.hdr_ui[2]=peak>0.f?peak:1000.f;return 0;});}
 int32_t SEVK_CALL sevk_set_upscale_owner(void* ctx,const char* id){return call(ctx,[&](Renderer& r){(void)r;return Renderer::ngx_set_owner(id);});}
 int32_t SEVK_CALL sevk_ngx_configure(uint32_t enabled,uint32_t mode,uint32_t preset,const char* directory){return Renderer::ngx_configure(enabled,mode,preset,directory);}

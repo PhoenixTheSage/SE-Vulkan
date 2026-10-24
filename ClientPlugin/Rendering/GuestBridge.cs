@@ -64,6 +64,11 @@ public static class GuestBridge
     /// physical light origins, camera center, bloom emissiveness). Null without a scene.
     /// </summary>
     public static object[] CaptureRayScene() => RayCaptureOverride != null ? RayCaptureOverride() : scene?.CaptureRayScene();
+    /// <summary>
+    /// Tenant compute session for RayScene v1 frames (frame[7][1], where DX11 passes the device context):
+    /// named BCL delegates over sevk_tenant_*. Null without a renderer.
+    /// </summary>
+    public static System.Collections.Generic.IReadOnlyDictionary<string, System.Delegate> TenantSession() => current?.TenantSession();
 
     static Scene.VulkanPostprocess postprocess;
     internal static void SetPostprocess(Scene.VulkanPostprocess value)=>postprocess=value;

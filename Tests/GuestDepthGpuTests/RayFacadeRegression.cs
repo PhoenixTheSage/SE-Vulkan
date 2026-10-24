@@ -66,7 +66,10 @@ partial class Program
             uint frameIndex=(uint)Call("Backend.GuestFrame","U32",16);var viewProj=(Matrix)Call("Backend.GuestFrame","MatrixAt",136);
             Check(frames==1&&last!=null&&last.Length==16&&(int)last[0]==1&&last[2] is uint index&&index==frameIndex&&((object[])last[4]).Length==1&&((float[])last[6]).Length==16,"a registered tenant receives one v1 frame per guest frame with the renderer capture");
             var devices=(object[])last[7];var view=(float[])last[10];
-            Check((string)devices[0]=="vulkan"&&(ulong)devices[1]==0xFFFF000000000001UL&&(ulong)devices[2]==0xFFFF000000000002UL&&((int[])last[8]).SequenceEqual(new[]{64,64})&&Math.Abs(view[0]-viewProj.M11)<1e-6&&Math.Abs(view[5]-viewProj.M22)<1e-6&&last[15]==null,"the frame names renderer images, size and the unjittered view-projection; far sun is pending");
+            // DX11 frame[7] positions: device, context (tenant session), LBuffer, depth, GBuffer0-2, velocity, frame constants, sun shadows, close/far cubes, BRDF.
+            Check(devices.Length==13&&(string)devices[0]=="vulkan"&&devices[1] is IReadOnlyDictionary<string,Delegate> session&&session.ContainsKey("Record")&&(ulong)devices[2]==0xFFFF000000000001UL&&(ulong)devices[3]==0xFFFF000000000002UL
+                &&(ulong)devices[8]==0xFFFF000000000024UL&&(ulong)devices[9]==0xFFFF000000000020UL&&(ulong)devices[12]==0xFFFF000000000023UL
+                &&((int[])last[8]).SequenceEqual(new[]{64,64})&&Math.Abs(view[0]-viewProj.M11)<1e-6&&Math.Abs(view[5]-viewProj.M22)<1e-6&&last[15]==null,"the frame keeps DX11's resource positions with the tenant session as context; far sun is pending");
             var sert=Assembly.LoadFrom(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"../../../../../../SE-RT/ClientPlugin/bin/Release/net10.0/SERT.dll")));
             var geometry=sert.GetType("SERT.Core.SceneAssembler",true)!.GetMethod("Build")!.Invoke(null,new object[]{last})!;
             Check(((Array)geometry.GetType().GetField("Triangles")!.GetValue(geometry)!).Length==2&&((Array)geometry.GetType().GetField("Instances")!.GetValue(geometry)!).Length==1,"SE-RT SceneAssembler builds the delivered Vulkan frame");
