@@ -978,3 +978,27 @@ DepthRead lines test the composed scene depth with reversed-Z; the IgnoreDepth
 batch does not. DebugDrawLine3DBatch stays a no-op, as on DX11.
 
 The `--debug-lines-only` lane passes 31 checks with zero validation errors.
+
+### HDR display contract (audit P4)
+
+- **`sevk_get_display_info`** reports:
+  - surface FP16 scRGB capability, `hdr_active` and the tenant grade;
+  - present mode, IMMEDIATE support and the tearing and low-latency state;
+  - on Windows, the DXGI Output6 description of the window's monitor: HDR10
+    colour space, peak, full-frame and minimum nits, and bit depth. This is
+    the source HdrRender's DX11 companion reads, and it is refreshed per
+    swapchain generation.
+- **Display bit 32** prefers IMMEDIATE when vsync is off, and returns to MAILBOX
+  when released.
+- **Display bit 64** waits for the previous frame's slot before recording, as
+  DX11's MaximumFrameLatency 1 does.
+- **`sevk_readback_hdr`** returns the raw RGBA16F presentation capture. On a PNG
+  request with an HDR tenant's paper white set, `HdrScreenshot` writes the ZIP
+  half-float EXR and a paper-white SDR PNG, ported from HdrRender's ExrWriter
+  and SaveSdr.
+
+The HDR lane passes 42 checks. These cover the display-info shape, the
+low-latency round trip, refusal of HDR readback on a non-FP16 target, the
+SDR curve against analytic values, and an EXR chunk that decodes to the exact
+source halves. Tearing on a real swapchain and the DXGI monitor fields need a
+live window and are build-verified only.

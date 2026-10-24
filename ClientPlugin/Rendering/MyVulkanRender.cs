@@ -536,7 +536,12 @@ public sealed class MyVulkanRender : IMyRender
                 string path = capture.Path;
                 if (string.IsNullOrEmpty(path)) path = Path.Combine(MyFileSystem.UserDataPath, "Screenshots", "Vulkan-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmssfff") + ".png");
                 var extent = backend.GetStats();
-                PngWriter.Save(path, (int)extent.Width, (int)extent.Height, backend.Readback((int)extent.Width, (int)extent.Height)); capture.Path = path; success = true;
+                int width = (int)extent.Width, height = (int)extent.Height; float paperWhite = GuestBridge.HdrScreenshotPaperWhite;
+                // HdrRender's DX11 behaviour: a PNG request on an HDR display keeps the original as EXR beside a paper-white SDR PNG.
+                if (paperWhite > 0 && backend.GetDisplayInfo().HdrActive != 0 && string.Equals(Path.GetExtension(path), ".png", StringComparison.OrdinalIgnoreCase))
+                    HdrScreenshot.Save(path, width, height, backend.ReadbackHdr(width, height), paperWhite);
+                else PngWriter.Save(path, width, height, backend.Readback(width, height));
+                capture.Path = path; success = true;
                 VulkanDiagnostics.Set("Screenshot readback", SubsystemState.Active, "Native image copied to PNG on explicit request.", extent.SubmittedFrames);
             }
             catch (Exception error) { VulkanDiagnostics.Failure("Screenshot: " + error.Message); }

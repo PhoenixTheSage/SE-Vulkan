@@ -74,6 +74,7 @@ partial class Program
             Check((service&32)==0&&backend.ReadbackFxaaInput(false,size,size).SequenceEqual(baseline),"losing the HDR display restores the exact stock tonemap");
             Set(grade,"Enabled",false);Frames(2);Check(!Tenant()&&(service&16)==0,"disabling the program releases display bit 16");
             Check(backend.GetStats().ValidationEnabled!=0&&backend.GetStats().ValidationErrors==0,"HDR display tenancy raises zero core/synchronization errors");
+            checks+=DisplayContractRegression(core,backend,()=>Frame());
         }finally{backend.ForceHdrDisplay(false);Set(grade,"Enabled",false);Set(writer,"Enabled",false);Call("Backend.GuestColor","SyncDisplay");}
         return checks;
     }

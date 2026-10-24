@@ -125,6 +125,24 @@ public static class GuestBridge
     /// <summary>HUD transform for an HDR display tenant: paper white x UI gain and peak in scRGB units, shoulder.</summary>
     public static void SetHdrUi(float paperWhite, float shoulder, float peak) => current?.SetHdrUi(paperWhite, shoulder, peak);
 
+    static float hdrScreenshotPaperWhite;
+    /// <summary>Scene paper white (nits) for HDR screenshots: PNG requests on an FP16 swapchain also keep an EXR. Zero disables.</summary>
+    public static void SetHdrScreenshot(float paperWhiteNits) => hdrScreenshotPaperWhite = paperWhiteNits > 0 ? paperWhiteNits : 0;
+    internal static float HdrScreenshotPaperWhite => hdrScreenshotPaperWhite;
+
+    /// <summary>
+    /// Display state for the HDR display contract: hdrCapable, hdrActive, tenantGraded, presentMode (-1 without a swapchain),
+    /// tearingSupported, tearingActive, lowLatency, displayKnown, displayHdr10, bitsPerColor, maxLuminance,
+    /// maxFullFrameLuminance, minLuminance (nits; DXGI Output6 for the window's monitor). Null without a renderer.
+    /// </summary>
+    public static float[] DisplayInfo()
+    {
+        if (current == null) return null;
+        var i = current.GetDisplayInfo();
+        return new float[] { i.HdrCapable, i.HdrActive, i.TenantGraded, i.PresentMode == uint.MaxValue ? -1 : i.PresentMode, i.TearingSupported, i.TearingActive,
+            i.LowLatency, i.DisplayKnown, i.DisplayHdr10, i.BitsPerColor, i.MaxLuminance, i.MaxFullFrameLuminance, i.MinLuminance };
+    }
+
     public static void SetUpscaleOwner(string id) => current?.SetUpscaleOwner(id);
 
     public static void SetViewClip(float farPlane) => current?.SetViewClip(farPlane);

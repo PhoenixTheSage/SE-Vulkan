@@ -20,6 +20,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <dbghelp.h>
+#include <dxgi1_6.h>
 #pragma comment(lib,"dbghelp.lib")
 #endif
 #define VMA_IMPLEMENTATION
@@ -434,6 +435,7 @@ struct Renderer {uint32_t recipe_generation=1;
     // HDR UI transform for the presented HUD: scene paper white x UI gain (scRGB), shoulder, peak (scRGB). Zero disables.
     float hdr_ui[3]{};
     bool hdr_display_forced{}; // diagnostics: display tenancy without an HDR swapchain
+    bool tearing_denied{},tearing_armed{};
     uint32_t display_flags{};bool hdr_active{},hdr_denied{},fg_denied{},swap_transfer{},null_descriptors{};
     std::array<uint64_t,11> opaque_compute_times{};
     SevkResolutionStats resolution_stats{sizeof(SevkResolutionStats),SEVK_ABI_VERSION};
@@ -809,7 +811,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if (info.platform == 1) {
 #if defined(_WIN32)
             VkWin32SurfaceCreateInfoKHR create{ VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
-            create.hinstance = GetModuleHandleW(nullptr); create.hwnd = static_cast<HWND>(info.window);
+            create.hinstance = GetModuleHandleW(nullptr); create.hwnd = static_cast<HWND>(info.window); native_window = info.window;
             check(vkCreateWin32SurfaceKHR(instance, &create, nullptr, &surface), "create HWND surface");
 #endif
         } else if (info.platform == 2) {
@@ -1247,11 +1249,14 @@ struct Renderer {uint32_t recipe_generation=1;
                 count = 0; check(vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, &count, nullptr), "query present modes");
                 std::vector<VkPresentModeKHR> modes(count); check(vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, &count, modes.data()), "query present modes");
                 bool generated = (display_flags & 2) != 0;
-                if (generated && std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_IMMEDIATE_KHR) != modes.end()) mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+                // Display bit 32 (HdrRender AllowTearing) also prefers IMMEDIATE; DX11 tears only without vsync too.
+                bool tearing = (display_flags & 32) != 0;
+                if ((generated || tearing) && std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_IMMEDIATE_KHR) != modes.end()) mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
                 else if (std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_MAILBOX_KHR) != modes.end()) mode = VK_PRESENT_MODE_MAILBOX_KHR;
                 else if (std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_IMMEDIATE_KHR) != modes.end()) mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
                 if (generated && mode != VK_PRESENT_MODE_IMMEDIATE_KHR) fg_denied = true;
                 if (!generated) fg_denied = false;
+                tearing_denied = tearing && mode != VK_PRESENT_MODE_IMMEDIATE_KHR; tearing_armed = tearing && mode == VK_PRESENT_MODE_IMMEDIATE_KHR;
             }
             uint32_t images = caps.minImageCount + 1; if (caps.maxImageCount) images = std::min(images, caps.maxImageCount);
             VkSwapchainCreateInfoKHR swap{ VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR }; swap.surface = surface; swap.minImageCount = images;
@@ -1474,7 +1479,9 @@ struct Renderer {uint32_t recipe_generation=1;
         if (recording) throw std::runtime_error("frame already begun");
         bool want_hdr=(display_flags&1)&&!hdr_denied&&!hdr_active;
         bool drop_hdr=!(display_flags&1)&&hdr_active;
-        bool want_immediate=(display_flags&2)&&!vsync&&!fg_denied&&actual_present_mode!=VK_PRESENT_MODE_IMMEDIATE_KHR;
+        bool want_immediate=(((display_flags&2)&&!fg_denied)||((display_flags&32)&&!tearing_denied))&&!vsync&&actual_present_mode!=VK_PRESENT_MODE_IMMEDIATE_KHR;
+        // Releasing tearing returns to the ordinary no-vsync mode (MAILBOX when available).
+        want_immediate|=tearing_armed&&!(display_flags&(2|32))&&!vsync;if(!(display_flags&32))tearing_denied=false;
         // Recreate for HDR or immediate present without replacing the selected
         // resolution. Passing the window extent here made borderless render at
         // the desktop size while the game still laid the HUD out at the mode.
@@ -1487,7 +1494,10 @@ struct Renderer {uint32_t recipe_generation=1;
         auto& slot = slots[slot_index];
         auto slot_stamp=std::chrono::steady_clock::now();
         auto slot_take=[&](){auto now=std::chrono::steady_clock::now();uint32_t elapsed=(uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(now-slot_stamp).count();slot_stamp=now;return elapsed;};
-        wait(slot.completion); work.wait_us=slot_take(); collect();sample_light_tiles(slot_index);
+        wait(slot.completion);
+        // Display bit 64 (HdrRender LowLatencyMode): DX11 sets MaximumFrameLatency 1, so also drain the previous frame.
+        if(display_flags&64)wait(slots[(slot_index+1)%slots.size()].completion);
+        work.wait_us=slot_take(); collect();sample_light_tiles(slot_index);
         if (!slot.draw_descriptors.empty()) {
             check(vkFreeDescriptorSets(device, descriptors, static_cast<uint32_t>(slot.draw_descriptors.size()), slot.draw_descriptors.data()), "recycle draw descriptors");
             slot.draw_descriptors.clear();
@@ -1839,6 +1849,7 @@ struct Renderer {uint32_t recipe_generation=1;
     #include "stage_bindings.inc"
     #include "display.inc"
     #include "jitter.inc"
+    #include "display_info.inc"
     #include "ngx.inc"
     #include "fsr.inc"
     #include "voxel_resources.inc"
@@ -2240,6 +2251,8 @@ int32_t SEVK_CALL sevk_force_jitter(void* ctx,uint32_t force){return call(ctx,[&
 int32_t SEVK_CALL sevk_get_jitter(void* ctx,float* state,uint32_t count){return call(ctx,[&](Renderer& r){if(!state||count<8)throw std::runtime_error("jitter state needs 8 floats");const auto& j=r.jitter;float values[8]{j.pixel[0],j.pixel[1],j.ndc[0],j.ndc[1],j.active?1.f:0.f,float(j.phases),float(j.index),float(j.frames)};std::memcpy(state,values,sizeof(values));return 0;});}
 int32_t SEVK_CALL sevk_set_display_flags(void* ctx,uint32_t flags){return call(ctx,[&](Renderer& r){uint32_t mask=flags>>16;uint32_t value=flags&0xffffu;if(!mask)r.display_flags=value;else r.display_flags=(r.display_flags&~mask)|(value&mask);return 0;});}
 int32_t SEVK_CALL sevk_force_hdr_display(void* ctx,uint32_t force){return call(ctx,[&](Renderer& r){if(r.recording||force>1)throw std::runtime_error("invalid HDR display override");r.hdr_display_forced=force!=0;return 0;});}
+int32_t SEVK_CALL sevk_get_display_info(void* ctx,SevkDisplayInfo* info){return call(ctx,[&](Renderer& r){if(!info||info->size!=sizeof(*info)||info->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("display info ABI mismatch");*info=r.display_info();return 0;});}
+int32_t SEVK_CALL sevk_readback_hdr(void* ctx,void* rgba16f,uint64_t bytes){return call(ctx,[&](Renderer& r){r.readback_hdr(rgba16f,bytes);return 0;});}
 int32_t SEVK_CALL sevk_set_hdr_ui(void* ctx,float paper_white,float shoulder,float peak){return call(ctx,[&](Renderer& r){if(!(paper_white>=0.f&&paper_white<=1000.f)||!(shoulder>=0.f&&shoulder<.95f)||!(peak>=0.f&&peak<=1000.f))throw std::runtime_error("invalid HDR UI transform");r.hdr_ui[0]=paper_white;r.hdr_ui[1]=shoulder;r.hdr_ui[2]=peak>0.f?peak:1000.f;return 0;});}
 int32_t SEVK_CALL sevk_set_upscale_owner(void* ctx,const char* id){return call(ctx,[&](Renderer& r){(void)r;return Renderer::ngx_set_owner(id);});}
 int32_t SEVK_CALL sevk_ngx_configure(uint32_t enabled,uint32_t mode,uint32_t preset,const char* directory){return Renderer::ngx_configure(enabled,mode,preset,directory);}

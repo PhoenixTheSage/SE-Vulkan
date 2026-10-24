@@ -611,6 +611,18 @@ SEVK_API int32_t SEVK_CALL sevk_set_upscale_owner(void* ctx, const char* id);
 SEVK_API int32_t SEVK_CALL sevk_set_hdr_ui(void* ctx, float paper_white, float shoulder, float peak);
 /* Diagnostics: lets HDR display tenancy grade without an HDR swapchain (offscreen tests). */
 SEVK_API int32_t SEVK_CALL sevk_force_hdr_display(void* ctx, uint32_t force);
+/* HDR display contract (P4). Display flags: 1 FP16 HDR, 2 frame generation, 4 temporal upscale, 16 display tenant,
+ * 32 allow tearing (IMMEDIATE without vsync), 64 low latency (one frame in flight). The DXGI fields describe the
+ * window's monitor on Windows (display_known=0 elsewhere); luminance is in nits. */
+typedef struct SevkDisplayInfo {
+    uint32_t size, abi_version;
+    uint32_t hdr_capable, hdr_active, tenant_graded, present_mode, tearing_supported, tearing_active, low_latency;
+    uint32_t display_known, display_hdr10, bits_per_color;
+    float max_luminance, max_full_frame_luminance, min_luminance, reserved;
+} SevkDisplayInfo;
+SEVK_API int32_t SEVK_CALL sevk_get_display_info(void* ctx, SevkDisplayInfo* info);
+/* Raw RGBA16F scRGB presentation capture (after sevk_request_readback on an FP16 swapchain). */
+SEVK_API int32_t SEVK_CALL sevk_readback_hdr(void* ctx, void* rgba16f, uint64_t bytes);
 /* Driver NGX for DLSS. The plugin passes the directory that contains the
  * feature library (nvngx_dlss.dll / libnvidia-ngx-dlss.so). mode is the
  * DLSS quality enum. preset 0 selects preset K. Calls copy the request
