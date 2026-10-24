@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Replace the sticky startup-recovery latch: unclean exits are attributed to the renderer or the game, the main menu prompts after the second counted exit, DX11 fallback happens only for renderer-attributed crashes, and driver/plugin changes release a fallback automatically.
+- Fix the crash when SE-FRS turns FSR on: FidelityFX now gets a device-proc resolver that maps KHR aliases (`vkGetBufferMemoryRequirements2KHR`) to their core 1.4 entry points and stubs the debug-utils and AMD marker calls the device never enables.
 
 ## 1.5.0 — 2026-10-24
 

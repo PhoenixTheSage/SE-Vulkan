@@ -160,6 +160,30 @@ void* fsr_symbol(const char* name) {
 #endif
 }
 
+// FFX resolves KHR aliases such as vkGetBufferMemoryRequirements2KHR and calls them unchecked once the GPU
+// lists the extension. Our 1.4 device enables none of those, so the alias is NULL: fall back to the core name.
+// Debug-utils and AMD buffer-marker entries are never enabled for FFX, so they get no-op stubs instead.
+static void VKAPI_PTR fsr_no_label(VkCommandBuffer, const VkDebugUtilsLabelEXT*) {}
+static void VKAPI_PTR fsr_no_label_end(VkCommandBuffer) {}
+static VkResult VKAPI_PTR fsr_no_name(VkDevice, const VkDebugUtilsObjectNameInfoEXT*) { return VK_SUCCESS; }
+static void VKAPI_PTR fsr_no_marker(VkCommandBuffer, VkPipelineStageFlagBits, VkBuffer, VkDeviceSize, uint32_t) {}
+static void VKAPI_PTR fsr_no_marker2(VkCommandBuffer, VkPipelineStageFlags2, VkBuffer, VkDeviceSize, uint32_t) {}
+static PFN_vkVoidFunction VKAPI_PTR fsr_device_proc(VkDevice dev, const char* name) {
+    if (!name) return nullptr;
+    if (auto fn = vkGetDeviceProcAddr(dev, name)) return fn;
+    size_t length = std::strlen(name);
+    if (length > 3 && std::strcmp(name + length - 3, "KHR") == 0) {
+        std::string core(name, length - 3);
+        if (auto fn = vkGetDeviceProcAddr(dev, core.c_str())) return fn;
+    }
+    if (std::strcmp(name, "vkCmdBeginDebugUtilsLabelEXT") == 0) return reinterpret_cast<PFN_vkVoidFunction>(&fsr_no_label);
+    if (std::strcmp(name, "vkCmdEndDebugUtilsLabelEXT") == 0) return reinterpret_cast<PFN_vkVoidFunction>(&fsr_no_label_end);
+    if (std::strcmp(name, "vkSetDebugUtilsObjectNameEXT") == 0) return reinterpret_cast<PFN_vkVoidFunction>(&fsr_no_name);
+    if (std::strcmp(name, "vkCmdWriteBufferMarkerAMD") == 0) return reinterpret_cast<PFN_vkVoidFunction>(&fsr_no_marker);
+    if (std::strcmp(name, "vkCmdWriteBufferMarker2AMD") == 0) return reinterpret_cast<PFN_vkVoidFunction>(&fsr_no_marker2);
+    return nullptr;
+}
+
 // FFX API surface format ids for the formats Anomaly catalog images can take; 0 means FSR cannot read it.
 static uint32_t fsr_surface_format(VkFormat format) {
     switch (format) {
@@ -247,7 +271,7 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
         fsr.backend.type = 3;
         fsr.backend.device = device;
         fsr.backend.physical = physical;
-        fsr.backend.get_device_proc = vkGetDeviceProcAddr;
+        fsr.backend.get_device_proc = fsr_device_proc;
         fsr.created = {};
         fsr.created.type = 0x00010000ull;
         fsr.created.next = reinterpret_cast<FsrHeader*>(&fsr.backend);
