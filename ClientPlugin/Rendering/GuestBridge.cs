@@ -57,6 +57,14 @@ public static class GuestBridge
     public static object[] CaptureVolumeScene()=>scene?.CaptureGuestVolumeScene();
     public static bool ConfigureDepthViews(ulong[] images,float[] matrices)=>current!=null && current.ConfigureGuestDepthViews(images,matrices);
     public static uint DepthViewsReady=>current?.GuestDepthReady??0;
+    /// <summary>Diagnostics: replaces the live scene as the RayScene source.</summary>
+    internal static System.Func<object[]> RayCaptureOverride;
+    /// <summary>
+    /// Scene half of an Anomaly RayScene v1 frame from the current Vulkan scene (meshes, instances, lights, cookies,
+    /// physical light origins, camera center, bloom emissiveness). Null without a scene.
+    /// </summary>
+    public static object[] CaptureRayScene() => RayCaptureOverride != null ? RayCaptureOverride() : scene?.CaptureRayScene();
+
     static Scene.VulkanPostprocess postprocess;
     internal static void SetPostprocess(Scene.VulkanPostprocess value)=>postprocess=value;
     /// <summary>

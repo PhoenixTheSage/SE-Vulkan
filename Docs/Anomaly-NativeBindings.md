@@ -1002,3 +1002,37 @@ low-latency round trip, refusal of HDR readback on a non-FP16 target, the
 SDR curve against analytic values, and an EXR chunk that decodes to the exact
 source halves. Tearing on a real swapchain and the DXGI monitor fields need a
 live window and are build-verified only.
+
+### RayScene v1 producer (audit P3 step 3)
+
+`VulkanScene.CaptureRayScene` builds the scene half of Anomaly's RayScene v1 frame
+from the same records the DX11 capture produces:
+- **Meshes:** a revision, 16-float vertices (position, normal, UV, bone indices,
+  weights) from the CPU model data, concatenated part indices, and parts
+  (start, count, base vertex, material, four texture paths, technique).
+- **Instances** within 256 m: actor id, mesh index, camera-relative row-major
+  world, camera-relative bounds, and per-part variants. Variants carry the
+  material colour and emissivity override, texture overrides, and thin-glass
+  optics.
+- **Native point and spot lights:** 16 floats each, with cookies and physical
+  origins.
+
+Texture ids are boxed once per id, so SE-RT's reference comparisons see stable
+identities. `GuestBridge.CaptureRayScene` exposes the capture. Anomaly wraps it
+in the full frame (version, epoch, `uint` frame index, sun and ambient,
+view-projections, emitters, and renderer image ids in the device slot) and
+delivers it at the start of guest submission.
+
+Not yet captured:
+- skinned and instanced actors (unknown occupants, as DX11 treats instancing);
+- voxels;
+- billboard and GPU emitters;
+- the far-sun product.
+
+**Tests:**
+- SceneSubmissionGpuTests `--ray-scene-only`, 12 checks: a 10⁶ m camera-relative
+  scene goes through SE-RT's `SceneAssembler` Build, Signature and Refresh,
+  covering stable revisions, a moved transform and a material override.
+- GuestDepthGpuTests `--ray-facade-only`, 28 checks: delivery, frame shape,
+  SE-RT Build on the delivered frame, and an in-callback commit that owns the
+  same frame.
