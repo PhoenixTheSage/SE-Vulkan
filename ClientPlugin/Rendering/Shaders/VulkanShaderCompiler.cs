@@ -118,6 +118,12 @@ public sealed class VulkanShaderCompiler : IDisposable
             if (!Identifier.IsMatch(define.Key) || (define.Value ?? "").IndexOfAny(new[] { '\0', '\r', '\n' }) >= 0)
                 throw new ArgumentException("Invalid HLSL definition: " + define.Key + ".");
         Directory.CreateDirectory(cacheDirectory);
+        // Repeat requests (every launch's guest and tenant programs) resolve from the input index
+        // without mirroring include trees or starting DXC.
+        string inputKey = batchMirror == null ? InputKey(request, profile, definitions) : null;
+        string indexPath = inputKey == null ? null : Path.Combine(cacheDirectory, "Index", inputKey);
+        VulkanShaderResult indexed = indexPath == null ? null : ReadIndexed(indexPath, request, profile);
+        if (indexed != null) return indexed;
         string jobs = Path.Combine(cacheDirectory, "Jobs");
         Directory.CreateDirectory(jobs);
         string job = Path.Combine(jobs, Guid.NewGuid().ToString("N"));
@@ -176,7 +182,7 @@ public sealed class VulkanShaderCompiler : IDisposable
             lock (CacheLocks[(int)(Convert.ToUInt32(key.Substring(0, 8), 16) % (uint)CacheLocks.Length)])
             {
                 VulkanShaderResult cached = ReadCached(spirvPath, metadataPath, key, request, toolchain, profile, diagnostics, job);
-                if (cached != null) return cached;
+                if (cached != null) { WriteIndex(indexPath, key); return cached; }
                 // Vanilla includes reuse registers across mutually exclusive
                 // resources. Preserve active bindings, not dead declarations.
                 var compileArgs = new List<string> { "-spirv", "-fspv-target-env=vulkan1.3", "-fvk-use-dx-layout", "-fvk-use-dx-position-w", "-fvk-auto-shift-bindings", "-fspv-reflect", "-HV", "2016", "-Zpr", "-T", profile, "-E", request.EntryPoint, "-Fo", Path.Combine(job, "shader.spv") };
@@ -207,8 +213,16 @@ public sealed class VulkanShaderCompiler : IDisposable
                 SpirvMetadataReader.Reflect(spirv, metadata);
                 WriteAtomic(spirvPath, stream => stream.Write(spirv, 0, spirv.Length));
                 WriteAtomic(metadataPath, stream => { lock (MetadataSerializer) MetadataSerializer.Serialize(stream, metadata); });
+                WriteIndex(indexPath, key);
                 return new VulkanShaderResult { SpirvPath = spirvPath, MetadataPath = metadataPath, Metadata = metadata, Diagnostics = diagnostics, CacheHit = false };
             }
+        }
+        // Callers probe entry points (main, then __pixel_shader); remember a deterministic rejection for the same inputs.
+        catch (Exception error) when (indexPath != null && (error is InvalidOperationException || error is InvalidDataException) &&
+            !error.Message.Contains("timeout") && !error.Message.StartsWith("Could not start", StringComparison.Ordinal))
+        {
+            WriteIndex(indexPath, FailurePrefix + error.Message);
+            throw;
         }
         finally
         {
@@ -231,7 +245,8 @@ public sealed class VulkanShaderCompiler : IDisposable
             if(request.GpuOpaque&&(metadata.SourceTransform!=GpuOpaqueShaderAdapter.Contract||metadata.BaseSpirvSha256!=request.GpuOpaqueBaseModule))return null;
             if(request.HbaoNegativeBorder&&(metadata.SourceTransform!=HbaoBorderShaderAdapter.Contract||metadata.BaseSpirvSha256!=request.HbaoBaseModule))return null;
             if(metadata.SourceGenerationSha256!=request.SourceGeneration?.Fingerprint)return null;
-            diagnostics += Validate(spirvPath, job);
+            // An index hit (no job) reuses bytes whose hash matches the module validated when it was written.
+            if (job != null) diagnostics += Validate(spirvPath, job);
             SpirvMetadataReader.Reflect(bytes, metadata);
             return new VulkanShaderResult { SpirvPath = spirvPath, MetadataPath = metadataPath, Metadata = metadata, Diagnostics = diagnostics, CacheHit = true };
         }
@@ -239,6 +254,81 @@ public sealed class VulkanShaderCompiler : IDisposable
         {
             return null;
         }
+    }
+
+    private VulkanShaderResult ReadIndexed(string indexPath, VulkanShaderRequest request, string profile)
+    {
+        string key;
+        try { key = File.Exists(indexPath) ? File.ReadAllText(indexPath) : null; }
+        catch (Exception error) when (error is IOException || error is UnauthorizedAccessException) { return null; }
+        if (key != null && key.StartsWith(FailurePrefix, StringComparison.Ordinal)) throw new InvalidOperationException(key.Substring(FailurePrefix.Length));
+        key = key?.Trim();
+        if (key == null || key.Length != 64 || key.Any(c => !Uri.IsHexDigit(c))) return null;
+        string spirvPath = Path.Combine(cacheDirectory, key + ".spv"), metadataPath = Path.Combine(cacheDirectory, key + ".xml");
+        lock (CacheLocks[(int)(Convert.ToUInt32(key.Substring(0, 8), 16) % (uint)CacheLocks.Length)])
+            return ReadCached(spirvPath, metadataPath, key, request, ToolchainHash(), profile, "", null);
+    }
+
+    private const string FailurePrefix = "failed:";
+    private static void WriteIndex(string indexPath, string entry)
+    {
+        if (indexPath == null) return;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(indexPath));
+            WriteAtomic(indexPath, stream => { byte[] bytes = new UTF8Encoding(false).GetBytes(entry); stream.Write(bytes, 0, bytes.Length); });
+        }
+        catch (Exception error) when (error is IOException || error is UnauthorizedAccessException) { }
+    }
+
+    // Callers regenerate identical include files every launch, so the input key hashes content; a file is
+    // rehashed only when its size or write time changes.
+    private static readonly Dictionary<string, KeyValuePair<string, string>> ContentHashes = new Dictionary<string, KeyValuePair<string, string>>(StringComparer.OrdinalIgnoreCase);
+    private static string ContentHash(string path)
+    {
+        var file = new FileInfo(path);
+        string stamp = file.Length.ToString(CultureInfo.InvariantCulture) + "|" + file.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture);
+        KeyValuePair<string, string> known;
+        lock (ContentHashes) if (ContentHashes.TryGetValue(path, out known) && known.Key == stamp) return known.Value;
+        string hash = FileHash(path);
+        lock (ContentHashes) ContentHashes[path] = new KeyValuePair<string, string>(stamp, hash);
+        return hash;
+    }
+
+    // Everything the full cache key is derived from: any include edit, added or removed include, or plugin/toolchain update misses.
+    private string InputKey(VulkanShaderRequest request, string profile, KeyValuePair<string, string>[] definitions)
+    {
+        string source = Path.GetFullPath(request.SourcePath ?? throw new ArgumentException("A shader source is required."));
+        var text = new StringBuilder(CompileContract).Append('\n').Append(ShaderMetadata.CurrentSchemaVersion).Append('\n')
+            .Append(typeof(VulkanShaderCompiler).Assembly.ManifestModule.ModuleVersionId).Append('\n')
+            .Append(request.NativeAbiVersion).Append('\n').Append(ToolchainHash()).Append('\n').Append(profile).Append('\n')
+            .Append(request.EntryPoint).Append('\n').Append(request.Debug).Append('\n').Append(source).Append('\n')
+            .Append(request.GpuOpaque).Append('|').Append(request.GpuOpaqueBaseModule).Append('\n')
+            .Append(request.HbaoNegativeBorder).Append('|').Append(request.HbaoBaseModule).Append('\n')
+            .Append(request.SourceGeneration?.Fingerprint).Append('\n');
+        foreach (var dependency in (request.GpuOpaqueBaseDependencies ?? new List<ShaderDependency>()).Concat(request.HbaoBaseDependencies ?? new List<ShaderDependency>()))
+            text.Append(dependency.Path).Append('=').Append(dependency.Sha256).Append('\n');
+        foreach (var define in definitions) text.Append(define.Key).Append('=').Append(define.Value ?? "1").Append('\n');
+        var roots = new List<string> { Path.GetFullPath(request.ContentDirectory ?? Path.GetDirectoryName(source)) };
+        foreach (string include in request.IncludeDirectories ?? new List<string>()) roots.Add(Path.GetFullPath(include));
+        foreach (string root in roots)
+        {
+            text.Append("root ").Append(root).Append('\n');
+            if (!Directory.Exists(root)) continue;
+            foreach (string path in Directory.GetFiles(root, "*", SearchOption.AllDirectories).OrderBy(p => p, StringComparer.Ordinal))
+            {
+                if (!IsHlslFile(path) && !path.Equals(source, StringComparison.OrdinalIgnoreCase)) continue;
+                text.Append(path).Append('|').Append(ContentHash(path)).Append('\n');
+            }
+        }
+        return Hash(Encoding.UTF8.GetBytes(text.ToString()));
+    }
+
+    private static bool IsHlslFile(string path)
+    {
+        string extension = Path.GetExtension(path);
+        return extension.Equals(".hlsl", StringComparison.OrdinalIgnoreCase) || extension.Equals(".hlsli", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".h", StringComparison.OrdinalIgnoreCase) || extension.Equals(".inl", StringComparison.OrdinalIgnoreCase) || extension.Equals(".inc", StringComparison.OrdinalIgnoreCase);
     }
 
     private string Validate(string path, string job)
@@ -275,13 +365,22 @@ public sealed class VulkanShaderCompiler : IDisposable
         }
     }
 
+    // Hashing the tool binaries costs far more than a compile-cache hit; reuse it until a file's size or write time changes.
+    private static readonly Dictionary<string, string> ToolchainHashes = new Dictionary<string, string>(StringComparer.Ordinal);
     private string ToolchainHash()
     {
+        var files = Directory.GetFiles(toolsDirectory, "*", SearchOption.AllDirectories).Where(p =>
+            p == dxc || p == validator || p.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) || Path.GetFileName(p).Contains(".so")).OrderBy(p => p, StringComparer.Ordinal).ToArray();
+        var signature = new StringBuilder(toolsDirectory);
+        foreach (string path in files) { var file = new FileInfo(path); signature.Append('\n').Append(path).Append('|').Append(file.Length).Append('|').Append(file.LastWriteTimeUtc.Ticks); }
+        string signatureText = signature.ToString(), hash;
+        lock (ToolchainHashes) if (ToolchainHashes.TryGetValue(signatureText, out hash)) return hash;
         var digest = new StringBuilder();
-        foreach (string path in Directory.GetFiles(toolsDirectory, "*", SearchOption.AllDirectories).Where(p =>
-            p == dxc || p == validator || p.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) || Path.GetFileName(p).Contains(".so")).OrderBy(p => p, StringComparer.Ordinal))
+        foreach (string path in files)
             digest.Append(path.Substring(toolsDirectory.Length).Replace('\\', '/')).Append('=').Append(FileHash(path)).Append('\n');
-        return Hash(Encoding.UTF8.GetBytes(digest.ToString()));
+        hash = Hash(Encoding.UTF8.GetBytes(digest.ToString()));
+        lock (ToolchainHashes) ToolchainHashes[signatureText] = hash;
+        return hash;
     }
 
     private static string NormalizeProfile(string profile)

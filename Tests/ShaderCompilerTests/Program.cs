@@ -56,6 +56,15 @@ try
     Check(first.Metadata.ExecutionModel == 5 && first.Metadata.WorkgroupSizeX == 1 && first.Metadata.WorkgroupSizeY == 1 && first.Metadata.WorkgroupSizeZ == 1 && first.Metadata.Capabilities.Contains(1),
         "reflection records compute execution model, workgroup dimensions and required capabilities");
     Check(compiler.Compile(request).CacheHit, "identical preprocessed content reuses a validated cache entry");
+    string jobsDirectory = Path.Combine(testDirectory, "Cache", "Jobs");
+    Directory.Delete(jobsDirectory, true);
+    Check(new VulkanShaderCompiler(toolCopy, Path.Combine(testDirectory, "Cache")).Compile(request).CacheHit && !Directory.Exists(jobsDirectory),
+        "unchanged inputs resolve from the input index without a DXC job");
+    var missingEntry = new VulkanShaderRequest { SourcePath = source, ContentDirectory = content, Profile = "cs_5_0", EntryPoint = "missing_entry" };
+    string FailureOf(VulkanShaderRequest failing) { try { compiler.Compile(failing); return null; } catch (InvalidOperationException error) { return error.Message; } }
+    string firstFailure = FailureOf(missingEntry);
+    Directory.Delete(jobsDirectory, true);
+    Check(firstFailure != null && FailureOf(missingEntry) == firstFailure && !Directory.Exists(jobsDirectory), "a deterministic compile failure is replayed from the input index");
     string originalKey = first.Metadata.CacheKey;
     File.WriteAllBytes(Path.Combine(toolCopy, "dependency-hash-test.dll"), new byte[] { 1, 2, 3 });
     var changedTool = compiler.Compile(request);
