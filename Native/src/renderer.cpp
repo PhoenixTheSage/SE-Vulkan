@@ -381,7 +381,7 @@ struct FsrBackend {
 };
 struct FsrCreate {
     uint64_t type; FsrHeader* next;
-    uint32_t flags, pad;
+    uint32_t flags;
     uint32_t max_render_w, max_render_h, max_upscale_w, max_upscale_h;
     void* message;
 };
@@ -401,7 +401,7 @@ struct FsrDispatch {
     uint32_t flags;
 };
 static_assert(sizeof(FsrBackend) == 40, "FSR Vulkan backend layout");
-static_assert(sizeof(FsrCreate) == 48, "FSR create layout");
+static_assert(sizeof(FsrCreate) == 48 && offsetof(FsrCreate, max_render_w) == 20 && offsetof(FsrCreate, message) == 40, "FSR create layout");
 static_assert(sizeof(FsrResource) == 48 && offsetof(FsrResource, state) == 40, "FSR resource layout");
 static_assert(sizeof(FsrDispatch) == 432 && offsetof(FsrDispatch, flags) == 428, "FSR dispatch layout");
 

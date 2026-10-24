@@ -243,8 +243,9 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
     if (!mv_image || !mv_w || !mv_h) { fsr_publish(in_w, in_h, out_w, out_h, false, false, nullptr); fsr_set_status("FSR waiting for Anomaly velocity"); return false; }
     using Create = uint32_t (*)(void**, void*, const void*);
     using Destroy = uint32_t (*)(void**, const void*);
-    using Dispatch = uint32_t (*)(void*, const void*);
-    using Query = uint32_t (*)(void*, void*);
+    // Every FFX entry point takes the address of the context handle, not the handle.
+    using Dispatch = uint32_t (*)(void**, const void*);
+    using Query = uint32_t (*)(void**, void*);
     if (!fsr.library) {
         fsr.library = fsr_load_library(directory);
         fsr.directory = directory;
@@ -299,7 +300,7 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
         if (fsr.query) {
             FsrVersionQuery query{};
             query.type = 6;
-            if (reinterpret_cast<Query>(fsr.query)(fsr.context, &query) == 0 && query.version_name && query.version_name[0])
+            if (reinterpret_cast<Query>(fsr.query)(&fsr.context, &query) == 0 && query.version_name && query.version_name[0])
                 fsr.version = query.version_name;
         }
     }
@@ -333,7 +334,8 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
     bool graded = post.display_graded && post.output && post.output->image.handle && post.output->format == VK_FORMAT_R16G16B16A16_SFLOAT;
     work.color = graded ? fsr_image(post.output->image.handle, 4u, in_w, in_h, 0, 12)
         : fsr_image(world.hdr.handle, world.hdr_format==VK_FORMAT_B10G11R11_UFLOAT_PACK32?16u:4u, in_w, in_h, 0, 12);
-    work.depth = fsr_image(world.gbuffer[3].handle, 28, in_w, in_h, 4, 12);
+    // gbuffer[3] is an R32 color image; DEPTHTARGET usage would make FFX build a D32 depth-aspect view of it.
+    work.depth = fsr_image(world.gbuffer[3].handle, 28, in_w, in_h, 0, 12);
     work.motion = fsr_image(mv_image, 18, mv_w, mv_h, 0, 12);
     work.output = fsr_image(dest.handle, 4, out_w, out_h, 2, 2);
     // Anomaly's reactiveMask feeds FSR's reactive input when it matches the render size, as SE-FRS does on DX11.
@@ -363,7 +365,7 @@ bool fsr_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in
     work.far_plane = guest.frame.far_plane > 1.f ? guest.frame.far_plane : view_far;
     work.fov = fov;
     work.meters = 1.f;
-    uint32_t result = dispatch(fsr.context, &work);
+    uint32_t result = dispatch(&fsr.context, &work);
     barrier(cmd, dest.handle, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
