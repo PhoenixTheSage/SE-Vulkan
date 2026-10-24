@@ -33,7 +33,7 @@ partial class Program
             R("SetFarSunEnabled",tenant,true);R("SetFrameEnabled",tenant,true);R("SetEmitter",7u,new float[16],null!,0u,1u);R("RemoveEmitter",7u);
             Check(((string)scene!.GetProperty("Status")!.GetValue(null)!).Contains("registered"),"status reports the Vulkan registration");
             string refused=null;try{R("CompileShader","x.hlsl",0);}catch(TargetInvocationException e){refused=e.InnerException?.Message;}
-            Check(refused!=null&&refused.Contains("guest compiler"),"CompileShader refuses DX11 bytecode on Vulkan");
+            Check(refused!=null&&refused.Contains("Ray tenant shader compilation failed"),"CompileShader compiles through the guest compiler on Vulkan and reports a failed source");
 
             Check((bool)O("Claim",tenant,7)&&!(bool)O("Claim","fixture.other",2),"a claim overlapping another tenant's signals is refused");
             Check(!(bool)O("Commit",tenant),"a commit is refused while an overlapping claim stands");

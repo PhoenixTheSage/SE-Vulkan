@@ -100,19 +100,27 @@ uint64_t tenant_create_image(uint32_t width,uint32_t height,uint32_t layers,uint
 }
 // DXC types RWTexture2D<float4> as Rgba32f. DX11 binds any compatible UAV format there, so storage
 // images are retyped Unknown (shaderStorageImageRead/WriteWithoutFormat) on the executable copy.
+// Two images differing only by format would become duplicate types, so such a group keeps DXC's
+// formats (inferred from the element type, e.g. uint -> R32ui, uint4 -> Rgba32ui).
 std::vector<uint32_t> tenant_spirv(const void* data,uint64_t bytes){
     if(!data || bytes<20 || bytes%4 || bytes>16*1024*1024)throw std::runtime_error("invalid tenant SPIR-V size");
     std::vector<uint32_t> words(bytes/4);std::memcpy(words.data(),data,bytes);
     if(words[0]!=0x07230203u)throw std::runtime_error("invalid tenant SPIR-V header");
     static constexpr uint32_t allowed[]{1,25,43,44,46,47,49,50,51,55,56,5379};
-    size_t first=0;bool storage=false,read=false,write=false;
+    size_t first=0;bool storage=false,read=false,write=false;std::vector<size_t> images;
     for(size_t i=5;i<words.size();){uint32_t n=words[i]>>16,op=words[i]&65535;
         if(!n || n>words.size()-i)throw std::runtime_error("malformed tenant SPIR-V");
         if(op==10)throw std::runtime_error("tenant shader requests a SPIR-V extension");
         if(op==17 && n==2){uint32_t c=words[i+1];if(std::find(std::begin(allowed),std::end(allowed),c)==std::end(allowed))throw std::runtime_error("tenant shader requests capability "+std::to_string(c));
             if(!first)first=i;read|=c==55;write|=c==56;}
-        if(op==25 && n>=9 && words[i+7]==2 && words[i+3]!=5){words[i+8]=0;storage=true;}
+        if(op==25 && n>=9)images.push_back(i);
         i+=n;}
+    // An image's shape with the format cleared: everything after its result id.
+    auto shape=[&](size_t i){std::vector<uint32_t> s(words.begin()+i+2,words.begin()+i+(words[i]>>16));s[6]=0;s.insert(s.begin(),words[i]>>16);return s;};
+    for(size_t i:images){if(words[i+7]!=2 || words[i+3]==5 || words[i+8]==0)continue;auto own=shape(i);
+        bool unique=std::none_of(images.begin(),images.end(),[&](size_t j){return j!=i && shape(j)==own;});
+        if(unique){words[i+8]=0;storage=true;}}
+    for(size_t i:images)if(words[i+7]==2 && words[i+3]!=5 && words[i+8]==0)storage=true;
     if(storage){
         if(!tenant.without_format)throw std::runtime_error("tenant storage images need shaderStorageImageRead/WriteWithoutFormat");
         if(!first)throw std::runtime_error("tenant SPIR-V declares no capabilities");

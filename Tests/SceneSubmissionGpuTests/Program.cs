@@ -31,6 +31,8 @@ partial class Program
         if(System.Environment.GetCommandLineArgs().Contains("--ray-scene-only")){int count=RaySceneRegression(scene,content,(ok,text)=>Check(ok,text));
             var rayStats=backend.GetStats();Check(rayStats.ValidationErrors==0,"ray scene capture raises zero validation errors");Console.WriteLine("PASS "+(count+1)+" RayScene v1 producer checks");return 0;}
         scene.Process(new MyRenderMessageCreateRenderEntity{ID=10,Model=armor,DebugName="submission test",WorldMatrix=MatrixD.CreateTranslation(0,0,-5),Flags=RenderFlags.Visible|RenderFlags.CastShadows});
+        if(System.Environment.GetCommandLineArgs().Contains("--sert-scene-only")){int count=SertSceneRegression(backend,scene,content,output,(ok,text)=>Check(ok,text));
+            Check(backend.GetStats().ValidationErrors==0,"SE-RT scene composition raises zero validation errors");Console.WriteLine("PASS "+(count+1)+" SE-RT SoftwareVulkan scene checks");return 0;}
         MatrixD projection=MatrixD.CreatePerspectiveFieldOfView(Math.PI/2,1,.1,distanceFadeOnly?10000:100);projection.M13=projection.M14-projection.M13;projection.M23=projection.M24-projection.M23;projection.M33=projection.M34-projection.M33;projection.M43=projection.M44-projection.M43;
         var light=MyEnvironmentLightData.Default;light.SunLightDirection=Vector3.Forward;light.SunColorRaw=new Vector3(2);light.SunDiffuseFactor=1;light.SunDiscIntensity=0;
         Vector3D renderCamera=Vector3D.Zero;
