@@ -191,6 +191,11 @@ partial class Program
         }
         else Console.WriteLine("SKIP ray query checks: device has no ray query");
 
+        // GPU timestamps around each tenant list, read once the frame completes.
+        var timing = ((Func<double[]>)session["Timing"])();
+        Console.WriteLine("TENANT timing: " + timing[0].ToString("F4") + " ms over " + timing[1] + " measurements");
+        Check(!backend.TenantStats().Timestamps || (timing[1] > 0 && double.IsFinite(timing[0]) && timing[0] > 0 && timing[0] < 1000), "the session reports the GPU time of completed tenant lists");
+
         foreach (var id in ids) backend.TenantDestroy(id);
         Frame(null); Frame(null);
         var empty = backend.TenantStats();

@@ -65,7 +65,10 @@ partial class Program
         }
         try{
             overrideField.SetValue(null,(Func<object[]>)(()=>synthetic));
-            Check((bool)hostType.GetMethod("TryBind")!.Invoke(host,new object[]{frame,null!})!,"SE-RT's AnomalyHost binds RayScene v1 on Vulkan");
+            // Plugin.Completed's path: Anomaly polls with the tenant session; SE-RT reads its GPU timing.
+            int polls=0;double polled=double.NaN;var poll=software.GetType().GetMethod("Poll",new[]{typeof(object),typeof(Action<double>)})!;
+            Action<object> completed=context=>{polls++;poll.Invoke(software,new object[]{context,(Action<double>)(ms=>polled=ms)});};
+            Check((bool)hostType.GetMethod("TryBind")!.Invoke(host,new object[]{frame,completed})!,"SE-RT's AnomalyHost binds RayScene v1 on Vulkan");
             Frame();var baseline=backend.Readback(64,64);
             var watch=System.Diagnostics.Stopwatch.StartNew();
             while(!rendered&&error==null&&watch.Elapsed.TotalSeconds<300){Frame();if(!rendered)Thread.Sleep(50);}
@@ -75,6 +78,9 @@ partial class Program
             Check(stats.Rejected==0&&stats.Dispatches>=10&&stats.Draws>=3,"the whole stack (atlas, guides, BVH refit, ReSTIR, trace, denoise, composite) records without a rejected command");
             ulong before=stats.Dispatches;for(int i=0;i<3;i++)Frame();
             Check(rendered&&error==null&&backend.TenantStats().Dispatches>before&&backend.TenantStats().Rejected==0,"later frames keep rendering with history");
+            double gpu=(double)software.GetType().GetProperty("GpuMilliseconds")!.GetValue(software)!;long measured=(long)software.GetType().GetProperty("Measurements")!.GetValue(software)!;
+            Console.WriteLine("SERT timing: polls="+polls+" gpu="+gpu.ToString("F4")+" ms measurements="+measured);
+            Check(polls>0&&measured>0&&double.IsFinite(gpu)&&gpu>0&&polled==gpu,"Anomaly's Vulkan completion polls give SE-RT its GPU time for the adaptive budget");
             // This lane has no GBuffer geometry, so Composite discards every pixel; SceneSubmissionGpuTests --sert-scene-only checks its output.
             Check(backend.Readback(64,64).SequenceEqual(baseline),"with no GBuffer surface the composite leaves the image untouched, as on DX11");
             Check(backend.GetStats().ValidationEnabled!=0&&backend.GetStats().ValidationErrors==0,"SE-RT on the tenant session raises zero validation errors");

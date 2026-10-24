@@ -10,7 +10,10 @@ public struct NativeTenantStats
     public uint Size, Buffers, Images, Pipelines;
     public ulong Bytes, Frames, Commands, Dispatches, Draws, Rejected, Builds;
     public uint Accels, Features;
+    public double GpuMilliseconds;
+    public ulong Measurements;
     public bool RayQuery => (Features & 1) != 0;
+    public bool Timestamps => (Features & 2) != 0;
 }
 
 /// <summary>
@@ -87,7 +90,9 @@ public sealed partial class NativeBackend
     /// CreateRaster: Func&lt;byte[],string,byte[],string,int[],ulong&gt;; Destroy: Action&lt;ulong&gt;;
     /// Record: Action&lt;byte[],byte[],byte[]&gt; (commands, bindings, blob); Readback: Action&lt;ulong,int,long,byte[]&gt;;
     /// Stats: Func&lt;ulong[]&gt; {buffers, images, pipelines, bytes, frames, commands, dispatches, draws, rejected, builds, accels};
-    /// RayQuery: Func&lt;bool&gt;; CreateAccel: Func&lt;bool,ulong&gt; (top level when true).
+    /// RayQuery: Func&lt;bool&gt;; CreateAccel: Func&lt;bool,ulong&gt; (top level when true);
+    /// Timing: Func&lt;double[]&gt; {GPU milliseconds of the latest completed tenant list, completed measurements}
+    /// (NaN, 0 without timestamps).
     /// </summary>
     public IReadOnlyDictionary<string, Delegate> TenantSession()
     {
@@ -101,6 +106,7 @@ public sealed partial class NativeBackend
             ["Destroy"] = (Action<ulong>)TenantDestroy,
             ["RayQuery"] = (Func<bool>)(() => TenantStats().RayQuery),
             ["CreateAccel"] = (Func<bool, ulong>)TenantCreateAccel,
+            ["Timing"] = (Func<double[]>)(() => { var s = TenantStats(); return new[] { s.Timestamps && s.Measurements > 0 ? s.GpuMilliseconds : double.NaN, s.Measurements }; }),
             ["Record"] = (Action<byte[], byte[], byte[]>)TenantRecord,
             ["Readback"] = (Action<ulong, int, long, byte[]>)TenantReadback,
             ["Stats"] = (Func<ulong[]>)(() => { var s = TenantStats(); return new[] { s.Buffers, s.Images, s.Pipelines, s.Bytes, s.Frames, s.Commands, s.Dispatches, s.Draws, s.Rejected, s.Builds, s.Accels }; }),

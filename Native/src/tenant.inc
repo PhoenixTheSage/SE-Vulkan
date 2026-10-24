@@ -21,6 +21,8 @@ struct TenantRetired{uint64_t completion{};Buffer buffer{};TenantImage image{};T
 struct TenantState{
     std::unordered_map<uint64_t,Buffer> buffers;std::unordered_map<uint64_t,TenantImage> images;std::unordered_map<uint64_t,TenantPipeline> pipelines;
     std::unordered_map<uint64_t,TenantAccel> accels;Buffer scratch[2]{};TenantAccel dummy_tlas{};
+    // GPU time of each slot's tenant list: two timestamps per slot, read once the frame completes.
+    VkQueryPool timing{};bool timing_valid[2]{};
     std::vector<uint64_t> fresh_buffers;std::vector<TenantRetired> retired;uint64_t next_id{1};
     std::vector<SevkTenantCommand> commands;std::vector<SevkTenantBinding> bindings;std::vector<uint8_t> blob;
     VkDescriptorPool pools[2]{};Buffer stream[2]{};VkSampler samplers[3]{};
@@ -54,7 +56,15 @@ void tenant_destroy_pipeline(TenantPipeline& p){
 }
 void tenant_destroy_accel(TenantAccel& a){if(a.handle && vkDestroyAccelerationStructureKHR)vkDestroyAccelerationStructureKHR(device,a.handle,nullptr);destroy_buffer(a.storage);a={};}
 void tenant_destroy_retired(TenantRetired& r){destroy_buffer(r.buffer);tenant_destroy_image(r.image);tenant_destroy_pipeline(r.pipeline);tenant_destroy_accel(r.accel);}
+void tenant_sample_timing(){
+    for(uint32_t i=0;i<2;++i){if(!tenant.timing || !tenant.timing_valid[i])continue;uint64_t values[4]{};
+        auto result=vkGetQueryPoolResults(device,tenant.timing,i*2,2,sizeof(values),values,16,VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        if(result==VK_NOT_READY || !values[1] || !values[3])continue;check(result,"read tenant timestamps");
+        uint64_t mask=timestamp_bits==64?~uint64_t(0):(uint64_t(1)<<timestamp_bits)-1;
+        tenant.stats.gpu_ms=double((values[2]-values[0])&mask)*timestamp_period/1000000.0;++tenant.stats.measurements;tenant.timing_valid[i]=false;}
+}
 void tenant_collect(uint64_t complete){
+    tenant_sample_timing();
     for(auto it=tenant.retired.begin();it!=tenant.retired.end();)if(it->completion<=complete){tenant_destroy_retired(*it);it=tenant.retired.erase(it);}else ++it;
 }
 void cleanup_tenant(){
@@ -64,6 +74,7 @@ void cleanup_tenant(){
     for(auto& a:tenant.accels)tenant_destroy_accel(a.second);tenant_destroy_accel(tenant.dummy_tlas);
     for(uint32_t i=0;i<2;++i){if(tenant.pools[i])vkDestroyDescriptorPool(device,tenant.pools[i],nullptr);destroy_buffer(tenant.stream[i]);destroy_buffer(tenant.scratch[i]);}
     for(auto s:tenant.samplers)if(s)vkDestroySampler(device,s,nullptr);
+    if(tenant.timing)vkDestroyQueryPool(device,tenant.timing,nullptr);
     bool without_format=tenant.without_format;tenant=TenantState{};tenant.without_format=without_format;
 }
 void tenant_ensure(){
@@ -81,6 +92,8 @@ void tenant_ensure(){
         check(vkCreateDescriptorPool(device,&p,nullptr,&tenant.pools[i]),"create tenant descriptor pool");
     }
     tenant.dummy_buffer=make_buffer(65536,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,false);
+    if(timestamp_bits){VkQueryPoolCreateInfo qp{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};qp.queryType=VK_QUERY_TYPE_TIMESTAMP;qp.queryCount=4;
+        check(vkCreateQueryPool(device,&qp,nullptr,&tenant.timing),"create tenant timestamp pool");}
 }
 
 uint64_t tenant_create_buffer(uint64_t bytes){
@@ -412,6 +425,8 @@ void tenant_execute(VkCommandBuffer cmd){
             VkDeviceSize span=std::max<VkDeviceSize>(b.bytes,size_of(c,b.binding));std::memset(mapped+offsets[c.binding_first+j],0,span);
             std::memcpy(mapped+offsets[c.binding_first+j],tenant.blob.data()+b.offset,b.bytes);}}
     check(vmaFlushAllocation(allocator,stream.memory,0,used),"flush tenant stream");
+    // The slot is fenced before re-recording, so its previous measurement is complete: read it before the reset.
+    if(tenant.timing){tenant_sample_timing();tenant.timing_valid[s]=false;vkCmdResetQueryPool(cmd,tenant.timing,s*2,2);vkCmdWriteTimestamp2(cmd,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,tenant.timing,s*2);}
     tenant_initialize(cmd);tenant_barrier(cmd);VkImageView hdr{};
     for(size_t i=0;i<tenant.commands.size();++i){const auto& c=tenant.commands[i];bool ok=true;
         if(c.op==1 || c.op==2){const auto& p=tenant.pipelines.at(c.pipeline);VkDescriptorSet set=tenant_set(cmd,p,c,offsets,hdr,s);ok=set!=VK_NULL_HANDLE;
@@ -458,6 +473,7 @@ void tenant_execute(VkCommandBuffer cmd){
             vkCmdCopyBufferToImage(cmd,stream.handle,dst.image.handle,VK_IMAGE_LAYOUT_GENERAL,1,&region);}
         if(!ok)++tenant.stats.rejected;
         ++tenant.stats.commands;tenant_barrier(cmd);}
+    if(tenant.timing){vkCmdWriteTimestamp2(cmd,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,tenant.timing,s*2+1);tenant.timing_valid[s]=true;}
     ++tenant.stats.frames;tenant_end_frame();
 }
 void tenant_readback(uint64_t id,uint32_t layer,uint64_t offset,void* data,uint64_t bytes){
@@ -481,6 +497,6 @@ void tenant_readback(uint64_t id,uint32_t layer,uint64_t offset,void* data,uint6
 }
 SevkTenantStats tenant_stats()const{
     SevkTenantStats s=tenant.stats;s.size=sizeof(s);s.buffers=uint32_t(tenant.buffers.size());s.images=uint32_t(tenant.images.size());s.pipelines=uint32_t(tenant.pipelines.size());s.bytes=0;
-    s.accels=uint32_t(tenant.accels.size());s.features=ray.supported?1u:0u;
+    s.accels=uint32_t(tenant.accels.size());s.features=(ray.supported?1u:0u)|(timestamp_bits?2u:0u);
     for(const auto& b:tenant.buffers)s.bytes+=b.second.bytes;for(const auto& i:tenant.images)s.bytes+=uint64_t(i.second.width)*i.second.height*i.second.layers*i.second.bpp;return s;
 }

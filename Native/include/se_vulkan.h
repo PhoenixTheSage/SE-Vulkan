@@ -652,7 +652,9 @@ typedef struct SevkTenantBinding { uint32_t binding, kind; uint64_t id, offset, 
 typedef struct SevkTenantStats {
     uint32_t size, buffers, images, pipelines;
     uint64_t bytes, frames, commands, dispatches, draws, rejected, builds;
-    uint32_t accels, features; /* features bit0: ray query */
+    uint32_t accels, features; /* features bit0: ray query, bit1: GPU timestamps */
+    double gpu_ms; /* GPU time of the latest completed tenant list */
+    uint64_t measurements; /* completed timestamp pairs */
 } SevkTenantStats;
 /* Image formats are VkFormat values; raster target format 0 means the renderer HDR format. flags bit0: array view. */
 SEVK_API int32_t SEVK_CALL sevk_tenant_create_buffer(void* ctx, uint64_t bytes, uint64_t* id);
