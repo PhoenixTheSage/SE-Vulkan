@@ -71,7 +71,7 @@ namespace ClientPlugin.Rendering.Scene
             public Color SubmissionColor;
             public Vector3 SubmissionHsv;
             public float SubmissionDither;
-            public bool SubmissionMetal,SubmissionOpaque,SubmissionDepthGeometry,SubmissionDistanceFade;
+            public bool SubmissionMetal,SubmissionOpaque,SubmissionDepthGeometry,SubmissionDistanceFade;public long SubmissionTextures;
             public PackedInstances Packed;
             public int Proxy=-1;
             public BoundingBoxD Bounds;
@@ -715,7 +715,7 @@ namespace ClientPlugin.Rendering.Scene
         {
             Vector3 hsv=actor.Hsv+colorizeHsv;bool metal=(actor.Flags&RenderFlags.MetalnessColorable)!=0;bool distanceFade=type>=2 && UsesOldDecalShaders(actor) && (actor.Flags&RenderFlags.DistanceFade)!=0;
             bool depthGeometry=target.SharedModelGeometryEnabled && casts && type==0 && actor.RenderModel.SharedMesh!=0 && models.IsStockNewModel(actor.RenderModel);
-            if(actor.Submission==null || actor.SubmissionDepthGeometry!=depthGeometry || actor.SubmissionRevision!=actor.MaterialRevision || actor.SubmissionType!=type || actor.SubmissionColor!=actor.Color || actor.SubmissionHsv!=hsv || actor.SubmissionDither!=actor.Dithering || actor.SubmissionMetal!=metal || actor.SubmissionDistanceFade!=distanceFade)
+            if(actor.Submission==null || actor.SubmissionTextures!=TextureCache.Generation || actor.SubmissionDepthGeometry!=depthGeometry || actor.SubmissionRevision!=actor.MaterialRevision || actor.SubmissionType!=type || actor.SubmissionColor!=actor.Color || actor.SubmissionHsv!=hsv || actor.SubmissionDither!=actor.Dithering || actor.SubmissionMetal!=metal || actor.SubmissionDistanceFade!=distanceFade)
             {
                 using var rebuildProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PreparedRebuild);
                 var parts=new List<NativeBackend.PreparedPart>(actor.RenderModel.Parts.Count);
@@ -740,7 +740,7 @@ namespace ClientPlugin.Rendering.Scene
                     }
                 }
                 actor.Submission=new NativeBackend.PreparedActor(parts.ToArray());actor.SubmissionRevision=actor.MaterialRevision;actor.SubmissionType=type;actor.SubmissionColor=actor.Color;actor.SubmissionHsv=hsv;actor.SubmissionDither=actor.Dithering;actor.SubmissionMetal=metal;actor.SubmissionDistanceFade=distanceFade;
-                actor.SubmissionDepthGeometry=depthGeometry;
+                actor.SubmissionDepthGeometry=depthGeometry;actor.SubmissionTextures=TextureCache.Generation;
                 target.NoteSubmissionRebuild();
             }
             uint flags=(casts?0u:512u)|actor.ExtraViewFlags;if(probeOnly||occluded)flags|=4096u;if(outsideProbe)flags|=16384u;if(actor.DynamicShadow || actor.LodAlpha!=0)flags|=0x1000000u;

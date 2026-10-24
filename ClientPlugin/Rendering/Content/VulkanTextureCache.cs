@@ -32,6 +32,16 @@ namespace ClientPlugin.Rendering.Content
         private readonly Dictionary<string, ulong> worldCubes = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> worldProbeCubePaths = new Dictionary<string, string>(StringComparer.Ordinal);
         private ulong neutralNormal, neutralExtensions;
+        // A handle stays valid for the session once handed out: prepared submissions, old cells and native pass
+        // families keep texture ids across frames, and native rejects a draw naming a removed texture. A destroyed
+        // generated texture (LCD) keeps its handle as a 1x1 transparent placeholder that re-creation reuses; an
+        // unloaded file texture keeps its handle as the placeholder and reloads into it.
+        private readonly Dictionary<string, ulong> destroyedGenerated = new Dictionary<string, ulong>(StringComparer.Ordinal);
+        private readonly Dictionary<string, ulong> unloaded = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
+        private long generation;
+        /// <summary>Advances when a file texture is unloaded; texture-id caches rebuild so they look it up (and reload) again.</summary>
+        public long Generation => Interlocked.Read(ref generation);
+        private void Placeholder(ulong handle) => backend.UploadTexture(handle, 1, 1, 0, new byte[4], false);
         private int ownerThread;
         private ulong nextHandle = 1;
         private static readonly Lazy<byte[]> guiPremultiplyTable = new Lazy<byte[]>(() =>
@@ -113,6 +123,7 @@ namespace ClientPlugin.Rendering.Content
             ulong handle;
             Entry dynamic;
             if (generated.TryGetValue(path, out dynamic)) return dynamic.Handle;
+            if (Thread.CurrentThread.ManagedThreadId == Volatile.Read(ref ownerThread) && destroyedGenerated.TryGetValue(path, out handle)) return handle;
             string resolved = ResolvePath(path);
             string key = (gui ? "g:" : srgb ? "s:" : "l:") + resolved;
             Entry existing;
@@ -152,10 +163,12 @@ namespace ClientPlugin.Rendering.Content
                     // pixels with a gamma-2.2 lookup table before an sRGB view.
                     // Keep a separate cache entry so world textures stay intact.
                     if (gui && rawRgba) foreach (var level in levels) PremultiplyGui(level);
-                    handle = nextHandle++;
+                    bool reload = unloaded.TryGetValue(key, out handle);
+                    if (!reload) handle = nextHandle++;
                     // Stock MakeSrgb leaves floating-point RG16 unchanged;
                     // that native format has no sRGB-compatible view.
                     backend.UploadTextureMips(handle, width, height, format, levels, srgb && format!=9);
+                    if (reload) unloaded.Remove(key);
                     entries[key] = new Entry { Handle = handle, Width = width, Height = height, Format = format, PremultipliedSprite = rawRgba || premultiplied };
                     if (format == 5) singleChannelTextures.TryAdd(handle, 0); // BC4 is a red-only view.
                     return handle;
@@ -273,8 +286,10 @@ namespace ClientPlugin.Rendering.Content
         {
             RequireOwner();
             Entry entry;
-            if (!generated.TryGetValue(name, out entry)) entry = new Entry { Handle = nextHandle++ };
+            if (!generated.TryGetValue(name, out entry))
+                entry = new Entry { Handle = destroyedGenerated.TryGetValue(name, out ulong kept) ? kept : nextHandle++ };
             backend.UploadTexture(entry.Handle, width, height, 0, rgba, false);
+            destroyedGenerated.Remove(name);
             generated[name] = new Entry { Handle = entry.Handle, Width = width, Height = height };
             return entry.Handle;
         }
@@ -284,7 +299,7 @@ namespace ClientPlugin.Rendering.Content
             RequireOwner();
             Entry entry;
             if (!generated.TryRemove(name, out entry)) return;
-            backend.RemoveResource(0, entry.Handle);
+            Placeholder(entry.Handle); destroyedGenerated[name] = entry.Handle;
         }
 
         public void Unload(string path)
@@ -296,7 +311,7 @@ namespace ClientPlugin.Rendering.Content
             {
                 Entry entry;
                 if (!entries.TryRemove(key, out entry)) continue;
-                if (entry.Handle != 0) backend.RemoveResource(0, entry.Handle);
+                if (entry.Handle != 0) { Placeholder(entry.Handle); unloaded[key] = entry.Handle; Interlocked.Increment(ref generation); }
                 singleChannelTextures.TryRemove(entry.Handle, out _);
             }
         }
@@ -307,7 +322,9 @@ namespace ClientPlugin.Rendering.Content
             foreach (Entry entry in entries.Values) if (entry.Handle != 0) backend.RemoveResource(0, entry.Handle);
             foreach (Entry entry in generated.Values) backend.RemoveResource(0, entry.Handle);
             foreach (ulong[] cube in cubes.Values) if (cube != null) foreach (ulong handle in cube) backend.RemoveResource(0, handle);
-            entries.Clear(); generated.Clear(); singleChannelTextures.Clear();
+            foreach (ulong handle in destroyedGenerated.Values) backend.RemoveResource(0, handle);
+            foreach (ulong handle in unloaded.Values) backend.RemoveResource(0, handle);
+            entries.Clear(); generated.Clear(); singleChannelTextures.Clear(); destroyedGenerated.Clear(); unloaded.Clear(); Interlocked.Increment(ref generation);
             cubes.Clear();
             foreach(ulong cube in worldCubes.Values)if(cube!=0)backend.RemoveResource(4,cube);worldCubes.Clear();worldProbeCubePaths.Clear();
             if(neutralNormal!=0)backend.RemoveResource(0,neutralNormal);if(neutralExtensions!=0)backend.RemoveResource(0,neutralExtensions);neutralNormal=neutralExtensions=0;

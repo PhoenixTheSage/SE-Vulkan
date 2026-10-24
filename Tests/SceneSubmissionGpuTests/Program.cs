@@ -40,6 +40,7 @@ partial class Program
         void Pair(string name){var reference=Render(false);Check(Render(true).SequenceEqual(reference),name+" on first slot");Check(Render(true).SequenceEqual(reference),name+" on second slot");}
         Pair("installed model prepared submission preserves legacy pixels");
         Check(failures.Count==0 && backend.GetSubmissionStats().Actors==1 && backend.GetSubmissionStats().Parts>0 && backend.GetSubmissionStats().RebuiltActors==0,"steady actor replays without reconstructing its descriptors: "+string.Join("; ",failures));
+        if(System.Environment.GetCommandLineArgs().Contains("--texture-lifetime-only")){TextureLifetimeSceneChecks(backend,scene,()=>Render(true),Check);Console.WriteLine(checks+" texture lifetime scene checks passed.");return 0;}
         if(entityColorOnly){EntityColorSceneChecks(backend,scene,output,()=>Render(false),()=>Render(true),Check);Console.WriteLine(checks+" entity color scene checks passed.");return 0;}
         if(distanceFadeOnly){DistanceFadeSceneChecks(backend,scene,output,()=>Render(false),()=>Render(true),(keep,setup)=>Render(keep,setup),camera=>renderCamera=camera,Check);Console.WriteLine(checks+" distance-fade scene checks passed.");return 0;}
         if(rasterOnly){RasterSceneChecks(backend,scene,output,()=>Render(false),()=>Render(true),Check);File.WriteAllText(Path.Combine(output,"raster-result.json"),JsonSerializer.Serialize(new{Checks=checks,ValidationErrors=backend.GetStats().ValidationErrors}));Console.WriteLine(checks+" raster scene checks passed.");return 0;}
