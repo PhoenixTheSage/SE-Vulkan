@@ -517,7 +517,7 @@ struct Renderer {uint32_t recipe_generation=1;
     bool shadow_depth_bias_clamp{};
     std::vector<SevkDrawMesh> frame_meshes; std::vector<SevkSprite> frame_sprites;
     VkPipelineCache pipeline_cache{}; VkSampler sampler{}, sprite_sampler{};
-    uint32_t anisotropy_samples{1}; float anisotropy_limit{1};
+    uint32_t anisotropy_samples{1}; float anisotropy_limit{1}, mip_bias{};
     VkSemaphore timeline{}; VkCommandPool upload_pool{};
     std::array<Slot, 2> slots{}; uint32_t slot_index{}, image_index{}; uint64_t next_completion{};
     bool recording{}, suspended{}, surface_dirty{}, vsync{}, validation{}, readback_supported{}, device_lost{};
@@ -948,21 +948,34 @@ struct Renderer {uint32_t recipe_generation=1;
         const uint32_t white = 0xffffffff; upload_texture(0, 1, 1, 0, false, &white, sizeof(white), true);
         stats.size = sizeof(stats); stats.abi_version = SEVK_ABI_VERSION; stats.validation_enabled = validation;
     }
-    void apply_anisotropy(VkSamplerCreateInfo& sample) {
+    void apply_material_sampler(VkSamplerCreateInfo& sample) {
         sample.anisotropyEnable = VK_FALSE; sample.maxAnisotropy = 1.f;
         uint32_t samples = anisotropy_samples==4||anisotropy_samples==8||anisotropy_samples==16 ? anisotropy_samples : 1u;
         if (samples>=2 && anisotropy_limit>=2.f) { sample.anisotropyEnable = VK_TRUE; sample.maxAnisotropy = std::min(float(samples), anisotropy_limit); }
+        sample.mipLodBias = mip_bias;
     }
     void set_anisotropy(uint32_t samples) {
         if (recording) throw std::runtime_error("anisotropy cannot change during recording");
         uint32_t normalized = samples==4||samples==8||samples==16 ? samples : 1u;
         if (normalized==anisotropy_samples) return;
         anisotropy_samples = normalized;
+        replace_material_sampler();
+    }
+    // Temporal upscalers (DLSS, FSR) need textures sampled at display-resolution mips: bias by
+    // log2(render/display) while one renders below output size, as both SDK guides prescribe.
+    void update_mip_bias() {
+        bool upscaling = (ngx_active() || fsr_active()) && render_fraction < 1.f;
+        float bias = upscaling ? std::log2(render_fraction) : 0.f;
+        if (bias == mip_bias) return;
+        mip_bias = bias;
+        replace_material_sampler();
+    }
+    void replace_material_sampler() {
         if (!sampler) return;
         join_present(false); check(vkDeviceWaitIdle(device), "wait before material sampler replacement");
         VkSamplerCreateInfo sample{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO }; sample.magFilter = VK_FILTER_LINEAR; sample.minFilter = VK_FILTER_LINEAR;
         sample.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR; sample.addressModeU = sample.addressModeV = sample.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        sample.maxLod = VK_LOD_CLAMP_NONE; apply_anisotropy(sample);
+        sample.maxLod = VK_LOD_CLAMP_NONE; apply_material_sampler(sample);
         VkSampler next{}; check(vkCreateSampler(device, &sample, nullptr, &next), "replace texture sampler");
         VkSampler previous = sampler; sampler = next;
         for (auto& item : textures) if (item.second.descriptor) {
@@ -1007,9 +1020,9 @@ struct Renderer {uint32_t recipe_generation=1;
         check(vkCreatePipelineLayout(device, &pipeline, nullptr, &pipeline_layout), "create pipeline layout");
         VkSamplerCreateInfo sample{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO }; sample.magFilter = VK_FILTER_LINEAR; sample.minFilter = VK_FILTER_LINEAR;
         sample.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR; sample.addressModeU = sample.addressModeV = sample.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        sample.maxLod = VK_LOD_CLAMP_NONE; apply_anisotropy(sample);
+        sample.maxLod = VK_LOD_CLAMP_NONE; apply_material_sampler(sample);
         check(vkCreateSampler(device, &sample, nullptr, &sampler), "create texture sampler");
-        sample.anisotropyEnable = VK_FALSE; sample.maxAnisotropy = 1.f;
+        sample.anisotropyEnable = VK_FALSE; sample.maxAnisotropy = 1.f; sample.mipLodBias = 0.f;
         sample.addressModeU = sample.addressModeV = sample.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         check(vkCreateSampler(device, &sample, nullptr, &sprite_sampler), "create stock linear clamp sprite sampler");
     }
@@ -1481,6 +1494,7 @@ struct Renderer {uint32_t recipe_generation=1;
         join_present();
         match_surface_extent();
         if (recording) throw std::runtime_error("frame already begun");
+        update_mip_bias();
         bool want_hdr=(display_flags&1)&&!hdr_denied&&!hdr_active;
         bool drop_hdr=!(display_flags&1)&&hdr_active;
         bool want_immediate=(((display_flags&2)&&!fg_denied)||((display_flags&32)&&!tearing_denied))&&!vsync&&actual_present_mode!=VK_PRESENT_MODE_IMMEDIATE_KHR;
