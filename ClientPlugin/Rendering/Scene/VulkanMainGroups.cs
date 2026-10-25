@@ -52,9 +52,9 @@ public sealed partial class VulkanScene
         if(candidatePlans.Length<list.Count)candidatePlans=new CandidatePlan[list.Count];
         // Model classification is cached lazily on first use; settle it here.
         foreach(var data in list)if(data.Model!=null&&!data.Model.NewPipelineEligible.HasValue)models.IsStockNewModel(data.Model);
-        var plans=candidatePlans;const int chunk=128;
+        var plans=candidatePlans;const int chunk=128;bool stable=backend.StableMainOrderEnabled;
         System.Threading.Tasks.Parallel.For(0,(list.Count+chunk-1)/chunk,c=>{
-            for(int i=c*chunk,end=Math.Min(list.Count,i+chunk);i<end;i++){var data=list[i];bool visible=data.Model!=null&&IsVisible(data.Actor);
+            for(int i=c*chunk,end=Math.Min(list.Count,i+chunk);i<end;i++){var data=list[i];if(stable&&(data.PassOwned||data.CellOwned)){plans[i]=default;continue;}bool visible=data.Model!=null&&IsVisible(data.Actor);
                 plans[i]=new CandidatePlan{Visible=visible,Key=visible&&(data.Flags&RenderFlags.SkipInMainView)==0?MainGroupKey(data,true):null};}
         });
     }

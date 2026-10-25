@@ -304,6 +304,8 @@ SEVK_API int32_t SEVK_CALL sevk_world_old_order(void* ctx,const SevkOldPartOrder
 SEVK_API int32_t SEVK_CALL sevk_world_draw_owners(void* ctx,const uint32_t* owners,uint32_t count);
 typedef struct SevkMainOwnerOrder {uint32_t owner,group;} SevkMainOwnerOrder;
 SEVK_API int32_t SEVK_CALL sevk_world_main_owners(void* ctx,const SevkMainOwnerOrder* owners,uint32_t count);
+/* Persistent owner orders (stable main order); frame orders take precedence. Removals apply before sets. */
+SEVK_API int32_t SEVK_CALL sevk_world_resident_main_owners(void* ctx,const SevkMainOwnerOrder* set,uint32_t set_count,const uint32_t* removed,uint32_t removed_count);
 SEVK_API int32_t SEVK_CALL sevk_get_model_group_stats(void* ctx,SevkModelGroupStats* stats);
 SEVK_API int32_t SEVK_CALL sevk_register_world_recipe(void* context,const SevkWorldRecipe* recipe,uint64_t* handle);
 SEVK_API int32_t SEVK_CALL sevk_queue_world_recipes(void* context,const void* frame,uint32_t frame_bytes,const float* projection,const float* inverse,const SevkRecipeDraw* draws,uint32_t count,const uint8_t* objects,uint32_t object_bytes,const uint8_t* instances,uint32_t instance_bytes);

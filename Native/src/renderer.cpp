@@ -306,6 +306,9 @@ struct WorldState {ModelState models;
     VkCommandPool cascade_pools[2][8]{};VkCommandBuffer cascade_commands[2][8]{};
     VkDescriptorPool cascade_descriptor_pools[2][8]{};
     // Spot-shadow scope contents recorded by worker k into its own pool.
+    // Stable main order: pass-owned actors' group orders, kept across frames and updated only when an
+    // actor's pass commit changes. Frame owner orders take precedence.
+    std::unordered_map<uint32_t,uint32_t> resident_main_owners;
     bool parallel_spots{};uint32_t spot_tasks{};
     VkCommandPool spot_pools[2][8]{};std::vector<VkCommandBuffer> spot_commands[2][8];uint32_t spot_used[2][8]{};
     // Object/instance upload copies overlap material lookup and the draw sort.
@@ -2243,6 +2246,9 @@ int32_t SEVK_CALL sevk_append_models(void* ctx,const SevkModelInstance* instance
 int32_t SEVK_CALL sevk_world_main_order(void* ctx,const SevkMainDrawOrder* orders,uint32_t count){return call(ctx,[&](Renderer& r){r.set_world_main_order(orders,count);return 0;});}
 int32_t SEVK_CALL sevk_world_old_order(void* ctx,const SevkOldPartOrder* orders,uint32_t count){return call(ctx,[&](Renderer& r){r.set_world_old_order(orders,count);return 0;});}
 int32_t SEVK_CALL sevk_world_draw_owners(void* ctx,const uint32_t* owners,uint32_t count){return call(ctx,[&](Renderer& r){r.set_world_draw_owners(owners,count);return 0;});}
+int32_t SEVK_CALL sevk_world_resident_main_owners(void* ctx,const SevkMainOwnerOrder* set,uint32_t set_count,const uint32_t* removed,uint32_t removed_count){if((!set&&set_count)||(!removed&&removed_count)||set_count>1000000||removed_count>1000000)return -1;
+    return call_deferrable(ctx,[set_copy=copy_in(set,set_count),set_count,removed_copy=copy_in(removed,removed_count),removed_count](Renderer& r){auto& map=r.world.resident_main_owners;
+        for(uint32_t i=0;i<removed_count;++i)map.erase(removed_copy.get()[i]);for(uint32_t i=0;i<set_count;++i){auto o=set_copy.get()[i];if(!o.group)throw std::runtime_error("invalid resident main owner order");map[o.owner]=o.group;}return 0;});}
 int32_t SEVK_CALL sevk_world_main_owners(void* ctx,const SevkMainOwnerOrder* owners,uint32_t count){return call(ctx,[&](Renderer& r){r.set_world_main_owners(owners,count);return 0;});}
 int32_t SEVK_CALL sevk_get_model_group_stats(void* ctx,SevkModelGroupStats* stats){return call(ctx,[&](Renderer& r){if(!stats||stats->size!=sizeof(*stats)||stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("model group stats ABI mismatch");*stats=r.world.models.stats;return 0;});}
 int32_t SEVK_CALL sevk_get_recipe_stats(void* ctx,SevkRecipeStats* stats){return call(ctx,[&](Renderer& r){r.settle_cells();if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("recipe stats ABI mismatch");*stats=r.world.current().recipe_stats;return 0;});}

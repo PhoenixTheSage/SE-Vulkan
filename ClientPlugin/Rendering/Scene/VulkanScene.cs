@@ -564,9 +564,12 @@ namespace ClientPlugin.Rendering.Scene
             IEnumerable<ActorData> drawCandidates;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CandidateQuery))drawCandidates=DrawCandidates(target.WorldReady);
             var candidateList=drawCandidates as List<ActorData>;bool planned=candidateList!=null&&ParallelTraversalEnabled&&candidateList.Count>=256;
             if(planned)using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CandidatePlan,false))PlanCandidates(candidateList);
-            int candidateIndex=0;
+            int candidateIndex=0;bool stableOrder=target.StableMainOrderEnabled;
             foreach (var data in drawCandidates)
             {
+                // Stable main order: pass-owned actors' orders are resident in native, and cell-owned (OLD)
+                // actors take no main order, so neither needs the per-frame declaration.
+                if(stableOrder&&(data.PassOwned||data.CellOwned)){candidateIndex++;continue;}
                 bool ancestorsVisible;object ownerKey;
                 if(planned){var plan=candidatePlans[candidateIndex++];ancestorsVisible=plan.Visible;ownerKey=plan.Key;}
                 else{ancestorsVisible=data.Model!=null&&IsVisible(data.Actor);ownerKey=ancestorsVisible&&(data.Flags&RenderFlags.SkipInMainView)==0?MainGroupKey(data,true):null;}

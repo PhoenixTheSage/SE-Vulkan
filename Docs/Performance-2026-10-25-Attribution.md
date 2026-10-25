@@ -210,3 +210,47 @@ Results:
 - DX11 on the same harness: **4.44 ms** mean, 5.28 ms P95.
 - Validation-layer gameplay run `Vulkan-460a9e7b…`: layer enabled, 0 errors.
   Native CTests 18/18.
+
+## Session 3: stable main order (plan item 1.4), opt-in
+
+The managed traversal visited about 2,700 native-owned actors each frame only
+to declare main-group owners. Those declarations numbered NEW groups in
+spatial-query order, and native used them to place pass groups among the
+managed NEW draws.
+
+With `SE_VULKAN_STABLE_MAIN_ORDER=1` (or the scene property
+`StableMainOrderEnabled`):
+
+- **Group order:** each main-group key keeps the order number it got when first
+  seen this session (`NativeMainGroups.StableOrder`).
+- **Pass-owned actors:** their orders are resident in native
+  (`sevk_world_resident_main_owners`, deferrable). They are updated only when
+  an actor's pass commit changes, or it is removed. Frame owner orders still
+  take precedence.
+- **Traversal:** pass- and cell-owned actors are skipped in both the plan and
+  the loop. Cell-owned actors are OLD and take no main order.
+
+Results:
+
+- CpuDetail lane `Vulkan-0d2b206e…`: ActorTraversal 2.19 → 1.11 ms.
+  MainOwnerDeclare is gone and CandidatePlan dropped from 0.35 to 0.18 ms.
+- Paired runs, order NP, NPS, NPS, NP
+  (`TestResults/StableMainOrder-Paired-2026-10-25.json`):
+
+  | Set | Mean | P95 |
+  |---|---|---|
+  | NP | 9.83 / 9.45 ms | 12.84 / 11.79 ms |
+  | NPS | **9.37 / 9.21 ms** | **12.06 / 11.21 ms** |
+
+- Same-process frozen-light lane `Vulkan-aa4f4ce6…`, toggling the property:
+  - 49 of 50 probe, cascade and spot artifacts are byte-identical.
+  - The view changes in 10,348 of 8.29 M channel values (0.125%, max 41). The
+    control-return noise floor is 362.
+  - The differences are thin coplanar edges only: a floor trim line and
+    doorframe edges (`TestResults/StableMainOrder-ViewDiff-2026-10-25.png`).
+    That is z-tie resolution between coplanar surfaces whose draw order
+    changed.
+
+It stays off by default. DX11 orders NEW geometry by its own cull tree, so
+neither order is DX11's. Make it default only after a visual check of those
+edges against DX11.

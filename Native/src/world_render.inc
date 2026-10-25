@@ -71,6 +71,7 @@ void begin_next_submission(){
     world.active_submission^=1u;
     world.current().main_owner_orders.clear();
 }
+bool world_new_main_ordered()const{return !world.current().main_owner_orders.empty()||!world.resident_main_owners.empty();}
 void set_world_main_owners(const SevkMainOwnerOrder* owners,uint32_t count){settle_cells();
     if(recording||!world.current().queued||(!owners&&count)||count>1000000)throw std::runtime_error("main owner orders must precede frame recording");
     std::unordered_map<uint32_t,uint32_t> next;next.reserve(count);for(uint32_t i=0;i<count;++i)if(!owners[i].group||!next.emplace(owners[i].owner,owners[i].group).second)throw std::runtime_error("invalid or duplicate main owner order");world.current().main_owner_orders=std::move(next);
@@ -287,7 +288,7 @@ void prepare_world_indirect(){
     for(const auto& d:world.current().draws){const auto& p=d.packet;
         bool eligible=world.pipelines[p.pipeline].indirect_safe && world.pipelines[world_base_pipeline(p.pipeline)+32].indirect_safe;
         auto& mesh=*d.geometry;
-        bool ordered=!world.current().main_owner_orders.empty()&&world_main_phase(p.pipeline,p.flags)==4;
+        bool ordered=world_new_main_ordered()&&world_main_phase(p.pipeline,p.flags)==4;
         world.current().indirect_packets.push_back({p.mesh,(uint64_t)d.material,p.pipeline,mesh.index_count,p.instance_count,d.instance_at,d.object_at,d.object_n,eligible,(uint64_t)mesh.vertices.handle,(uint64_t)mesh.indices.handle,uint32_t(mesh.index_offset/4),int32_t(mesh.vertex_offset/mesh.vertex_stride),mesh.vertex_allocation!=0,p.flags&0x3c000000u,ordered?d.main_order:0u,ordered?d.main_part:0u,d.old_order});}
     for(uint32_t pass=0;pass<=shadow_count;++pass){auto& plan=world.current().indirect_plans[pass];
         const auto& selection=pass==0?world.current().main_selection:world.current().cascade_casters[pass-1];
@@ -349,7 +350,7 @@ void record_new_main(VkCommandBuffer cmd,WorldSlot& slot){
     struct Entry {uint32_t order,part,kind,index;};std::vector<Entry> entries;
     auto managed=[&](uint32_t draw,uint32_t index){const auto& d=world.current().draws[draw];if(world_main_phase(d.packet.pipeline,d.packet.flags)==4)entries.push_back({d.main_order?d.main_order:draw+1,d.main_part,0,index});};
     if(plan){for(uint32_t i=0;i<plan->runs.size();++i)managed(selection[plan->runs[i].selection_start],i);}else for(uint32_t i=0;i<selection.size();++i)managed(selection[i],i);
-    auto owner_order=[&](uint32_t owner){auto found=owners.find(owner);return found==owners.end()?UINT32_MAX:found->second;};
+    auto owner_order=[&](uint32_t owner){auto found=owners.find(owner);if(found!=owners.end())return found->second;auto resident=world.resident_main_owners.find(owner);return resident==world.resident_main_owners.end()?UINT32_MAX:resident->second;};
     auto& r=opaque_reference;
     if(opaque_stock.ready&&r.frame_ready){
         uint32_t view=gpu_resident.published?gpu_resident.view_map[0]:0;if(view<r.view_count&&(r.views[view].flags&1)){
@@ -543,13 +544,13 @@ void render_world(){
     auto main_packet=[&](uint32_t i,bool record,uint32_t count=0,uint32_t start=0){if(world_voxel(world.current().draws[i].packet.pipeline)){++world.voxel_draws;voxel_frame=true;}++work.world_draws;work.world_instances+=world.current().draws[i].packet.instance_count;auto type=world.pipelines[world.current().draws[i].packet.pipeline].type;if(type==1)++work.skinned_draws;if(type>=3)++work.cube_draws;++stats.mesh_draws;};
     if(!world.indirect_stats.enabled){world.current().main_selection.clear();for(uint32_t i:order)if(!(world.current().draws[i].packet.flags&(4096|8192)))world.current().main_selection.push_back(i);}
     // Ownership changes batching, never the stock OLD/NEW submission boundary.
-    for(uint32_t phase=0;phase<(world.current().main_owner_orders.empty()?5u:4u);++phase){
+    for(uint32_t phase=0;phase<(world_new_main_ordered()?4u:5u);++phase){
         if(phase<4){record_old_main(cmd,slot,phase);continue;}
         auto count=record_world_selection(cmd,slot,world.current().main_selection,-1,world.indirect_stats.enabled?&world.current().indirect_plans[0]:nullptr,world.current().indirect_bases[0],false,int(phase));
         performance.main_commands+=count.commands;world.indirect_stats.main_groups+=count.groups;world.indirect_stats.grouped_draws+=count.packets;
         performance.main_commands+=record_pass_view(cmd,slot,0,false,nullptr,nullptr,0,nullptr,int(phase));
     }
-    cpu_lap("gbuffer new main");if(!world.current().main_owner_orders.empty())record_new_main(cmd,slot);
+    cpu_lap("gbuffer new main");if(world_new_main_ordered())record_new_main(cmd,slot);
     cpu_lap("gbuffer counters");for(uint32_t i:world.current().main_selection)main_packet(i,false);
     if(voxel_frame)++world.voxel_frames;frame_mark("foliage");render_foliage(cmd,slot);gbuffer_velocity_end();vkCmdEndRendering(cmd);frame_mark("object motion");if(object_motion_wanted()){prepare_world_history(slot);render_object_motion(cmd,slot);}else skip_object_motion(cmd,slot);frame_mark("gbuffer attachment");render_gbuffer_attachments(cmd,slot);work.main_us=profile_take();
     for(uint32_t i=0;i<4;++i){bool depth=i==3;barrier(cmd,world.gbuffer[i].handle,depth?VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,depth?VK_IMAGE_ASPECT_DEPTH_BIT:VK_IMAGE_ASPECT_COLOR_BIT,depth?VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT:VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,depth?VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT:VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT),VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);}
