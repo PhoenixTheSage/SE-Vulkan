@@ -609,6 +609,14 @@ SEVK_API int32_t SEVK_CALL sevk_set_upscale_owner(void* ctx, const char* id);
  * paper_white is scene paper white times UI gain in scRGB units (1 = 80 nits), shoulder is the inverse-
  * Reinhard UI shoulder in [0,0.95), peak caps UI in scRGB units (0 = uncapped). paper_white 0 disables. */
 SEVK_API int32_t SEVK_CALL sevk_set_hdr_ui(void* ctx, float paper_white, float shoulder, float peak);
+/* HdrRender's DX11 billboard lifts under HDR display tenancy: emissive LDR billboards (queued with flag 32, Keen's
+ * ColorIntensity > 1 producer signal) scale by ldr_intensity while the tenant grades; PostPP billboards (Rich HUD)
+ * take the sevk_set_hdr_ui transform on an HDR swapchain. ldr_intensity 1 disables the emissive lift. */
+SEVK_API int32_t SEVK_CALL sevk_set_hdr_billboards(void* ctx, float ldr_intensity);
+/* Diagnostics: Keen auto-exposure from the latest completed frame, as EyeAdaptation writes avgLuminance:
+ * values[0] desired and values[1] adapted exposure in log2 stops (tonemapping scales by exp2(values[1])),
+ * values[2] 1 once a frame has been read back, values[3] reserved. */
+SEVK_API int32_t SEVK_CALL sevk_get_exposure(void* ctx, float* values);
 /* Diagnostics: lets HDR display tenancy grade without an HDR swapchain (offscreen tests). */
 SEVK_API int32_t SEVK_CALL sevk_force_hdr_display(void* ctx, uint32_t force);
 /* HDR display contract (P4). Display flags: 1 FP16 HDR, 2 frame generation, 4 temporal upscale, 16 display tenant,
@@ -745,6 +753,8 @@ typedef struct SevkNativeGeneration {uint32_t size,abi_version;uint64_t expected
 SEVK_API int32_t SEVK_CALL sevk_set_gbuffer_velocity_probe(void* ctx,uint32_t mode);
 /* Temporal jitter owner: force=1 runs it without a temporal upscaler; state receives pixel x/y, clip x/y, active, phases, index, frames. */
 SEVK_API int32_t SEVK_CALL sevk_force_jitter(void* ctx,uint32_t force);
+/* Diagnostics: 1 resets and starts the SE_VULKAN_GPU_PASS_TIMING / SE_VULKAN_RECORD_TIMING accumulators, 0 stops them. */
+SEVK_API int32_t SEVK_CALL sevk_set_timing_reports(void* ctx,uint32_t active);
 SEVK_API int32_t SEVK_CALL sevk_get_jitter(void* ctx,float* state,uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_native_owner_capabilities(void* ctx,SevkNativeOwnerCapabilities* state);
 /* flags1 marks a stock restore: execute stock without pack-only GPU production instrumentation. */

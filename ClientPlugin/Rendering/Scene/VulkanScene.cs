@@ -534,6 +534,7 @@ namespace ClientPlugin.Rendering.Scene
         }
 
         long profileCullTicks, profilePackTicks, profileMaterialTicks;
+        [ThreadStatic] static float[] boneScratch,boneRowScratch;
         public void Draw(NativeBackend target)
         {
             using var sceneProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene);
@@ -701,7 +702,8 @@ namespace ClientPlugin.Rendering.Scene
                     models.EnsureSkinParts(actor.RenderModel,part);
                     foreach(var skin in part.SkinParts)
                     {
-                        var bones=new float[60*16];for(int i=0;i<60;++i){Matrix bone=i<skin.Bones.Length && skin.Bones[i]<actor.SkinMatrices.Length?actor.SkinMatrices[skin.Bones[i]]:Matrix.Identity;Array.Copy(NativeBackend.MatrixValues(bone),0,bones,i*16,16);}
+                        // Every row is rewritten; Object copies the palette into the packet constants.
+                        var bones=boneScratch??=new float[60*16];var row=boneRowScratch??=new float[16];for(int i=0;i<60;++i){Matrix bone=i<skin.Bones.Length && skin.Bones[i]<actor.SkinMatrices.Length?actor.SkinMatrices[skin.Bones[i]]:Matrix.Identity;NativeBackend.MatrixValues(bone,row);Array.Copy(row,0,bones,i*16,16);}
                         if(glass)target.AddGlassPacket(transparentType,skin.Mesh,TextureCache.GetTexture(material?.Textures.ColorMetalFileName??glassMaterial.Texture),TextureCache.GetTexture(material?.Textures.NormalGlossFileName??glassMaterial.GlossTexture,false),Constants(bones),NativeBackend.GlassMaterial(glassMaterial,actor.RenderModel.Bounds.HalfExtents.X,RenderSettings),triangleFaceCulling:glassMaterial.TriangleFaceCulling,oldDecalDistanceSquared:oldDecalDistance);else {uint draw=target.AddWorldPacket(pipeline,skin.Mesh,color,normal,extensions,alpha,Constants(bones),null,1,flags,cascades,origin,radius);SubmitHighlight(draw,actor,part,skin.StartIndex,skin.IndexCount,1);}if(glass && !actor.SuppressViewHighlight && HasHighlight(actor.Actor.ID)){uint draw=target.AddWorldPacket(type,skin.Mesh,color,normal,extensions,alpha,Constants(bones),null,1,8192);SubmitHighlight(draw,actor,part,skin.StartIndex,skin.IndexCount,1);}DrawnMeshes++;
                     }
                     actor.SkinDirty=false;

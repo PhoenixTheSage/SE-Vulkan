@@ -5,8 +5,9 @@ using VRageMath;
 
 namespace ClientPlugin.Rendering.Scene;
 
-// Metadata owns the immutable layout; each packet still gets fresh, zeroed bytes
-// and every dynamic field is written. No actor or camera state is cached.
+// Metadata owns the immutable layout; each packet still gets zeroed bytes (rented,
+// recycled when its packet is cleared) and every dynamic field is written.
+// No actor or camera state is cached.
 public static class VoxelObjectConstants
 {
     public static bool Enabled { get; set; }=Environment.GetEnvironmentVariable("SE_VULKAN_VOXEL_OBJECT_CACHE")!="0";
@@ -34,7 +35,7 @@ public static class VoxelObjectConstants
     public static unsafe byte[] Write(ShaderMetadata metadata,MatrixD matrix,Vector3D offset,int lod,float dither,float? radius,Vector3D center)
     {
         Layout layout=Layouts.GetValue(metadata,key=>new Layout(key));
-        var bytes=new byte[layout.Size];float scale=(float)(1<<lod);
+        var bytes=ReflectedConstantBuffer.Rent(layout.Size);float scale=(float)(1<<lod);
         fixed(byte* target=bytes)
         {
             *(float*)(target+layout.Lod)=lod;

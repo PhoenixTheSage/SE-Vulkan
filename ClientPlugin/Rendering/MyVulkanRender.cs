@@ -104,7 +104,7 @@ public sealed class MyVulkanRender : IMyRender
     };
 
     private MyVulkanRender(NativeProbe probe, RenderSessionLog log)
-    { this.probe = probe; sessionLog = log; dispatchMessage = Process; returnPreFrame = SharedData.ReturnPreFrame; Active = this; }
+    { this.probe = probe; sessionLog = log; dispatchMessage = RendererCpuProfiler.Enabled ? ProcessProfiled : Process; returnPreFrame = SharedData.ReturnPreFrame; Active = this; }
     public static bool TryCreate(MyRenderSettings renderSettings, out IMyRender renderer, out string reason)
     {
         renderer = null;
@@ -425,6 +425,11 @@ public sealed class MyVulkanRender : IMyRender
         => RenderFrameProtocol.Process(frame, draw, dispatchMessage);
     private void ProcessPreFrame(MyUpdateFrame frame, bool returnShared)
         => RenderFrameProtocol.Retire(frame, dispatchMessage, returnShared ? returnPreFrame : null);
+    private void ProcessProfiled(MyRenderMessageBase message)
+    {
+        if (!RendererCpuProfiler.BeginMessage()) { Process(message); return; }
+        try { Process(message); } finally { RendererCpuProfiler.EndMessage((int)message.MessageType); }
+    }
     private void Process(MyRenderMessageBase message)
     {
         annotation = (int)message.MessageType;
@@ -446,7 +451,7 @@ public sealed class MyVulkanRender : IMyRender
         switch (message.MessageType)
         {
             case MyRenderMessageEnum.DrawCommands:
-                foreach (var child in ((MyRenderMessageDrawCommands)message).Messages) Process(child); break;
+                foreach (var child in ((MyRenderMessageDrawCommands)message).Messages) dispatchMessage(child); break;
             case MyRenderMessageEnum.DrawScene: drawScene = true; break;
             case MyRenderMessageEnum.SetCameraViewMatrix:
                 var cam = (MyRenderMessageSetCameraViewMatrix)message; haveCamera=true; camera = cam.CameraPosition;cameraWorld=MatrixD.Invert(cam.ViewMatrix);voxelFrustum=new BoundingFrustumD(cam.ViewMatrix*(MatrixD)cam.ProjectionMatrix);voxelFar=cam.FarPlane;GuestBridge.SetViewClip(voxelFar);cameraSmooth=cam.Smooth;voxelDrawFrustum=new BoundingFrustumD(cam.ViewMatrix*(MatrixD)cam.ProjectionFarMatrix);
@@ -476,7 +481,10 @@ public sealed class MyVulkanRender : IMyRender
             case MyRenderMessageEnum.RenderOffscreenTexture:
                 var offscreen = (MyRenderMessageRenderOffscreenTexture)message;
                 if (generated.TryGetValue(offscreen.OffscreenTexture, out var surface))
-                { backend.RenderTexture(surface.Handle, surface.Width, surface.Height, offscreen.BackgroundColor ?? Color.Transparent, sprites.ConsumeTarget(offscreen.OffscreenTexture), offscreen.AspectRatio,surface.MipMaps); lcdPasses++; }
+                {
+                    NativeSprite[] targetSprites;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.OffscreenTargets))targetSprites=sprites.ConsumeTarget(offscreen.OffscreenTexture);
+                    using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.OffscreenNative))backend.RenderTexture(surface.Handle, surface.Width, surface.Height, offscreen.BackgroundColor ?? Color.Transparent, targetSprites, offscreen.AspectRatio,surface.MipMaps); lcdPasses++;
+                }
                 else Pending(message, "Generated LCD target was not created: " + offscreen.OffscreenTexture); break;
             case MyRenderMessageEnum.TakeScreenshot:
                 var capture = (MyRenderMessageTakeScreenshot)message;

@@ -7,8 +7,15 @@ public sealed partial class NativeBackend
     // HDR display tenant's HUD transform on an HDR swapchain (HdrRender's DX11 UI composite). Zero paper white disables.
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int SetHdrUiFn(IntPtr ctx,float paperWhite,float shoulder,float peak);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int ForceHdrDisplayFn(IntPtr ctx,uint force);
-    SetHdrUiFn setHdrUi;ForceHdrDisplayFn forceHdrDisplay;
+    // HdrRender LdrIntensity for emissive LDR billboards while the display tenant grades; 1 disables.
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int SetHdrBillboardsFn(IntPtr ctx,float ldrIntensity);
+    SetHdrUiFn setHdrUi;ForceHdrDisplayFn forceHdrDisplay;SetHdrBillboardsFn setHdrBillboards;
     public void SetHdrUi(float paperWhite,float shoulder,float peak){if(context==IntPtr.Zero)return;setHdrUi??=PostFunction<SetHdrUiFn>("sevk_set_hdr_ui");Check(setHdrUi(context,paperWhite,shoulder,peak),context);}
+    // Keen auto-exposure of the latest completed frame: desired and adapted log2 stops, then 1 once read back.
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int GetExposureFn(IntPtr ctx,[Out]float[] values);
+    GetExposureFn getExposure;
+    public float[] GetExposure(){if(context==IntPtr.Zero)return null;getExposure??=PostFunction<GetExposureFn>("sevk_get_exposure");var values=new float[4];Check(getExposure(context,values),context);return values;}
+    public void SetHdrBillboards(float ldrIntensity){if(context==IntPtr.Zero)return;setHdrBillboards??=PostFunction<SetHdrBillboardsFn>("sevk_set_hdr_billboards");Check(setHdrBillboards(context,ldrIntensity),context);}
     /// <summary>Diagnostics: lets display tenancy grade without an HDR swapchain.</summary>
     public void ForceHdrDisplay(bool force){forceHdrDisplay??=PostFunction<ForceHdrDisplayFn>("sevk_force_hdr_display");Check(forceHdrDisplay(context,force?1u:0u),context);}
     /// <summary>The display tenant's FP16 graded tone image (final=false) or final post output (final=true), as floats.</summary>

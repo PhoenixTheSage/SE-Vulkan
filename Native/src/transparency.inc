@@ -157,8 +157,20 @@ void render_transparency(VkCommandBuffer cmd,WorldSlot& slot){
     }
     post_note_execution(2048);vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,transparency.resolve);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,transparency.resolve_pipeline_layout,0,1,&set,0,nullptr);VkDeviceSize zero=0;vkCmdBindVertexBuffers(cmd,0,1,&world.quad.handle,&zero);world_viewport(cmd,extent.width,extent.height);vkCmdDraw(cmd,3,1,0,0);vkCmdEndRendering(cmd);render_billboards(cmd,slot,2);transparency.initialized=true;++transparency.stats.frames;++transparency.stats.resolves;
 }
+// HdrRender's DX11 BillboardIntensityScalePatch on Vulkan: emissive LDR billboards (flag 32: ColorIntensity > 1)
+// scale by LdrIntensity while the display tenant grades, and PostPP billboards (Rich HUD) take the presented HUD's
+// paper-white expand, the same math as sprite_ps, since they draw onto the swapchain after compose.
+void billboard_hdr_lift(const SevkBillboardDraw& d,float* color,bool emissive,bool ui){
+    if(emissive&&(d.flags&32u)){for(int c=0;c<3;++c)color[c]*=hdr_ldr_intensity;return;}
+    if(!ui||d.bucket!=4)return;
+    float a=color[3];if(a<=1e-5f)return;
+    for(int c=0;c<3;++c){float n=std::clamp(color[c]/a,0.f,1.f);float contrasted=std::pow(n,1.f+hdr_ui[1]);
+        color[c]=std::min(contrasted/std::max(1.f-contrasted*hdr_ui[1],1e-3f)*hdr_ui[0],hdr_ui[2])*a;}
+}
 void prepare_billboards(){
-    uint32_t count=uint32_t(transparency.billboard_draws.size());if(!count)return;auto& vertices=transparency.billboard_vertices[slot_index];auto& data=transparency.billboard_data[slot_index];auto& projections=transparency.billboard_projections[slot_index];world_buffer(vertices,uint64_t(count)*80,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);world_buffer(data,uint64_t(count)*48,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);world_buffer(projections,2048,VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);std::memcpy(projections.mapped,transparency.custom_projections,2048);for(uint32_t i=0;i<count;++i){auto& d=transparency.billboard_draws[i];std::memcpy(static_cast<uint8_t*>(vertices.mapped)+i*80,d.vertices,80);std::memcpy(static_cast<uint8_t*>(data.mapped)+i*48,d.data,48);}for(auto* b:{&vertices,&data,&projections})check(vmaFlushAllocation(allocator,b->memory,0,VK_WHOLE_SIZE),"flush copied billboard streams");
+    uint32_t count=uint32_t(transparency.billboard_draws.size());if(!count)return;
+    bool emissive=hdr_ldr_intensity>1.f&&display_tenant(),ui=hdr_active&&hdr_ui[0]>0.f,hdr_billboards=emissive||ui;auto& vertices=transparency.billboard_vertices[slot_index];auto& data=transparency.billboard_data[slot_index];auto& projections=transparency.billboard_projections[slot_index];world_buffer(vertices,uint64_t(count)*80,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);world_buffer(data,uint64_t(count)*48,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);world_buffer(projections,2048,VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);std::memcpy(projections.mapped,transparency.custom_projections,2048);for(uint32_t i=0;i<count;++i){auto& d=transparency.billboard_draws[i];std::memcpy(static_cast<uint8_t*>(vertices.mapped)+i*80,d.vertices,80);std::memcpy(static_cast<uint8_t*>(data.mapped)+i*48,d.data,48);
+        if(hdr_billboards)billboard_hdr_lift(d,reinterpret_cast<float*>(static_cast<uint8_t*>(data.mapped)+i*48),emissive,ui);}for(auto* b:{&vertices,&data,&projections})check(vmaFlushAllocation(allocator,b->memory,0,VK_WHOLE_SIZE),"flush copied billboard streams");
 }
 // PostPP belongs to the final displayed frame, after temporal upscale. Keep its
 // pixels out of reconstruction/FG history and reuse this path on extra presents.

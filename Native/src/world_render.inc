@@ -430,7 +430,7 @@ GeometryRecordCounts record_cascade_secondary(uint32_t c){
     check(vkEndCommandBuffer(command),"end cascade secondary");return counts;
 }
 void render_world(){
-    std::optional<critical_profile::Scope> critical_prepare;critical_prepare.emplace(critical_profile::WorldPrepare,true);
+    cpu_lap("world targets");std::optional<critical_profile::Scope> critical_prepare;critical_prepare.emplace(critical_profile::WorldPrepare,true);
     auto profile_stamp=std::chrono::steady_clock::now();
     auto profile_take=[&](){auto now=std::chrono::steady_clock::now();uint32_t elapsed=(uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(now-profile_stamp).count();profile_stamp=now;return elapsed;};
     prepare_shadow_targets(slots[slot_index].command);world_targets();auto& slot=world.slots[slot_index];auto cmd=slots[slot_index].command;check(vkResetDescriptorPool(device,slot.pool,0),"recycle completed world descriptors");slot.probe_materials.clear();
@@ -441,10 +441,10 @@ void render_world(){
     for(auto& config:spots.config)std::memcpy(static_cast<uint8_t*>(slot.projections.mapped)+world_align(64)*(9+config.light),config.projection,64);
     if(guest.depth_configured)for(uint32_t i=0;i<guest.depth_count;i++)
         std::memcpy(static_cast<uint8_t*>(slot.projections.mapped)+world_align(64)*(73+i),guest.depth_matrices[i],64);
-    auto& object_offsets=world.current().object_offsets;auto& instance_offsets=world.current().instance_offsets;object_offsets.clear();instance_offsets.clear();uint64_t object_bytes=world.retained_objects?world.object_records.data.size():world.current().draw_objects.size(),instance_bytes=world.current().instances.data.size();
+    cpu_lap("prepare geometry");auto& object_offsets=world.current().object_offsets;auto& instance_offsets=world.current().instance_offsets;object_offsets.clear();instance_offsets.clear();uint64_t object_bytes=world.retained_objects?world.object_records.data.size():world.current().draw_objects.size(),instance_bytes=world.current().instances.data.size();
     object_offsets.reserve(world.current().draws.size());instance_offsets.reserve(world.current().draws.size());
     for(auto& draw:world.current().draws){draw.gpu_object_at=draw.object_at;if(draw.recipe){if(!draw.recipe->alive || draw.recipe->generation!=draw.recipe_generation)throw std::runtime_error("retired queued recipe");validate_world_recipe(*draw.recipe);draw.geometry=draw.recipe->geometry;}else draw.geometry=&world.meshes.at(draw.packet.mesh);object_offsets.push_back(draw.gpu_object_at);instance_offsets.push_back(draw.instance_at);}
-    auto perf_prepare_stamp=std::chrono::steady_clock::now();performance.geometry_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(perf_prepare_stamp-profile_stamp).count());
+    cpu_lap("prepare upload");auto perf_prepare_stamp=std::chrono::steady_clock::now();performance.geometry_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(perf_prepare_stamp-profile_stamp).count());
     auto perf_prepare_take=[&](){auto now=std::chrono::steady_clock::now();auto us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(now-perf_prepare_stamp).count());perf_prepare_stamp=now;return us;};
     bool material_buffers_moved=!slot.objects.handle || slot.objects.bytes<object_bytes || !slot.instances.handle || slot.instances.bytes<std::max(instance_bytes,uint64_t(64)) || !slot.frame.handle || !slot.projections.handle;
     if(material_buffers_moved||slot.material_stale)release_cached_materials(slot);
@@ -473,10 +473,10 @@ void render_world(){
     slot.instance_bytes_used=instance_bytes;
     struct Glue{float inverse[16],matrices[64],splits[4];uint32_t count,width,height,reserved;};static_assert(sizeof(Glue)==352);Glue glue{};std::memcpy(glue.inverse,world.current().inverse.data(),64);std::memcpy(glue.matrices,shadow_matrices,sizeof(glue.matrices));std::memcpy(glue.splits,shadow_splits,sizeof(glue.splits));glue.count=std::min(4u,shadow_count);glue.width=extent.width;glue.height=extent.height;std::memcpy(slot.glue.mapped,&glue,sizeof(glue));
     for(auto* b:{&slot.frame,&slot.projections,&slot.glue})check(vmaFlushAllocation(allocator,b->memory,0,VK_WHOLE_SIZE),"flush batched world uniforms/instances");world_light_data(slot);
-    performance.upload_us=perf_prepare_take();
+    performance.upload_us=perf_prepare_take();cpu_lap("prepare materials");
     auto& materials=world.current().materials;materials.clear();materials.reserve(world.current().draws.size());for(auto& draw:world.current().draws){draw.material=draw.recipe?world_recipe_material(slot,draw):world_material(slot,draw);materials.push_back(draw.material);}
     prepare_pass_gpu(slot);
-    performance.descriptors_us=perf_prepare_take();
+    performance.descriptors_us=perf_prepare_take();cpu_lap("prepare sort");
     auto& order=world.current().order;order.resize(world.current().draws.size());for(uint32_t n=0;n<order.size();++n)order[n]=n;
     // Compact per-draw copies of every comparator input. The comparator is the
     // same function of them, so std::sort yields the same order without
@@ -500,18 +500,18 @@ void render_world(){
         }
         if(A.pipeline!=B.pipeline)return A.pipeline<B.pipeline;if(A.mesh!=B.mesh)return A.mesh<B.mesh;if(A.material!=B.material)return A.material<B.material;return a<b;
     });
-    if(upload_job.valid())upload_job.get();
+    cpu_lap("prepare upload join");if(upload_job.valid())upload_job.get();
     check(vmaFlushAllocation(allocator,slot.instances.memory,0,VK_WHOLE_SIZE),"flush batched world uniforms/instances");if(!world.retained_objects)check(vmaFlushAllocation(allocator,slot.objects.memory,0,VK_WHOLE_SIZE),"flush legacy world objects");
-    for(auto& casters:world.current().cascade_casters)casters.clear();
+    cpu_lap("prepare cascade casters");for(auto& casters:world.current().cascade_casters)casters.clear();
     if(scheduled_shadows)shadow_update_mask|=((1u<<shadow_count)-1)&~shadow_image_mask;
     for(uint32_t i:order){const auto& packet=world.current().draws[i].packet;if(packet.flags&(512|8192))continue;for(uint32_t c=0;c<shadow_count;c++)if((packet.reserved&(1u<<c)) && (!scheduled_shadows || (shadow_update_mask&(1u<<c))))world.current().cascade_casters[c].push_back(i);}
-    prepare_world_indirect();
+    cpu_lap("prepare indirect");prepare_world_indirect();
     // CPU fade dependencies must reach GPU conditional view flags before the
     // selector dispatch. Both paths now observe this frame's immutable inputs.
-    update_spot_fade_dependencies(slot,object_offsets,instance_offsets);
-    if(opaque_stock.ready)prepare_opaque_reference(cmd);gpu_owner_begin_frame();
+    cpu_lap("prepare spot fades");update_spot_fade_dependencies(slot,object_offsets,instance_offsets);
+    cpu_lap("prepare opaque reference");if(opaque_stock.ready)prepare_opaque_reference(cmd);gpu_owner_begin_frame();
 
-    auto merge_shadow=[&](GeometryRecordCounts count){performance.shadow_commands+=count.commands;world.indirect_stats.shadow_groups+=count.groups;world.indirect_stats.grouped_draws+=count.packets;};
+    cpu_lap("prepare shadow reuse");auto merge_shadow=[&](GeometryRecordCounts count){performance.shadow_commands+=count.commands;world.indirect_stats.shadow_groups+=count.groups;world.indirect_stats.grouped_draws+=count.packets;};
     auto emit_cascade=[&](uint32_t c){merge_shadow(record_world_selection(cmd,slot,world.current().cascade_casters[c],int(c),world.indirect_stats.enabled?&world.current().indirect_plans[c+1]:nullptr,world.current().indirect_bases[c+1]));performance.shadow_commands+=record_pass_view(cmd,slot,c+1);};
     performance.sort_us=perf_prepare_take();work.prepare_us=profile_take();critical_prepare.reset();
     // Membership changes must invalidate cached cascades, even with no moving
@@ -549,9 +549,9 @@ void render_world(){
         performance.main_commands+=count.commands;world.indirect_stats.main_groups+=count.groups;world.indirect_stats.grouped_draws+=count.packets;
         performance.main_commands+=record_pass_view(cmd,slot,0,false,nullptr,nullptr,0,nullptr,int(phase));
     }
-    if(!world.current().main_owner_orders.empty())record_new_main(cmd,slot);
-    for(uint32_t i:world.current().main_selection)main_packet(i,false);
-    if(voxel_frame)++world.voxel_frames;frame_mark("foliage");render_foliage(cmd,slot);gbuffer_velocity_end();vkCmdEndRendering(cmd);frame_mark("object motion");prepare_world_history(slot);render_object_motion(cmd,slot);frame_mark("gbuffer attachment");render_gbuffer_attachments(cmd,slot);work.main_us=profile_take();
+    cpu_lap("gbuffer new main");if(!world.current().main_owner_orders.empty())record_new_main(cmd,slot);
+    cpu_lap("gbuffer counters");for(uint32_t i:world.current().main_selection)main_packet(i,false);
+    if(voxel_frame)++world.voxel_frames;frame_mark("foliage");render_foliage(cmd,slot);gbuffer_velocity_end();vkCmdEndRendering(cmd);frame_mark("object motion");if(object_motion_wanted()){prepare_world_history(slot);render_object_motion(cmd,slot);}else skip_object_motion(cmd,slot);frame_mark("gbuffer attachment");render_gbuffer_attachments(cmd,slot);work.main_us=profile_take();
     for(uint32_t i=0;i<4;++i){bool depth=i==3;barrier(cmd,world.gbuffer[i].handle,depth?VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,depth?VK_IMAGE_ASPECT_DEPTH_BIT:VK_IMAGE_ASPECT_COLOR_BIT,depth?VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT:VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,depth?VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT:VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT),VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);}
     frame_mark("occlusion");render_occlusion(cmd,slot);frame_mark("opaque decals");prepare_decals(cmd,slot);render_opaque_decals(cmd,slot);
     frame_mark("environment prepare");prepare_environment(cmd,slot);

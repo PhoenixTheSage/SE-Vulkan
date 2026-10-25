@@ -8,6 +8,10 @@ namespace ClientPlugin.Rendering.Shaders;
 
 public static class WorldConstants
 {
+    // Member paths are built once per (prefix, name): Frame runs for the main view and every probe face.
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Prefix,string Name),string> MemberPaths=new();
+    static string MemberPath(string prefix,string name)=>MemberPaths.GetOrAdd((prefix,name),static key=>key.Prefix+key.Name);
+    [ThreadStatic] static float[] matrixScratch;
     public static uint PointLightCapacity(MyRenderQualityEnum quality)=>quality switch {
         MyRenderQualityEnum.LOW=>256,MyRenderQualityEnum.NORMAL=>512,
         MyRenderQualityEnum.HIGH=>2048,MyRenderQualityEnum.EXTREME=>4096,
@@ -15,7 +19,8 @@ public static class WorldConstants
     public static byte[] Frame(ShaderMetadata layout,MatrixD view,MatrixD projection,int width,int height,MyEnvironmentLightData light,float emission=1,MatrixD? background=null,MyRenderFogSettings? fog=null,float time=0,float delta=0,MyRenderSettings? renderSettings=null,Vector3? cameraDelta=null,MyPostprocessSettings? postprocess=null,bool specularProbes=false,float renderFraction=1,MyTextureDebugMultipliers? textureMultipliers=null)
     {
         var result=new ReflectedConstantBuffer(layout,"Frame");
-        void Matrix(string name,MatrixD value)=>result.Set("frame_.Environment."+name,NativeBackend.MatrixValues(value));
+        var matrix=matrixScratch??=new float[16];
+        void Matrix(string name,MatrixD value){NativeBackend.MatrixValues(value,matrix);result.Set(MemberPath("frame_.Environment.",name),matrix);}
         Matrix("view_matrix",view);Matrix("projection_matrix",projection);Matrix("projection_matrix_for_skybox",projection);Matrix("view_projection_matrix",view*projection);
         Matrix("inv_view_matrix",MatrixD.Invert(view));Matrix("inv_proj_matrix",MatrixD.Invert(projection));Matrix("inv_view_proj_matrix",MatrixD.Invert(view*projection));// Vanilla writes this one matrix without its usual CPU transpose; -Zpr needs the inverse storage convention.
         Matrix("background_orientation",MatrixD.Transpose(background??MatrixD.Identity));
@@ -24,8 +29,8 @@ public static class WorldConstants
         // reconstruct positions from a second, incorrectly scaled viewport.
         result.Set("frame_.Screen.resolution",width,height);result.Set("frame_.Screen.drs",1);
         result.Set("frame_.DistanceFade",(renderSettings??new MyRenderSettings()).User.DistanceFade);
-        void Scalar(string name,float value)=>result.Set("frame_.Light."+name,value);
-        void Vector(string name,Vector3 value)=>result.Set("frame_.Light."+name,value.X,value.Y,value.Z);
+        void Scalar(string name,float value)=>result.Set(MemberPath("frame_.Light.",name),value);
+        void Vector(string name,Vector3 value)=>result.Set(MemberPath("frame_.Light.",name),value.X,value.Y,value.Z);
         Vector("directionalLightColor",light.SunColorRaw);Vector("directionalLightSpecularColor",light.SunSpecularColorRaw);Vector("directionalLightVec",light.SunLightDirection);
         Scalar("directionalLightDiffuseFactor",light.SunDiffuseFactor);Scalar("directionalLightGlossFactor",light.SunGlossFactor);Scalar("directionalLightSpecularFactor",light.SunSpecularFactor);
         Scalar("ambientDiffuseFactor",light.AmbientDiffuseFactor);Scalar("ambientSpecularFactor",specularProbes?light.AmbientSpecularFactor:0);
@@ -36,11 +41,11 @@ public static class WorldConstants
         result.SetUInt("frame_.Light.tiles_x",(uint)((width+15)/16));result.SetUInt("frame_.Light.tiles_num",(uint)(((width+15)/16)*((height+15)/16)));result.SetUInt("frame_.Light.maxTileLights",PointLightCapacity((renderSettings??new MyRenderSettings()).User.LightsQuality));
         object post=(postprocess??MyPostprocessSettings.Default).GetProcessedData();
         foreach(var field in typeof(MyPostprocessSettings.Layout).GetFields(System.Reflection.BindingFlags.Public|System.Reflection.BindingFlags.Instance))
-        {string path="frame_.Post."+(field.Name=="Res2"?"LogLumThreshold":field.Name);object value=field.GetValue(post);if(value is Vector3 v)result.Set(path,v.X,v.Y,v.Z);else if(value is int n)result.SetInt(path,n);else result.Set(path,(float)value);}
+        {string path=MemberPath("frame_.Post.",field.Name=="Res2"?"LogLumThreshold":field.Name);object value=field.GetValue(post);if(value is Vector3 v)result.Set(path,v.X,v.Y,v.Z);else if(value is int n)result.SetInt(path,n);else result.Set(path,(float)value);}
         result.Set("frame_.Post.BloomEmissiveness",emission);
         var texture=textureMultipliers??MyTextureDebugMultipliers.Defaults;
         foreach(var field in typeof(MyTextureDebugMultipliers).GetFields(System.Reflection.BindingFlags.Public|System.Reflection.BindingFlags.Instance))
-            if(field.FieldType==typeof(float))result.Set("frame_.TextureDebugMultipliers."+field.Name,(float)field.GetValue(texture));
+            if(field.FieldType==typeof(float))result.Set(MemberPath("frame_.TextureDebugMultipliers.",field.Name),(float)field.GetValue(texture));
         // Scene submission already adds ColorizeHSV to each object's key color.
         // Leave the frame vector zero to preserve that existing ownership.
         if(fog.HasValue){var f=fog.Value;Vector3 color=f.FogColor.ToVector3().ToLinearRGB();result.Set("frame_.Fog.color",color.X,color.Y,color.Z);result.Set("frame_.Fog.density",f.FogDensity);result.Set("frame_.Fog.mult",f.FogMultiplier);result.Set("frame_.Fog.sky",f.FogSkybox);result.Set("frame_.Fog.atmo",f.FogAtmo);}

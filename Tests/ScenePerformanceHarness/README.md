@@ -19,8 +19,27 @@ rendered frames. `result.json` reports CPU Draw-through-Present duration,
 consecutive Present intervals, mean/median/p95/p99, actual dimensions, runtime
 and camera position. It exits without saving. `frame-profile.json` records the
 Vulkan panel's final gameplay window, including independent asynchronous world
-GPU timestamps. That GPU interval excludes uploads, final composition, HUD and
-present. Rendered fps comes from Present intervals, not inverse mean CPU work.
+GPU timestamps. That GPU interval runs from before resident preparation to
+the swapchain barrier after the HUD sprites, so it is the full frame except
+upload batches and present. Rendered fps comes from Present intervals, not
+inverse mean CPU work.
+
+Every run writes `frame-gap.json`, which splits the render-thread time
+outside the CpuMean span:
+
+- `HarnessPrefixSampleMs`: this harness's frame sample, taken in the Present
+  prefix when recording is pipelined. It is measurement cost.
+- `PresentBodyMs`: the renderer's `Present`.
+- `LoopMs`: SE's loop up to the next Draw.
+
+Opt-in native reports, limited to the sampling window:
+
+- `SE_VULKAN_GPU_PASS_TIMING=<file>`: GPU time per frame mark.
+- `SE_VULKAN_RECORD_TIMING=<file>`: recording-thread CPU time per mark and
+  preparation lap.
+
+`-CpuDetail` also writes `message-census.json`, the exclusive time per render
+message type and its share of spike frames.
 
 Run once with `-Backend Vulkan`, then once with `-Backend Dx11` and identical
 arguments. Example:

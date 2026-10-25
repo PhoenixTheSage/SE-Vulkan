@@ -246,6 +246,26 @@ void prepare_postprocess(VkCommandBuffer cmd,WorldSlot& slot){
         if(post.config.flags&128){post_pass(cmd,slot,31,post.ao_blur,{world.gbuffer[3].view,{},{},{},{},post.ao.image.view});post_pass(cmd,slot,32,post.ao,{world.gbuffer[3].view,{},{},{},{},post.ao_blur.image.view});post.stats.ssao_passes+=2;}}
     else post_clear(cmd,post.ao,1);
 }
+// Auto-exposure diagnostic (sevk_get_exposure): the 1x1 R32G32 exposure texel, x desired and y adapted log2 stops as
+// Keen's EyeAdaptation writes it, is copied to a per-slot host buffer and read once that frame's timeline completes.
+struct ExposureReadback{Buffer buffers[2]{};uint64_t completion[2]{};bool pending[2]{};float value[2]{};bool valid{};} exposure_readback;
+void exposure_sample(uint64_t complete){
+    auto& r=exposure_readback;
+    for(uint32_t i=0;i<2;++i){if(!r.pending[i]||r.completion[i]>complete)continue;
+        check(vmaInvalidateAllocation(allocator,r.buffers[i].memory,0,8),"invalidate exposure readback");std::memcpy(r.value,r.buffers[i].mapped,8);r.valid=true;r.pending[i]=false;}
+}
+void exposure_record(VkCommandBuffer cmd,PostImage& image){
+    auto& r=exposure_readback;auto& buffer=r.buffers[slot_index];
+    if(!buffer.handle)buffer=make_buffer(8,VK_BUFFER_USAGE_TRANSFER_DST_BIT,true,true);
+    if(r.pending[slot_index]){uint64_t complete=0;check_gpu(vkGetSemaphoreCounterValue(device,timeline,&complete),"exposure readback completion");exposure_sample(complete);if(r.pending[slot_index])return;}
+    VkImageLayout layout=image.layout?image.layout:VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;post_transition(cmd,image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkBufferImageCopy region{};region.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};region.imageExtent={1,1,1};
+    vkCmdCopyImageToBuffer(cmd,image.image.handle,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,buffer.handle,1,&region);
+    VkMemoryBarrier2 host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};host.srcStageMask=VK_PIPELINE_STAGE_2_TRANSFER_BIT;host.srcAccessMask=VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    host.dstStageMask=VK_PIPELINE_STAGE_2_HOST_BIT;host.dstAccessMask=VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};dependency.memoryBarrierCount=1;dependency.pMemoryBarriers=&host;vkCmdPipelineBarrier2(cmd,&dependency);
+    post_transition(cmd,image,layout);r.completion[slot_index]=next_completion+(recording?1:0);r.pending[slot_index]=true;
+}
 // Stage-7 HDR display tenancy: Anomaly requests display bit 16 while a Display-policy AfterUpscale program
 // (packet flag 16384) is ready. On an HDR swapchain that program grades at the tone position into FP16, as
 // DX11 OwnedPassRegistry.CompleteDisplayWithoutUpscale grades LBuffer in MyToneMapping.Run's place.
@@ -260,7 +280,7 @@ void render_postprocess(VkCommandBuffer cmd,WorldSlot& slot){
     if(flags&2){post_pass(cmd,slot,1,post.half,{world.hdr.view});post_buffer_barrier(cmd,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_MEMORY_READ_BIT|VK_ACCESS_2_MEMORY_WRITE_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT);vkCmdFillBuffer(cmd,post.histogram.handle,0,256,0);post_buffer_barrier(cmd,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT|VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
         uint32_t id=flags&1024?4:3;post_note_execution(id);auto& s=post.stages[id];auto set=post_set(slot,id,post.half,{post.half.image.view,world.gbuffer[3].view});vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,s.pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,s.pipeline_layout,0,1,&set,0,nullptr);vkCmdDispatch(cmd,(post.half.width+15)/16,(post.half.height+15)/16,1);++post.stats.histogram_dispatches;post_buffer_barrier(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
         auto& next=post.exposure[post.exposure_index^1];post_pass(cmd,slot,2,next,{VK_NULL_HANDLE,exposure.image.view});post.exposure_index^=1;
-    }else post_pass(cmd,slot,0,exposure);++post.stats.exposure_passes;
+    }else post_pass(cmd,slot,0,exposure);++post.stats.exposure_passes;exposure_record(cmd,post.exposure[post.exposure_index]);
     VkImageView bloom{};
     if(flags&4){uint32_t width=(flags&8)?extent.width:std::max(1u,extent.width/2),height=(flags&8)?extent.height:std::max(1u,extent.height/2);uint32_t levels=uint32_t(std::clamp(int(std::log2(height))-8+int(post.config.bloom_size),1,10));
         post_image(post.bloom_down[0],width,height,world.hdr_format);post_pass(cmd,slot,flags&16?6:5,post.bloom_down[0],{world.hdr.view,{},{},post.exposure[post.exposure_index].image.view});++post.stats.bloom_passes;
@@ -289,6 +309,7 @@ void render_postprocess(VkCommandBuffer cmd,WorldSlot& slot){
         post_pass(cmd,slot,chromatic,target,{post.output->image.view});post.output=&target;++post.stats.chromatic_dispatches;}++post.stats.frames;
 }
 void cleanup_postprocess(){
+    for(auto& b:exposure_readback.buffers)destroy_buffer(b);exposure_readback={};
     gpu_owner_cleanup();for(auto* states:{&post.cells,&post.gpu_new,&post.gpu_old})for(auto& stage:*states)post_destroy_stage(stage);
     for(auto& stage:post.geometry)post_destroy_stage(stage);
     for(auto& stage:post.stages)post_destroy_stage(stage);

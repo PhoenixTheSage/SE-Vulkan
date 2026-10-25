@@ -28,14 +28,18 @@ static class ManagedTraceAnalysis
         var suspended=new List<double>();var reasons=new Dictionary<int,(int Count,double Milliseconds)>();double? suspend=null;int reason=0;
         foreach(var e in events){if(e.EventName=="GC/SuspendEEStart"){suspend=e.TimeStampRelativeMSec;reason=Convert.ToInt32(e.Values["Reason"]);}
             if(e.EventName=="GC/RestartEEStop"&&suspend.HasValue){double elapsed=e.TimeStampRelativeMSec-suspend.Value;var old=reasons.GetValueOrDefault(reason);reasons[reason]=(old.Count+1,old.Milliseconds+elapsed);if(reason==1)suspended.Add(elapsed);suspend=null;}}
-        var allocations=new Dictionary<string,double>();int withStack=0,count=0;
+        var allocations=new Dictionary<string,double>();var callers=new Dictionary<string,double>();int withStack=0,count=0;
         foreach(var e in trace.Events.Where(e=>e.EventName=="GC/AllocationTick"&&e.ThreadID==tids[0]&&e.TimeStampRelativeMSec>=first&&e.TimeStampRelativeMSec<=last)){
             count++;var stack=e.CallStack();if(stack==null)continue;withStack++;
             string owner="[no plugin allocator]";while(stack!=null){string name=stack.CodeAddress.FullMethodName;if(name.Contains("ClientPlugin.")||name.Contains("ScenePerformanceHarness.")){owner=name;break;}stack=stack.Caller;}
+            // The next plugin frame up names the caller of small allocating helpers.
+            string parent="[none]";for(var up=stack?.Caller;up!=null;up=up.Caller){string name=up.CodeAddress.FullMethodName;if(name.Contains("ClientPlugin.")||name.Contains("ScenePerformanceHarness.")){parent=name;break;}}
             string key=Convert.ToString(e.PayloadByName("TypeName"))+" <- "+owner;
-            allocations[key]=allocations.GetValueOrDefault(key)+Convert.ToDouble(e.PayloadByName("AllocationAmount64"));
+            double bytes=Convert.ToDouble(e.PayloadByName("AllocationAmount64"));
+            allocations[key]=allocations.GetValueOrDefault(key)+bytes;callers[key+" <- "+parent]=callers.GetValueOrDefault(key+" <- "+parent)+bytes;
         }
         var options=new JsonSerializerOptions{WriteIndented=true};
+        File.WriteAllText(Path.Combine(run,"managed-allocation-callers.json"),JsonSerializer.Serialize(callers.OrderByDescending(e=>e.Value).Select(e=>new{Name=e.Key,SampledBytes=e.Value}),options));
         File.WriteAllText(Path.Combine(run,"managed-suspension-reasons.json"),JsonSerializer.Serialize(reasons.OrderBy(e=>e.Key).Select(e=>new{Reason=e.Key,e.Value.Count,e.Value.Milliseconds,Scope="Reason 1 denotes garbage collection; other suspensions are not counted as GC pauses."}),options));
         File.WriteAllText(Path.Combine(run,"managed-frame-markers.json"),JsonSerializer.Serialize(markers,options));
         File.WriteAllText(Path.Combine(run,"managed-gc-events.json"),JsonSerializer.Serialize(events,options));

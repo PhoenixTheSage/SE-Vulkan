@@ -56,7 +56,11 @@ public sealed partial class VulkanScene
             if(data.CellOwned&&allowed&&CellSupported(data))AppendPose(data);else cellDirty.Add(data);
         }
         cellPoseDirty.Clear();
-        if(cellPoses.Count!=0){backend.UpdateCellPoses(cellPoseHandles.ToArray(),cellPoses.ToArray(),cellPoses.Count);cellPoses.Clear();cellPoseHandles.Clear();}
+        if(cellPoses.Count!=0){
+            // Reused buffers: the native call copies the first count entries before returning.
+            if(cellPoseArray.Length<cellPoses.Count){cellPoseArray=new NativeCellPose[cellPoses.Count*2];cellPoseHandleArray=new ulong[cellPoses.Count*2];}
+            cellPoses.CopyTo(cellPoseArray);cellPoseHandles.CopyTo(cellPoseHandleArray);
+            backend.UpdateCellPoses(cellPoseHandleArray,cellPoseArray,cellPoses.Count);cellPoses.Clear();cellPoseHandles.Clear();}
         if(cellDirty.Count==0)return;
         cellInputs.Clear();cellHandles.Clear();cellOwners.Clear();cellLevels.Clear();cellParts.Clear();cellThresholds.Clear();cellBytes.Clear();
         foreach(var data in cellDirty){
@@ -70,7 +74,7 @@ public sealed partial class VulkanScene
         backend.CommitCells(cellInputs.ToArray(),count,handles,output,cellLevels.ToArray(),cellLevels.Count,cellParts.ToArray(),cellParts.Count,cellThresholds.ToArray(),cellThresholds.Count,cellBytes.ToArray(),cellBytes.Count);
         for(int i=0;i<count;i++){var data=cellOwners[i];if(!data.CellOwned)ownedCells++;data.CellHandle=output[i];data.CellOwned=true;}
     }
-    readonly List<NativeCellPose> cellPoses=new();readonly List<ulong> cellPoseHandles=new();
+    readonly List<NativeCellPose> cellPoses=new();readonly List<ulong> cellPoseHandles=new();NativeCellPose[] cellPoseArray=Array.Empty<NativeCellPose>();ulong[] cellPoseHandleArray=Array.Empty<ulong>();
     uint CellFlags(ActorData data,bool eligible,bool skinning){var flags=data.Flags;bool castFlag=(flags&RenderFlags.CastShadows)!=0,casts=(flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))==RenderFlags.CastShadows;
         return (IsVisible(data.Actor)?1u:0u)|((flags&RenderFlags.SkipInMainView)!=0?2u:0u)|(castFlag?4u:0u)|(casts?8u:0u)|(data.DynamicShadow?16u:0u)|(data.Actor.Parent!=null?32u:0u)|(eligible?64u:0u)|(skinning?128u:0u)|((flags&RenderFlags.DrawOutsideViewDistance)!=0?256u:0u);}
     unsafe void AppendPose(ActorData data)

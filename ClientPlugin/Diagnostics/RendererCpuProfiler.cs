@@ -29,7 +29,7 @@ public static class RendererCpuProfiler
         NativePassPublish, NativePassFallbacks, NativePassEndVisibility,
         GpuFrameInputs, GpuTopologyPublication, GpuResidentQueue, GpuRootQueries,
         GpuVisibilityPublication,
-        MainOwnerDeclare, NewViewSpots, NewViewSelect, DrawWorldSetup, PreparedAppend, CandidatePlan, CellCommits, CellPublish, Count
+        MainOwnerDeclare, NewViewSpots, NewViewSelect, DrawWorldSetup, PreparedAppend, CandidatePlan, CellCommits, CellPublish, OffscreenTargets, OffscreenNative, Count
     }
     public static bool Enabled {get;}=Environment.GetEnvironmentVariable("SE_VULKAN_CPU_DETAIL")=="1";
     static readonly Counter[] Current=new Counter[(int)Phase.Count];
@@ -45,10 +45,23 @@ public static class RendererCpuProfiler
         var method=typeof(GC).GetMethod("GetAllocatedBytesForCurrentThread",Type.EmptyTypes);
         return method==null?null:(Func<long>)Delegate.CreateDelegate(typeof(Func<long>),method);
     }
+    // Exclusive wall ticks per render message type (MyRenderMessageEnum value); a DrawCommands
+    // container keeps only its own time, its children count under their own types.
+    const int MessageTypes=512,MessageNesting=8;
+    static readonly long[] currentMessageTicks=new long[MessageTypes],completedMessageTicks=new long[MessageTypes];
+    static readonly int[] currentMessageCalls=new int[MessageTypes],completedMessageCalls=new int[MessageTypes];
+    static readonly long[] messageStart=new long[MessageNesting],messageChild=new long[MessageNesting];
+    static int messageDepth;
+    public static bool BeginMessage(){if(!Enabled||!active||messageDepth>=MessageNesting)return false;messageStart[messageDepth]=Stopwatch.GetTimestamp();messageChild[messageDepth]=0;messageDepth++;return true;}
+    public static void EndMessage(int type){
+        int d=--messageDepth;long total=Stopwatch.GetTimestamp()-messageStart[d];if(d>0)messageChild[d-1]+=total;
+        if((uint)type<MessageTypes){currentMessageTicks[type]+=total-messageChild[d];currentMessageCalls[type]++;}
+    }
     public static void BeginFrame()
     {
         if(!Enabled)return;
         Array.Clear(Current,0,Current.Length);readTicks=0;owner=GetCurrentThreadId();active=true;sequence++;
+        Array.Clear(currentMessageTicks,0,MessageTypes);Array.Clear(currentMessageCalls,0,MessageTypes);messageDepth=0;
         gen0=GC.CollectionCount(0);gen1=GC.CollectionCount(1);gen2=GC.CollectionCount(2);
         frame=Measure(Phase.Frame);
     }
@@ -57,6 +70,7 @@ public static class RendererCpuProfiler
         if(!Enabled||!active)return;
         frame.Dispose();active=false;
         Array.Copy(Current,Completed,Current.Length);completedOwner=owner;completedSequence=sequence;completedReadTicks=readTicks;
+        Array.Copy(currentMessageTicks,completedMessageTicks,MessageTypes);Array.Copy(currentMessageCalls,completedMessageCalls,MessageTypes);
         completedGen0=GC.CollectionCount(0)-gen0;completedGen1=GC.CollectionCount(1)-gen1;completedGen2=GC.CollectionCount(2)-gen2;
     }
     public static Scope Measure(Phase phase,bool counters=true)=>Enabled&&active?new Scope(phase,counters):default;
@@ -101,6 +115,21 @@ public static class RendererCpuProfiler
                 sampleCount++;
             }else dropped++;
             frames++;lastSequence=completedSequence;overhead+=completedReadTicks;
+            bool spike=Completed[(int)Phase.Messages].Wall*1000.0/Stopwatch.Frequency>=MessageSpikeMs;if(spike)messageSpikeFrames++;
+            for(int i=0;i<MessageTypes;i++){if(completedMessageCalls[i]==0)continue;messageTicks[i]+=completedMessageTicks[i];messageCalls[i]+=completedMessageCalls[i];if(spike)messageSpikeTicks[i]+=completedMessageTicks[i];}
+        }
+        // A frame whose Messages phase reaches this wall time is a spike frame.
+        public const double MessageSpikeMs=2.0;
+        readonly long[] messageTicks=Enabled?new long[MessageTypes]:null,messageCalls=Enabled?new long[MessageTypes]:null,messageSpikeTicks=Enabled?new long[MessageTypes]:null;
+        long messageSpikeFrames;
+        public MessageSnapshot CaptureMessages()
+        {
+            if(!Enabled||frames==0)return new MessageSnapshot{Enabled=Enabled,Rows=Array.Empty<MessageRow>()};
+            double ms=1000.0/Stopwatch.Frequency;var rows=new System.Collections.Generic.List<MessageRow>();
+            for(int i=0;i<MessageTypes;i++)if(messageCalls[i]!=0)rows.Add(new MessageRow{Type=((VRageRender.Messages.MyRenderMessageEnum)i).ToString(),CallsPerFrame=(double)messageCalls[i]/frames,MsPerFrame=messageTicks[i]*ms/frames,
+                MsPerCall=messageTicks[i]*ms/messageCalls[i],MsPerSpikeFrame=messageSpikeFrames==0?0:messageSpikeTicks[i]*ms/messageSpikeFrames});
+            rows.Sort((a,b)=>b.MsPerFrame.CompareTo(a.MsPerFrame));
+            return new MessageSnapshot{Enabled=true,Frames=frames,SpikeFrames=messageSpikeFrames,SpikeThresholdMs=MessageSpikeMs,Rows=rows.ToArray()};
         }
         public Snapshot Capture()=>Describe(totals,frames,lastSequence,thread,overhead);
         public TailSnapshot CaptureTails()
@@ -122,7 +151,8 @@ public static class RendererCpuProfiler
             }
             return new TailSnapshot{Enabled=true,Frames=sampleCount,DroppedSamples=dropped,GcTaggedFrames=gcTagged,Rows=rows,Slowest=slowest};
         }
-        public void Reset(){Array.Clear(totals,0,totals.Length);frames=lastSequence=overhead=dropped=0;sampleCount=0;thread=0;}
+        public void Reset(){Array.Clear(totals,0,totals.Length);frames=lastSequence=overhead=dropped=0;sampleCount=0;thread=0;
+            if(Enabled){Array.Clear(messageTicks,0,MessageTypes);Array.Clear(messageCalls,0,MessageTypes);Array.Clear(messageSpikeTicks,0,MessageTypes);}messageSpikeFrames=0;}
     }
     struct Counter {public long Calls,CpuCalls,CycleCalls,Wall,Cpu,Allocated;public ulong Cycles;}
     public struct Scope:IDisposable
@@ -163,5 +193,7 @@ public static class RendererCpuProfiler
     public struct FrameTail {public long Sequence,AllocatedBytes;public double CompletedDrawMs,FrameWallMs,FrameCpuMs;public int Gen0Collections,Gen1Collections,Gen2Collections;}
     public sealed class SlowFrame {public FrameTail Frame;public double[] PhaseWallMs;}
     public sealed class TailRow {public string Phase;public double MeanMs,P95Ms,P99Ms,MeanOnSlowest5PercentMs;}
+    public sealed class MessageRow {public string Type;public double CallsPerFrame,MsPerFrame,MsPerCall,MsPerSpikeFrame;}
+    public sealed class MessageSnapshot {public bool Enabled;public long Frames,SpikeFrames;public double SpikeThresholdMs;public MessageRow[] Rows;}
     public sealed class TailSnapshot {public bool Enabled;public int Frames,GcTaggedFrames;public long DroppedSamples;public TailRow[] Rows;public SlowFrame[] Slowest;}
 }

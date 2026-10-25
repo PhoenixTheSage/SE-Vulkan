@@ -34,9 +34,10 @@ public sealed class ReflectedConstantBuffer
         }
         return descriptor;
     }
-    public static byte[] Rent(ShaderMetadata metadata, string name)
+    public static byte[] Rent(ShaderMetadata metadata, string name) => Rent(checked((int)Descriptor(metadata, name).BlockSize));
+    // Zeroed block of a known reflected size; packets added with recycleConstants return it.
+    public static byte[] Rent(int size)
     {
-        int size = checked((int)Descriptor(metadata, name).BlockSize);
         if (Pool.TryGetValue(size, out Stack<byte[]> stack) && stack.Count > 0)
         {
             byte[] rented = stack.Pop();

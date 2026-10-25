@@ -124,8 +124,9 @@ namespace ClientPlugin.Rendering.Content
             Entry dynamic;
             if (generated.TryGetValue(path, out dynamic)) return dynamic.Handle;
             if (Thread.CurrentThread.ManagedThreadId == Volatile.Read(ref ownerThread) && destroyedGenerated.TryGetValue(path, out handle)) return handle;
-            string resolved = ResolvePath(path);
-            string key = (gui ? "g:" : srgb ? "s:" : "l:") + resolved;
+            var keys = Keys(path);
+            string resolved = keys.Resolved;
+            string key = keys.For(srgb, gui);
             Entry existing;
             if (entries.TryGetValue(key, out existing) && (existing.Handle != 0 || existing.Failed)) return existing.Handle;
             if (Thread.CurrentThread.ManagedThreadId != Volatile.Read(ref ownerThread))
@@ -185,7 +186,7 @@ namespace ClientPlugin.Rendering.Content
         public ulong GetSpriteTexture(string path, out bool premultiplied)
         {
             ulong handle = GetTexture(path, true, true); premultiplied = false;
-            if (!string.IsNullOrWhiteSpace(path) && entries.TryGetValue("g:" + ResolvePath(path), out Entry entry)) premultiplied = entry.PremultipliedSprite;
+            if (!string.IsNullOrWhiteSpace(path) && entries.TryGetValue(Keys(path).Gui, out Entry entry)) premultiplied = entry.PremultipliedSprite;
             return handle;
         }
 
@@ -206,9 +207,10 @@ namespace ClientPlugin.Rendering.Content
             if (string.IsNullOrWhiteSpace(path)) return false;
             Entry dynamic;
             if (generated.TryGetValue(path, out dynamic)) { width = dynamic.Width; height = dynamic.Height; return true; }
-            string resolved = ResolvePath(path);
+            var keys = Keys(path);
+            string resolved = keys.Resolved;
             Entry entry;
-            if ((entries.TryGetValue("g:" + resolved, out entry) || entries.TryGetValue("s:" + resolved, out entry) || entries.TryGetValue("l:" + resolved, out entry)) && entry.Width > 0 && entry.Height > 0)
+            if ((entries.TryGetValue(keys.Gui, out entry) || entries.TryGetValue(keys.Srgb, out entry) || entries.TryGetValue(keys.Linear, out entry)) && entry.Width > 0 && entry.Height > 0)
             { width = entry.Width; height = entry.Height; return true; }
             try
             {
@@ -340,10 +342,28 @@ namespace ClientPlugin.Rendering.Content
             if (Thread.CurrentThread.ManagedThreadId != Volatile.Read(ref ownerThread)) throw new InvalidOperationException("Vulkan texture uploads must run on the owner render thread.");
         }
 
-        public static string ResolvePath(string path)
+        public static string ResolvePath(string path) => Keys(path).Resolved;
+        // Resolved paths and their cache keys depend only on the input and the content root,
+        // so per-frame lookups reuse them instead of building new strings.
+        internal sealed class PathKeys
         {
+            public readonly string Resolved, Gui, Srgb, Linear;
+            public PathKeys(string resolved) { Resolved = resolved; Gui = "g:" + resolved; Srgb = "s:" + resolved; Linear = "l:" + resolved; }
+            public string For(bool srgb, bool gui) => gui ? Gui : srgb ? Srgb : Linear;
+        }
+        static readonly ConcurrentDictionary<string, PathKeys> pathKeys = new ConcurrentDictionary<string, PathKeys>(StringComparer.Ordinal);
+        static string pathKeysRoot;
+        // ConcurrentDictionary.Count takes every bucket lock; the bound uses its own counter.
+        static int pathKeysAdded;
+        internal static PathKeys Keys(string path)
+        {
+            string root = MyFileSystem.ContentPath;
+            if (!ReferenceEquals(root, Volatile.Read(ref pathKeysRoot)) || Volatile.Read(ref pathKeysAdded) > 65536) { pathKeys.Clear(); Volatile.Write(ref pathKeysAdded, 0); Volatile.Write(ref pathKeysRoot, root); }
+            if (pathKeys.TryGetValue(path, out PathKeys keys)) return keys;
             string normalized = path.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
-            return Path.IsPathRooted(normalized) ? normalized : Path.Combine(MyFileSystem.ContentPath, normalized);
+            keys = new PathKeys(Path.IsPathRooted(normalized) ? normalized : Path.Combine(root, normalized));
+            if (pathKeys.TryAdd(path, keys)) Interlocked.Increment(ref pathKeysAdded);
+            return keys;
         }
     }
 }

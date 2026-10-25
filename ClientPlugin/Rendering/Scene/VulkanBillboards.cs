@@ -118,7 +118,8 @@ namespace ClientPlugin.Rendering.Scene
                 Vector3 normal=(Vector3)Vector3D.Cross(b-a,d-a);if(normal.LengthSquared()>1e-10f)normal.Normalize();
                 if (triangle != null) normal = triangle.Normal0;
                 Buffer.BlockCopy(new[]{billboard.Reflectivity,material.AlphaSaturation,billboard.AlphaCutout,normal.X,normal.Y,normal.Z,billboard.SoftParticleDistanceScale*material.SoftParticleDistanceScale},0,data,20,28);
-                uint flags=(material.CanBeAffectedByOtherLights?1u:0u)|(material.SoftParticleDistanceScale>0?2u:0u)|(material.AlphaCutout?4u:0u);
+                // 32: Keen's emissive producer signal (ColorIntensity > 1), which HdrRender lifts by LdrIntensity under HDR.
+                uint flags=(material.CanBeAffectedByOtherLights?1u:0u)|(material.SoftParticleDistanceScale>0?2u:0u)|(material.AlphaCutout?4u:0u)|(billboard.ColorIntensity>1f?32u:0u);
                 uint bucket=billboard.BlendType==MyBillboard.BlendTypeEnum.Standard?1u:billboard.BlendType==MyBillboard.BlendTypeEnum.AdditiveBottom?0u:billboard.BlendType==MyBillboard.BlendTypeEnum.AdditiveTop?2u:billboard.BlendType==MyBillboard.BlendTypeEnum.LDR?3u:4u;
                 ulong texture=scene.TextureCache.GetTexture(material.Texture);if(scene.TextureCache.IsSingleChannel(texture))flags|=16;if(bucket!=1)flags|=8;if(backend.BillboardPackets.Count>=32768){Unsupported++;continue;}
                 backend.BillboardPackets.Add(new NativeBillboardDraw{Texture=texture,Flags=flags,Bucket=bucket,Vertices=vertices,Data=data});

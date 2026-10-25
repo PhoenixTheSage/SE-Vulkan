@@ -43,6 +43,8 @@ partial class Program
         foreach(string file in Directory.GetFiles(Path.Combine(root,"Assets/Shaders/Compiled")))
             File.Copy(file,Path.Combine(stage,"Shaders/Compiled",Path.GetFileName(file)),true);
         Environment.SetEnvironmentVariable("SE_VULKAN_ASSET_DIR",stage);
+        // Motion lanes read the object-motion target back without an upscaler or pack consuming it.
+        Environment.SetEnvironmentVariable("SE_VULKAN_MOTION_ON_DEMAND","0");
         var library=new VulkanShaderLibrary(Path.Combine(root,"Assets/Shaders/Vanilla"),Path.Combine(bin,"../Content/Shaders"),Path.Combine(bin,"VRage.Render11.dll"));
         using var backend=new NativeBackend(null);
         backend.Create(64,64,0,true,Path.Combine(output,"Cache"));

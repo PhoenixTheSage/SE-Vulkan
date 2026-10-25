@@ -139,7 +139,7 @@ struct Buffer { VkBuffer handle{}; VmaAllocation memory{}; void* mapped{}; VkDev
 thread_local const Buffer* active_buffer_destroy{};
 thread_local std::source_location active_buffer_destroy_source;
 struct Image { VkImage handle{}; VmaAllocation memory{}; VkImageView view{}; };
-struct Texture { Image image{}; VkDescriptorSet descriptor{}, sprite_descriptor{}; VkImageView attachment{}; uint32_t stream_width{},stream_height{},stream_format{}; };
+struct Texture { Image image{}; VkDescriptorSet descriptor{}, sprite_descriptor{}; VkImageView attachment{}; uint32_t stream_width{},stream_height{},stream_format{}; uint32_t offscreen_width{},offscreen_height{},offscreen_levels{}; };
 struct Mesh { Buffer vertices{}, indices{}; uint32_t index_count{}, vertex_stride{};
     VkDeviceSize vertex_offset{},index_offset{};uint32_t vertex_page{},index_page{};
     VmaVirtualAllocation vertex_allocation{},index_allocation{};
@@ -434,9 +434,10 @@ struct Renderer {uint32_t recipe_generation=1;
     FsrRuntime fsr;
     // HDR UI transform for the presented HUD: scene paper white x UI gain (scRGB), shoulder, peak (scRGB). Zero disables.
     float hdr_ui[3]{};
+    float hdr_ldr_intensity{1.f}; // HdrRender LdrIntensity for emissive LDR billboards under display tenancy
     bool hdr_display_forced{}; // diagnostics: display tenancy without an HDR swapchain
     bool tearing_denied{},tearing_armed{};
-    uint32_t display_flags{};bool hdr_active{},hdr_denied{},fg_denied{},swap_transfer{},null_descriptors{};
+    uint32_t display_flags{};bool hdr_active{},hdr_denied{},fg_denied{},swap_transfer{},null_descriptors{};uint32_t hdr_probe_frames{};
     std::array<uint64_t,11> opaque_compute_times{};
     SevkResolutionStats resolution_stats{sizeof(SevkResolutionStats),SEVK_ABI_VERSION};
     std::vector<std::pair<uint64_t,VkImageView>> retired_views;
@@ -553,7 +554,41 @@ struct Renderer {uint32_t recipe_generation=1;
     std::array<GpuMark,8192> gpu_marks{}; uint32_t gpu_mark_head{}; bool gpu_checkpoints{}, gpu_fault{};
     void gpu_mark(VkCommandBuffer cmd,const char* name,uint64_t value){if(!gpu_checkpoints || !cmd)return;auto& m=gpu_marks[gpu_mark_head++%gpu_marks.size()];m={name,value};vkCmdSetCheckpointNV(cmd,&m);}
     bool profile_markers{}, profile_label_open{};
-    void frame_mark(const char* name){auto cmd=slots[slot_index].command;gpu_mark(cmd,name,next_completion+1);
+    // SE_VULKAN_GPU_PASS_TIMING=<file>: a timestamp at every frame mark. A completed slot adds each
+    // interval to the next mark under the earlier mark's name; overlapping GPU work makes the split
+    // approximate, but the intervals always sum to the frame. Written as JSON at shutdown.
+    struct GpuPassTiming{static constexpr uint32_t capacity=96;VkQueryPool pool{};std::string path;
+        std::array<std::array<const char*,capacity>,2> names{};std::array<uint32_t,2> used{};std::array<bool,2> armed{};std::array<uint64_t,2> target{};
+        std::vector<std::pair<std::string,std::pair<double,uint64_t>>> passes;uint64_t frames{};double frame_ms{};} gpu_pass;
+    // The harness resets both reports when its sampling window opens and stops them when it closes.
+    bool timing_reports_active=true;
+    void set_timing_reports(bool active){timing_reports_active=active;if(!active)return;
+        gpu_pass.passes.clear();gpu_pass.frames=0;gpu_pass.frame_ms=0;gpu_pass.target={};gpu_pass.armed={};record_laps.laps.clear();record_laps.frames=0;record_laps.open=nullptr;}
+    void gpu_pass_mark(VkCommandBuffer cmd,const char* name){if(!gpu_pass.pool)return;uint32_t s=slot_index;
+        if(std::strcmp(name,"frame begin")==0){vkCmdResetQueryPool(cmd,gpu_pass.pool,s*GpuPassTiming::capacity,GpuPassTiming::capacity);gpu_pass.used[s]=0;gpu_pass.armed[s]=false;gpu_pass.target[s]=0;}
+        auto& used=gpu_pass.used[s];if(used>=GpuPassTiming::capacity)return;
+        vkCmdWriteTimestamp2(cmd,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,gpu_pass.pool,s*GpuPassTiming::capacity+used);gpu_pass.names[s][used++]=name;
+        if(std::strcmp(name,"frame end")==0)gpu_pass.armed[s]=true;}
+    // Only a frame that reached "frame end" and was submitted is read, after its timeline value completes.
+    void gpu_pass_submitted(uint32_t s,uint64_t completion){if(gpu_pass.pool&&gpu_pass.armed[s]){gpu_pass.target[s]=completion;gpu_pass.armed[s]=false;}}
+    void sample_gpu_pass(uint32_t s,uint64_t complete){if(!gpu_pass.pool||!gpu_pass.target[s]||complete<gpu_pass.target[s])return;gpu_pass.target[s]=0;uint32_t used=gpu_pass.used[s];if(used<2||!timing_reports_active)return;
+        std::array<uint64_t,GpuPassTiming::capacity*2> values{};
+        if(vkGetQueryPoolResults(device,gpu_pass.pool,s*GpuPassTiming::capacity,used,sizeof(uint64_t)*2*used,values.data(),16,VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WITH_AVAILABILITY_BIT)!=VK_SUCCESS)return;
+        for(uint32_t i=0;i<used;++i)if(!values[i*2+1])return;
+        uint64_t mask=timestamp_bits>=64?~uint64_t(0):(uint64_t(1)<<timestamp_bits)-1;auto ms=[&](uint32_t a,uint32_t b){return double((values[b*2]-values[a*2])&mask)*timestamp_period/1000000.0;};
+        for(uint32_t i=0;i+1<used;++i){const char* name=gpu_pass.names[s][i];auto it=std::find_if(gpu_pass.passes.begin(),gpu_pass.passes.end(),[&](const auto& p){return p.first==name;});
+            if(it==gpu_pass.passes.end()){gpu_pass.passes.push_back({name,{0.0,0}});it=gpu_pass.passes.end()-1;}it->second.first+=ms(i,i+1);++it->second.second;}
+        gpu_pass.frame_ms+=ms(0,used-1);++gpu_pass.frames;}
+    // SE_VULKAN_RECORD_TIMING=<file>: CPU recording time between frame marks and the extra cpu_lap
+    // points inside preparation, attributed to the earlier name. The "frame begin" interval spans the
+    // managed frame, so it is not counted. Written as JSON at shutdown.
+    struct RecordLaps{bool enabled{};std::string path;std::chrono::steady_clock::time_point at{};const char* open{};uint64_t frames{};
+        std::vector<std::pair<std::string,std::pair<double,uint64_t>>> laps;} record_laps;
+    void cpu_lap(const char* name){if(!record_laps.enabled)return;auto now=std::chrono::steady_clock::now();auto& r=record_laps;
+        if(r.open&&timing_reports_active&&std::strcmp(r.open,"frame begin")!=0){double us=std::chrono::duration<double,std::micro>(now-r.at).count();auto it=std::find_if(r.laps.begin(),r.laps.end(),[&](const auto& l){return l.first==r.open;});
+            if(it==r.laps.end()){r.laps.push_back({r.open,{0.0,0}});it=r.laps.end()-1;}it->second.first+=us;++it->second.second;}
+        r.at=now;r.open=name;if(std::strcmp(name,"frame end")==0){r.open=nullptr;if(timing_reports_active)++r.frames;}}
+    void frame_mark(const char* name){auto cmd=slots[slot_index].command;gpu_mark(cmd,name,next_completion+1);gpu_pass_mark(cmd,name);cpu_lap(name);
         if(profile_markers && vkCmdBeginDebugUtilsLabelEXT && vkCmdEndDebugUtilsLabelEXT){
             if(profile_label_open)vkCmdEndDebugUtilsLabelEXT(cmd);
             VkDebugUtilsLabelEXT label{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};label.pLabelName=name;
@@ -675,6 +710,7 @@ struct Renderer {uint32_t recipe_generation=1;
         tenant_collect(complete);
         gpu_owner_resolve_generations(complete);post_collect(complete);
         stats.completed_timeline = complete;
+        for(uint32_t i=0;i<2;++i)sample_gpu_pass(i,complete);
         for(uint32_t i=0;i<2;++i)if(slots[i].completion<=complete){sample_timing(i);sample_occlusion(i);sample_shadow_usage(i);if(world.slots[i].material_stale)release_cached_materials(world.slots[i]);else release_dirty_materials(world.slots[i]);}
         for(auto it=retired_views.begin();it!=retired_views.end();){if(it->first<=complete){vkDestroyImageView(device,it->second,nullptr);it=retired_views.erase(it);}else ++it;}
         for(auto it=world.atlas_transients.begin();it!=world.atlas_transients.end();){if(it->completion<=complete){for(auto v:it->views)vkDestroyImageView(device,v,nullptr);for(auto set:it->sets)check(vkFreeDescriptorSets(device,descriptors,1,&set),"free completed atlas descriptors");it=world.atlas_transients.erase(it);}else ++it;}
@@ -786,6 +822,9 @@ struct Renderer {uint32_t recipe_generation=1;
 #endif
         }
         const char* marker_env=std::getenv("SE_VULKAN_PROFILE_MARKERS");profile_markers=marker_env && std::strcmp(marker_env,"1")==0;
+        if(const char* reuse=std::getenv("SE_VULKAN_OFFSCREEN_REUSE");reuse&&std::strcmp(reuse,"0")==0)offscreen_reuse=false;
+        if(const char* motion=std::getenv("SE_VULKAN_MOTION_ON_DEMAND");motion&&std::strcmp(motion,"0")==0)motion_on_demand=false;
+        if(const char* laps=std::getenv("SE_VULKAN_RECORD_TIMING");laps&&*laps&&std::strcmp(laps,"0")!=0){record_laps.enabled=true;record_laps.path=laps;}
         const char* validation_cache_env=std::getenv("SE_VULKAN_TEXTURE_VALIDATION_CACHE");world.texture_validation_cache=!validation_cache_env || std::strcmp(validation_cache_env,"0")!=0;
         if (validation || profile_markers) extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         uint32_t instance_extension_count=0;vkEnumerateInstanceExtensionProperties(nullptr,&instance_extension_count,nullptr);
@@ -943,7 +982,8 @@ struct Renderer {uint32_t recipe_generation=1;
         check(vkCreateCommandPool(device, &pool, nullptr, &upload_pool), "create upload pool");
         init_descriptors(); init_slots(); init_pipeline_cache(); init_shadows();
         if(timestamp_bits){VkPhysicalDeviceProperties properties{};vkGetPhysicalDeviceProperties(physical,&properties);timestamp_period=properties.limits.timestampPeriod;
-            VkQueryPoolCreateInfo qp{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};qp.queryType=VK_QUERY_TYPE_TIMESTAMP;qp.queryCount=4;check(vkCreateQueryPool(device,&qp,nullptr,&timing_pool),"create world timing queries");resolution_stats.timing_supported=1;}
+            VkQueryPoolCreateInfo qp{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};qp.queryType=VK_QUERY_TYPE_TIMESTAMP;qp.queryCount=4;check(vkCreateQueryPool(device,&qp,nullptr,&timing_pool),"create world timing queries");resolution_stats.timing_supported=1;
+            if(const char* path=std::getenv("SE_VULKAN_GPU_PASS_TIMING");path&&*path&&std::strcmp(path,"0")!=0){gpu_pass.path=path;qp.queryCount=2*GpuPassTiming::capacity;check(vkCreateQueryPool(device,&qp,nullptr,&gpu_pass.pool),"create pass timing queries");}}
         resize(info.width, info.height, info.vsync != 0);
         const uint32_t white = 0xffffffff; upload_texture(0, 1, 1, 0, false, &white, sizeof(white), true);
         stats.size = sizeof(stats); stats.abi_version = SEVK_ABI_VERSION; stats.validation_enabled = validation;
@@ -1488,6 +1528,14 @@ struct Renderer {uint32_t recipe_generation=1;
         uint32_t logical_w = sprite_w ? sprite_w : caps.currentExtent.width, logical_h = sprite_h ? sprite_h : caps.currentExtent.height;
         resize_output(caps.currentExtent.width, caps.currentExtent.height, logical_w, logical_h, vsync);
     }
+    // The scRGB surface format follows the Windows HDR switch, which can change while the game runs.
+    bool surface_offers_scrgb() {
+        uint32_t count = 0;
+        if (!surface || vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, &count, nullptr) != VK_SUCCESS || !count) return false;
+        std::vector<VkSurfaceFormatKHR> formats(count);
+        if (vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, &count, formats.data()) != VK_SUCCESS) return false;
+        return std::any_of(formats.begin(), formats.begin() + count, [](const auto& f) { return f.format == VK_FORMAT_R16G16B16A16_SFLOAT && f.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT; });
+    }
     int begin_frame(const SevkFrameInfo& frame) {
         submitted_frame=frame;jitter_begin_frame();
         guest.depth_ready=0;++guest.catalog_epoch;
@@ -1495,8 +1543,13 @@ struct Renderer {uint32_t recipe_generation=1;
         match_surface_extent();
         if (recording) throw std::runtime_error("frame already begun");
         update_mip_bias();
+        // A denied HDR request latched for the session, so turning Windows HDR on after launch left the game SDR.
+        // Re-check the surface about once a second: retry when scRGB appears, fall back when it goes away.
+        bool lost_hdr=false;
+        if(swapchain&&(display_flags&1)&&(hdr_denied||hdr_active)&&++hdr_probe_frames>=60){hdr_probe_frames=0;bool offered=surface_offers_scrgb();
+            if(hdr_denied&&offered)hdr_denied=false;else if(hdr_active&&!offered)lost_hdr=true;}
         bool want_hdr=(display_flags&1)&&!hdr_denied&&!hdr_active;
-        bool drop_hdr=!(display_flags&1)&&hdr_active;
+        bool drop_hdr=(!(display_flags&1)&&hdr_active)||lost_hdr;
         bool want_immediate=(((display_flags&2)&&!fg_denied)||((display_flags&32)&&!tearing_denied))&&!vsync&&actual_present_mode!=VK_PRESENT_MODE_IMMEDIATE_KHR;
         // Releasing tearing returns to the ordinary no-vsync mode (MAILBOX when available).
         want_immediate|=tearing_armed&&!(display_flags&(2|32))&&!vsync;if(!(display_flags&32))tearing_denied=false;
@@ -1670,15 +1723,23 @@ struct Renderer {uint32_t recipe_generation=1;
         if (!recording) throw std::runtime_error("sprite draw outside frame");
         if(count) frame_sprites.insert(frame_sprites.end(),sprites,sprites+count);
     }
+    bool offscreen_reuse=true;uint64_t offscreen_reuses{};
     void render_texture(uint64_t id, uint32_t width, uint32_t height, const float* clear, const SevkSprite* sprites, uint32_t count, float logical_width, float logical_height, bool generate_mips=false) {
         if (recording || !id || !width || !height || width > 16384 || height > 16384 || !clear || (!sprites && count) || count > 1000000)
             throw std::runtime_error("invalid offscreen render arguments");
         if (!std::isfinite(logical_width) || !std::isfinite(logical_height) || logical_width < 1 || logical_height < 1 || logical_width > 1000000 || logical_height > 1000000)
             throw std::runtime_error("invalid offscreen logical viewport");
         for (uint32_t i = 0; i < count; ++i) if (sprites[i].texture_id == id) throw std::runtime_error("offscreen feedback loop unsupported");
-        Texture result{};
+        uint32_t levels=generate_mips?std::bit_width(std::max(width,height)):1;
+        // A same-sized re-render draws into the target it created before. Its view, descriptors, cached
+        // materials and recipes stay valid, so nothing is replaced or invalidated. Earlier frames were
+        // submitted first on the same queue; the barriers below wait for their sampling.
+        // SE_VULKAN_OFFSCREEN_REUSE=0 creates a new image for every render.
+        auto previous=textures.find(id);
+        bool reuse=offscreen_reuse&&previous!=textures.end()&&previous->second.offscreen_width==width&&previous->second.offscreen_height==height&&previous->second.offscreen_levels==levels;
+        Texture result=reuse?previous->second:Texture{};
         try {
-            uint32_t levels=generate_mips?std::bit_width(std::max(width,height)):1;
+            if(!reuse){
             auto usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             if(levels>1)usage|=VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
             result.image = make_image(width,height,VK_FORMAT_R8G8B8A8_SRGB,usage,VK_IMAGE_ASPECT_COLOR_BIT,levels);
@@ -1686,9 +1747,13 @@ struct Renderer {uint32_t recipe_generation=1;
                 VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};view.image=result.image.handle;view.viewType=VK_IMAGE_VIEW_TYPE_2D;view.format=VK_FORMAT_R8G8B8A8_SRGB;view.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
                 check(vkCreateImageView(device,&view,nullptr,&result.attachment),"create LCD base-mip attachment");
             }
+            }
+            const VkImageLayout prior=reuse?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED;
+            const VkPipelineStageFlags2 prior_stage=reuse?VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT:VK_PIPELINE_STAGE_2_NONE;
+            const VkAccessFlags2 prior_access=reuse?VK_ACCESS_2_SHADER_SAMPLED_READ_BIT:0;
             immediate([&](VkCommandBuffer command) {
-                barrier(command,result.image.handle,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,
-                    VK_PIPELINE_STAGE_2_NONE,0,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+                barrier(command,result.image.handle,prior,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,
+                    prior_stage,prior_access,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
                 VkRenderingAttachmentInfo attachment{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }; attachment.imageView = result.attachment?result.attachment:result.image.view;
                 attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                 std::memcpy(attachment.clearValue.color.float32,clear,4*sizeof(float));
@@ -1698,7 +1763,7 @@ struct Renderer {uint32_t recipe_generation=1;
                 if(levels>1){
                     barrier(command,result.image.handle,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_READ_BIT);
                     for(uint32_t m=1;m<levels;++m){
-                        VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};b.srcStageMask=VK_PIPELINE_STAGE_2_NONE;b.dstStageMask=VK_PIPELINE_STAGE_2_TRANSFER_BIT;b.dstAccessMask=VK_ACCESS_2_TRANSFER_WRITE_BIT;b.oldLayout=VK_IMAGE_LAYOUT_UNDEFINED;b.newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;b.image=result.image.handle;b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,m,1,0,1};VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};d.imageMemoryBarrierCount=1;d.pImageMemoryBarriers=&b;vkCmdPipelineBarrier2(command,&d);
+                        VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};b.srcStageMask=prior_stage;b.srcAccessMask=prior_access;b.dstStageMask=VK_PIPELINE_STAGE_2_TRANSFER_BIT;b.dstAccessMask=VK_ACCESS_2_TRANSFER_WRITE_BIT;b.oldLayout=prior;b.newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;b.image=result.image.handle;b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,m,1,0,1};VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};d.imageMemoryBarrierCount=1;d.pImageMemoryBarriers=&b;vkCmdPipelineBarrier2(command,&d);
                         VkImageBlit blit{};blit.srcSubresource={VK_IMAGE_ASPECT_COLOR_BIT,m-1,0,1};blit.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,m,0,1};blit.srcOffsets[1]={int32_t(std::max(1u,width>>(m-1))),int32_t(std::max(1u,height>>(m-1))),1};blit.dstOffsets[1]={int32_t(std::max(1u,width>>m)),int32_t(std::max(1u,height>>m)),1};vkCmdBlitImage(command,result.image.handle,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,result.image.handle,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&blit,VK_FILTER_LINEAR);
                         b.srcStageMask=VK_PIPELINE_STAGE_2_TRANSFER_BIT;b.srcAccessMask=VK_ACCESS_2_TRANSFER_WRITE_BIT;b.dstAccessMask=VK_ACCESS_2_TRANSFER_READ_BIT;b.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;b.newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;vkCmdPipelineBarrier2(command,&d);
                     }
@@ -1706,13 +1771,15 @@ struct Renderer {uint32_t recipe_generation=1;
                 }else barrier(command,result.image.handle,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             });
+            if(reuse){++offscreen_reuses;if(world.shadow_alpha_textures.count(id))saved_shadows=false;return;}
+            result.offscreen_width=width;result.offscreen_height=height;result.offscreen_levels=levels;
             texture_descriptors(result);
             // Material sets cache this image view. The replacement is retired with the
             // upload, which finishes before the next frame, so the old view must not be reused.
             if (auto old=textures.find(id);old!=textures.end()) { retired.push_back({next_completion,old->second,{}}); old->second=result; recycle_cached_texture(id); }
             else textures.emplace(id,result);
             stats.textures=textures.size(); collect();
-        } catch (...) { if(batch_command)wait(next_completion);destroy_texture(result); throw; }
+        } catch (...) { if(batch_command)wait(next_completion);if(!reuse)destroy_texture(result); throw; }
     }
     int end_frame() {
         critical_profile::Finish critical_finish{critical};
@@ -1787,7 +1854,7 @@ struct Renderer {uint32_t recipe_generation=1;
         VkSemaphoreSubmitInfo acquired{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO }; acquired.semaphore = slot.acquired; acquired.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         std::array<VkSemaphoreSubmitInfo, 2> signals{};
         for (auto& signal : signals) signal.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-        slot.completion = ++next_completion; signals[0].semaphore = timeline; signals[0].value = slot.completion; signals[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        slot.completion = ++next_completion; gpu_pass_submitted(slot_index,slot.completion); signals[0].semaphore = timeline; signals[0].value = slot.completion; signals[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         // Separate submits are not ordered. The frame samples images whose layout
         // transition is in the upload batch, so it waits on that timeline value.
         std::array<VkSemaphoreSubmitInfo,2> waits{}; uint32_t wait_count=0;
@@ -1925,6 +1992,7 @@ struct Renderer {uint32_t recipe_generation=1;
             for(auto& item:retired){destroy_texture(item.texture);destroy_mesh(item.mesh);}retired.clear();
             for(auto& item:retired_views)vkDestroyImageView(device,item.second,nullptr);retired_views.clear();
             if(timing_pool)vkDestroyQueryPool(device,timing_pool,nullptr);
+            if(gpu_pass.pool)vkDestroyQueryPool(device,gpu_pass.pool,nullptr);
             cleanup_stock();
             cleanup_occlusion();cleanup_spot_copy();for(auto& image:spots.images)destroy_image(image);for(auto& image:spots.frozen)destroy_image(image);cleanup_highlights();cleanup_jitter();cleanup_shadow_usage();cleanup_stock_shadows();cleanup_probes();cleanup_hbao();cleanup_postprocess();cleanup_flares();cleanup_display();cleanup_decals();cleanup_particles();cleanup_transparency();cleanup_environment();
             cleanup_guest();
@@ -2105,14 +2173,16 @@ int32_t SEVK_CALL sevk_set_shadow_pass_constants(void* ctx,const void* data,uint
 int32_t SEVK_CALL sevk_set_shadow_schedule(void* context,uint32_t enabled,uint32_t update_mask,uint32_t valid_mask){
     return call_deferrable(context,[enabled,update_mask,valid_mask](Renderer& r){uint32_t active=(1u<<r.shadow_count)-1;if(r.recording || enabled>3 || ((update_mask|valid_mask)&~active))throw std::runtime_error("invalid shadow scheduling mask");r.scheduled_shadows=(enabled&1)!=0;r.shadow_usage.enabled=(enabled&2)!=0;r.shadow_update_mask=update_mask;r.shadow_valid_mask=valid_mask;return 0;});
 }
+// Offscreen (LCD) renders are deferrable: while a recording is in flight they replay in issue order at the
+// next waiting call instead of blocking message processing on the recording.
 int32_t SEVK_CALL sevk_render_texture(void* context, uint64_t id, uint32_t width, uint32_t height, const float* clear, const SevkSprite* sprites, uint32_t count) {
-    return call(context,[&](Renderer& r) { r.render_texture(id,width,height,clear,sprites,count,float(width),float(height)); return 0; });
+    return call_deferrable(context,[id,width,height,clear_copy=copy_in(clear,4),sprites_copy=copy_in(sprites,count),count](Renderer& r) { r.render_texture(id,width,height,clear_copy.get(),sprites_copy.get(),count,float(width),float(height)); return 0; });
 }
 int32_t SEVK_CALL sevk_render_texture_aspect(void* context, uint64_t id, uint32_t width, uint32_t height, const float* clear, const SevkSprite* sprites, uint32_t count, float logical_width, float logical_height) {
-    return call(context,[&](Renderer& r) { r.render_texture(id,width,height,clear,sprites,count,logical_width,logical_height); return 0; });
+    return call_deferrable(context,[id,width,height,clear_copy=copy_in(clear,4),sprites_copy=copy_in(sprites,count),count,logical_width,logical_height](Renderer& r) { r.render_texture(id,width,height,clear_copy.get(),sprites_copy.get(),count,logical_width,logical_height); return 0; });
 }
 int32_t SEVK_CALL sevk_begin_frame(void* context, const SevkFrameInfo* frame) { return call(context, [&](Renderer& r) { if (!frame) throw std::runtime_error("null frame"); return r.begin_frame(*frame); }); }
-int32_t SEVK_CALL sevk_render_texture_mips(void* context,uint64_t id,uint32_t width,uint32_t height,const float* clear,const SevkSprite* sprites,uint32_t count,float logical_width,float logical_height,uint32_t generate_mips){return call(context,[&](Renderer& r){if(generate_mips>1)throw std::runtime_error("invalid LCD mip option");r.render_texture(id,width,height,clear,sprites,count,logical_width,logical_height,generate_mips!=0);return 0;});}
+int32_t SEVK_CALL sevk_render_texture_mips(void* context,uint64_t id,uint32_t width,uint32_t height,const float* clear,const SevkSprite* sprites,uint32_t count,float logical_width,float logical_height,uint32_t generate_mips){return call_deferrable(context,[id,width,height,clear_copy=copy_in(clear,4),sprites_copy=copy_in(sprites,count),count,logical_width,logical_height,generate_mips](Renderer& r){if(generate_mips>1)throw std::runtime_error("invalid LCD mip option");r.render_texture(id,width,height,clear_copy.get(),sprites_copy.get(),count,logical_width,logical_height,generate_mips!=0);return 0;});}
 int32_t SEVK_CALL sevk_draw_mesh(void* context, const SevkDrawMesh* draw) { return call(context, [&](Renderer& r) { if (!draw) throw std::runtime_error("null draw"); r.draw_mesh(*draw); return 0; }); }
 int32_t SEVK_CALL sevk_draw_lines(void* context, const SevkLineVertex* vertices, uint32_t count, uint32_t flags) { return call(context, [&](Renderer& r) { r.draw_lines(vertices, count, flags); return 0; }); }
 int32_t SEVK_CALL sevk_draw_sprites(void* context, const SevkSprite* sprites, uint32_t count) { return call(context, [&](Renderer& r) { if ((!sprites && count) || count > 1000000) throw std::runtime_error("invalid sprite batch"); r.draw_sprites(sprites,count); return 0; }); }
@@ -2129,6 +2199,14 @@ int32_t SEVK_CALL sevk_request_readback(void* context) {return call(context,[&](
 void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) active_context = nullptr; if(context){auto* r=static_cast<Renderer*>(context);if(r->record_job.valid())r->record_job.wait();
     // SE_VULKAN_PIPELINE_REPORT=<file>: pipelined frames, cascade-mask prediction misses and waits,
     // plus native pass packing joins that blocked, split into render thread and recording worker.
+    if(!r->gpu_pass.path.empty())if(FILE* f=std::fopen(r->gpu_pass.path.c_str(),"w")){const auto& g=r->gpu_pass;double frames=double(std::max<uint64_t>(1,g.frames));
+        std::fprintf(f,"{\"Frames\":%llu,\"FrameMs\":%.4f,\"Scope\":\"Primary command buffer; interval from each frame mark to the next, per sampled frame. Overlapping work is attributed to the earlier mark.\",\"Passes\":[",(unsigned long long)g.frames,g.frame_ms/frames);
+        for(size_t i=0;i<g.passes.size();++i)std::fprintf(f,"%s{\"Name\":\"%s\",\"Ms\":%.4f,\"Frames\":%llu}",i?",":"",g.passes[i].first.c_str(),g.passes[i].second.first/frames,(unsigned long long)g.passes[i].second.second);
+        std::fprintf(f,"]}\n");std::fclose(f);}
+    if(r->record_laps.enabled)if(FILE* f=std::fopen(r->record_laps.path.c_str(),"w")){const auto& l=r->record_laps;double frames=double(std::max<uint64_t>(1,l.frames));
+        std::fprintf(f,"{\"Frames\":%llu,\"Scope\":\"Recording-thread CPU wall time from each frame mark or lap to the next, per recorded frame.\",\"Laps\":[",(unsigned long long)l.frames);
+        for(size_t i=0;i<l.laps.size();++i)std::fprintf(f,"%s{\"Name\":\"%s\",\"Ms\":%.4f,\"Calls\":%llu}",i?",":"",l.laps[i].first.c_str(),l.laps[i].second.first/frames/1000.0,(unsigned long long)l.laps[i].second.second);
+        std::fprintf(f,"]}\n");std::fclose(f);}
     if(const char* path=std::getenv("SE_VULKAN_PIPELINE_REPORT"))if(FILE* f=std::fopen(path,"w")){std::fprintf(f,"{\"PipelinedFrames\":%llu,\"MaskMismatches\":%llu,\"Waits\":%llu,\"WaitUs\":%llu,\"PackingBlocked\":%llu,\"PackingBlockedUs\":%llu,\"PackingWorkerBlocked\":%llu,\"PackingWorkerBlockedUs\":%llu",(unsigned long long)r->pipelined_frames,(unsigned long long)r->pipelined_mask_mismatches,(unsigned long long)r->pipelined_waits,(unsigned long long)r->pipelined_wait_us,(unsigned long long)r->packing_blocked[0],(unsigned long long)r->packing_blocked_us[0],(unsigned long long)r->packing_blocked[1],(unsigned long long)r->packing_blocked_us[1]);
 #if defined(_WIN32)
         // Each wait records its innermost frames; only frames resolving to an export are listed.
@@ -2267,9 +2345,13 @@ int32_t SEVK_CALL sevk_set_render_fraction(void* ctx,float fraction){
 int32_t SEVK_CALL sevk_set_view_clip(void* ctx,float far_plane){return call_deferrable(ctx,[far_plane](Renderer& r){if(!std::isfinite(far_plane)||far_plane<1)throw std::runtime_error("invalid view clip");r.view_far=far_plane;return 0;});}
 int32_t SEVK_CALL sevk_invalidate_guest_history(void* ctx){return call(ctx,[&](Renderer& r){r.guest.have_prev=false;r.guest.frame.history_valid=0;r.jitter.reset=true;return 0;});}
 // Temporal jitter owner state: pixel x/y, clip x/y, active, phase count, sequence index, frames. force=1 runs it without an upscaler (diagnostics).
+int32_t SEVK_CALL sevk_set_timing_reports(void* ctx,uint32_t active){return call(ctx,[&](Renderer& r){if(active>1)throw std::runtime_error("invalid timing report state");r.set_timing_reports(active!=0);return 0;});}
 int32_t SEVK_CALL sevk_force_jitter(void* ctx,uint32_t force){return call(ctx,[&](Renderer& r){if(r.recording||force>1)throw std::runtime_error("invalid jitter override");r.jitter.forced=force!=0;r.jitter.reset=true;return 0;});}
 int32_t SEVK_CALL sevk_get_jitter(void* ctx,float* state,uint32_t count){return call(ctx,[&](Renderer& r){if(!state||count<8)throw std::runtime_error("jitter state needs 8 floats");const auto& j=r.jitter;float values[8]{j.pixel[0],j.pixel[1],j.ndc[0],j.ndc[1],j.active?1.f:0.f,float(j.phases),float(j.index),float(j.frames)};std::memcpy(state,values,sizeof(values));return 0;});}
 int32_t SEVK_CALL sevk_set_display_flags(void* ctx,uint32_t flags){return call(ctx,[&](Renderer& r){uint32_t mask=flags>>16;uint32_t value=flags&0xffffu;if(!mask)r.display_flags=value;else r.display_flags=(r.display_flags&~mask)|(value&mask);return 0;});}
+int32_t SEVK_CALL sevk_get_exposure(void* ctx,float* values){return call(ctx,[&](Renderer& r){if(!values)throw std::runtime_error("null exposure output");uint64_t complete=0;check(vkGetSemaphoreCounterValue(r.device,r.timeline,&complete),"query exposure completion");r.exposure_sample(complete);
+    values[0]=r.exposure_readback.value[0];values[1]=r.exposure_readback.value[1];values[2]=r.exposure_readback.valid?1.f:0.f;values[3]=0;return 0;});}
+int32_t SEVK_CALL sevk_set_hdr_billboards(void* ctx,float ldr_intensity){return call(ctx,[&](Renderer& r){if(!(ldr_intensity>=1.f&&ldr_intensity<=64.f))throw std::runtime_error("invalid HDR billboard intensity");r.hdr_ldr_intensity=ldr_intensity;return 0;});}
 int32_t SEVK_CALL sevk_force_hdr_display(void* ctx,uint32_t force){return call(ctx,[&](Renderer& r){if(r.recording||force>1)throw std::runtime_error("invalid HDR display override");r.hdr_display_forced=force!=0;return 0;});}
 int32_t SEVK_CALL sevk_get_display_info(void* ctx,SevkDisplayInfo* info){return call(ctx,[&](Renderer& r){if(!info||info->size!=sizeof(*info)||info->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("display info ABI mismatch");*info=r.display_info();return 0;});}
 int32_t SEVK_CALL sevk_readback_hdr(void* ctx,void* rgba16f,uint64_t bytes){return call(ctx,[&](Renderer& r){r.readback_hdr(rgba16f,bytes);return 0;});}
@@ -2385,7 +2467,7 @@ int32_t SEVK_CALL sevk_queue_transparency(void* ctx,const SevkTransparentDraw* d
 int32_t SEVK_CALL sevk_get_transparency_stats(void* ctx,SevkTransparencyStats* stats){return call(ctx,[&](Renderer& r){if(!stats||stats->size!=sizeof(*stats)||stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("invalid transparency stats");*stats=r.transparency.stats;return 0;});}
 
 int32_t SEVK_CALL sevk_set_billboard_projections(void* ctx,const float* matrices){if(!matrices)return -1;return call_deferrable(ctx,[matrices_copy=copy_in(matrices,512)](Renderer& r){auto* matrices=matrices_copy.get();if(r.recording)throw std::runtime_error("billboard projection during frame");for(uint32_t i=0;i<512;++i)if(!std::isfinite(matrices[i]))throw std::runtime_error("nonfinite billboard projection");std::memcpy(r.transparency.custom_projections,matrices,2048);return 0;});}
-int32_t SEVK_CALL sevk_queue_billboards(void* ctx,const SevkBillboardDraw* draws,uint32_t count){return call_deferrable(ctx,[draws_copy=copy_in(draws,count),count](Renderer& r){auto* draws=draws_copy.get();if(r.recording||count>32768||(!draws&&count))throw std::runtime_error("invalid billboard batch");for(uint32_t i=0;i<count;++i)if(draws[i].flags>31||draws[i].bucket>4||!r.textures.count(draws[i].texture))throw std::runtime_error("invalid billboard material/bucket");r.transparency.billboard_draws.clear();if(count)r.transparency.billboard_draws.assign(draws,draws+count);return 0;});}
+int32_t SEVK_CALL sevk_queue_billboards(void* ctx,const SevkBillboardDraw* draws,uint32_t count){return call_deferrable(ctx,[draws_copy=copy_in(draws,count),count](Renderer& r){auto* draws=draws_copy.get();if(r.recording||count>32768||(!draws&&count))throw std::runtime_error("invalid billboard batch");for(uint32_t i=0;i<count;++i)if(draws[i].flags>63||draws[i].bucket>4||!r.textures.count(draws[i].texture))throw std::runtime_error("invalid billboard material/bucket");r.transparency.billboard_draws.clear();if(count)r.transparency.billboard_draws.assign(draws,draws+count);return 0;});}
 
 int32_t SEVK_CALL sevk_init_particles(void* ctx,uint32_t stage,const void* spv,uint64_t bytes){return call(ctx,[&](Renderer& r){r.init_particles(stage,spv,bytes);return 0;});}
 int32_t SEVK_CALL sevk_queue_particles(void* ctx,const void* data,uint32_t count,uint32_t bytes,uint64_t atlas,uint32_t reset){return call_deferrable(ctx,[data_copy=copy_bytes(data,bytes),count,bytes,atlas,reset](Renderer& r){const void* data=data_copy.get();if(r.recording||count>1024||bytes!=count*464||(!data&&count)||reset>1||(count&&!r.world.arrays.count(atlas)))throw std::runtime_error("invalid particle emitter batch/atlas");r.particles.packet.clear();if(bytes){auto* p=static_cast<const uint8_t*>(data);r.particles.packet.assign(p,p+bytes);}r.particles.count=count;r.particles.atlas=atlas;r.particles.reset|=reset!=0;r.particles.queued=count!=0||r.particles.initialized&&(atlas!=0||reset!=0);return 0;});}

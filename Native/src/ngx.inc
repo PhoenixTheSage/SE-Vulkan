@@ -432,13 +432,14 @@ static NgxResource ngx_resource(VkImageView view, VkImage image, VkFormat format
 
 bool ngx_evaluate(VkCommandBuffer cmd, uint32_t slot, uint32_t in_w, uint32_t in_h, uint32_t out_w, uint32_t out_h, PostImage* tonemap) {
     // DX11 evaluates the image Anomaly just finished at AfterTonemap.
-    // That image is sRGB UNORM. Compose decodes it. Pre-tonemap world.hdr is not this input.
+    // That image is sRGB UNORM, or FP16 scRGB once an HDR display tenant graded it. Compose decodes it.
+    // Pre-tonemap world.hdr is not this input.
     bool tonemapped = tonemap && tonemap->image.view && tonemap->image.handle &&
         tonemap->width == in_w && tonemap->height == in_h;
     if (!tonemapped) return false;
     VkImageView color_view = tonemap->image.view;
     VkImage color_image = tonemap->image.handle;
-    VkFormat color_format = VK_FORMAT_R8G8B8A8_UNORM;
+    VkFormat color_format = tonemap->format == VK_FORMAT_R16G16B16A16_SFLOAT ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
     if (!cmd || !in_w || !in_h || !out_w || !out_h || !world.gbuffer[3].view) return false;
     std::wstring directory;
     uint32_t mode = 0, preset = 11;

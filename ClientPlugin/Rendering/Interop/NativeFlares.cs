@@ -7,6 +7,9 @@ public sealed partial class NativeBackend
     private FlareFunctions flareApi;private FlareFunctions FlareApi=>flareApi??(flareApi=new FlareFunctions(GetSymbol));
     public void QueueFlares(MatrixD matrix,NativeFlareQuery[] queries)=>Check(FlareApi.Queue(context,MatrixValues(matrix),queries,(uint)(queries?.Length??0)),context);
     public void QueueFlareRaster(NativeFlareRasterQuery[] queries)=>Check(FlareApi.Raster(context,queries,(uint)(queries?.Length??0)),context);
+    public void QueueFlareRaster(NativeFlareRasterQuery[] queries,int count){if(count<0||count>(queries?.Length??0))throw new ArgumentOutOfRangeException(nameof(count));Check(FlareApi.Raster(context,queries,(uint)count),context);}
+    // Fills a caller-owned buffer (at least 4096 entries) and returns the completed result count.
+    public int ReadFlareResults(NativeFlareResult[] results){if(results==null||results.Length<4096)throw new ArgumentException("Flare result buffer needs 4096 entries.");Check(FlareApi.Get(context,results,4096,out uint count),context);return (int)count;}
     public NativeFlareResult[] GetFlareResults(){var results=new NativeFlareResult[4096];Check(FlareApi.Get(context,results,(uint)results.Length,out uint count),context);Array.Resize(ref results,(int)count);return results;}
 }
 [StructLayout(LayoutKind.Sequential,Pack=8)]public struct NativeFlareQuery{public ulong Id;public float X,Y,Z,Radius;}

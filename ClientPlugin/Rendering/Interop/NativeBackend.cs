@@ -221,6 +221,13 @@ public sealed partial class NativeBackend : IDisposable
         (float)m.M21, (float)m.M22, (float)m.M23, (float)m.M24,
         (float)m.M31, (float)m.M32, (float)m.M33, (float)m.M34,
         (float)m.M41, (float)m.M42, (float)m.M43, (float)m.M44 };
+    public static void MatrixValues(MatrixD m, float[] into)
+    {
+        into[0]=(float)m.M11;into[1]=(float)m.M12;into[2]=(float)m.M13;into[3]=(float)m.M14;
+        into[4]=(float)m.M21;into[5]=(float)m.M22;into[6]=(float)m.M23;into[7]=(float)m.M24;
+        into[8]=(float)m.M31;into[9]=(float)m.M32;into[10]=(float)m.M33;into[11]=(float)m.M34;
+        into[12]=(float)m.M41;into[13]=(float)m.M42;into[14]=(float)m.M43;into[15]=(float)m.M44;
+    }
     public static float[] RawColorValues(Color c) => new[] { c.R / 255f, c.G / 255f, c.B / 255f, c.A / 255f };
     public static float[] ColorValues(Color c) => new[] { ToLinear(c.R / 255f), ToLinear(c.G / 255f), ToLinear(c.B / 255f), c.A / 255f };
     private static float ToLinear(float value) => value <= .04045f ? value / 12.92f : (float)Math.Pow((value + .055f) / 1.055f, 2.4);

@@ -138,6 +138,16 @@ public static class GuestBridge
     /// <summary>HUD transform for an HDR display tenant: paper white x UI gain and peak in scRGB units, shoulder.</summary>
     public static void SetHdrUi(float paperWhite, float shoulder, float peak) => current?.SetHdrUi(paperWhite, shoulder, peak);
 
+    /// <summary>Emissive LDR billboard gain (HdrRender LdrIntensity) while the display tenant grades; 1 disables.</summary>
+    public static void SetHdrBillboards(float ldrIntensity) => current?.SetHdrBillboards(ldrIntensity);
+
+    /// <summary>Diagnostics: [desired, adapted] Keen auto-exposure in log2 stops; null until a frame was read back.</summary>
+    public static float[] Exposure()
+    {
+        var values = current?.GetExposure();
+        return values == null || values[2] == 0 ? null : new[] { values[0], values[1] };
+    }
+
     static float hdrScreenshotPaperWhite;
     /// <summary>Scene paper white (nits) for HDR screenshots: PNG requests on an FP16 swapchain also keep an EXR. Zero disables.</summary>
     public static void SetHdrScreenshot(float paperWhiteNits) => hdrScreenshotPaperWhite = paperWhiteNits > 0 ? paperWhiteNits : 0;

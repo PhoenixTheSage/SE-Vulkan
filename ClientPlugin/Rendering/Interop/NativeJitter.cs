@@ -9,6 +9,9 @@ public sealed partial class NativeBackend
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int GetJitterFn(IntPtr ctx,float[] state,uint count);
     ForceJitterFn forceJitter;GetJitterFn getJitter;
     public void ForceJitter(bool force){forceJitter??=PostFunction<ForceJitterFn>("sevk_force_jitter");Check(forceJitter(context,force?1u:0u),context);}
+    // Diagnostics: resets/starts (true) or stops the opt-in GPU pass and recording timing reports.
+    ForceJitterFn timingReports;
+    public void SetTimingReports(bool active){timingReports??=PostFunction<ForceJitterFn>("sevk_set_timing_reports");Check(timingReports(context,active?1u:0u),context);}
     /// <summary>Pixel x/y, clip x/y, active (0/1), phase count, next sequence index, jittered frames.</summary>
     public float[] GetJitter(){var state=new float[8];getJitter??=PostFunction<GetJitterFn>("sevk_get_jitter");Check(getJitter(context,state,8),context);return state;}
 }

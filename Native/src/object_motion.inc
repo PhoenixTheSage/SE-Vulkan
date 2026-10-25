@@ -60,6 +60,23 @@ float motion_distance_fade(const WorldSlot& slot,uint32_t pipeline){
     if(pipeline<2560 || slot.host_frame.size()<4 || world.distance_fade_at>slot.host_frame.size()-4)return 0.f;
     float threshold;std::memcpy(&threshold,slot.host_frame.data()+world.distance_fade_at,4);return -threshold;
 }
+// The object-motion replay draws every non-velocity draw a second time, and its history copies the
+// previous slot's instances. Only DLSS, FSR, display frame generation and upscaling, Anomaly guests
+// and tenants, and the velocity probe read the motion target, so the replay runs only while one of them is present.
+// SE_VULKAN_MOTION_ON_DEMAND=0 replays every frame.
+bool motion_on_demand=true;
+bool object_motion_wanted(){
+    return !motion_on_demand||ngx_active()||fsr_active()||(display_flags&(2|4))||gbuffer_velocity_probe!=0
+        ||!guest.pipelines.empty()||!guest.passes.empty()||!guest.stage_bindings.empty()||!tenant.pipelines.empty();
+}
+// Without a consumer, GBuffer velocity owners may still have written the target; hand it to sampling
+// as the replay would, and drop history so a later consumer starts from a reset.
+void skip_object_motion(VkCommandBuffer cmd,WorldSlot& slot){
+    slot.history_instance_bytes=0;world.motion_have_signature=false;
+    if(!gbuffer_velocity.frame||!world.motion.handle)return;
+    barrier(cmd,world.motion.handle,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    world.motion_sampled=true;
+}
 // Previous data is copied into the fenced current slot before either history
 // consumer records commands. No submitted frame borrows another slot's buffers.
 void prepare_world_history(WorldSlot& slot){

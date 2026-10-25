@@ -17,18 +17,23 @@ public sealed partial class VulkanScene
     private readonly Dictionary<ulong,ulong> pendingFlareOwners=new Dictionary<ulong,ulong>();
     private readonly MyRandom flareRandom=new MyRandom();
     public long FlareQueries {get;private set;}public long FlareBillboards {get;private set;}
+    // Per-frame scratch, reused so flare scheduling allocates nothing in steady state.
+    private readonly Dictionary<ulong,VulkanLightComponent> currentFlares=new Dictionary<ulong,VulkanLightComponent>();
+    private readonly List<ulong> staleFlareKeys=new List<ulong>();private readonly List<NativeFlareRasterQuery> flareQueries=new List<NativeFlareRasterQuery>();
+    private readonly NativeFlareResult[] flareResults=new NativeFlareResult[4096];private NativeFlareRasterQuery[] flareQueryArray=new NativeFlareRasterQuery[64];
     public void DrawFlares(MatrixD view,MatrixD projection,int width,int height,float multiplier)
     {
         float now=(float)Environment.FrameTime.Milliseconds;
-        var current=new Dictionary<ulong,VulkanLightComponent>();foreach(var l in lights)current[l.FlareId]=l;
-        foreach(var r in backend.GetFlareResults())if(pendingFlareOwners.TryGetValue(r.Id,out ulong owner) && current.TryGetValue(owner,out var light) && flareStates.TryGetValue(owner,out var state)){
+        var current=currentFlares;current.Clear();foreach(var l in lights)current[l.FlareId]=l;
+        int resultCount=backend.ReadFlareResults(flareResults);
+        for(int i=0;i<resultCount;i++){var r=flareResults[i];if(pendingFlareOwners.TryGetValue(r.Id,out ulong owner) && current.TryGetValue(owner,out var light) && flareStates.TryGetValue(owner,out var state)){
             var glare=light.EffectiveData.Glare;if(state.Complete(r.Id,r.Occlusion,now,glare.QueryFreqMinMs,glare.QueryFreqRndMs,flareRandom.NextFloat()))pendingFlareOwners.Remove(r.Id);
-        }
-        foreach(var key in new List<ulong>(flareOcclusion.Keys))if(!current.ContainsKey(key))flareOcclusion.Remove(key);
-        foreach(var key in new List<ulong>(flareStates.Keys))if(!current.ContainsKey(key))flareStates.Remove(key);
-        foreach(var key in new List<ulong>(pendingFlareOwners.Keys))if(!current.ContainsKey(pendingFlareOwners[key]))pendingFlareOwners.Remove(key);
+        }}
+        staleFlareKeys.Clear();foreach(var key in flareOcclusion.Keys)if(!current.ContainsKey(key))staleFlareKeys.Add(key);foreach(var key in staleFlareKeys)flareOcclusion.Remove(key);
+        staleFlareKeys.Clear();foreach(var key in flareStates.Keys)if(!current.ContainsKey(key))staleFlareKeys.Add(key);foreach(var key in staleFlareKeys)flareStates.Remove(key);
+        staleFlareKeys.Clear();foreach(var entry in pendingFlareOwners)if(!current.ContainsKey(entry.Value))staleFlareKeys.Add(entry.Key);foreach(var key in staleFlareKeys)pendingFlareOwners.Remove(key);
         foreach(var entry in flareStates)flareOcclusion[entry.Key]=entry.Value.Sample(now);
-        var queries=new List<NativeFlareRasterQuery>();MatrixD vp=view*projection,inv=MatrixD.Invert(vp),cameraRotation=MatrixD.Invert(view);
+        var queries=flareQueries;queries.Clear();MatrixD vp=view*projection,inv=MatrixD.Invert(vp),cameraRotation=MatrixD.Invert(view);
         Vector3D camera=Environment.CameraPosition;
         foreach(var l in lights)
         {
@@ -63,7 +68,8 @@ public sealed partial class VulkanScene
                 billboards.AddBillboardOriented(glare.Material,color,origin,left,up,size.X,size.Y,MyBillboard.BlendTypeEnum.AdditiveTop);FlareBillboards++;
             }
         }
-        backend.QueueFlareRaster(queries.ToArray());FlareQueries+=queries.Count;
+        if(flareQueryArray.Length<queries.Count)flareQueryArray=new NativeFlareRasterQuery[Math.Max(queries.Count,flareQueryArray.Length*2)];queries.CopyTo(flareQueryArray);
+        backend.QueueFlareRaster(flareQueryArray,queries.Count);FlareQueries+=queries.Count;
     }
     public static float FlareCurve(MySubGlare.KeyPoint[] curve,float occlusion)
     {

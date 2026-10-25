@@ -13,7 +13,7 @@ namespace ClientPlugin.Rendering;
 /// <summary>Copies sprite messages into owner-thread packets; never keeps pooled messages.</summary>
 internal sealed class VulkanSprites
 {
-    private sealed class FontEntry { public MyFont Font; public Color Mask; public bool Premultiplied; }
+    private sealed class FontEntry { public MyFont Font; public Color Mask; public bool Premultiplied; public readonly Dictionary<int, string> BitmapPaths = new(); }
     private readonly struct Packet
     {
         public readonly NativeSprite Sprite;
@@ -190,7 +190,9 @@ internal sealed class VulkanSprites
                     var destination = new RectangleF(x + glyph.pxLeftSideBearing * scale,
                         draw.ScreenCoord.Y + (glyph.pxHeightOffset + glyph.pxLeftSideBearing + 3.8333333f + lineIndex * font.LineHeight) * scale,
                         glyph.pxWidth * scale, glyph.pxHeight * scale);
-                    Add(batch, Path.Combine(font.FontDirectory, bitmap.strFilename), destination, source, color, 0, Vector2.Zero, draw.IgnoreBounds, premultiplied: entry.Premultiplied);
+                    // One path string per glyph bitmap, not per drawn glyph.
+                    if (!entry.BitmapPaths.TryGetValue(glyph.nBitmapID, out var bitmapPath)) entry.BitmapPaths.Add(glyph.nBitmapID, bitmapPath = Path.Combine(font.FontDirectory, bitmap.strFilename));
+                    Add(batch, bitmapPath, destination, source, color, 0, Vector2.Zero, draw.IgnoreBounds, premultiplied: entry.Premultiplied);
                 }
                 x += (glyph.pxAdvanceWidth + font.Spacing) * scale;
             }
