@@ -789,11 +789,18 @@ void guest_fill_owned(const GuestPass& pass, GuestPipeline& pipeline, uint8_t* o
         std::memcpy(light + 4, guest.frame.sun_color, 12); light[7] = 1.f;
         std::memcpy(light + 8, guest.frame.sun_color, 12); light[11] = 1.f;
         std::memcpy(owned, light, 48);
+        // DX11 frame_.frameTime is the draw clock in seconds (Keen Frame offset 1264), not a frame count;
+        // star twinkle speeds are authored against it.
         float time = float(guest.frame.frame_index);
+        if (world.current().frame.size() >= 1268) std::memcpy(&time, world.current().frame.data() + 1264, 4);
         std::memcpy(owned + 64, &time, 4);
         float view[16]{};
         view[0] = view[5] = view[10] = view[15] = 1.f;
-        if (world.current().inverse.size() >= 16) std::memcpy(view, world.current().inverse.data(), 64);
+        // inv_view_matrix is the camera rotation; world.current().inverse is the inverse view-projection.
+        if (guest.frame.size == sizeof(SevkGuestFrame)) {
+            std::memcpy(view, guest.frame.camera_to_world, 64);
+            view[12] = view[13] = view[14] = 0.f;
+        }
         std::memcpy(owned + 80, view, 64);
         return;
     }
@@ -815,8 +822,11 @@ const GuestProbeFace* guest_probe_face{};
 void guest_fill_celestial_view(const GuestPass& pass, uint8_t* bytes) {
     float rows[12]{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
     if (guest_probe_face) std::memcpy(rows, guest_probe_face->rows, 48);
-    else if (world.current().inverse.size() >= 16) {
-        const float* m = world.current().inverse.data();
+    else if (guest.frame.size == sizeof(SevkGuestFrame)) {
+        // Camera rotation only. world.current().inverse inverts the combined view-projection; its
+        // infinite reversed-Z 3x3 has no forward row, which collapses every ray onto the screen-centre
+        // horizon (radial star streaks) and inflates the per-pixel catalogue search footprint.
+        const float* m = guest.frame.camera_to_world;
         rows[0] = m[0]; rows[1] = m[4]; rows[2] = m[8];
         rows[4] = m[1]; rows[5] = m[5]; rows[6] = m[9];
         rows[8] = m[2]; rows[9] = m[6]; rows[10] = m[10];
@@ -1242,7 +1252,9 @@ void guest_probe_celestial(VkCommandBuffer cmd, uint32_t face, VkImageView color
     // DX11 passes the face view's rotation rows (row-vector world-to-view) and its projection scales.
     const float* view = reinterpret_cast<const float*>(probes.config.frames + face * 1280);
     for (uint32_t r = 0; r < 3; ++r) for (uint32_t k = 0; k < 3; ++k) target.rows[r * 4 + k] = view[r * 4 + k];
-    const float* projection = probes.config.projections + face * 16; target.scale[0] = projection[0]; target.scale[1] = projection[5];
+    // config.projections holds view*projection, whose diagonal is zero on the side faces. The face
+    // frame's own projection_matrix (second matrix) carries the real M11/M22 scales.
+    const float* projection = reinterpret_cast<const float*>(probes.config.frames + face * 1280 + 64); target.scale[0] = projection[0]; target.scale[1] = projection[5];
     auto& depth_image = probes.depth[face];
     barrier(cmd, depth_image.handle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
