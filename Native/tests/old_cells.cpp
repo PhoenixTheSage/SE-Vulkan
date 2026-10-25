@@ -51,5 +51,14 @@ int main(){
         auto far=make_cell(1,60);far.lod_eligible=true;far.levels[1].model=1;shared.update(h,far);shared.prepare(frame,nullptr);shared.publish({});
         require(shared.emitted().size()==1&&shared.emitted()[0].alpha==0,"same-model transition collapses");
     }
+    {   // A deferred publish builds the same draws and LOD state when finished.
+        auto frame=make_frame();old_cells::Scene direct,deferred;uint64_t handles[2]{};
+        for(auto* scene:{&direct,&deferred}){auto cell=make_cell(1,0);cell.lod_eligible=true;auto h=scene->add(cell);handles[scene==&deferred]=h;scene->prepare(frame,nullptr);scene->publish({},scene==&deferred);
+            auto moved=make_cell(1,60);moved.lod_eligible=true;scene->update(h,moved);scene->prepare(frame,nullptr);scene->publish({},scene==&deferred);}
+        require(deferred.building()&&deferred.ready(),"deferred publish waits for finish");deferred.finish();
+        const auto& a=direct.emitted();const auto& b=deferred.emitted();require(a.size()==b.size()&&a.size()==2,"deferred draw count");
+        for(size_t i=0;i<a.size();i++)require(a[i].part->recipe==b[i].part->recipe&&a[i].alpha==b[i].alpha&&a[i].flags==b[i].flags&&a[i].cascades==b[i].cascades,"deferred draws match");
+        require(direct.cell(handles[0]).lod.current==deferred.cell(handles[1]).lod.current&&direct.cell(handles[0]).shadow_current==deferred.cell(handles[1]).shadow_current,"deferred LOD state matches");
+    }
     std::cout<<"OLD cells: cull, flags, queries, cascades, constants and LOD transitions passed\n";
 }

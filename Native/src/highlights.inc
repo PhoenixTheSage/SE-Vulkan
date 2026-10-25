@@ -1,5 +1,6 @@
 void queue_highlights(const SevkHighlightDraw* draws,uint32_t count){
     if(recording || count>8192 || (!draws && count))throw std::runtime_error("invalid highlight batch");
+    if(count)settle_world(); // draw indices refer to the queued draws
     std::vector<SevkHighlightDraw> copied;copied.reserve(count);
     for(uint32_t i=0;i<count;++i){auto d=draws[i];if(d.draw>=world.current().draws.size() || d.flags>1 || d.reserved || !std::isfinite(d.thickness) || d.thickness<0 || !d.instance_count)throw std::runtime_error("invalid highlight draw");auto& source=world.current().draws[d.draw];auto& mesh=world.meshes.at(source.packet.mesh);
         if(d.first_index>mesh.index_count || d.index_count>mesh.index_count-d.first_index || !d.index_count || d.first_index%3 || d.index_count%3 || d.first_instance>=source.packet.instance_count || d.instance_count>source.packet.instance_count-d.first_instance || world_voxel(source.packet.pipeline))throw std::runtime_error("highlight range exceeds geometry/instances");

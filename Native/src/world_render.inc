@@ -72,22 +72,41 @@ void begin_next_submission(){
     world.current().main_owner_orders.clear();
 }
 bool world_new_main_ordered()const{return !world.current().main_owner_orders.empty()||!world.resident_main_owners.empty();}
-void set_world_main_owners(const SevkMainOwnerOrder* owners,uint32_t count){settle_cells();
+// Replaces only the owner map, so it does not settle a deferred world intake.
+void set_world_main_owners(const SevkMainOwnerOrder* owners,uint32_t count){
     if(recording||!world.current().queued||(!owners&&count)||count>1000000)throw std::runtime_error("main owner orders must precede frame recording");
     std::unordered_map<uint32_t,uint32_t> next;next.reserve(count);for(uint32_t i=0;i<count;++i)if(!owners[i].group||!next.emplace(owners[i].owner,owners[i].group).second)throw std::runtime_error("invalid or duplicate main owner order");world.current().main_owner_orders=std::move(next);
 }
-void set_world_main_order(const SevkMainDrawOrder* orders,uint32_t count){settle_cells();
-    if(recording||!world.current().queued||count!=world.current().draws.size()||(!orders&&count))throw std::runtime_error("main group metadata must match the queued legacy draws");
+void set_world_main_order(const SevkMainDrawOrder* orders,uint32_t count){
+    if(pending_world.active){if(recording||count!=pending_world.draws.size()||(!orders&&count))throw std::runtime_error("main group metadata must match the queued legacy draws");
+        for(uint32_t i=0;i<count;++i)if(!orders[i].group)throw std::runtime_error("main group order must be nonzero");
+        pending_world.main_order.assign(orders,orders+count);pending_world.has_main=true;return;}
+    if(recording)throw std::runtime_error("main group metadata must match the queued legacy draws");
+    settle_cells();apply_world_main_order(orders,count);
+}
+// The recording guard is the setter's: end_frame settles a deferred intake while recording.
+void apply_world_main_order(const SevkMainDrawOrder* orders,uint32_t count){
+    if(!world.current().queued||count!=world.current().draws.size()||(!orders&&count))throw std::runtime_error("main group metadata must match the queued legacy draws");
     for(uint32_t i=0;i<count;++i)if(!orders[i].group)throw std::runtime_error("main group order must be nonzero");
     for(uint32_t i=0;i<count;++i){world.current().draws[i].main_order=orders[i].group;world.current().draws[i].main_part=orders[i].part;}
 }
 // Optional logical owners of the queued draws; they break equal stock OLD keys.
 void set_world_draw_owners(const uint32_t* owners,uint32_t count){
-    if(recording||!world.current().queued||count!=world.current().draws.size()||(count&&!owners))throw std::runtime_error("draw owners must match queued draws");
+    if(pending_world.active){if(recording||count!=pending_world.draws.size()||(count&&!owners))throw std::runtime_error("draw owners must match queued draws");pending_world.owners.assign(owners,owners+count);pending_world.has_owners=true;return;}
+    if(recording)throw std::runtime_error("draw owners must match queued draws");
+    apply_world_draw_owners(owners,count);
+}
+void apply_world_draw_owners(const uint32_t* owners,uint32_t count){
+    if(!world.current().queued||count!=world.current().draws.size()||(count&&!owners))throw std::runtime_error("draw owners must match queued draws");
     for(uint32_t i=0;i<count;i++)world.current().draws[i].owner=owners[i];
 }
 void set_world_old_order(const SevkOldPartOrder* orders,uint32_t count){
-    if(recording||count!=world.current().draws.size()||(count&&!orders))throw std::runtime_error("OLD metadata must match queued draws");
+    if(pending_world.active){if(recording||count!=pending_world.draws.size()||(count&&!orders))throw std::runtime_error("OLD metadata must match queued draws");for(uint32_t i=0;i<count;i++)validate_old_order(orders[i]);pending_world.old_order.assign(orders,orders+count);pending_world.has_old=true;return;}
+    if(recording)throw std::runtime_error("OLD metadata must match queued draws");
+    apply_world_old_order(orders,count);
+}
+void apply_world_old_order(const SevkOldPartOrder* orders,uint32_t count){
+    if(count!=world.current().draws.size()||(count&&!orders))throw std::runtime_error("OLD metadata must match queued draws");
     for(uint32_t i=0;i<count;i++){validate_old_order(orders[i]);if(orders[i].valid&&!(world.current().draws[i].packet.flags&0x04000000u))throw std::runtime_error("OLD metadata requires source OLD provenance");}
     for(uint32_t i=0;i<count;i++)world.current().draws[i].old_order=orders[i];
 }

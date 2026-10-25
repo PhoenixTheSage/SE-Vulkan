@@ -300,6 +300,9 @@ struct WorldSubmission {
 };
 struct WorldState {ModelState models;
     bool lighting_diagnostics{};Image lighting_stages[3]{},lighting_terms[7]{};VkPipeline lighting_terms_pipeline{};VkSampler lighting_terms_sampler{};uint32_t lighting_stage_width{},lighting_stage_height{},lighting_stage_valid{};VkFormat lighting_stage_format{};
+    // Compact per-recipe summary the world intake checks handles and spans against: the full records are
+    // large and scattered, so a 3,000-draw scan of them is cache-bound.
+    struct RecipeBrief {uint32_t generation{},object_bytes{};bool alive{},valid{},instanced{},decal{};};std::vector<RecipeBrief> recipe_brief;
     std::deque<WorldRecipe> recipes;std::vector<uint32_t> free_recipes;std::unordered_map<RecipeDependency,std::unordered_set<uint32_t>,RecipeDependencyHash> recipe_dependencies;uint32_t recipe_live{},recipe_registered{},recipe_retired{};
     bool parallel_cascades{};
     bool parallel_queue{};
@@ -825,6 +828,8 @@ struct Renderer {uint32_t recipe_generation=1;
 #endif
         }
         const char* marker_env=std::getenv("SE_VULKAN_PROFILE_MARKERS");profile_markers=marker_env && std::strcmp(marker_env,"1")==0;
+        if(const char* world_queue=std::getenv("SE_VULKAN_DEFERRED_WORLD_QUEUE");world_queue&&std::strcmp(world_queue,"1")==0)deferred_world_queue=true;
+        if(const char* cell_publish=std::getenv("SE_VULKAN_DEFERRED_CELL_PUBLISH");cell_publish&&std::strcmp(cell_publish,"1")==0)deferred_cell_publish=true;
         if(const char* pass_spots=std::getenv("SE_VULKAN_PARALLEL_PASS_SPOTS");pass_spots&&std::strcmp(pass_spots,"0")==0)parallel_pass_spots=false;
         if(const char* reuse=std::getenv("SE_VULKAN_OFFSCREEN_REUSE");reuse&&std::strcmp(reuse,"0")==0)offscreen_reuse=false;
         if(const char* motion=std::getenv("SE_VULKAN_MOTION_ON_DEMAND");motion&&std::strcmp(motion,"0")==0)motion_on_demand=false;
@@ -1565,7 +1570,7 @@ struct Renderer {uint32_t recipe_generation=1;
         end_uploads();
         if (suspended) return 1;
         performance=SevkPerformanceStats{sizeof(SevkPerformanceStats),SEVK_ABI_VERSION};
-        performance.queue_us=world.current().queue_us;performance.logical_draws=performance.submitted_draws=uint32_t(world.current().draws.size()+(cells_emit_pending&&cells.scene.ready()?cells.scene.emitted().size():0));
+        performance.queue_us=world.current().queue_us;performance.logical_draws=performance.submitted_draws=uint32_t(queued_draw_count()+(cells_emit_pending&&cells.scene.ready()&&!cells.scene.building()?cells.scene.emitted().size():0));
         auto& slot = slots[slot_index];
         auto slot_stamp=std::chrono::steady_clock::now();
         auto slot_take=[&](){auto now=std::chrono::steady_clock::now();uint32_t elapsed=(uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(now-slot_stamp).count();slot_stamp=now;return elapsed;};
@@ -2336,7 +2341,7 @@ int32_t SEVK_CALL sevk_get_occlusion(void* ctx,SevkOcclusionResult* results,uint
     auto copy=[&](const std::vector<SevkOcclusionResult>& completed,uint64_t completed_token){*count=uint32_t(completed.size());*token=completed_token;if(*count>capacity)throw std::runtime_error("occlusion result capacity too small");if(*count)std::memcpy(results,completed.data(),*count*sizeof(*results));};
     return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{if(r.snapshot.occlusion.size()>capacity)return std::nullopt;copy(r.snapshot.occlusion,r.snapshot.occlusion_token);return 0;},[&](Renderer& r){r.collect();copy(r.occlusion.completed,r.occlusion.completed_token);return 0;});}
 int32_t SEVK_CALL sevk_get_occlusion_stats(void* ctx,SevkOcclusionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){r.collect();*stats=r.occlusion.stats;return 0;});}
-int32_t SEVK_CALL sevk_set_shadow_exclusions(void* ctx,const SevkShadowExclusion* exclusions,uint32_t count){return call_deferrable(ctx,[exclusions_copy=copy_in(exclusions,count),count](Renderer& r){auto* exclusions=exclusions_copy.get();if(r.recording || count>8192 || (!exclusions && count))throw std::runtime_error("invalid shadow exclusion batch");std::unordered_set<uint64_t> copied;for(uint32_t i=0;i<count;++i){auto e=exclusions[i];if(e.light>=64 || e.draw>=r.world.current().draws.size())throw std::runtime_error("shadow exclusion outside light/draw range");copied.insert((uint64_t(e.light)<<32)|e.draw);}r.spots.exclusions=std::move(copied);return 0;});}
+int32_t SEVK_CALL sevk_set_shadow_exclusions(void* ctx,const SevkShadowExclusion* exclusions,uint32_t count){return call_deferrable(ctx,[exclusions_copy=copy_in(exclusions,count),count](Renderer& r){auto* exclusions=exclusions_copy.get();if(r.recording || count>8192 || (!exclusions && count))throw std::runtime_error("invalid shadow exclusion batch");std::unordered_set<uint64_t> copied;for(uint32_t i=0;i<count;++i){auto e=exclusions[i];if(e.light>=64 || e.draw>=r.queued_draw_count())throw std::runtime_error("shadow exclusion outside light/draw range");copied.insert((uint64_t(e.light)<<32)|e.draw);}r.spots.exclusions=std::move(copied);return 0;});}
 int32_t SEVK_CALL sevk_set_spots(void* ctx,uint32_t resolution,const SevkSpot* spots,uint32_t count){return call_deferrable(ctx,[resolution,spots_copy=copy_in(spots,count),count](Renderer& r){auto* spots=spots_copy.get();r.set_spots(resolution,spots,count);return 0;});}
 int32_t SEVK_CALL sevk_set_spot_redraw(void* ctx,uint64_t static_mask,uint64_t dynamic_mask){return call(ctx,[&](Renderer& r){r.set_spot_redraw(static_mask,dynamic_mask);return 0;});}
 int32_t SEVK_CALL sevk_get_spot_stats(void* ctx,SevkSpotStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){*stats=r.spots.stats;return 0;});}

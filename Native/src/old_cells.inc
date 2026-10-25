@@ -49,7 +49,7 @@ void cells_prepare(const SevkCellFrame& f){settle_cells();
 void cells_publish(const SevkCellResult* results,uint32_t count){settle_cells();
     if(recording||count>1000000||(!results&&count))throw std::runtime_error("invalid OLD cell visibility publication");
     std::vector<old_cells::Result> values;values.reserve(count);for(uint32_t i=0;i<count;i++){if(results[i].main_hidden>1||results[i].cascades_hidden>255)throw std::runtime_error("invalid OLD cell visibility result");values.push_back({results[i].group,results[i].main_hidden!=0,results[i].cascades_hidden});}
-    cells.scene.publish(values);
+    cells.scene.publish(values,deferred_cell_emission&&deferred_cell_publish);
 }
 // Called after every managed packet and its order metadata are queued, so
 // managed physical indices (highlights, exclusions) are unchanged.
@@ -62,10 +62,14 @@ void cells_emit(){
     if(deferred_cell_emission){cells_emit_pending=true;return;}
     emit_cells_now();
 }
-void settle_cells(){if(cells_emit_pending){cells_emit_pending=false;emit_cells_now();}}
+// The deferred world intake settles first: cell draws append after the queued world draws.
+// Opt-in (SE_VULKAN_DEFERRED_CELL_PUBLISH=1), like the deferred world intake.
+bool deferred_cell_publish=false;
+void settle_cells(){settle_world();if(cells_emit_pending){cells_emit_pending=false;emit_cells_now();}}
 void emit_cells_now(){
     if(!world.current().queued)throw std::runtime_error("OLD cells must follow the queued world frame");
     cells.stats=SevkCellStats{sizeof(SevkCellStats),cells.scene.live()};if(!cells.scene.ready())return;
+    bool counted=!cells.scene.building();cells.scene.finish();if(!counted){performance.logical_draws+=uint32_t(cells.scene.emitted().size());performance.submitted_draws+=uint32_t(cells.scene.emitted().size());}
     auto& out=world.current();const auto& draws=cells.scene.emitted();auto camera=cells.scene.current_frame().camera;
     if(out.draws.size()+draws.size()>65536)throw std::runtime_error("OLD cell draws exceed the queued frame budget");
     std::unordered_map<const old_cells::Cell*,uint32_t> instance_at;uint64_t object_start=out.draw_objects.size(),instance_start=out.instances.data.size();

@@ -50,10 +50,11 @@ class Scene {
     struct Entry {Cell cell;uint32_t generation{};bool alive{};};
     std::vector<Entry> entries;std::vector<uint32_t> free;uint32_t generation{};
     struct Decision {bool drawn{},probe_only{},outside_probe{},occluded{};int current{},next=-1;float alpha{},next_alpha{};uint32_t cascades{};resident_proxy::Lod lod;};
-    std::vector<Decision> decisions;Frame frame;bool pending{},published{};
+    std::vector<Decision> decisions;Frame frame;bool pending{},published{},build_pending{};std::vector<Result> deferred_results;
     std::vector<Query> queries;std::vector<uint32_t> visible;std::vector<Change> changes;std::vector<Draw> draws;
     Cell& get(uint64_t handle){uint32_t i=uint32_t(handle);if(!i||i>entries.size()||!entries[i-1].alive||entries[i-1].generation!=uint32_t(handle>>32))throw std::runtime_error("stale OLD cell handle");return entries[i-1].cell;}
-    void idle()const{if(pending)throw std::runtime_error("OLD cell mutation during prepared frame");}
+    // A deferred draw build reads and updates cells, so it finishes before any mutation.
+    void idle(){if(pending)throw std::runtime_error("OLD cell mutation during prepared frame");finish();}
     static void validate(const Cell& cell){
         if(cell.levels.empty()||cell.levels.size()!=cell.thresholds.size()+1||cell.count>1000000||cell.instances.size()!=uint64_t(cell.count)*64)throw std::runtime_error("invalid OLD cell representation");
         for(auto& level:cell.levels)for(auto& part:level.parts){if(!part.recipe||part.constants.empty()||part.constants.size()>65536)throw std::runtime_error("invalid OLD cell part");
@@ -102,9 +103,9 @@ public:
     // Transform/visibility commits keep representation, selector and stream.
     Cell& pose_target(uint64_t handle){idle();return get(handle);}
     resident_proxy::Lod remove(uint64_t handle){idle();auto lod=get(handle).lod;uint32_t i=uint32_t(handle)-1;entries[i].alive=false;entries[i].cell={};free.push_back(i);return lod;}
-    const Cell& cell(uint64_t handle){return get(handle);}
+    const Cell& cell(uint64_t handle){finish();return get(handle);}
     uint32_t live()const{uint32_t n=0;for(auto& e:entries)n+=e.alive;return n;}
-    void clear_frame(){pending=published=false;queries.clear();visible.clear();changes.clear();draws.clear();}
+    void clear_frame(){pending=published=build_pending=false;queries.clear();visible.clear();changes.clear();draws.clear();}
     void prepare(Frame input,native_pass::ViewJobs* jobs){
         idle();frame=input;published=false;queries.clear();visible.clear();changes.clear();draws.clear();decisions.assign(entries.size(),{});
         uint32_t count=uint32_t(entries.size()),chunks=jobs&&count>=512?std::min(16u,(count+255)/256):1u;
@@ -115,10 +116,18 @@ public:
             if(cell.group&&(!d.probe_only||d.cascades)){auto [it,added]=by_group.emplace(cell.group,uint32_t(queries.size()));if(added)queries.push_back({cell.group,cell.owner,0,false});auto& q=queries[it->second];q.main|=!d.probe_only;q.cascades|=d.cascades;}}
         pending=true;
     }
-    void publish(const std::vector<Result>& results){
+    // With defer the results are checked now and the draws are built by finish(), which runs when the
+    // draws are emitted (recording) or before the next mutation, so the cell state is unchanged.
+    void publish(const std::vector<Result>& results,bool defer=false){
         if(!pending)throw std::runtime_error("OLD cell publication without preparation");
         std::map<uint64_t,const Result*> hidden;for(auto& r:results)if(!hidden.emplace(r.group,&r).second)throw std::runtime_error("duplicate OLD cell visibility result");
         for(auto& q:queries)if(!hidden.count(q.group))throw std::runtime_error("missing OLD cell visibility result");
+        if(defer){deferred_results=results;build_pending=true;pending=false;published=true;return;}
+        build(hidden);
+    }
+    void finish(){if(!build_pending)return;build_pending=false;std::map<uint64_t,const Result*> hidden;for(auto& r:deferred_results)hidden.emplace(r.group,&r);build(hidden);}
+    bool building()const{return build_pending;}
+    void build(const std::map<uint64_t,const Result*>& hidden){
         draws.clear();changes.clear();
         for(uint32_t i=0;i<decisions.size();++i){auto& d=decisions[i];if(!d.drawn)continue;auto& cell=entries[i].cell;
             const Result* r=nullptr;if(cell.group){auto it=hidden.find(cell.group);if(it!=hidden.end())r=it->second;}
@@ -134,9 +143,9 @@ public:
         }
         pending=false;published=true;
     }
-    void cancel(){pending=false;published=false;draws.clear();}
+    void cancel(){pending=false;published=false;build_pending=false;draws.clear();}
     bool ready()const{return published;}
-    void consume(){published=false;draws.clear();}
+    void consume(){finish();published=false;draws.clear();}
     const Frame& current_frame()const{return frame;}
     const std::vector<Query>& requests()const{return queries;}
     const std::vector<uint32_t>& visible_owners()const{return visible;}

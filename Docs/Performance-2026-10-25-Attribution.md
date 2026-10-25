@@ -315,3 +315,80 @@ Not forked:
 Overlapping the actor loop's own emission with other emitters needs the
 per-producer emitters of plan item 2.1. They pay only once emission rather
 than compute dominates.
+
+## Session 5: work moved from the render thread to recording
+
+### Deferred world intake (opt-in)
+
+`SE_VULKAN_DEFERRED_WORLD_QUEUE=1` enables it; see the results below.
+
+What `queue_world_recipes` still does synchronously:
+
+- checks the frame contract;
+- checks every draw's recipe handle, generation, count and object/instance
+  span, and revalidates recipes that are not currently valid;
+- copies the blobs.
+
+What waits for `settle_world()`, which runs first in `settle_cells()` (at
+`end_frame` on the recording worker when pipelined, or at any earlier call
+that reads queued draws or mutates recipes):
+
+- building the draw list;
+- the OLD order, draw owner and main-order rows sent after the queue, which are
+  stashed and applied in order after the build.
+
+Supporting changes:
+
+- `set_world_main_owners` no longer settles; it only replaces the owner map.
+- Highlights settle first.
+- Shadow exclusions and the `begin_frame` draw count use `queued_draw_count()`.
+- The per-draw checks read a compact `recipe_brief` table: generation, object
+  bytes, alive, valid, instanced, decal. They no longer scan the full recipe
+  records. Scanning those records cache-bound cost about 200 µs for 3,000
+  draws: the synchronous intake fell only from 328 to 288 µs when the 196 µs
+  build first moved off-thread.
+
+### Deferred cell publish build (opt-in)
+
+`SE_VULKAN_DEFERRED_CELL_PUBLISH=1` enables it, together with deferred cell emission.
+
+`cells_publish` checks the visibility results (duplicates, missing groups)
+at once and stashes them. `old_cells::Scene::finish()` builds the draws and
+updates the per-cell LOD and shadow state. It runs when cells are emitted, or
+before any mutation or cell-state read.
+
+### Not done
+
+- **Scene-update overlap.** The spatial index mutates the single-threaded AABB
+  tree, and occlusion begin issues native queries in order.
+- **Early pass prepare.** It needs probe views before guest preparation. That
+  is an Anomaly ordering question.
+
+### Checks
+
+- Native CTests 18/18, including a new deferred-vs-immediate cell publish case.
+- Under validation, zero errors: WorldPassGpuTests 538 (its recipe ABI
+  contract checks found every place the deferral had to keep synchronous) and
+  NativePassGpuTests 123.
+- Validation-layer gameplay run `Vulkan-0a07a377…`: layer enabled, 0 errors.
+
+### Results, and why both are opt-in
+
+CpuDetail lane `Vulkan-1d0c28ef…`, with both enabled:
+
+- `NativeWorldQueue` 0.33 → 0.16 ms; synchronous intake 328 → 162 µs.
+- `CellPublish` 0.29 → 0.18 ms.
+- But `FrameSlot` rose 0.35 → 0.62 ms (P95 1.70). The build work now sits in
+  recording, and `BeginFrame` waits for recording more often.
+- The lane's interval matched the previous build (8.97 against 9.01 ms).
+- `LogicalDraws` telemetry undercounts at sample time, because cell draws are
+  built after the harness reads it.
+
+One paired set, order JG1 (committed build), NEW, NEW, JG1
+(`TestResults/Session5-Paired-2026-10-25.json`): new 10.39 / 9.35 ms against
+9.13 / 9.01 ms. That is no gain, and possibly a loss.
+
+Both stay in the tree as opt-in switches, and their contract checks pass.
+Revisit them once recording has headroom (plan 3.1/3.2), or with `BeginFrame`
+made non-waiting.
+
