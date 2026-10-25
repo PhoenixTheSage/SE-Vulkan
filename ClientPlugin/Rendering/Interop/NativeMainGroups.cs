@@ -16,10 +16,13 @@ public sealed partial class NativeBackend
     // Candidates are unique per frame, so owners are appended without lookup;
     // a group's order is fixed at its first declaration and read when queued.
     readonly List<uint> mainOwnerIds=new();readonly List<MainGroupState> mainOwnerGroups=new();
-    void BeginMainGroups(){mainGroups.Clear();mainGroupEpoch++;mainOwnerIds.Clear();mainOwnerGroups.Clear();mainGroup=null;MainPart=0;oldPartOrder=default;packetOwner=0;}
+    // States are reused frame to frame: keys only trust a cached group from the current epoch, and
+    // packets holding a group are cleared before the next BeginMainGroups.
+    readonly List<MainGroupState> mainGroupPool=new();int mainGroupsRented;
+    void BeginMainGroups(){mainGroups.Clear();mainGroupsRented=0;mainGroupEpoch++;mainOwnerIds.Clear();mainOwnerGroups.Clear();mainGroup=null;MainPart=0;oldPartOrder=default;packetOwner=0;}
     MainGroupState ResolveMainGroup(object key){
         var cached=key as MainGroupKeyBase;if(cached!=null&&cached.Epoch==mainGroupEpoch&&ReferenceEquals(cached.Owner,this))return cached.Group;
-        if(!mainGroups.TryGetValue(key,out var group)){group=new MainGroupState{Token=(uint)mainGroups.Count+1};mainGroups.Add(key,group);}
+        if(!mainGroups.TryGetValue(key,out var group)){if(mainGroupsRented==mainGroupPool.Count)mainGroupPool.Add(new MainGroupState());group=mainGroupPool[mainGroupsRented++];group.Token=(uint)mainGroups.Count+1;group.Order=0;mainGroups.Add(key,group);}
         if(cached!=null){cached.Group=group;cached.Owner=this;cached.Epoch=mainGroupEpoch;}
         return group;
     }

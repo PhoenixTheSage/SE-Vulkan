@@ -822,6 +822,7 @@ struct Renderer {uint32_t recipe_generation=1;
 #endif
         }
         const char* marker_env=std::getenv("SE_VULKAN_PROFILE_MARKERS");profile_markers=marker_env && std::strcmp(marker_env,"1")==0;
+        if(const char* pass_spots=std::getenv("SE_VULKAN_PARALLEL_PASS_SPOTS");pass_spots&&std::strcmp(pass_spots,"0")==0)parallel_pass_spots=false;
         if(const char* reuse=std::getenv("SE_VULKAN_OFFSCREEN_REUSE");reuse&&std::strcmp(reuse,"0")==0)offscreen_reuse=false;
         if(const char* motion=std::getenv("SE_VULKAN_MOTION_ON_DEMAND");motion&&std::strcmp(motion,"0")==0)motion_on_demand=false;
         if(const char* laps=std::getenv("SE_VULKAN_RECORD_TIMING");laps&&*laps&&std::strcmp(laps,"0")!=0){record_laps.enabled=true;record_laps.path=laps;}
@@ -1723,7 +1724,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if (!recording) throw std::runtime_error("sprite draw outside frame");
         if(count) frame_sprites.insert(frame_sprites.end(),sprites,sprites+count);
     }
-    bool offscreen_reuse=true;uint64_t offscreen_reuses{};
+    bool offscreen_reuse=true;uint64_t offscreen_reuses{};bool parallel_pass_spots=true;
     void render_texture(uint64_t id, uint32_t width, uint32_t height, const float* clear, const SevkSprite* sprites, uint32_t count, float logical_width, float logical_height, bool generate_mips=false) {
         if (recording || !id || !width || !height || width > 16384 || height > 16384 || !clear || (!sprites && count) || count > 1000000)
             throw std::runtime_error("invalid offscreen render arguments");

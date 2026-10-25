@@ -335,6 +335,7 @@ public sealed class MyVulkanRender : IMyRender
             long nativeStart = System.Diagnostics.Stopwatch.GetTimestamp();
             GuestBridge.Bind(backend, scene);
             BackendRuntime.RaiseFrame();
+            if(backend.PipelinedRecordingEnabled)SampleDiagnostics();
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeRecord)){if(backend.PipelinedRecordingEnabled)backend.EndFrameAsync();else backend.EndFrame();} frameOpen = false;
             shadows.CommitPreparedFrame();
             RendererCpuProfiler.EndFrame();
@@ -344,68 +345,74 @@ public sealed class MyVulkanRender : IMyRender
             FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, profiled.SpotUs, profiled.ShadowUs, profiled.MainUs, profiled.ProbeUs, profiled.PrepareUs, profiled.TailUs, profiled.WaitUs, profiled.AcquireUs, profiled.ResetUs, profiled.WorldDraws,
                 drawScene && gpuProfile.TimingSupported != 0 ? gpuProfile.Samples : 0, gpuProfile.GpuMs);
             CompleteCaptures();
-            if ((DateTime.UtcNow - lastSample).TotalSeconds >= 1)
-            {
-                lastSample = DateTime.UtcNow;
-                var stats = backend.GetStats(); VulkanDiagnostics.NativeFrame(stats, scene.ActorCount, scene.InstanceCount, scene.ModelCount, sprites.FontCount);
-                var work=backend.GetWorkStats();
-                VulkanDiagnostics.Set("Upload scheduling",work.UploadBatches>0?SubsystemState.Active:SubsystemState.Ready,"Timeline batches="+work.UploadBatches+"; outstanding-slot waits="+work.UploadSlotWaits+"; two upload slots, 64 MiB staging cache per slot; main frame uniforms and instance streams use fenced frame slots.",stats.SubmittedFrames);
-                if(work.WorldFrames>observedWork.WorldFrames)
-                {
-                    VulkanDiagnostics.Set("Vanilla shader pass integration",SubsystemState.Active,"Stock material GBuffer, depth, directional/point/spot passes and HDR composition observed. Frames="+work.WorldFrames+"; material draws="+work.WorldDraws+"; instances="+work.WorldInstances+"; light passes="+work.LightingPasses+". Probe/BRDF, postprocessing and effect counters are reported below.",stats.SubmittedFrames);
-                    VulkanDiagnostics.Set("Actors and instancing",SubsystemState.Active,"Persistent stock geometry; instance count="+work.WorldInstances+" across "+work.WorldDraws+" material draws. Cube draws="+work.CubeDraws+".",stats.SubmittedFrames);
-                    if(work.SkinnedDraws>observedWork.SkinnedDraws)VulkanDiagnostics.Set("Character skinning",SubsystemState.Active,"Stock vertex shader consumed bone palettes; skinned draws="+work.SkinnedDraws+". Immutable vertices remain resident."+scene.CharacterStatus(),stats.SubmittedFrames);
-                    VulkanDiagnostics.Set("Sun and ambient lighting",SubsystemState.Active,"Stock deferred directional/ambient lighting consumed the GBuffer. Complete near/far GGX probes and the installed BRDF LUT feed diffuse/specular lighting after probe publication.",stats.SubmittedFrames);
-                    var post=backend.GetPostprocessStats();VulkanDiagnostics.Set("Stock postprocessing",post.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Frames="+post.Frames+"; exposure="+post.ExposurePasses+"; histogram="+post.HistogramDispatches+"; bloom="+post.BloomPasses+"; tone="+post.ToneDispatches+"; FXAA="+post.FxaaPasses+"; SSAO="+post.SsaoPasses+"; chromatic/vignette="+post.ChromaticDispatches+"; HBAO="+post.HbaoPasses+"; stock CSM="+post.ShadowDispatches+".",stats.SubmittedFrames);
-                }
-                VulkanDiagnostics.Set("Presentation", SubsystemState.Active, "Native frame submissions/presentation observed.", stats.SubmittedFrames);
-                bool meshEvidence = stats.MeshDraws > observedMeshDraws;
-                if (stats.SpriteDraws > observedSpriteDraws) VulkanDiagnostics.Set("Sprites and clipping", SubsystemState.Active, "Sprite draw commands submitted; visual clipping acceptance pending.", stats.SubmittedFrames);
-                if (sprites.FontCount > 0 && stats.SpriteDraws > observedSpriteDraws) VulkanDiagnostics.Set("Fonts", SubsystemState.Active, "Game glyph/kerning data loaded; HUD acceptance pending.", stats.SubmittedFrames);
-                if (meshEvidence && scene.DrawnActors > observedActorDraws) VulkanDiagnostics.Set("Models and materials", SubsystemState.Active, "MWM/DDS stock material draws observed; advanced material parity pending.", stats.SubmittedFrames);
-                if (meshEvidence && scene.SkinnedUploads > observedSkinUploads) VulkanDiagnostics.Set("Character skinning", SubsystemState.Active, "Copied bone transforms produced native vertex uploads; animation acceptance pending." + scene.CharacterStatus(), stats.SubmittedFrames);
-                if (meshEvidence && scene.RenderDirectRotationUpdates > observedRotations) VulkanDiagnostics.Set("RenderDirect animations", SubsystemState.Active, "Source rotation animators updated scene transforms " + scene.RenderDirectRotationUpdates + " times; live animation review remains separate.", stats.SubmittedFrames);
-                if (lcdPasses > observedLcdPasses) VulkanDiagnostics.Set("LCD targets", SubsystemState.Active, "Offscreen sprite passes=" + lcdPasses + "; source logical viewport and clipping applied; live LCD acceptance remains separate.", stats.SubmittedFrames);
-                if (scene.SkyboxReady) VulkanDiagnostics.Set("Skybox", SubsystemState.Active, "DDS cubemap sampled by stock directional-light shader with source orientation.", stats.SubmittedFrames);
-                if (scene.LightCount > 0) VulkanDiagnostics.Set("Local lighting", SubsystemState.Active, "Point/spot lights submitted; nearest 64 limit.", stats.SubmittedFrames);
-                bool billboardEvidence = meshEvidence && scene.BillboardCount > observedBillboards;
-                if (billboardEvidence) billboardEvidenceFrame = stats.SubmittedFrames;
-                if (billboardEvidence || scene.UnsupportedBillboards > observedUnsupportedBillboards)
-                    VulkanDiagnostics.Set("Billboards", billboardEvidenceFrame != 0 ? SubsystemState.Active : SubsystemState.Ready, "Standard/additive packets submitted=" + scene.BillboardCount + "; unsupported or over-budget packets=" + scene.UnsupportedBillboards + ".", billboardEvidenceFrame);
-                if (meshEvidence && scene.DrawnActors > observedActorDraws) VulkanDiagnostics.Set("Cascaded shadows", SubsystemState.Active, "Stock depth partners replay GPU instances/bones in up to eight quality-sized cascades; stock PCF, cascade blending and optional depth-aware Gaussian blur.", stats.SubmittedFrames);
-                if (meshEvidence && scene.DitheredDraws > observedDitherDraws) VulkanDiagnostics.Set("Construction dithering", SubsystemState.Active, "Stock material dithering packets submitted=" + scene.DitheredDraws + ".", stats.SubmittedFrames);
-                var transparent=backend.GetTransparencyStats();var particle=backend.GetParticleStats();
-                VulkanDiagnostics.Set("Glass, decals and OIT",transparent.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Stock glass draws="+transparent.GlassDraws+", instances="+transparent.Instances+", OIT resolves="+transparent.Resolves+", decal draws="+transparent.DecalDraws+", glass layer draws="+transparent.GlassLayerDraws+", copied decal residency="+decals.Count+". Stock near/far probe and BRDF inputs bound.",stats.SubmittedFrames);
-                VulkanDiagnostics.Set("GPU particles",particle.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Stock CPU effects="+particles.Effects+", GPU frames="+particle.Frames+", compute dispatches="+particle.Dispatches+", indirect draws="+particle.Draws+", completed alive/dead="+particle.Alive+"/"+particle.Dead+", indices="+particle.Indices+". Counters read only from completed frame slots; no status stalls.",stats.SubmittedFrames);
-                VulkanDiagnostics.Set("Flares",scene.FlareQueries>0?SubsystemState.Active:SubsystemState.Ready,"GPU depth queries="+scene.FlareQueries+", additive flare billboards="+scene.FlareBillboards+"; stock intensity curves and types; 16-sample asynchronous occlusion, up to two-frame latency.",stats.SubmittedFrames);
-                var probeStats=backend.GetProbeStats();VulkanDiagnostics.Set("Environment probes",probeStats.Ready!=0?SubsystemState.Active:SubsystemState.Ready,"Faces="+probeStats.Faces+"; geometry="+probeStats.GeometryDraws+"; GGX="+probeStats.PrefilterPasses+"; blend="+probeStats.BlendPasses+"; atmosphere="+probeStats.AtmospherePasses+"; published="+probeStats.Ready,stats.SubmittedFrames);
-                var visibility=backend.GetOcclusionStats();var ambient=backend.GetPostprocessStats();VulkanDiagnostics.Set("Fixed exposure tone mapping",ambient.ToneDispatches>0?SubsystemState.Active:SubsystemState.Ready,"Stock tone dispatches="+ambient.ToneDispatches+"; fixed or histogram exposure selected by copied postprocess settings.",stats.SubmittedFrames);VulkanDiagnostics.Set("Occlusion and SSAO/HBAO",visibility.Queries>0 || ambient.HbaoPasses>0 || ambient.SsaoPasses>0?SubsystemState.Active:SubsystemState.Ready,"Queries="+visibility.Queries+"; completed="+visibility.Results+"; hidden="+visibility.Occluded+"; scene culls="+scene.OcclusionCulls+"; SSAO="+ambient.SsaoPasses+"; HBAO="+ambient.HbaoPasses,stats.SubmittedFrames);
-                var highlight=backend.GetHighlightStats();VulkanDiagnostics.Set("Exposure, bloom and highlights",ambient.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Exposure="+ambient.ExposurePasses+"; bloom="+ambient.BloomPasses+"; highlight geometry="+highlight.Draws+"; blur="+highlight.BlurPasses+"; composition="+highlight.Compositions,stats.SubmittedFrames);
-                var dynamicResolution=backend.GetResolutionStats();VulkanDiagnostics.Set("Postprocessing and upscale",ambient.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Stock tone/FXAA/chromatic pipeline; world="+dynamicResolution.Width+"x"+dynamicResolution.Height+"; output="+dynamicResolution.OutputWidth+"x"+dynamicResolution.OutputHeight+"; fraction="+dynamicResolution.Fraction+"; completed GPU ms="+dynamicResolution.GpuMs+"; timestamp samples="+dynamicResolution.Samples+"; stock DRS heuristic and bilinear upscale.",stats.SubmittedFrames);
-                var spotStats=backend.GetSpotStats();VulkanDiagnostics.Set("Spotlight shadows",spotStats.Draws>0?SubsystemState.Active:SubsystemState.Ready,"Depth draws="+spotStats.Draws+"; quality map creations="+spotStats.Maps+"; cookie passes="+spotStats.Cookies+"; bounded to 16 nearest shadowed spots.",stats.SubmittedFrames);
-                var environmentStats=backend.GetEnvironmentStats();
-                VulkanDiagnostics.Set("Planet atmosphere/clouds",environmentStats.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Atmospheres="+environment.AtmosphereCount+", clouds="+environment.CloudCount+", atmosphere draws="+environmentStats.AtmosphereDraws+", cloud draws="+environmentStats.CloudDraws+", LUT dispatches="+environmentStats.LutDispatches+", resident LUTs="+environmentStats.Luts,stats.SubmittedFrames);
-                VulkanDiagnostics.Set("Weather fog",environment.FogUpdates>0?SubsystemState.Active:SubsystemState.Ready,"Stock world, sky and atmosphere fog constants; updates="+environment.FogUpdates+". Stock precipitation uses the GPU particle bridge.",stats.SubmittedFrames);
-                VulkanDiagnostics.Set("Voxel foliage/wind",environmentStats.FoliageDraws>0?SubsystemState.Active:SubsystemState.Ready,"Stock grass/pebble GS; persistent points generated="+voxels.Foliage.GeneratedPoints+", draws="+environmentStats.FoliageDraws+", submitted points="+environmentStats.FoliagePoints,stats.SubmittedFrames);
-                var voxelStats=backend.GetVoxelStats();
-                VulkanDiagnostics.Set("Planets and atmosphere",voxels.PlanetCount>0 && voxelStats.Frames>0 && environmentStats.AtmosphereDraws>0?SubsystemState.Active:SubsystemState.Ready,"Planet clipmaps="+voxels.PlanetCount+"; stock spherization, infinite reverse depth, far-frustum culling and main-view scattering. Atmosphere probe capture and stock exposure are integrated; cross-backend image parity remains under review.",stats.SubmittedFrames);
-                VulkanDiagnostics.Set("Clouds, fog, foliage and weather",environmentStats.CloudDraws>0 && environmentStats.FoliageDraws>0?SubsystemState.Active:SubsystemState.Ready,"Stock shells, world/sky/atmosphere fog, grass/pebbles and wind integrated; stock precipitation uses GPU particles.",stats.SubmittedFrames);
-                VulkanDiagnostics.Set("Voxels",voxelStats.Frames>0?SubsystemState.Active:SubsystemState.Ready,
-                    "Stock triplanar/depth; actors="+voxels.ActorCount+", cells="+voxels.CellCount+", visible="+voxels.VisibleCells+", LOD="+voxels.LodStatus+", mesh updates="+voxels.MeshUpdates+", frames="+voxelStats.Frames+", draws="+voxelStats.Draws+", meshes="+voxelStats.Meshes+", arrays="+voxelStats.Arrays+", material groups="+voxelStats.Materials+", resident bytes="+voxels.Materials.ResidentBytes+"; shared 512 MiB atlas pages="+voxels.Materials.AtlasStatus+"; source DDS separate. Atomic LOD swaps; planet spherization supplied; timed fades and user quality mapping remain pending.",stats.SubmittedFrames);
-                observedWork=work;
-                observedMeshDraws = stats.MeshDraws; observedSpriteDraws = stats.SpriteDraws;
-                observedSkinUploads = scene.SkinnedUploads; observedRotations = scene.RenderDirectRotationUpdates;
-                observedLcdPasses = lcdPasses; observedDitherDraws = scene.DitheredDraws; observedActorDraws = scene.DrawnActors;
-                observedBillboards = scene.BillboardCount; observedUnsupportedBillboards = scene.UnsupportedBillboards;
-                // A healthy menu-only session may exit without world meshes. Creative acceptance is tracked independently.
-                if (!startupEvidence && stats.PresentedFrames >= 120 && stats.SpriteDraws > 0 && sprites.FontCount > 0 && stats.ValidationErrors == 0)
-                {
-                    startupEvidence = true; BackendRuntime.MarkStartupSuccessful();
-                    VulkanDiagnostics.Set("Bootstrap", SubsystemState.Active, "Factory/device startup healthy; presented UI evidence observed. Creative acceptance is tracked separately.", stats.SubmittedFrames);
-                }
-            }
+            if(!backend.PipelinedRecordingEnabled)SampleDiagnostics();
         }
         catch (Exception error) { Fatal(error); throw; }
+    }
+    // Once a second. Its native reads are ordinary calls: with pipelined recording it runs before the
+    // launch, because after it every read would wait for the whole recording.
+    private void SampleDiagnostics()
+    {
+        if ((DateTime.UtcNow - lastSample).TotalSeconds >= 1)
+        {
+            lastSample = DateTime.UtcNow;
+            var stats = backend.GetStats(); VulkanDiagnostics.NativeFrame(stats, scene.ActorCount, scene.InstanceCount, scene.ModelCount, sprites.FontCount);
+            var work=backend.GetWorkStats();
+            VulkanDiagnostics.Set("Upload scheduling",work.UploadBatches>0?SubsystemState.Active:SubsystemState.Ready,"Timeline batches="+work.UploadBatches+"; outstanding-slot waits="+work.UploadSlotWaits+"; two upload slots, 64 MiB staging cache per slot; main frame uniforms and instance streams use fenced frame slots.",stats.SubmittedFrames);
+            if(work.WorldFrames>observedWork.WorldFrames)
+            {
+                VulkanDiagnostics.Set("Vanilla shader pass integration",SubsystemState.Active,"Stock material GBuffer, depth, directional/point/spot passes and HDR composition observed. Frames="+work.WorldFrames+"; material draws="+work.WorldDraws+"; instances="+work.WorldInstances+"; light passes="+work.LightingPasses+". Probe/BRDF, postprocessing and effect counters are reported below.",stats.SubmittedFrames);
+                VulkanDiagnostics.Set("Actors and instancing",SubsystemState.Active,"Persistent stock geometry; instance count="+work.WorldInstances+" across "+work.WorldDraws+" material draws. Cube draws="+work.CubeDraws+".",stats.SubmittedFrames);
+                if(work.SkinnedDraws>observedWork.SkinnedDraws)VulkanDiagnostics.Set("Character skinning",SubsystemState.Active,"Stock vertex shader consumed bone palettes; skinned draws="+work.SkinnedDraws+". Immutable vertices remain resident."+scene.CharacterStatus(),stats.SubmittedFrames);
+                VulkanDiagnostics.Set("Sun and ambient lighting",SubsystemState.Active,"Stock deferred directional/ambient lighting consumed the GBuffer. Complete near/far GGX probes and the installed BRDF LUT feed diffuse/specular lighting after probe publication.",stats.SubmittedFrames);
+                var post=backend.GetPostprocessStats();VulkanDiagnostics.Set("Stock postprocessing",post.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Frames="+post.Frames+"; exposure="+post.ExposurePasses+"; histogram="+post.HistogramDispatches+"; bloom="+post.BloomPasses+"; tone="+post.ToneDispatches+"; FXAA="+post.FxaaPasses+"; SSAO="+post.SsaoPasses+"; chromatic/vignette="+post.ChromaticDispatches+"; HBAO="+post.HbaoPasses+"; stock CSM="+post.ShadowDispatches+".",stats.SubmittedFrames);
+            }
+            VulkanDiagnostics.Set("Presentation", SubsystemState.Active, "Native frame submissions/presentation observed.", stats.SubmittedFrames);
+            bool meshEvidence = stats.MeshDraws > observedMeshDraws;
+            if (stats.SpriteDraws > observedSpriteDraws) VulkanDiagnostics.Set("Sprites and clipping", SubsystemState.Active, "Sprite draw commands submitted; visual clipping acceptance pending.", stats.SubmittedFrames);
+            if (sprites.FontCount > 0 && stats.SpriteDraws > observedSpriteDraws) VulkanDiagnostics.Set("Fonts", SubsystemState.Active, "Game glyph/kerning data loaded; HUD acceptance pending.", stats.SubmittedFrames);
+            if (meshEvidence && scene.DrawnActors > observedActorDraws) VulkanDiagnostics.Set("Models and materials", SubsystemState.Active, "MWM/DDS stock material draws observed; advanced material parity pending.", stats.SubmittedFrames);
+            if (meshEvidence && scene.SkinnedUploads > observedSkinUploads) VulkanDiagnostics.Set("Character skinning", SubsystemState.Active, "Copied bone transforms produced native vertex uploads; animation acceptance pending." + scene.CharacterStatus(), stats.SubmittedFrames);
+            if (meshEvidence && scene.RenderDirectRotationUpdates > observedRotations) VulkanDiagnostics.Set("RenderDirect animations", SubsystemState.Active, "Source rotation animators updated scene transforms " + scene.RenderDirectRotationUpdates + " times; live animation review remains separate.", stats.SubmittedFrames);
+            if (lcdPasses > observedLcdPasses) VulkanDiagnostics.Set("LCD targets", SubsystemState.Active, "Offscreen sprite passes=" + lcdPasses + "; source logical viewport and clipping applied; live LCD acceptance remains separate.", stats.SubmittedFrames);
+            if (scene.SkyboxReady) VulkanDiagnostics.Set("Skybox", SubsystemState.Active, "DDS cubemap sampled by stock directional-light shader with source orientation.", stats.SubmittedFrames);
+            if (scene.LightCount > 0) VulkanDiagnostics.Set("Local lighting", SubsystemState.Active, "Point/spot lights submitted; nearest 64 limit.", stats.SubmittedFrames);
+            bool billboardEvidence = meshEvidence && scene.BillboardCount > observedBillboards;
+            if (billboardEvidence) billboardEvidenceFrame = stats.SubmittedFrames;
+            if (billboardEvidence || scene.UnsupportedBillboards > observedUnsupportedBillboards)
+                VulkanDiagnostics.Set("Billboards", billboardEvidenceFrame != 0 ? SubsystemState.Active : SubsystemState.Ready, "Standard/additive packets submitted=" + scene.BillboardCount + "; unsupported or over-budget packets=" + scene.UnsupportedBillboards + ".", billboardEvidenceFrame);
+            if (meshEvidence && scene.DrawnActors > observedActorDraws) VulkanDiagnostics.Set("Cascaded shadows", SubsystemState.Active, "Stock depth partners replay GPU instances/bones in up to eight quality-sized cascades; stock PCF, cascade blending and optional depth-aware Gaussian blur.", stats.SubmittedFrames);
+            if (meshEvidence && scene.DitheredDraws > observedDitherDraws) VulkanDiagnostics.Set("Construction dithering", SubsystemState.Active, "Stock material dithering packets submitted=" + scene.DitheredDraws + ".", stats.SubmittedFrames);
+            var transparent=backend.GetTransparencyStats();var particle=backend.GetParticleStats();
+            VulkanDiagnostics.Set("Glass, decals and OIT",transparent.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Stock glass draws="+transparent.GlassDraws+", instances="+transparent.Instances+", OIT resolves="+transparent.Resolves+", decal draws="+transparent.DecalDraws+", glass layer draws="+transparent.GlassLayerDraws+", copied decal residency="+decals.Count+". Stock near/far probe and BRDF inputs bound.",stats.SubmittedFrames);
+            VulkanDiagnostics.Set("GPU particles",particle.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Stock CPU effects="+particles.Effects+", GPU frames="+particle.Frames+", compute dispatches="+particle.Dispatches+", indirect draws="+particle.Draws+", completed alive/dead="+particle.Alive+"/"+particle.Dead+", indices="+particle.Indices+". Counters read only from completed frame slots; no status stalls.",stats.SubmittedFrames);
+            VulkanDiagnostics.Set("Flares",scene.FlareQueries>0?SubsystemState.Active:SubsystemState.Ready,"GPU depth queries="+scene.FlareQueries+", additive flare billboards="+scene.FlareBillboards+"; stock intensity curves and types; 16-sample asynchronous occlusion, up to two-frame latency.",stats.SubmittedFrames);
+            var probeStats=backend.GetProbeStats();VulkanDiagnostics.Set("Environment probes",probeStats.Ready!=0?SubsystemState.Active:SubsystemState.Ready,"Faces="+probeStats.Faces+"; geometry="+probeStats.GeometryDraws+"; GGX="+probeStats.PrefilterPasses+"; blend="+probeStats.BlendPasses+"; atmosphere="+probeStats.AtmospherePasses+"; published="+probeStats.Ready,stats.SubmittedFrames);
+            var visibility=backend.GetOcclusionStats();var ambient=backend.GetPostprocessStats();VulkanDiagnostics.Set("Fixed exposure tone mapping",ambient.ToneDispatches>0?SubsystemState.Active:SubsystemState.Ready,"Stock tone dispatches="+ambient.ToneDispatches+"; fixed or histogram exposure selected by copied postprocess settings.",stats.SubmittedFrames);VulkanDiagnostics.Set("Occlusion and SSAO/HBAO",visibility.Queries>0 || ambient.HbaoPasses>0 || ambient.SsaoPasses>0?SubsystemState.Active:SubsystemState.Ready,"Queries="+visibility.Queries+"; completed="+visibility.Results+"; hidden="+visibility.Occluded+"; scene culls="+scene.OcclusionCulls+"; SSAO="+ambient.SsaoPasses+"; HBAO="+ambient.HbaoPasses,stats.SubmittedFrames);
+            var highlight=backend.GetHighlightStats();VulkanDiagnostics.Set("Exposure, bloom and highlights",ambient.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Exposure="+ambient.ExposurePasses+"; bloom="+ambient.BloomPasses+"; highlight geometry="+highlight.Draws+"; blur="+highlight.BlurPasses+"; composition="+highlight.Compositions,stats.SubmittedFrames);
+            var dynamicResolution=backend.GetResolutionStats();VulkanDiagnostics.Set("Postprocessing and upscale",ambient.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Stock tone/FXAA/chromatic pipeline; world="+dynamicResolution.Width+"x"+dynamicResolution.Height+"; output="+dynamicResolution.OutputWidth+"x"+dynamicResolution.OutputHeight+"; fraction="+dynamicResolution.Fraction+"; completed GPU ms="+dynamicResolution.GpuMs+"; timestamp samples="+dynamicResolution.Samples+"; stock DRS heuristic and bilinear upscale.",stats.SubmittedFrames);
+            var spotStats=backend.GetSpotStats();VulkanDiagnostics.Set("Spotlight shadows",spotStats.Draws>0?SubsystemState.Active:SubsystemState.Ready,"Depth draws="+spotStats.Draws+"; quality map creations="+spotStats.Maps+"; cookie passes="+spotStats.Cookies+"; bounded to 16 nearest shadowed spots.",stats.SubmittedFrames);
+            var environmentStats=backend.GetEnvironmentStats();
+            VulkanDiagnostics.Set("Planet atmosphere/clouds",environmentStats.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Atmospheres="+environment.AtmosphereCount+", clouds="+environment.CloudCount+", atmosphere draws="+environmentStats.AtmosphereDraws+", cloud draws="+environmentStats.CloudDraws+", LUT dispatches="+environmentStats.LutDispatches+", resident LUTs="+environmentStats.Luts,stats.SubmittedFrames);
+            VulkanDiagnostics.Set("Weather fog",environment.FogUpdates>0?SubsystemState.Active:SubsystemState.Ready,"Stock world, sky and atmosphere fog constants; updates="+environment.FogUpdates+". Stock precipitation uses the GPU particle bridge.",stats.SubmittedFrames);
+            VulkanDiagnostics.Set("Voxel foliage/wind",environmentStats.FoliageDraws>0?SubsystemState.Active:SubsystemState.Ready,"Stock grass/pebble GS; persistent points generated="+voxels.Foliage.GeneratedPoints+", draws="+environmentStats.FoliageDraws+", submitted points="+environmentStats.FoliagePoints,stats.SubmittedFrames);
+            var voxelStats=backend.GetVoxelStats();
+            VulkanDiagnostics.Set("Planets and atmosphere",voxels.PlanetCount>0 && voxelStats.Frames>0 && environmentStats.AtmosphereDraws>0?SubsystemState.Active:SubsystemState.Ready,"Planet clipmaps="+voxels.PlanetCount+"; stock spherization, infinite reverse depth, far-frustum culling and main-view scattering. Atmosphere probe capture and stock exposure are integrated; cross-backend image parity remains under review.",stats.SubmittedFrames);
+            VulkanDiagnostics.Set("Clouds, fog, foliage and weather",environmentStats.CloudDraws>0 && environmentStats.FoliageDraws>0?SubsystemState.Active:SubsystemState.Ready,"Stock shells, world/sky/atmosphere fog, grass/pebbles and wind integrated; stock precipitation uses GPU particles.",stats.SubmittedFrames);
+            VulkanDiagnostics.Set("Voxels",voxelStats.Frames>0?SubsystemState.Active:SubsystemState.Ready,
+                "Stock triplanar/depth; actors="+voxels.ActorCount+", cells="+voxels.CellCount+", visible="+voxels.VisibleCells+", LOD="+voxels.LodStatus+", mesh updates="+voxels.MeshUpdates+", frames="+voxelStats.Frames+", draws="+voxelStats.Draws+", meshes="+voxelStats.Meshes+", arrays="+voxelStats.Arrays+", material groups="+voxelStats.Materials+", resident bytes="+voxels.Materials.ResidentBytes+"; shared 512 MiB atlas pages="+voxels.Materials.AtlasStatus+"; source DDS separate. Atomic LOD swaps; planet spherization supplied; timed fades and user quality mapping remain pending.",stats.SubmittedFrames);
+            observedWork=work;
+            observedMeshDraws = stats.MeshDraws; observedSpriteDraws = stats.SpriteDraws;
+            observedSkinUploads = scene.SkinnedUploads; observedRotations = scene.RenderDirectRotationUpdates;
+            observedLcdPasses = lcdPasses; observedDitherDraws = scene.DitheredDraws; observedActorDraws = scene.DrawnActors;
+            observedBillboards = scene.BillboardCount; observedUnsupportedBillboards = scene.UnsupportedBillboards;
+            // A healthy menu-only session may exit without world meshes. Creative acceptance is tracked independently.
+            if (!startupEvidence && stats.PresentedFrames >= 120 && stats.SpriteDraws > 0 && sprites.FontCount > 0 && stats.ValidationErrors == 0)
+            {
+                startupEvidence = true; BackendRuntime.MarkStartupSuccessful();
+                VulkanDiagnostics.Set("Bootstrap", SubsystemState.Active, "Factory/device startup healthy; presented UI evidence observed. Creative acceptance is tracked separately.", stats.SubmittedFrames);
+            }
+        }
     }
     private void Fatal(Exception error) { frameOpen = false; sessionLog?.Fail("Exception in render! Vulkan native failure: " + error.Message, error); BackendRuntime.FailStartup("Vulkan active-session failure: " + error.Message); VulkanDiagnostics.Set("Presentation", SubsystemState.Failed, error.Message); }
     private void ProcessMessages(bool draw)

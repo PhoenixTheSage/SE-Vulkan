@@ -252,6 +252,13 @@ public sealed partial class Plugin : IPlugin
         if(selectionAudit && captureWorkloadFrame){workloadSnapshot=__instance is MyVulkanRender?AuditVulkan(__instance):AuditDx11();CaptureShadowDepth(__instance);if(__instance is MyVulkanRender)((NativeBackend)BackendField.GetValue(__instance)).EndLogicalSelectionCapture();captureWorkloadFrame=false;selectionArmed=false;}
         if(!PipelinedPresent(__instance))SampleFrame(__instance);
     }
+    static readonly int TelemetryStride=int.TryParse(Environment.GetEnvironmentVariable("SE_VULKAN_HARNESS_TELEMETRY_STRIDE"),out int stride)&&stride>0?stride:16;
+    static long telemetryCounter;
+    // Caller holds Gate.
+    static void SamplePresent(NativeBackend native){
+        if(native==null)return;
+        var flow=native.GetPresentFlowStats();PresentFlows.Add(flow);if(lastPresentSample==0)lastPresentSample=flow.CompletedCalls;int count=native.GetPresentSamples(lastPresentSample,PresentSampleBuffer,out ulong oldest);if(oldest>lastPresentSample+1)lostPresentSamples=true;for(int i=0;i<count;i++){var row=PresentSampleBuffer[i];if(row.Sequence!=lastPresentSample+1)lostPresentSamples=true;PresentSamples.Add(row);lastPresentSample=row.Sequence;}BulkModelFrames.Add(native.GetModelGroupStats());
+    }
     static void SampleFrame(object __instance)
     {
         long now = Stopwatch.GetTimestamp(), previous = previousPresent;previousPresent = now;RenderFrameEvents.Log.End(profileFrameSequence,(now-drawStarted)*1000.0/Stopwatch.Frequency);
@@ -260,6 +267,10 @@ public sealed partial class Plugin : IPlugin
         if(gpuAdmissionSnapshot==null&&__instance is MyVulkanRender&&Environment.GetEnvironmentVariable("SE_VULKAN_GPU_OPAQUE_TIMING")=="1")gpuAdmissionSnapshot=AuditGpuAdmission((VulkanScene)SceneField.GetValue(__instance));
         ObserveWorkloadDiagnostics(__instance);if(captureWorkloadFrame){workloadSnapshot=__instance is MyVulkanRender?AuditVulkan(__instance):AuditDx11();captureWorkloadFrame=false;}
         var native=__instance is MyVulkanRender?(NativeBackend)BackendField.GetValue(__instance):null;
+        // Pipelined Vulkan samples in the Present prefix, so every native read here is frame time.
+        // Timing and present samples are read every frame; auxiliary telemetry every stride frames.
+        bool telemetry=native==null||RendererCpuProfiler.Enabled||++telemetryCounter%TelemetryStride==0;
+        if(!telemetry){lock(Gate){if(!sampling)return;Frames.Add(((now-drawStarted)*1000.0/Stopwatch.Frequency,(now-previous)*1000.0/Stopwatch.Frequency));ObserveBenchmarkCompletedFrame();SamplePresent(native);}return;}
         var performance=native!=null?native.GetPerformanceStats():default;
         if(native!=null){gpuTopologyLast=native.GetGpuTopologyCounts();gpuTopologyFirst??=gpuTopologyLast;gpuComputeLast=native.GetGpuComputeTimes();gpuComputeFirst??=gpuComputeLast;if(RendererCpuProfiler.Enabled){gpuCpuCostsLast=native.GetType().GetMethod("GetGpuCpuCosts")?.Invoke(native,null) as ulong[];gpuCpuCostsFirst??=gpuCpuCostsLast;}}
         var validation=native!=null?native.GetQueueValidationStats():default;
@@ -276,7 +287,7 @@ public sealed partial class Plugin : IPlugin
             if(!sampling || frameBatching!=batchingEnabled || frameHints!=hintsEnabled || frameWide!=wideEnabled || frameVoxelLookup!=voxelLookupEnabled || frameVoxelObject!=voxelObjectEnabled || frameTextureValidation!=textureValidationEnabled || frameIndirect!=indirectEnabled || frameRetained!=retainedEnabled || frameSubmission!=submissionEnabled || frameActorLods!=actorLodsEnabled || frameSize!=sizeEnabled || frameFar!=farEnabled || frameView!=viewEnabled || frameRecipes!=recipesEnabled || frameNewViews!=newViewsEnabled || frameModels!=modelsEnabled || frameBulkModels!=bulkModelsEnabled || frameAsyncPresent!=asyncPresentEnabled || frameGroupOcclusion!=groupOcclusionEnabled || frameParallel!=parallelEnabled || frameParallelQueue!=parallelQueueEnabled || frameLightTiles!=lightTilesEnabled)return;
             Frames.Add(((now-drawStarted)*1000.0/Stopwatch.Frequency, (now-previous)*1000.0/Stopwatch.Frequency));
             ObserveBenchmarkCompletedFrame();
-            if(native!=null){var flow=native.GetPresentFlowStats();PresentFlows.Add(flow);if(lastPresentSample==0)lastPresentSample=flow.CompletedCalls;int count=native.GetPresentSamples(lastPresentSample,PresentSampleBuffer,out ulong oldest);if(oldest>lastPresentSample+1)lostPresentSamples=true;for(int i=0;i<count;i++){var row=PresentSampleBuffer[i];if(row.Sequence!=lastPresentSample+1)lostPresentSamples=true;PresentSamples.Add(row);lastPresentSample=row.Sequence;}BulkModelFrames.Add(native.GetModelGroupStats());}
+            SamplePresent(native);
             if(native!=null&&RendererCpuProfiler.Enabled){CpuPhases.AddCompleted((now-drawStarted)*1000.0/Stopwatch.Frequency);SampleNativeCritical(native);if(native.NativePassReady)NativePassFrames.Add(native.GetPassProfile(true));}
             if(native!=null){IndirectFrames.Add(indirect);GeometryFrames.Add(geometry);ObjectFrames.Add(objects);SubmissionFrames.Add(native.GetSubmissionStats());LodFrames.Add(((VulkanScene)SceneField.GetValue(__instance)).GetActorLodStats());SizeFrames.Add(((VulkanScene)SceneField.GetValue(__instance)).GetActorSizeCullStats());FarFrames.Add(((VulkanScene)SceneField.GetValue(__instance)).GetFarCascadePolicyStats());ViewFrames.Add(((VulkanScene)SceneField.GetValue(__instance)).GetViewEligibilityStats());RecipeFrames.Add(native.GetRecipeStats());NewViewFrames.Add(((VulkanScene)SceneField.GetValue(__instance)).GetNewActorViewStats());ModelFrames.Add(native.GetModelBatchStats());if(LodFrames.Count%120==0)groupOcclusionSnapshot=((VulkanScene)SceneField.GetValue(__instance)).GetGroupOcclusionStats();CascadeFrames.Add(cascade);QueueWorkFrames.Add(native.GetQueueWorkStats());LightTileFrames.Add(lightTiles);}
             if(native!=null){ValidationFrames.Add(validation);presentationState=actualPresentation;NativeFrames.Add(performance);if(native.PacketProfilingEnabled)PacketFrames.Add(native.GetPacketPreparationStats());geometryStorage=((VulkanScene)SceneField.GetValue(__instance)).GeometryStorage;}

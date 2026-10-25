@@ -168,3 +168,45 @@ in Messages (8.5 ms) and GlassParts (2.6 ms). A plain counter fixed it.
 - **Remaining allocation** (about 480 KB/frame): sprite UV and packet arrays,
   glass constants, light arrays, per-frame main-group states, particle
   closures and pass-preparation arrays.
+
+## Session 2: harness cost, diagnostics stall, parallel pass spots
+
+Changes:
+
+- **Harness telemetry stride.** Pipelined Vulkan samples in the `Present`
+  prefix, so every native read there was frame time. Frame timing and present
+  samples are still read every frame; the dozen auxiliary reads (and their
+  policy-consistency check) run every 16th frame. CpuDetail runs read every
+  frame. `SE_VULKAN_HARNESS_TELEMETRY_STRIDE=1` restores every-frame reads.
+- **Once-a-second diagnostics before the launch.** The `Present` status block
+  makes ordinary native reads. With pipelined recording it now runs before
+  `EndFrameAsync` instead of after, where each read waited about 7 ms for the
+  recording.
+- **Parallel spot recording with native pass views.** Pass spot views are
+  depth views: `record_pass_view` reads only prepared material sets, groups and
+  pipelines. Workers now record them after the groups are settled on the
+  recording thread. `SE_VULKAN_PARALLEL_PASS_SPOTS=0` restores serial
+  recording.
+- **Allocation.** `MainGroupState` is pooled per frame, since keys trust a
+  group only within its epoch and rigid batches key on the token. The
+  capturing `All()` in pass model support is now a loop, and the pass view list
+  and array are reused.
+
+Results:
+
+- Frame gap: harness sample 0.51 → 0.09 ms; `Present` body 0.23 → 0.11 ms.
+- Recording laps: 4.53 → 3.66 ms. Spot shadows 0.72 → 0.49 ms; object motion is
+  gone without a consumer. GPU frame 3.06 ms.
+- Paired runs, order S1, NEW, NEW, S1, with both sets on the new harness
+  (`TestResults/Session2-Paired-2026-10-25.json`). S1 is the session-1 build.
+
+  | Set | Mean | P95 |
+  |---|---|---|
+  | S1 | 9.09 / 9.81 ms | 11.23 / 14.48 ms |
+  | NEW | **9.02 / 9.01 ms** | **11.21 / 10.98 ms** |
+
+  The second S1 run is noisy. The render thread is the wall, so the recording
+  savings are headroom, not cadence.
+- DX11 on the same harness: **4.44 ms** mean, 5.28 ms P95.
+- Validation-layer gameplay run `Vulkan-460a9e7b…`: layer enabled, 0 errors.
+  Native CTests 18/18.

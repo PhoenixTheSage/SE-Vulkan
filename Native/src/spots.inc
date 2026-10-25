@@ -103,8 +103,12 @@ void render_spot_shadows(VkCommandBuffer cmd,WorldSlot& slot,const std::vector<u
     // the draws inside its depth scopes into secondaries executed in place.
     // GPU-visibility views (conditional rendering) and native pass views
     // (shared slot descriptor pool) stay on the serial recorder.
-    bool spot_parallel=world.parallel_spots && !pass_scene.ready && !(opaque_stock.ready&&opaque_reference.frame_ready);
-    for(uint32_t i=0;spot_parallel && i<64;++i)if(pass_scene.spot_views[i])spot_parallel=false;
+    // Native pass spot views are depth views: record_pass_view only reads their prepared material
+    // sets, groups and pipelines, so workers can record them too once the groups are settled here.
+    // SE_VULKAN_PARALLEL_PASS_SPOTS=0 keeps those frames on the serial recorder.
+    bool spot_parallel=world.parallel_spots && !(opaque_stock.ready&&opaque_reference.frame_ready);
+    if(!parallel_pass_spots)for(uint32_t i=0;spot_parallel && i<64;++i)if(pass_scene.spot_views[i]||pass_scene.ready)spot_parallel=false;
+    if(spot_parallel&&pass_scene.ready)(void)pass_scene.scene.render_groups();
     world.spot_tasks=0;
     if(spot_parallel){
         struct SpotPlan{uint32_t light;bool fresh,rebuild,dynamic;VkCommandBuffer statics{},dynamics{};uint32_t draws{};};std::vector<SpotPlan> plans;

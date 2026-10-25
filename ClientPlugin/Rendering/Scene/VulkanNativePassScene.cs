@@ -62,7 +62,12 @@ public sealed partial class VulkanScene
 
     private void DirtyNativePass(ActorData actor,bool bindings=false,bool appearance=true){nativePassDirty.Add(actor);if(bindings||appearance)cellDirty.Add(actor);else cellPoseDirty.Add(actor);gpuDirty.Add(actor);actor.GpuBindingDirty|=bindings;actor.GpuAppearanceDirty|=appearance||bindings;actor.PassBindingDirty|=bindings;actor.PassAppearanceDirty|=appearance;}
     private uint PassMaterialId(string name){name??=string.Empty;if(!nativePassMaterials.TryGetValue(name,out uint id)){id=checked((uint)nativePassMaterials.Count+1);nativePassMaterials.Add(name,id);}return id;}
-    private static bool PassModelSupported(VulkanModel model,bool mixed=false)=>model.SharedMesh!=0&&model.Parts.Count!=0&&model.Parts.All(p=>p.Technique==MyMeshDrawTechnique.MESH||p.Technique==MyMeshDrawTechnique.ALPHA_MASKED||p.Technique==MyMeshDrawTechnique.ALPHA_MASKED_SINGLE_SIDED||p.Technique==MyMeshDrawTechnique.DECAL_CUTOUT||(mixed&&p.Technique==MyMeshDrawTechnique.GLASS));
+    // A plain loop: the capturing All() lambda allocated on every dirty actor commit.
+    private static bool PassModelSupported(VulkanModel model,bool mixed=false){
+        if(model.SharedMesh==0||model.Parts.Count==0)return false;
+        foreach(var p in model.Parts)if(!(p.Technique==MyMeshDrawTechnique.MESH||p.Technique==MyMeshDrawTechnique.ALPHA_MASKED||p.Technique==MyMeshDrawTechnique.ALPHA_MASKED_SINGLE_SIDED||p.Technique==MyMeshDrawTechnique.DECAL_CUTOUT||(mixed&&p.Technique==MyMeshDrawTechnique.GLASS)))return false;
+        return true;
+    }
     private bool PassActorSupported(ActorData actor)=>actor.Model!=null&&!KnownStockOldPipeline(actor)&&actor.InstanceBuffer==uint.MaxValue&&actor.StaticInstances==null&&actor.SkinMatrices==null&&actor.Dithering==0&&!HasHighlight(actor.Actor.ID)&&!frameExcludedActors.Contains(actor.Actor.ID)&&PassModelSupported(actor.Model,NativeMixedOpaqueEnabled)&&models.IsStockNewModel(actor.Model);
 
     private PassFamily GetPassFamily(ActorData actor)
@@ -183,7 +188,8 @@ public sealed partial class VulkanScene
     {
         PublishGpuScene();if(!nativePassActive){if(gpuActive)FinishPassVisibility();return;}using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPublication);
         var views=BuildNativeViews(out NativePassFrame frame);
-        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPrepare))backend.PreparePassFrame(ref frame,views.ToArray(),views.Count);
+        if(passViewArray.Length<views.Count)passViewArray=new NativePassView[Math.Max(views.Count,passViewArray.Length*2)];views.CopyTo(passViewArray);
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPrepare))backend.PreparePassFrame(ref frame,passViewArray,views.Count);
         bool pending=true;
         try{
             NativePassPreparation preparation;
@@ -213,9 +219,11 @@ public sealed partial class VulkanScene
         EndOcclusion();EndShadowGroupOcclusion();backend.ShadowExclusions=frameShadowExclusions.ToArray();backend.SetSpotRedraw(frameSpotStatic,frameSpotDynamic);
         }
     }
+    // Reused each frame; the native prepare copies the views it is given.
+    readonly List<NativePassView> passViews=new();NativePassView[] passViewArray=new NativePassView[32];
     private unsafe List<NativePassView> BuildNativeViews(out NativePassFrame frame)
     {
-        var views=new List<NativePassView>();
+        var views=passViews;views.Clear();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassFrameInputs)){
         var global=actorLodSettings.Global;frame=new NativePassFrame{Coefficient=lodFov>0?(float)(Math.Tan(lodFov*.5)/Math.Tan(70*Math.PI/360))*1080/Math.Max(1,backend.PresentationHeight):1,Delta=Environment.LastFrameDelta,GlobalFlags=(global.EnableLodSelection?1u:0u)|(global.IsUpdateEnabled?2u:0u),Selection=global.LodSelection,SmoothDistance=global.MaxDistanceForSmoothCameraMovement};
         frame.Camera[0]=Environment.CameraPosition.X;frame.Camera[1]=Environment.CameraPosition.Y;frame.Camera[2]=Environment.CameraPosition.Z;
