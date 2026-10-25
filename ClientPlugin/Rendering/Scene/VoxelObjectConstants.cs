@@ -32,6 +32,8 @@ public static class VoxelObjectConstants
             Alpha=buffer.FloatOffsetOf("object_.custom_alpha",2);
         }
     }
+    // Builds the layout now; its first use fills shared reflection caches that are not thread-safe.
+    public static void Warm(ShaderMetadata metadata)=>Layouts.GetValue(metadata,key=>new Layout(key));
     public static unsafe byte[] Write(ShaderMetadata metadata,MatrixD matrix,Vector3D offset,int lod,float dither,float? radius,Vector3D center)
     {
         Layout layout=Layouts.GetValue(metadata,key=>new Layout(key));

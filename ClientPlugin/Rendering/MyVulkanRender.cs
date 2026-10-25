@@ -256,7 +256,7 @@ public sealed class MyVulkanRender : IMyRender
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Particles)){
             if (drawScene)
             {
-                scene.ExternalDepthRevision=voxels.MeshUpdates+voxels.LodChanges;scene.HighlightSepia=postprocess.Settings.Data.SepiaStrength;scene.ProbeDrawDistance=probes.Settings.DrawDistance;scene.RenderSettings=renderConfiguration;scene.ShadowSettings=shadows.Settings.Data;scene.ShadowDrawDistance=shadows.DrawDistance;scene.SetCamera(camera, CurrentDrawTime, animationDelta);particles.Draw(camera,animationDelta,renderConfiguration);decals.Draw(camera,CurrentDrawTime.Seconds,gameplayFrame,(int)renderConfiguration.User.ParticleQuality);
+                scene.ExternalDepthRevision=voxels.MeshUpdates+voxels.LodChanges;scene.HighlightSepia=postprocess.Settings.Data.SepiaStrength;scene.ProbeDrawDistance=probes.Settings.DrawDistance;scene.RenderSettings=renderConfiguration;scene.ShadowSettings=shadows.Settings.Data;scene.ShadowDrawDistance=shadows.DrawDistance;scene.SetCamera(camera, CurrentDrawTime, animationDelta);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ParticleDraw))particles.Draw(camera,animationDelta,renderConfiguration);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.DecalDraw))decals.Draw(camera,CurrentDrawTime.Seconds,gameplayFrame,(int)renderConfiguration.User.ParticleQuality);
             }
             FrameProfiler.Lap(FrameProfiler.Section.Particles);
             }
@@ -267,13 +267,15 @@ public sealed class MyVulkanRender : IMyRender
             if (drawScene) shadows.Update(backend, cameraView, light.SunLightDirection,renderConfiguration,cameraProjection,camera);
             else backend.SetShadowCascades(Array.Empty<float>(), Array.Empty<float>());
             }
+            // Voxel plan-ahead overlaps the actor traversal; its inputs are final once the shadows are fitted.
+            if (drawScene) { voxels.Foliage.Distance=renderConfiguration.User.GrassDrawDistance; voxels.Foliage.Density=renderConfiguration.User.GrassDensityFactor; voxels.ProbeDrawDistance=probes.Settings.DrawDistance; voxels.ShadowDrawDistance=shadows.DrawDistance; if(VoxelObjectConstants.Enabled)voxels.BeginPlan(camera,voxelDrawFrustum); }
             FrameProfiler.Lap(FrameProfiler.Section.Shadows);
             if (drawScene) {scene.ShadowDrawDistance=shadows.DrawDistance;scene.Draw(backend);}
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.VoxelsAndBillboards)){
             if (drawScene)
             {
                 voxels.Foliage.Distance=renderConfiguration.User.GrassDrawDistance; voxels.Foliage.Density=renderConfiguration.User.GrassDensityFactor;
-                voxels.ProbeDrawDistance=probes.Settings.DrawDistance;voxels.ShadowDrawDistance=shadows.DrawDistance;voxels.Draw(camera,voxelDrawFrustum,SharedData.VisibleObjects.Write);MatrixD flareProjection=cameraProjection;flareProjection.M33=flareProjection.M34-flareProjection.M33;flareProjection.M43=flareProjection.M44-flareProjection.M43;scene.DrawFlares(cameraView,flareProjection,BackBufferResolution.X,BackBufferResolution.Y,renderConfiguration.FlaresIntensity); scene.DrawBillboards(SharedData); if(!scene.NativePassSceneEnabled)scene.AddVisible(SharedData.VisibleObjects.Write);
+                voxels.ProbeDrawDistance=probes.Settings.DrawDistance;voxels.ShadowDrawDistance=shadows.DrawDistance;voxels.Draw(camera,voxelDrawFrustum,SharedData.VisibleObjects.Write);MatrixD flareProjection=cameraProjection;flareProjection.M33=flareProjection.M34-flareProjection.M33;flareProjection.M43=flareProjection.M44-flareProjection.M43;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Flares))scene.DrawFlares(cameraView,flareProjection,BackBufferResolution.X,BackBufferResolution.Y,renderConfiguration.FlaresIntensity); using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Billboards))scene.DrawBillboards(SharedData); if(!scene.NativePassSceneEnabled)scene.AddVisible(SharedData.VisibleObjects.Write);
             }
             FrameProfiler.Lap(FrameProfiler.Section.Voxels);
             }

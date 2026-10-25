@@ -36,21 +36,23 @@ public sealed class ReflectedConstantBuffer
     }
     public static byte[] Rent(ShaderMetadata metadata, string name) => Rent(checked((int)Descriptor(metadata, name).BlockSize));
     // Zeroed block of a known reflected size; packets added with recycleConstants return it.
+    // Locked: voxel plan-ahead rents on a worker while the render thread rents and recycles.
     public static byte[] Rent(int size)
     {
-        if (Pool.TryGetValue(size, out Stack<byte[]> stack) && stack.Count > 0)
-        {
-            byte[] rented = stack.Pop();
-            Array.Clear(rented, 0, size);
-            return rented;
-        }
-        return new byte[size];
+        byte[] rented = null;
+        lock (Pool) if (Pool.TryGetValue(size, out Stack<byte[]> stack) && stack.Count > 0) rented = stack.Pop();
+        if (rented == null) return new byte[size];
+        Array.Clear(rented, 0, size);
+        return rented;
     }
     public static void Recycle(byte[] bytes)
     {
         if (bytes == null || bytes.Length == 0) return;
-        if (!Pool.TryGetValue(bytes.Length, out Stack<byte[]> stack)) Pool.Add(bytes.Length, stack = new Stack<byte[]>());
-        if (stack.Count < 16384) stack.Push(bytes);
+        lock (Pool)
+        {
+            if (!Pool.TryGetValue(bytes.Length, out Stack<byte[]> stack)) Pool.Add(bytes.Length, stack = new Stack<byte[]>());
+            if (stack.Count < 16384) stack.Push(bytes);
+        }
     }
     public int OffsetOf(string path) => Locate(path).Offset;
     // Resolve and validate immutable shader fields once for specialized writers.

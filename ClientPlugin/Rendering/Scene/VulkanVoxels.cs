@@ -6,6 +6,7 @@ using System.Threading;
 using ClientPlugin.Diagnostics;
 using ClientPlugin.Rendering.Content;
 using ClientPlugin.Rendering.Interop;
+using ClientPlugin.Rendering.Shaders;
 using VRage;
 using VRageMath;
 using VRageRender;
@@ -67,17 +68,44 @@ public sealed partial class VulkanVoxels : IDisposable
     // Single cell pass plus memoized material preparation; the previous two-pass
     // path stays for same-process parity lanes (VulkanScene.VoxelFastPathEnabled).
     public static bool FastPathEnabled=System.Environment.GetEnvironmentVariable("SE_VULKAN_VOXEL_FAST_PATH")!="0";
+    // Plan-ahead (SE_VULKAN_VOXEL_PLAN_AHEAD=0, or VulkanScene.VoxelPlanAheadEnabled, turns it off):
+    // BeginPlan runs the cell cull and every surviving part's object constants and cascade mask on a
+    // worker while the actor traversal runs. Draw joins it and does the render-thread work at the
+    // same point and in the same order as before: foliage retirement, materials, recipes, packets,
+    // foliage and visibility. Everything the plan reads is fixed before the shadow fit returns.
+    public static bool PlanAheadEnabled=System.Environment.GetEnvironmentVariable("SE_VULKAN_VOXEL_PLAN_AHEAD")!="0";
+    System.Threading.Tasks.Task planTask;Vector3D planCamera;
+    public void BeginPlan(Vector3D camera,BoundingFrustumD frustum)
+    {
+        RequireOwner();DropPlan();
+        if(!FastPathEnabled||!PlanAheadEnabled||!backend.WorldLayouts.TryGetValue(20,out var single)||!backend.WorldLayouts.TryGetValue(21,out var triple))return;
+        // First use of a layout fills shared reflection caches; do it on this thread.
+        VoxelObjectConstants.Warm(single);VoxelObjectConstants.Warm(triple);
+        planCamera=camera;planTask=System.Threading.Tasks.Task.Run(()=>Plan(camera,frustum,false));
+    }
+    void DropPlan(){var task=planTask;planTask=null;if(task==null)return;try{task.Wait();}catch(AggregateException){}foreach(var item in cellScratch)RecycleConstants(item);}
+    void RecycleConstants(CellDraw item){for(int i=0;i<item.PartCount;i++)ReflectedConstantBuffer.Recycle(partConstants[item.PartStart+i]);}
     public void Draw(Vector3D camera,BoundingFrustumD frustum,HashSet<uint> visible)
     {
         RequireOwner();Materials.BeginFrame();Foliage.BeginFrame();
+        if(planTask!=null&&planCamera==camera){var task=planTask;planTask=null;task.GetAwaiter().GetResult();Emit(camera,visible);return;}
+        DropPlan();
         if(!FastPathEnabled){DrawTwoPass(camera,frustum,visible);return;}
-        // One cell pass: the material set and the emitted packets both use the
-        // same transform, bounds and cull decision, so survivors are recorded once
-        // and emitted after the materials are prepared, in the same order.
-        frameMaterials.Clear();cellScratch.Clear();
+        Plan(camera,frustum,true);Emit(camera,visible);
+    }
+    // One cell pass: the material set and the emitted packets both use the
+    // same transform, bounds and cull decision, so survivors are recorded once
+    // and emitted after the materials are prepared, in the same order.
+    // Touches no shared mutable state: it may run on a worker.
+    // The profiler's scopes belong to the render thread; a worker plan is not scoped.
+    void Plan(Vector3D camera,BoundingFrustumD frustum,bool profile)
+    {
+        frameMaterials.Clear();cellScratch.Clear();retiredParts.Clear();partConstants.Clear();
+        var cullProfile=profile?RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.VoxelCull,false):default;
         foreach(var actor in actors.Values)
         {
             if((actor.Flags&(RenderFlags.Visible|RenderFlags.SkipInMainView))!=RenderFlags.Visible)continue;
+            bool casts=(actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))==RenderFlags.CastShadows;
             foreach(var cell in actor.Cells)
             {
                 if(!cell.Visible)continue;
@@ -88,31 +116,39 @@ public sealed partial class VulkanVoxels : IDisposable
                 bool culled=outside && outsideProbe && ((actor.Flags&RenderFlags.CastShadows)==0 || distance>ShadowDrawDistance*ShadowDrawDistance);
                 if(!culled)foreach(var part in cell.Parts)frameMaterials.Add(part.Material);
                 if(cell.Parts.Count==0)continue;
-                if(distance>Foliage.Distance*Foliage.Distance*2.25)foreach(var p in cell.Parts){Foliage.Retire(p.Foliage);p.Foliage=null;}
-                if(!culled)cellScratch.Add(new CellDraw{Actor=actor,Cell=cell,Matrix=matrix,Bounds=bounds,Distance=distance,Outside=outside,OutsideProbe=outsideProbe});
+                if(distance>Foliage.Distance*Foliage.Distance*2.25)foreach(var p in cell.Parts)retiredParts.Add(p);
+                if(culled)continue;
+                MatrixD relative=matrix;relative.Translation-=camera;
+                var draw=new CellDraw{Actor=actor,Cell=cell,Matrix=relative,Distance=distance,Outside=outside,OutsideProbe=outsideProbe,Casts=casts,
+                    Origin=(Vector3)(bounds.Center-camera),Radius=(float)bounds.HalfExtents.Length(),Cascades=casts?(CascadeMaskFor?.Invoke(bounds,camera)??0xFFu):0u,PartStart=partConstants.Count,PartCount=cell.Parts.Count};
+                foreach(var part in cell.Parts)partConstants.Add(VulkanVoxelMaterials.Object(backend.WorldLayouts[part.Material.SingleMaterial?20u:21u],relative,cell.Offset,cell.Lod,actor.Dither,actor.SpherizeRadius,actor.SpherizeCenter-camera));
+                cellScratch.Add(draw);
             }
         }
-        Materials.Prepare(frameMaterials);
+        cullProfile.Dispose();
+    }
+    void Emit(Vector3D camera,HashSet<uint> visible)
+    {
+        foreach(var p in retiredParts){Foliage.Retire(p.Foliage);p.Foliage=null;}
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.VoxelMaterials,false))Materials.Prepare(frameMaterials);
+        using var emitProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.VoxelEmit,false);
         Actor seenActor=null;bool seen=false;
         foreach(var item in cellScratch)
         {
-            var actor=item.Actor;var cell=item.Cell;MatrixD matrix=item.Matrix;var bounds=item.Bounds;double distance=item.Distance;bool outside=item.Outside,outsideProbe=item.OutsideProbe;
+            var actor=item.Actor;var cell=item.Cell;MatrixD matrix=item.Matrix;double distance=item.Distance;bool outside=item.Outside,outsideProbe=item.OutsideProbe;
             if(!ReferenceEquals(actor,seenActor)){if(seen)visible.Add(seenActor.Id);seenActor=actor;seen=false;}
-                matrix.Translation-=camera;
-                bool casts=(actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))==RenderFlags.CastShadows;
-                Vector3 origin=(Vector3)(bounds.Center-camera);float radius=(float)bounds.HalfExtents.Length();
-                uint cascades=casts?(CascadeMaskFor?.Invoke(bounds,camera)??0xFFu):0u;
-                foreach(var part in cell.Parts)
-                {
-                    uint pipeline=part.Material.SingleMaterial?20u:21u;ulong material=Materials.Get(part.Material);
-                    var objectConstants=VulkanVoxelMaterials.Object(backend.WorldLayouts[pipeline],matrix,cell.Offset,cell.Lod,actor.Dither,actor.SpherizeRadius,actor.SpherizeCenter-camera);
-                    if(backend.WorldRecipesEnabled)backend.EnsureWorldRecipe(ref part.Recipe,pipeline,part.Mesh,material,0,0,0,objectConstants.Length);
-                    backend.AddWorldPacket(pipeline,part.Mesh,material,0,0,0,objectConstants,null,1,(casts?0u:512u)|(outside?4096u:0u)|(outsideProbe?16384u:0u),cascades,origin,radius,recipe:part.Recipe);Draws++;
-                    if(!outside && distance<Foliage.Distance*Foliage.Distance && Foliage.Density>0){if(part.Foliage==null || part.FoliageVersion!=Materials.Version || part.Density!=Foliage.Density){Foliage.Retire(part.Foliage);part.Foliage=Foliage.Generate(part.Vertices,part.Indices,part.Material,cell.Lod,actor.Matrix);part.FoliageVersion=Materials.Version;part.Density=Foliage.Density;}Foliage.Draw(part.Foliage,MatrixD.CreateScale(1.0/(1<<cell.Lod))*matrix,actor.Dither);}
-                }
-                seen|=!outside;
+            for(int i=0;i<item.PartCount;i++)
+            {
+                var part=cell.Parts[i];var objectConstants=partConstants[item.PartStart+i];
+                uint pipeline=part.Material.SingleMaterial?20u:21u;ulong material=Materials.Get(part.Material);
+                if(backend.WorldRecipesEnabled)backend.EnsureWorldRecipe(ref part.Recipe,pipeline,part.Mesh,material,0,0,0,objectConstants.Length);
+                backend.AddWorldPacket(pipeline,part.Mesh,material,0,0,0,objectConstants,null,1,(item.Casts?0u:512u)|(outside?4096u:0u)|(outsideProbe?16384u:0u),item.Cascades,item.Origin,item.Radius,recipe:part.Recipe);Draws++;
+                if(!outside && distance<Foliage.Distance*Foliage.Distance && Foliage.Density>0){if(part.Foliage==null || part.FoliageVersion!=Materials.Version || part.Density!=Foliage.Density){Foliage.Retire(part.Foliage);part.Foliage=Foliage.Generate(part.Vertices,part.Indices,part.Material,cell.Lod,actor.Matrix);part.FoliageVersion=Materials.Version;part.Density=Foliage.Density;}Foliage.Draw(part.Foliage,MatrixD.CreateScale(1.0/(1<<cell.Lod))*matrix,actor.Dither);}
+            }
+            seen|=!outside;
         }
         if(seen)visible.Add(seenActor.Id);
+        cellScratch.Clear();partConstants.Clear();
         Foliage.EndFrame();
     }
     void DrawTwoPass(Vector3D camera,BoundingFrustumD frustum,HashSet<uint> visible)
@@ -146,8 +182,8 @@ public sealed partial class VulkanVoxels : IDisposable
             if(seen)visible.Add(actor.Id);
         }Foliage.EndFrame();
     }
-    struct CellDraw {public Actor Actor;public Cell Cell;public MatrixD Matrix;public BoundingBoxD Bounds;public double Distance;public bool Outside,OutsideProbe;}
-    readonly List<CellDraw> cellScratch=new();readonly List<MyVoxelMaterialTriple> frameMaterials=new();
+    struct CellDraw {public Actor Actor;public Cell Cell;public MatrixD Matrix;public double Distance;public bool Outside,OutsideProbe,Casts;public Vector3 Origin;public float Radius;public uint Cascades;public int PartStart,PartCount;}
+    readonly List<CellDraw> cellScratch=new();readonly List<MyVoxelMaterialTriple> frameMaterials=new();readonly List<Part> retiredParts=new();readonly List<byte[]> partConstants=new();
     public void Clear(){RequireOwner();foreach(var actor in actors.Values.ToArray())actor.Dispose();actors.Clear();Foliage.Clear();Materials.ClearResident();}
     public void Dispose(){Clear();Foliage.Dispose();Materials.Dispose();}
     private sealed class Part {public NativeBackend.WorldRecipe Recipe;public ulong Mesh;public MyVoxelMaterialTriple Material;public MyVertexFormatVoxelSingleData[] Vertices;public uint[] Indices;public List<VulkanFoliage.Stream> Foliage;public int FoliageVersion;public float Density;}

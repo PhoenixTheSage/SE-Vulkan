@@ -38,6 +38,7 @@ public sealed partial class VulkanScene
     bool asyncNativeWork=System.Environment.GetEnvironmentVariable("SE_VULKAN_ASYNC_PASS_PACKING")!="0"&&System.Environment.GetEnvironmentVariable("SE_VULKAN_DEFERRED_CELL_EMISSION")!="0";
     public bool AsyncNativeWorkEnabled {get=>asyncNativeWork;set{asyncNativeWork=value;backend.SetAsyncPolicy(value,value);}}
     public bool VoxelFastPathEnabled {get=>VulkanVoxels.FastPathEnabled;set=>VulkanVoxels.FastPathEnabled=value;}
+    public bool VoxelPlanAheadEnabled {get=>VulkanVoxels.PlanAheadEnabled;set=>VulkanVoxels.PlanAheadEnabled=value;}
     // Stable main order: pass-owned actors carry a resident main-group order and are skipped by the
     // managed traversal. Turning it on re-commits every pass actor so native gets their orders.
     public bool StableMainOrderEnabled {get=>backend.StableMainOrderEnabled;set{if(value==backend.StableMainOrderEnabled)return;backend.ClearStableMainOrders();backend.StableMainOrderEnabled=value;if(value)foreach(var actor in actors.Values)if(actor.PassOwned)DirtyNativePass(actor,appearance:false);}}

@@ -254,3 +254,64 @@ Results:
 It stays off by default. DX11 orders NEW geometry by its own cull tree, so
 neither order is DX11's. Make it default only after a visual check of those
 edges against DX11.
+
+## Session 4: job graph, first stage (voxel plan-ahead)
+
+New CpuDetail phases split the producers (`VoxelCull`, `VoxelMaterials`,
+`VoxelEmit`, `Flares`, `Billboards`, `ParticleDraw`, `DecalDraw`). Baseline,
+ms per frame:
+
+| Phase | ms |
+|---|---|
+| Voxel emission loop | 0.78 |
+| Voxel cull | 0.18 |
+| Particle draw | 0.39 |
+| Flares and billboards | 0.17 |
+
+### Voxel plan-ahead (default on)
+
+`SE_VULKAN_VOXEL_PLAN_AHEAD=0` or `VulkanScene.VoxelPlanAheadEnabled` turns it
+off.
+
+Right after the shadow fit, `VulkanVoxels.BeginPlan` starts a worker. It runs
+the cell cull, every surviving part's object constants and cascade mask, and
+the foliage retirement set, overlapping `scene.Draw`. `Draw` joins it at the
+original point and does the render-thread work in the original order:
+
+- foliage retirement;
+- material preparation;
+- recipes and packets;
+- foliage and visibility.
+
+Packet order and numbering are unchanged by construction. Thread safety:
+
+- Every plan input is final once the shadows are fitted.
+- The constants pool is locked, and constant layouts are warmed on the render
+  thread before the fork.
+- Profiler scopes stay on the render thread.
+- If the camera changed, or the frame never reached `Draw`, the plan is
+  dropped and its constants are recycled.
+
+Results:
+
+- CpuDetail: voxels and billboards 1.13 → 0.82 ms. What remains in emission
+  (≈0.62 ms) is `AddWorldPacket`, materials, recipes and foliage.
+- Same-process frozen-light lane `Vulkan-0c295556…`: all 50 artifacts are
+  byte-identical. The view changes in 677 values against a control-return
+  floor of 203, the capture noise seen before.
+- Paired runs, both orders: new 8.89 / 8.67 / 8.23 / 8.97 ms against baseline
+  9.74 / 8.18 / 9.19 / 8.94 ms. Means are 8.69 against 9.01 ms (≈ −0.3 ms); P95
+  is 11.0 against 12.5 ms. The host drifted by up to 1.5 ms within a set, so
+  read this as a likely 0.2–0.3 ms.
+
+Not forked:
+
+- **Particles.** The stock particle manager runs by reflection and feeds
+  particle lights into the scene.
+- **Flares and billboards.** 0.17 ms.
+- **The scene update steps.** Transforms, spatial index, lights, shadow poses
+  and occlusion depend on each other.
+
+Overlapping the actor loop's own emission with other emitters needs the
+per-producer emitters of plan item 2.1. They pay only once emission rather
+than compute dominates.
