@@ -23,7 +23,21 @@
 // cannot run work that needs that lock. Jobs must not block on anything but
 // their own nested groups. Blocking pipeline stages (recording, present) use
 // Stage threads, outside the cap.
+#ifdef _WIN32
+extern "C" __declspec(dllimport) int __stdcall SetThreadPriority(void* thread,int priority);
+#endif
 namespace sevk_jobs {
+// OS priority for pool workers (SE_VULKAN_JOB_PRIORITY): unset or "normal"
+// keeps the default; "above" and "highest" raise it. SE runs DX11's render
+// jobs on its Highest-priority VeryHigh worker array.
+inline int worker_os_priority(){const char* value=std::getenv("SE_VULKAN_JOB_PRIORITY");if(!value)return 0;std::string v(value);return v=="highest"?2:v=="above"?1:0;}
+inline void raise_worker_priority(std::thread& thread,int priority){
+#ifdef _WIN32
+    if(priority>0)SetThreadPriority(thread.native_handle(),priority);
+#else
+    (void)thread;(void)priority;
+#endif
+}
 enum class Priority:uint8_t {High,Normal};
 // Telemetry slots; SevkJobStats reports them in this order.
 enum Kind:uint32_t {PassView,PassPack,CellView,QueueValidate,Upload,Cascade,Spot,KindCount};
@@ -70,7 +84,7 @@ class System {
         execute(task,false);}}
 public:
     explicit System(uint32_t workers){stats.workers=workers;
-        try{for(uint32_t i=0;i<workers;++i)threads.emplace_back([this]{worker();});}catch(...){stop();throw;}}
+        try{int os=worker_os_priority();for(uint32_t i=0;i<workers;++i){threads.emplace_back([this]{worker();});raise_worker_priority(threads.back(),os);}}catch(...){stop();throw;}}
     System(const System&)=delete;System& operator=(const System&)=delete;
     ~System(){stop();}
     void stop(){{std::lock_guard lock(mutex);stopping=true;}work_ready.notify_all();for(auto& thread:threads)if(thread.joinable())thread.join();threads.clear();}

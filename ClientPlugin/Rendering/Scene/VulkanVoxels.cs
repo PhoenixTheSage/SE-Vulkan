@@ -74,21 +74,21 @@ public sealed partial class VulkanVoxels : IDisposable
     // same point and in the same order as before: foliage retirement, materials, recipes, packets,
     // foliage and visibility. Everything the plan reads is fixed before the shadow fit returns.
     public static bool PlanAheadEnabled=System.Environment.GetEnvironmentVariable("SE_VULKAN_VOXEL_PLAN_AHEAD")!="0";
-    System.Threading.Tasks.Task planTask;Vector3D planCamera;
+    RenderJobs.Job? planTask;Vector3D planCamera;
     public void BeginPlan(Vector3D camera,BoundingFrustumD frustum)
     {
         RequireOwner();DropPlan();
         if(!FastPathEnabled||!PlanAheadEnabled||!backend.WorldLayouts.TryGetValue(20,out var single)||!backend.WorldLayouts.TryGetValue(21,out var triple))return;
         // First use of a layout fills shared reflection caches; do it on this thread.
         VoxelObjectConstants.Warm(single);VoxelObjectConstants.Warm(triple);
-        planCamera=camera;planTask=System.Threading.Tasks.Task.Run(()=>Plan(camera,frustum,false));
+        planCamera=camera;planTask=RenderJobs.Start(()=>Plan(camera,frustum,false));
     }
-    void DropPlan(){var task=planTask;planTask=null;if(task==null)return;try{task.Wait();}catch(AggregateException){}foreach(var item in cellScratch)RecycleConstants(item);}
+    void DropPlan(){var task=planTask;planTask=null;if(task==null)return;task.Value.Join();foreach(var item in cellScratch)RecycleConstants(item);}
     void RecycleConstants(CellDraw item){for(int i=0;i<item.PartCount;i++)ReflectedConstantBuffer.Recycle(partConstants[item.PartStart+i]);}
     public void Draw(Vector3D camera,BoundingFrustumD frustum,HashSet<uint> visible)
     {
         RequireOwner();Materials.BeginFrame();Foliage.BeginFrame();
-        if(planTask!=null&&planCamera==camera){var task=planTask;planTask=null;task.GetAwaiter().GetResult();Emit(camera,visible);return;}
+        if(planTask!=null&&planCamera==camera){var task=planTask.Value;planTask=null;task.Wait();Emit(camera,visible);return;}
         DropPlan();
         if(!FastPathEnabled){DrawTwoPass(camera,frustum,visible);return;}
         Plan(camera,frustum,true);Emit(camera,visible);
