@@ -762,6 +762,8 @@ struct Renderer {uint32_t recipe_generation=1;
         s.probe_stats=probes.stats;s.probe_stats.size=sizeof(SevkProbeStats);s.probe_stats.abi_version=SEVK_ABI_VERSION;s.probe_stats.ready=probes.ready;s.probe_stats.next_face=probes.face;
         s.probe_schedule=SevkProbeScheduleStats{sizeof(SevkProbeScheduleStats),SEVK_ABI_VERSION};s.probe_schedule.stage=probes.stage;s.probe_schedule.busy=probes.stage!=0;s.probe_schedule.cycles=probes.stats.cycles;
     }
+    // The fraction an active upscaler imposes (what ngx_apply_scale and fsr_apply_scale set), or none.
+    static std::optional<float> upscaler_fraction(){{auto& n=ngx_request();std::lock_guard l(n.mu);if(n.enabled&&!n.directory.empty())return std::clamp(ngx_scale(n.mode),.25f,1.f);}{auto& f=fsr_request();std::lock_guard l(f.mu);if(f.enabled&&!f.directory.empty())return std::clamp(fsr_scale(f.mode),.25f,1.f);}return std::nullopt;}
     static bool upscaler_requested(){{auto& n=ngx_request();std::lock_guard l(n.mu);if(n.enabled&&!n.directory.empty())return true;}{auto& f=fsr_request();std::lock_guard l(f.mu);if(f.enabled&&!f.directory.empty())return true;}return false;}
     // Ordinary calls: recording finished, then deferred calls in issue order.
     void await_recording(std::unique_lock<std::mutex>& lock){record_cv.wait(lock,[&]{return !record_pending&&!record_running;});if(record_failed){record_failed=false;throw std::runtime_error(record_error);}}
@@ -1551,6 +1553,13 @@ struct Renderer {uint32_t recipe_generation=1;
         } catch (...) { if(batch_command)wait(next_completion);destroy_buffer(staging); destroy_texture(texture); throw; }
         destroy_buffer(staging); collect();
     }
+    struct PendingStream {uint32_t width{},height{},format{};std::vector<uint8_t> data;bool queued{};};
+    std::mutex stream_mutex;std::unordered_map<uint64_t,PendingStream> pending_streams;
+    void apply_pending_stream(uint64_t id){std::vector<uint8_t> data;uint32_t width,height,format;
+        {std::lock_guard s(stream_mutex);auto& pending=pending_streams[id];pending.queued=false;data.swap(pending.data);width=pending.width;height=pending.height;format=pending.format;}
+        if(!data.empty())update_stream_texture(id,width,height,format,data.data(),data.size());
+        std::lock_guard s(stream_mutex);auto& pending=pending_streams[id];if(pending.data.empty()){data.clear();pending.data.swap(data);} // keep the capacity
+    }
     void update_stream_texture(uint64_t id,uint32_t width,uint32_t height,uint32_t format,const void* rgba,uint64_t bytes) {
         if(recording || !id || !rgba || !width || !height || format>1 || width>16384 || height>16384 || bytes!=uint64_t(width)*height*4)
             throw std::runtime_error("invalid streaming texture update");
@@ -2026,7 +2035,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if (recording) throw std::runtime_error("resource removal must precede begin_frame");
         if (!id || kind > 7) throw std::runtime_error("invalid resource kind/id");
         invalidate_world_recipes(kind,id,kind==3);
-        if (kind == 0) { auto it = textures.find(id); if (it != textures.end()) { retired.push_back({ next_completion,it->second,{} }); textures.erase(it); recycle_cached_texture(id); } }
+        if (kind == 0) { {std::lock_guard s(stream_mutex);pending_streams.erase(id);} auto it = textures.find(id); if (it != textures.end()) { retired.push_back({ next_completion,it->second,{} }); textures.erase(it); recycle_cached_texture(id); } }
         else if(kind == 1) { auto it = meshes.find(id); if (it != meshes.end()) { retired.push_back({ next_completion,{},it->second }); meshes.erase(it); } }
         else if(kind==2) { auto it = stock.meshes.find(id); if (it != stock.meshes.end()) { retired.push_back({ next_completion,{},it->second }); stock.meshes.erase(it); } }
         else if(kind==3) { auto it=world.meshes.find(id);if(it!=world.meshes.end()){retired.push_back({next_completion,{},it->second});world.meshes.erase(it);} }
@@ -2249,6 +2258,14 @@ template<class Fn> int32_t call_deferrable_scene(void* context, Fn fn) {
     {std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){renderer->deferred.push_back({std::move(fn),true});return 0;}}
     return call(context,fn);
 }
+// Calls whose state has its own lock: no api_mutex, no wait for recording.
+template<class Fn> int32_t call_unlocked(void* context, Fn&& fn) {
+    if (!context) { global_error = "null Vulkan context"; return -1; }
+    auto* renderer = static_cast<Renderer*>(context);
+    try { return fn(*renderer); }
+    catch (const std::exception& e) { global_error = e.what(); return -1; }
+    catch (...) { global_error = "unknown native Vulkan error"; return -1; }
+}
 // Reads answered from the launch snapshot while recording; a snapshot
 // function returning nullopt falls back to the ordinary (waiting) call.
 template<class Snapshot,class Fn> int32_t call_snapshot(void* context,Snapshot&& snapshot,Fn&& fn){
@@ -2322,6 +2339,13 @@ int32_t SEVK_CALL sevk_upload_mesh(void* context, uint64_t id, const SevkVertex*
     return call(context, [&](Renderer& r) { r.upload_mesh(id,vertices,vertex_count,indices,index_count); return 0; });
 }
 int32_t SEVK_CALL sevk_update_stream_texture(void* context,uint64_t id,uint32_t width,uint32_t height,uint32_t format,const void* data,uint64_t bytes) {
+    // While recording, keep only the latest frame per texture and queue one upload for it, applied before the
+    // next frame opens; video frames otherwise waited for the whole recording.
+    if(context&&id&&data&&bytes==uint64_t(width)*height*4&&width&&height&&width<=16384&&height<=16384&&format<=1){auto* r=static_cast<Renderer*>(context);bool in_flight;{std::lock_guard q(r->deferred_mutex);in_flight=r->record_in_flight;}
+        if(in_flight){bool enqueue;{std::lock_guard s(r->stream_mutex);auto& pending=r->pending_streams[id];pending.width=width;pending.height=height;pending.format=format;
+                auto* bytes_in=static_cast<const uint8_t*>(data);pending.data.assign(bytes_in,bytes_in+bytes);enqueue=!pending.queued;pending.queued=true;}
+            if(enqueue){std::lock_guard q(r->deferred_mutex);r->deferred.push_back({[id](Renderer& renderer){renderer.apply_pending_stream(id);return 0;},false});}
+            return 0;}}
     return call(context,[&](Renderer& r){r.update_stream_texture(id,width,height,format,data,bytes);return 0;});
 }
 int32_t SEVK_CALL sevk_upload_texture_mips(void* context, uint64_t id, uint32_t width, uint32_t height, uint32_t format, uint32_t srgb, const void* data, uint64_t bytes, uint32_t mip_count) {
@@ -2572,8 +2596,12 @@ int32_t SEVK_CALL sevk_fg_status(SevkFrameGenStatus* status){return Renderer::fg
 int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32_t height,uint32_t* render_width,uint32_t* render_height,float* fraction){
     if(!width || !height || !render_width || !render_height || !fraction)return -1;
     auto resolve=[&](float value){*render_width=std::max(1u,uint32_t(std::lround(width*value)));*render_height=std::max(1u,uint32_t(std::lround(height*value)));*fraction=value;};
-    // Upscalers rewrite the fraction on the owner thread; those frames wait.
-    return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{if(Renderer::upscaler_requested())return std::nullopt;resolve(r.snapshot.render_fraction);return 0;},[&](Renderer& r){
+    // While recording, an active upscaler's fraction is computed from its request (no wait), published in the
+    // snapshot and applied to render_fraction by a deferred call before the next frame opens.
+    return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{
+        if(auto upscaled=Renderer::upscaler_fraction()){float value=*upscaled;r.snapshot.render_fraction=value;
+            r.deferred.push_back({[value](Renderer& renderer){renderer.render_fraction=value;return 0;},false});resolve(value);return 0;}
+        resolve(r.snapshot.render_fraction);return 0;},[&](Renderer& r){
         if(r.recording)throw std::runtime_error("cannot resolve world resolution during recording");
         r.ngx_apply_scale();r.fsr_apply_scale();resolve(r.render_fraction);return 0;
     });
@@ -2647,8 +2675,10 @@ int32_t SEVK_CALL sevk_guest_replay_now(void* ctx,uint32_t mark){
 }
 uint64_t SEVK_CALL sevk_guest_replay_count(void* ctx){uint64_t count=0;call(ctx,[&](Renderer& r){count=r.guest.replay_count;return 0;});return count;}
 int32_t SEVK_CALL sevk_get_guest_frame(void* ctx, SevkGuestFrame* frame){if(!frame || frame->size < sizeof(SevkGuestFrame) || frame->abi_version != SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){r.guest_refresh_frame();*frame=r.guest.frame;frame->size=sizeof(SevkGuestFrame);frame->abi_version=SEVK_ABI_VERSION;return 0;});}
-int32_t SEVK_CALL sevk_get_ray_capabilities(void* ctx, SevkRayCapabilities* caps){if(!caps)return -1;if(!ctx)ctx=active_context;return call(ctx,[&](Renderer& r){return r.get_ray_capabilities(caps);});}
-int32_t SEVK_CALL sevk_set_ray_options(void* ctx, const SevkRayOptions* options){if(!options)return -1;if(!ctx)ctx=active_context;return call(ctx,[&](Renderer& r){return r.set_ray_options(*options);});}
+// Ray capabilities and options are guarded by ray.mutex alone, so they do not wait for recording (SE-RT queries
+// the capabilities every frame).
+int32_t SEVK_CALL sevk_get_ray_capabilities(void* ctx, SevkRayCapabilities* caps){if(!caps)return -1;if(!ctx)ctx=active_context;return call_unlocked(ctx,[&](Renderer& r){return r.get_ray_capabilities(caps);});}
+int32_t SEVK_CALL sevk_set_ray_options(void* ctx, const SevkRayOptions* options){if(!options)return -1;if(!ctx)ctx=active_context;return call_unlocked(ctx,[&](Renderer& r){return r.set_ray_options(*options);});}
 int32_t SEVK_CALL sevk_set_postprocess(void* ctx,const SevkPostprocessConfig* config){if(!config)return -1;return call_deferrable(ctx,[config_copy=*config](Renderer& r){auto* config=&config_copy;r.set_postprocess(*config);return 0;});}
 int32_t SEVK_CALL sevk_get_postprocess_stats(void* ctx,SevkPostprocessStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){*stats=r.post.stats;return 0;});}
 int32_t SEVK_CALL sevk_queue_environment(void* ctx,const SevkEnvironmentDraw* draws,uint32_t count){return call_deferrable(ctx,[draws_copy=copy_in(draws,count),count](Renderer& r){auto* draws=draws_copy.get();r.queue_environment(draws,count);return 0;});}

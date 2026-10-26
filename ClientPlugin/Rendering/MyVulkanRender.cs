@@ -344,7 +344,7 @@ public sealed class MyVulkanRender : IMyRender
             FrameProfiler.Lap(FrameProfiler.Section.Host);
             long nativeStart = System.Diagnostics.Stopwatch.GetTimestamp();
             GuestBridge.Bind(backend, scene);
-            BackendRuntime.RaiseFrame();
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GuestFrame))BackendRuntime.RaiseFrame();
             if(backend.PipelinedRecordingEnabled)SampleDiagnostics();
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeRecord)){if(backend.PipelinedRecordingEnabled)backend.EndFrameAsync();else backend.EndFrame();} frameOpen = false;
             shadows.CommitPreparedFrame();

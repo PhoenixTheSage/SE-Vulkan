@@ -161,7 +161,7 @@ public static class BackendRuntime
     public static void RaisePreparation()
     {
         Action[] copy;lock(Sync)copy=preparationListeners.ToArray();
-        foreach(var listener in copy)try{listener();}catch(Exception error){RecordFailure("guest preparation: "+error.Message);}
+        foreach(var listener in copy){long start=GuestTiming.Start();try{listener();}catch(Exception error){RecordFailure("guest preparation: "+error.Message);}GuestTiming.Stop("preparation",listener,start);}
     }
     public static void AddFrameListener(Action listener)
     {
@@ -174,8 +174,12 @@ public static class BackendRuntime
     {
         Action<double[],float[]>[] copy;lock(Sync)copy=sceneListeners.ToArray();
         foreach(var listener in copy)
+        {
+            long start=GuestTiming.Start();
             try { listener((double[])camera.Clone(),(float[])sunToward.Clone()); }
             catch(Exception error) { RecordFailure("guest scene: "+error.Message); }
+            GuestTiming.Stop("scene",listener,start);
+        }
     }
     public static void RaiseFrame()
     {
@@ -183,9 +187,12 @@ public static class BackendRuntime
         lock (Sync) copy = frameListeners.ToArray();
         foreach (var listener in copy)
         {
+            long start = GuestTiming.Start();
             try { listener(); }
             catch (Exception error) { RecordFailure("guest frame: " + error.Message); }
+            GuestTiming.Stop("frame", listener, start);
         }
+        GuestTiming.FrameDone();
     }
     public static void SetActive(RendererBackend backend, string reason)
     {

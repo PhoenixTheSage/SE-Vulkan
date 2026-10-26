@@ -1445,3 +1445,114 @@ Most other phases rose 5–10%, because recording now runs concurrently.
   world clear).
 - **A read that serves both scheduling and statistics should be split.** The
   scheduling half can be exact early; the counters cannot.
+
+## Second scene and the user's plugin set (2026-10-26)
+
+A live session in the same Pertam save, in a station interior with an in-world
+video screen, ran at about 11.5 ms (87 FPS). That was with every plugin
+feature set to vanilla, DLSS off, FXAA on, and validation and the profiler
+off. The benchmark reported about 6.2 ms.
+
+### Setup
+
+- **Pinned worlds**, under `TestResults/Worlds` (git-ignored). The live save
+  was overwritten with the interior position, so each harness world is now a
+  pinned copy:
+  - `Pertam-Orbit`, the original benchmark world (copied from a run root);
+  - `Pertam-Interior`, the new save.
+
+  `bench-sets.ps1` and `lighting-lane.ps1` use `Pertam-Orbit`; the interior
+  lanes are `IN*`.
+- **`Run-Isolated.ps1 -UserPlugins`** keeps the source profile's DevFolder
+  plugins and local plugin sources, their Storage settings and the compiled
+  DevFolder cache. It drops the Vulkan repository's own source entry and
+  DevFolder entry, which would otherwise replace the benchmark build and
+  break the harness plugin's binding to `Vulkan`. Without the switch, runs
+  already include the profile's GitHub plugins and mods.
+
+### Results (interior)
+
+| Lane | Interval mean / P95 (ms) | Ordinary-call waits per frame |
+|---|---|---|
+| Vulkan alone (`IN*`) | **5.79** / 8.0 | 0.13 ms |
+| Plugin set, before | **14.93** / 20.8 | 4.47 ms |
+| Plugin set, after the fixes below | **9.57** / 13.5 | 0.14 ms |
+
+- The interior view itself is not slower than the orbit view.
+- **The plugin set was waiting on the recording lock.** The census showed:
+  - `sevk_update_stream_texture`: 3,004 waits, about 3.5 ms per frame. It
+    uploads a 1920×1080 in-world video every frame (video 7330, driven by
+    the plugin set; the Vulkan-alone run played only the intro video);
+  - `sevk_get_ray_capabilities`: SE-RT queries it every frame, about 0.9 ms
+    per frame.
+- **Fixes:**
+  - while recording, a stream texture update keeps the latest frame per
+    texture in a reused buffer and queues one upload, replayed before the
+    next frame opens. Removing the texture drops the pending frame;
+  - ray capabilities and options take only `ray.mutex` (`call_unlocked`);
+  - with an upscaler requested, `sevk_resolve_render_resolution` computes the
+    upscaler's fraction from its request and queues the `render_fraction`
+    write, instead of waiting for recording. This is the DLSS/FRS case, which
+    in the first live screenshot put about 4 ms into the "Particles and
+    decals" lap.
+- **What remains (3.8 ms): the plugins' own frame work.** The harness
+  frame-gap report puts the renderer's Present body at 2.85 ms per frame with
+  the plugin set, against 0.07 ms alone. Present runs
+  `BackendRuntime.RaiseFrame()`, the plugin frame callbacks (Anomaly guest
+  passes, HDR, DLSS, FrameGen and the rest), before launching recording.
+  With every feature off, that is idle plugin and framework cost, and it
+  needs its own investigation in the plugin repositories.
+- Draw-to-Present on the render thread is 6.62 ms with the plugin set,
+  against about 5.6 alone.
+
+Runs:
+- Vulkan alone: `Vulkan-aaba2530…`;
+- plugin set before: `Vulkan-b8149378…`;
+- plugin set after: `Vulkan-ae8d1b3b…`, CpuDetail `Vulkan-9dbe4372…`.
+
+### Idle plugin cost in Present (2026-10-26, continued)
+
+New instrumentation, CpuDetail runs only:
+- the `GuestFrame` profiler phase around `BackendRuntime.RaiseFrame`;
+- `Reports/guest-listeners.json` (`ClientPlugin/Bootstrap/GuestTiming.cs`),
+  per-listener time and allocation for the frame, preparation and scene
+  callbacks.
+
+Findings:
+
+- **One listener was nearly all of it:** Anomaly's `RenderHost.SubmitVulkan`.
+  `GuestFrame` took 3.16 ms and 1,058 KB per frame with every feature off.
+  Temporary step laps inside Anomaly found:
+  - **Bridge reflection.** Every `GuestBridgeClient.Call`, `ResourceEpoch`
+    read and `SupportsPacketFlags` check scanned every loaded assembly
+    (`Find()`), and `Call` also scanned every method. This was about 2 ms,
+    mostly through `ImagesFor` → `Catalog` → `GuestRendererImage.IsAvailable`
+    → `ResourceEpoch`.
+  - **`Ordered(programs)`** copied and sorted the program list once per mark,
+    seven times a frame.
+  - **Plugin portable callbacks while off:** Prism.SSGI `guest.prepare`
+    0.19 ms (it re-pushed every setting) and VolumetricClouds `uniforms`
+    0.14 ms (it uploaded studio placement).
+- **Fixes**, in their repositories and uncommitted:
+  - Anomaly caches the bridge type, methods and properties, applies the same
+    caching to `Dx11Call` for DX11 parity, and orders by mark once per frame;
+  - Prism.SSGI keeps only its disable flags while off;
+  - VolumetricClouds returns early while disabled.
+- **CpuDetail after:** `GuestFrame` 0.50 ms and 120 KB per frame;
+  `GuestPreparation` 0.33 → 0.05 ms; frame allocation 1,550 → 511 KB.
+
+Paired, interior, both orders
+(`TestResults/Interior-PluginSet-Paired-2026-10-26.json`):
+
+| Lane | Interval means (ms) | Mean |
+|---|---|---|
+| Vulkan alone | 5.87, 6.09 | 5.98 |
+| Plugin set, all fixes | 6.96, 8.36 | **7.66** (from 14.93, then 9.57) |
+
+The remaining gap is about 1.7 ms. GPU accounts for about 0.6 ms (3.5–3.6
+against 2.9). Anomaly's six owned producer passes (CameraVelocity,
+LinearDepth, HiZ, ReactiveClear, LitMips, HistoryCopy) submit every frame
+with no consumer. That gap is filed in Anomaly's `wiki/Framework-gaps.md`
+("Idle framework cost on Vulkan"), for consumer-driven activation on both
+backends. The second plugin-set run was 1.4 ms slower than the first;
+repeat the pair before quoting a final number.

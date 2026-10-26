@@ -103,6 +103,8 @@ param(
     [switch]$CompareRetainedObjects,
     [switch]$CompareWorldIndirect,
     [ValidateSet('individual','batch')][string]$NsightGpuWorkload='individual',
+    # Keep the source profile's local DevFolder plugins (and their Storage settings) instead of only Vulkan.
+    [switch]$UserPlugins,
     [switch]$PassThru
 )
 $ErrorActionPreference='Stop'
@@ -203,10 +205,19 @@ foreach($folder in 'GitHub','NuGet','Sources'){
 $sourcesPath=Join-Path $edition 'Sources/sources.xml'
 if(Test-Path -LiteralPath $sourcesPath){
     $sources=[xml](Get-Content -LiteralPath $sourcesPath -Raw)
-    foreach($name in 'LocalPluginSources','RemotePluginSources'){$node=$sources.DocumentElement.SelectSingleNode($name);if($node){$node.RemoveAll()}}
+    foreach($name in 'LocalPluginSources','RemotePluginSources'){if($UserPlugins -and $name -eq 'LocalPluginSources'){continue};$node=$sources.DocumentElement.SelectSingleNode($name);if($node){$node.RemoveAll()}}
+    # The Vulkan repository's own source entry shares the plugin id and would replace the benchmark build.
+    if($UserPlugins){$node=$sources.DocumentElement.SelectSingleNode('LocalPluginSources');if($node){foreach($plugin in @($node.ChildNodes)){$folder=$plugin.SelectSingleNode('Folder');if($folder -and [IO.Path]::GetFullPath($folder.InnerText).TrimEnd('') -eq [IO.Path]::GetFullPath($repository).TrimEnd('')){[void]$node.RemoveChild($plugin)}}}}
     $sources.Save($sourcesPath)
 }
 Copy-Item -LiteralPath (Join-Path $sourcePulsar 'Interim/config.xml') -Destination $edition
+if($UserPlugins){
+    # Compiled DevFolder plugins are cached by source fingerprint; the copy only saves the rebuild at startup.
+    $devCache=Join-Path $sourcePulsar 'Interim/DevFolder'
+    if(Test-Path -LiteralPath $devCache){Copy-Item -LiteralPath $devCache -Destination $edition -Recurse;Get-ChildItem -LiteralPath (Join-Path $edition 'DevFolder') -Directory -Filter 'AE72EBB8-*' | Remove-Item -Recurse -Force}
+    # Plugin settings; mod storage, the Vulkan pipeline cache and Vulkan.cfg (written below) stay out.
+    Get-ChildItem -LiteralPath (Join-Path $sourceData 'Storage') | Where-Object {$_.Name -notlike '*.sbm_*' -and $_.Name -notlike 'Vulkan*' -and $_.Name -notlike '*.Log'} | Copy-Item -Destination (Join-Path $data 'Storage') -Recurse -Force
+}
 Copy-Item -LiteralPath $(if($BenchmarkPlugin){$BenchmarkPlugin}else{Join-Path $repository 'ClientPlugin/bin/Release/net10.0/Vulkan.dll'}) -Destination (Join-Path $localVulkan 'plugin.dll')
 Copy-Item -LiteralPath (Join-Path $repository 'Vulkan.xml') -Destination (Join-Path $localVulkan 'plugin.xml')
 if($BenchmarkAssets -and !(Test-Path -LiteralPath $BenchmarkAssets -PathType Container)){throw 'Benchmark assets must be an existing directory'}
@@ -276,7 +287,9 @@ if(Test-Path -LiteralPath (Join-Path $sourceData 'SmoothFrames.cfg')){
 [IO.File]::WriteAllText((Join-Path $data '.se-vulkan-performance'),$data)
 $profile=[xml](Get-Content -LiteralPath (Join-Path $sourcePulsar 'Interim/Profiles/Current.xml') -Raw)
 $profile.Profile.Name='Isolated scene performance '+$Backend
-$profile.Profile.SelectSingleNode('DevFolder').RemoveAll()
+$devFolder=$profile.Profile.SelectSingleNode('DevFolder')
+if($UserPlugins){$seen=@{};foreach($entry in @($devFolder.ChildNodes)){$id=$entry.SelectSingleNode('Id').InnerText;if($id -eq 'AE72EBB8-F4A8-4ADB-A400-19CC46FDAB79' -or $seen.ContainsKey($id)){[void]$devFolder.RemoveChild($entry)}else{$seen[$id]=$true}}}
+else{$devFolder.RemoveAll()}
 $local=$profile.Profile.SelectSingleNode('Local');$local.RemoveAll()
 foreach($id in 'AE72EBB8-F4A8-4ADB-A400-19CC46FDAB79','ScenePerformanceHarness.dll'){$node=$profile.CreateElement('string');$node.InnerText=$id;[void]$local.AppendChild($node)}
 if($RichHudAudit){$node=$profile.CreateElement('string');$node.InnerText='A9C29274-E447-49EE-881B-C980E6D190FD';[void]$local.AppendChild($node)}
