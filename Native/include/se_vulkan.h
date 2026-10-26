@@ -283,7 +283,7 @@ typedef struct SevkModelInstance {
     uint32_t order,flags,cascade_mask,cell;
     int32_t x,y,z;
     float origin[3],radius;
-    uint32_t reserved; /* Optional first-seen main-group order, <=order; zero uses order. */
+    uint32_t reserved; /* Optional main-group order (the main sort key; per-frame first-seen or session-stable); zero uses order. */
     float instance[16];
 } SevkModelInstance;
 typedef struct SevkModelGroupStats {

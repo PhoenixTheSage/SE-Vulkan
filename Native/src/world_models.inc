@@ -27,7 +27,7 @@ void append_models(const SevkModelInstance* instances,uint32_t count,const uint3
     m.stats={sizeof(SevkModelGroupStats),SEVK_ABI_VERSION,1,count,0,0,uint32_t(m.definitions.size()),legacy_count};
     for(uint32_t i=1;i<legacy_count;++i)if(legacy_order[i]<=legacy_order[i-1])throw std::runtime_error("noncanonical legacy model ordering");
     for(uint32_t i=0;i<count;++i){const auto& source=instances[i];uint32_t index=uint32_t(source.model)-1,generation=uint32_t(source.model>>32);
-        if(index>=m.definitions.size() || !generation || m.definitions[index].generation!=generation || source.reserved>source.order || (source.cell!=16&&source.cell!=64) || (i && source.order<=instances[i-1].order))throw std::runtime_error("invalid model instance handle/order/cell");
+        if(index>=m.definitions.size() || !generation || m.definitions[index].generation!=generation || (source.cell!=16&&source.cell!=64) || (i && source.order<=instances[i-1].order))throw std::runtime_error("invalid model instance handle/order/cell");
         ModelGroupKey key{source.model,source.flags,source.cascade_mask,source.cell,source.x,source.y,source.z,source.reserved};
         auto [entry,added]=m.lookup.try_emplace(key,uint32_t(m.groups.size()));if(added){m.groups.emplace_back();m.groups.back().key=key;}
         auto& group=m.groups[entry->second];
