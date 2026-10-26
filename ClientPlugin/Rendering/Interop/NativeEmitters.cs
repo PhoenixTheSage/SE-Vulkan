@@ -57,7 +57,7 @@ public sealed partial class NativeBackend
 
     // Packet signature gate (SE_VULKAN_PACKET_SIGNATURE=1 or PacketSignatureEnabled):
     // FNV-1a over every queued world packet's fields, constants and instances at
-    // QueueWorld, before packing. A forked producer must leave it unchanged.
+    // QueueWorld, before packing; billboard packets get their own signature. A forked producer must leave it unchanged.
     public bool PacketSignatureEnabled {get;set;}=Environment.GetEnvironmentVariable("SE_VULKAN_PACKET_SIGNATURE")=="1";
     public ulong LastPacketSignature {get;private set;}
     public int LastPacketSignatureCount {get;private set;}
@@ -79,5 +79,14 @@ public sealed partial class NativeBackend
         }
         return hash;
     }
-    void NotePacketSignature(){if(!PacketSignatureEnabled)return;LastPacketSignature=ComputePacketSignature();LastPacketSignatureCount=worldPackets.Count;}
+    // Billboard packets, separately: HUD and flare content changes frame to frame even when paused.
+    public static ulong BillboardSignature(List<NativeBillboardDraw> packets)
+    {
+        ulong hash=Mix(14695981039346656037UL,(ulong)packets.Count);
+        foreach(var b in packets){hash=Mix(hash,b.Texture);hash=Mix(hash,b.Flags);hash=Mix(hash,b.Bucket);
+            if(b.Vertices!=null)foreach(float v in b.Vertices)hash=MixFloat(hash,v);hash=MixBytes(hash,b.Data,b.Data?.Length??0);}
+        return hash;
+    }
+    public ulong LastBillboardSignature {get;private set;}
+    void NotePacketSignature(){if(!PacketSignatureEnabled)return;LastPacketSignature=ComputePacketSignature();LastPacketSignatureCount=worldPackets.Count;LastBillboardSignature=BillboardSignature(BillboardPackets);}
 }

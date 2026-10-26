@@ -60,5 +60,21 @@ class Program
         Check(backend.BillboardPackets.Count==32,"transient Rich HUD triangle list reaches Vulkan");
         for(int i=0;i<32;i++)
             Check(BitConverter.ToSingle(backend.BillboardPackets[i].Data,0)==i/32f,"PostPP layer order "+i);
+        // Forked emission (plan 2.2): collect on this thread, flares and emission on a worker, finish
+        // here. Equals serial emission with the flare billboard queued first, both when the worker's
+        // packets are kept and when a texture miss makes the finish re-emit on this thread.
+        string Signature()=>string.Join("|",backend.BillboardPackets.ConvertAll(p=>p.Texture+","+p.Flags+","+p.Bucket+","+string.Join(",",p.Vertices)+","+Convert.ToBase64String(p.Data)));
+        void Flare()=>renderer.AddPointBillboard(material.Id,Vector4.One,new Vector3D(110,200,280),2,0);
+        VulkanBillboards.Verify=true;
+        backend.BillboardPackets.Clear();Flare();renderer.Draw(shared);string serial=Signature();
+        foreach(bool resident in new[]{true,false})
+        {
+            ClientPlugin.Rendering.Content.VulkanTextureCache.Resident=resident;backend.BillboardPackets.Clear();
+            renderer.Collect(shared);var worker=new System.Threading.Thread(()=>renderer.EmitAhead(Flare));worker.Start();worker.Join();renderer.FinishAhead();
+            Check(Signature()==serial&&backend.BillboardPackets.Count==33,resident?"forked flares and billboards match serial packets":"texture miss falls back to the same packets on the render thread");
+        }
+        ClientPlugin.Rendering.Content.VulkanTextureCache.Resident=true;
+        Check(renderer.AheadFrames==1&&renderer.AheadFallbacks==1,"fork counters record one kept and one re-emitted frame");
+        Check(renderer.VerifyMatches==1&&renderer.VerifyMismatches==0,"verify mode re-emits the kept frame on this thread and finds it identical");VulkanBillboards.Verify=false;
     }
 }

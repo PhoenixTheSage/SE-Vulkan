@@ -40,6 +40,9 @@ public sealed class MyVulkanRender : IMyRender
     private VulkanWindowHost host;
     private VulkanScene scene;
     private VulkanParticles particles;
+    // Flares and billboards forked over lighting setup and publication; joined before QueueWorld.
+    private RenderJobs.Job? effectsJob;
+    private void JoinEffects(){var job=effectsJob;if(job==null)return;effectsJob=null;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Billboards)){job.Value.Wait();scene.FinishBillboards();}}
     private VulkanDecals decals;private Vector3D previousParticleCamera;private bool haveParticleCamera;
     private VulkanVoxels voxels;
     private VulkanEnvironment environment;
@@ -277,7 +280,8 @@ public sealed class MyVulkanRender : IMyRender
             if (drawScene)
             {
                 voxels.Foliage.Distance=renderConfiguration.User.GrassDrawDistance; voxels.Foliage.Density=renderConfiguration.User.GrassDensityFactor;
-                voxels.ProbeDrawDistance=probes.Settings.DrawDistance;voxels.ShadowDrawDistance=shadows.DrawDistance;voxels.Draw(camera,voxelDrawFrustum,SharedData.VisibleObjects.Write);MatrixD flareProjection=cameraProjection;flareProjection.M33=flareProjection.M34-flareProjection.M33;flareProjection.M43=flareProjection.M44-flareProjection.M43;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Flares))scene.DrawFlares(cameraView,flareProjection,BackBufferResolution.X,BackBufferResolution.Y,renderConfiguration.FlaresIntensity); using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Billboards))scene.DrawBillboards(SharedData); if(!scene.NativePassSceneEnabled)scene.AddVisible(SharedData.VisibleObjects.Write);
+                voxels.ProbeDrawDistance=probes.Settings.DrawDistance;voxels.ShadowDrawDistance=shadows.DrawDistance;voxels.Draw(camera,voxelDrawFrustum,SharedData.VisibleObjects.Write);MatrixD flareProjection=cameraProjection;flareProjection.M33=flareProjection.M34-flareProjection.M33;flareProjection.M43=flareProjection.M44-flareProjection.M43;if(VulkanScene.EffectsAheadEnabled){scene.CollectBillboards(SharedData);var flareView=cameraView;int flareWidth=BackBufferResolution.X,flareHeight=BackBufferResolution.Y;float flareIntensity=renderConfiguration.FlaresIntensity;effectsJob=RenderJobs.Start(()=>scene.DrawFlaresAndBillboardsAhead(flareView,flareProjection,flareWidth,flareHeight,flareIntensity));}
+                else{using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Flares))scene.DrawFlares(cameraView,flareProjection,BackBufferResolution.X,BackBufferResolution.Y,renderConfiguration.FlaresIntensity); using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Billboards))scene.DrawBillboards(SharedData);} if(!scene.NativePassSceneEnabled)scene.AddVisible(SharedData.VisibleObjects.Write);
             }
             FrameProfiler.Lap(FrameProfiler.Section.Voxels);
             }
@@ -305,14 +309,16 @@ public sealed class MyVulkanRender : IMyRender
                 // Finish every scene/lighting resource consumer before publishing it.
                 if(backend.GpuSceneEnabled){using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads();uploadsOpen=false;}
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene))scene.PublishNativePassScene();if(scene.NativePassSceneEnabled||backend.GpuSceneEnabled)scene.AddVisible(SharedData.VisibleObjects.Write);
+                JoinEffects();
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.QueueWorld)){
                 backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,cameraView,projection,worldResolution.X,worldResolution.Y,frameLight,scene.BloomEmissiveness,scene.BackgroundOrientation,environment.Fog,(float)CurrentDrawTime.Seconds,animationDelta,renderConfiguration,haveParticleCamera?(Vector3)(camera-previousParticleCamera):Vector3.Zero,postprocess.Settings,backend.ProbesAvailableForFrame,resolution.Fraction,textureMultipliers),
                     NativeBackend.MatrixValues(reversedProjection),NativeBackend.MatrixValues(MatrixD.Invert(reversedProjection)));previousParticleCamera=camera;haveParticleCamera=true;
                 }
                 FrameProfiler.Lap(FrameProfiler.Section.Queue);
             }
+            JoinEffects();
             }
-            finally { if(uploadsOpen)using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads(); }
+            finally { if(effectsJob!=null){effectsJob.Value.Join();effectsJob=null;} if(uploadsOpen)using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads(); }
             backend.SetHdrQuality(renderConfiguration.User.HqTarget);
             FrameProfiler.Lap(FrameProfiler.Section.Queue);
             MatrixD reversedFrame=viewProjection;reversedFrame.M13=reversedFrame.M14-reversedFrame.M13;reversedFrame.M23=reversedFrame.M24-reversedFrame.M23;reversedFrame.M33=reversedFrame.M34-reversedFrame.M33;reversedFrame.M43=reversedFrame.M44-reversedFrame.M43;
@@ -391,7 +397,7 @@ public sealed class MyVulkanRender : IMyRender
             VulkanDiagnostics.Set("Glass, decals and OIT",transparent.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Stock glass draws="+transparent.GlassDraws+", instances="+transparent.Instances+", OIT resolves="+transparent.Resolves+", decal draws="+transparent.DecalDraws+", glass layer draws="+transparent.GlassLayerDraws+", copied decal residency="+decals.Count+". Stock near/far probe and BRDF inputs bound.",stats.SubmittedFrames);
             VulkanDiagnostics.Set("GPU particles",particle.Frames>0?SubsystemState.Active:SubsystemState.Ready,"Stock CPU effects="+particles.Effects+", GPU frames="+particle.Frames+", compute dispatches="+particle.Dispatches+", indirect draws="+particle.Draws+", completed alive/dead="+particle.Alive+"/"+particle.Dead+", indices="+particle.Indices+". Counters read only from completed frame slots; no status stalls.",stats.SubmittedFrames);
             var jobs=backend.GetJobStats();ulong jobCount=0,jobWait=0;foreach(var kind in jobs.Kinds){jobCount+=kind.Jobs;jobWait+=kind.WaitNs;}
-            VulkanDiagnostics.Set("Native job pool",jobCount>0?SubsystemState.Active:SubsystemState.Ready,"Workers="+jobs.Workers+" (SE_VULKAN_JOB_THREADS), stage threads="+jobs.StageThreads+"; jobs="+jobCount+", mean queue wait="+(jobCount>0?(jobWait/(double)jobCount/1000).ToString("0.0"):"0")+" us; managed render jobs on "+(RenderJobs.OnGameScheduler?"SE ParallelTasks (VeryHigh)":".NET thread pool")+"; voxel emit-ahead frames="+voxels.EmitAheadFrames+", fallbacks="+voxels.EmitAheadFallbacks+".",stats.SubmittedFrames);
+            VulkanDiagnostics.Set("Native job pool",jobCount>0?SubsystemState.Active:SubsystemState.Ready,"Workers="+jobs.Workers+" (SE_VULKAN_JOB_THREADS), stage threads="+jobs.StageThreads+"; jobs="+jobCount+", mean queue wait="+(jobCount>0?(jobWait/(double)jobCount/1000).ToString("0.0"):"0")+" us; managed render jobs on "+(RenderJobs.OnGameScheduler?"SE ParallelTasks (VeryHigh)":".NET thread pool")+"; voxel emit-ahead frames="+voxels.EmitAheadFrames+", fallbacks="+voxels.EmitAheadFallbacks+"; billboards ahead frames="+scene.BillboardAheadFrames+", fallbacks="+scene.BillboardAheadFallbacks+(scene.BillboardVerifyMatches+scene.BillboardVerifyMismatches>0?", verify matches="+scene.BillboardVerifyMatches+", mismatches="+scene.BillboardVerifyMismatches:"")+".",stats.SubmittedFrames);
             if(scene.EarlyPassPrepareEnabled)VulkanDiagnostics.Set("Early pass preparation",scene.EarlyPrepareHits>0?SubsystemState.Active:SubsystemState.Ready,"Kept="+scene.EarlyPrepareHits+"; re-prepared="+scene.EarlyPrepareMisses+".",stats.SubmittedFrames);
             VulkanDiagnostics.Set("Flares",scene.FlareQueries>0?SubsystemState.Active:SubsystemState.Ready,"GPU depth queries="+scene.FlareQueries+", additive flare billboards="+scene.FlareBillboards+"; stock intensity curves and types; 16-sample asynchronous occlusion, up to two-frame latency.",stats.SubmittedFrames);
             var probeStats=backend.GetProbeStats();VulkanDiagnostics.Set("Environment probes",probeStats.Ready!=0?SubsystemState.Active:SubsystemState.Ready,"Faces="+probeStats.Faces+"; geometry="+probeStats.GeometryDraws+"; GGX="+probeStats.PrefilterPasses+"; blend="+probeStats.BlendPasses+"; atmosphere="+probeStats.AtmospherePasses+"; published="+probeStats.Ready,stats.SubmittedFrames);

@@ -1074,6 +1074,18 @@ namespace ClientPlugin.Rendering.Scene
         }
 
         public void DrawBillboards(MySharedData shared) => billboards.Draw(shared);
+        // Flares and billboards forked over lighting setup and pass publication (plan 2.2,
+        // SE_VULKAN_EFFECTS_AHEAD=0 turns it off): collect on the render thread at the serial point,
+        // run flares and billboard emission on a worker, finish on the render thread before QueueWorld.
+        public static bool EffectsAheadEnabled = System.Environment.GetEnvironmentVariable("SE_VULKAN_EFFECTS_AHEAD") != "0";
+        public bool EffectsAhead { get => EffectsAheadEnabled; set => EffectsAheadEnabled = value; }
+        public void CollectBillboards(MySharedData shared) => billboards.Collect(shared);
+        public void DrawFlaresAndBillboardsAhead(MatrixD view, MatrixD projection, int width, int height, float multiplier) => billboards.EmitAhead(() => DrawFlares(view, projection, width, height, multiplier));
+        public void FinishBillboards() => billboards.FinishAhead();
+        public long BillboardAheadFrames => billboards.AheadFrames;
+        public long BillboardAheadFallbacks => billboards.AheadFallbacks;
+        public long BillboardVerifyMatches => billboards.VerifyMatches;
+        public long BillboardVerifyMismatches => billboards.VerifyMismatches;
         public long BillboardCount => billboards.Submitted;
         public long UnsupportedBillboards => billboards.Unsupported;
         public long SkyboxDraws => skybox.Draws;

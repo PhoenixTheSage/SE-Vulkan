@@ -19,7 +19,13 @@ namespace ClientPlugin.Rendering.Content
 {
     public sealed class VulkanTextureCache
     {
-        public ulong GetTexture(string path) => 1;
+        // Resident-only contract of the production cache: a miss inside the scope throws.
+        public static bool Resident = true;
+        [System.ThreadStatic] private static bool strict;
+        public sealed class TextureNotResident : System.Exception { public TextureNotResident(string path) : base(path) { } }
+        public readonly struct ResidentScope : System.IDisposable { private readonly bool previous; internal ResidentScope(bool previous) { this.previous = previous; strict = true; } public void Dispose() => strict = previous; }
+        public static ResidentScope ResidentOnly() => new ResidentScope(strict);
+        public ulong GetTexture(string path) { if (strict && !Resident) throw new TextureNotResident(path); return 1; }
         public bool IsSingleChannel(ulong handle) => false;
     }
 }

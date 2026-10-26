@@ -24,15 +24,57 @@ namespace ClientPlugin.Rendering.Scene
 
         public VulkanBillboards(VulkanScene scene, NativeBackend backend) { this.scene = scene; this.backend = backend; }
 
-        public void Draw(MySharedData shared)
+        public void Draw(MySharedData shared){Collect(shared);Prepare();EmitPackets(backend.BillboardPackets);}
+        // Fork (job graph, plan 2.2): the render thread collects at the serial point; a worker then runs
+        // the flares, whose glare billboards go to a private capture list and follow the collected
+        // generated billboards exactly as they would through the queue, then prepares and emits into a
+        // pending list with resident-only texture reads. FinishAhead appends it on the render thread; a
+        // texture miss instead re-emits there from the same prepared frame.
+        [ThreadStatic] private static List<MyBillboard> capture;
+        private readonly List<MyBillboard> flareCapture = new List<MyBillboard>();
+        private readonly List<NativeBillboardDraw> pending = new List<NativeBillboardDraw>();
+        private bool pendingReady;
+        private MySharedData collected;
+        public long AheadFrames { get; private set; }
+        public long AheadFallbacks { get; private set; }
+        public static bool Verify = System.Environment.GetEnvironmentVariable("SE_VULKAN_EFFECTS_VERIFY") == "1";
+        private readonly List<NativeBillboardDraw> verifyScratch = new List<NativeBillboardDraw>();
+        public long VerifyMatches { get; private set; }
+        public long VerifyMismatches { get; private set; }
+        public void EmitAhead(Action flares)
         {
-            frame.Clear();
+            pendingReady = false; pending.Clear(); flareCapture.Clear();
+            capture = flareCapture; try { flares(); } finally { capture = null; }
+            frame.AddRange(flareCapture); flareCapture.Clear();
+            Prepare();
+            long submitted = Submitted, unsupported = Unsupported;
+            try { using (VulkanTextureCache.ResidentOnly()) EmitPackets(pending); pendingReady = true; }
+            catch (VulkanTextureCache.TextureNotResident) { pending.Clear(); Submitted = submitted; Unsupported = unsupported; }
+        }
+        public void FinishAhead()
+        {
+            if (pendingReady)
+            {
+                // Self-check (SE_VULKAN_EFFECTS_VERIFY=1): re-emit the same prepared frame here and compare.
+                if (Verify) { verifyScratch.Clear(); long submitted = Submitted, unsupported = Unsupported; EmitPackets(verifyScratch); Submitted = submitted; Unsupported = unsupported;
+                    if (SamePackets(verifyScratch, pending)) VerifyMatches++; else VerifyMismatches++; }
+                backend.BillboardPackets.AddRange(pending); pending.Clear(); pendingReady = false; AheadFrames++; return;
+            }
+            AheadFallbacks++; EmitPackets(backend.BillboardPackets);
+        }
+        public void Collect(MySharedData shared)
+        {
+            frame.Clear(); collected = shared;
             if (shared != null)
             {
                 foreach (MyBillboard billboard in shared.Billboards.Read.Billboards) frame.Add(Copy(billboard));
                 shared.ApplyActionOnPersistentBillboards(billboard => frame.Add(Copy(billboard)));
             }
             lock (generated) { frame.AddRange(generated); generated.Clear(); }
+        }
+        private void Prepare()
+        {
+            var shared = collected;
             var projections=new float[512];for(int j=0;j<32;j++)Array.Copy(NativeBackend.MatrixValues(MatrixD.Identity),0,projections,j*16,16);
             if(shared!=null)foreach(var entry in shared.Billboards.Read.Matrices){if(entry.Key<0 || entry.Key>=32)continue;var data=entry.Value;float width=backend.PresentationWidth,height=backend.PresentationHeight;MatrixD viewport=MatrixD.Identity;viewport.M11=data.Viewport.Width/width;viewport.M22=data.Viewport.Height/height;viewport.M41=data.Viewport.OffsetX/width;viewport.M42=(height-data.Viewport.OffsetY-data.Viewport.Height)/height;MatrixD matrix=data.ViewAtZero*data.Projection*viewport;Array.Copy(NativeBackend.MatrixValues(matrix),0,projections,entry.Key*16,16);}backend.SetBillboardProjections(projections);
             Vector3D camera = scene.Environment.CameraPosition;
@@ -56,6 +98,10 @@ namespace ClientPlugin.Rendering.Scene
                 return bucket != 0 ? bucket : Vector3D.DistanceSquared(WorldPosition(b), camera).CompareTo(Vector3D.DistanceSquared(WorldPosition(a), camera));
             });
             frame.AddRange(hudFrame);
+        }
+        private void EmitPackets(List<NativeBillboardDraw> target)
+        {
+            var shared = collected; Vector3D camera = scene.Environment.CameraPosition;
             for (int i = 0; i < frame.Count; ++i)
             {
                 MyBillboard billboard = frame[i];
@@ -121,12 +167,24 @@ namespace ClientPlugin.Rendering.Scene
                 // 32: Keen's emissive producer signal (ColorIntensity > 1), which HdrRender lifts by LdrIntensity under HDR.
                 uint flags=(material.CanBeAffectedByOtherLights?1u:0u)|(material.SoftParticleDistanceScale>0?2u:0u)|(material.AlphaCutout?4u:0u)|(billboard.ColorIntensity>1f?32u:0u);
                 uint bucket=billboard.BlendType==MyBillboard.BlendTypeEnum.Standard?1u:billboard.BlendType==MyBillboard.BlendTypeEnum.AdditiveBottom?0u:billboard.BlendType==MyBillboard.BlendTypeEnum.AdditiveTop?2u:billboard.BlendType==MyBillboard.BlendTypeEnum.LDR?3u:4u;
-                ulong texture=scene.TextureCache.GetTexture(material.Texture);if(scene.TextureCache.IsSingleChannel(texture))flags|=16;if(bucket!=1)flags|=8;if(backend.BillboardPackets.Count>=32768){Unsupported++;continue;}
-                backend.BillboardPackets.Add(new NativeBillboardDraw{Texture=texture,Flags=flags,Bucket=bucket,Vertices=vertices,Data=data});
+                ulong texture=scene.TextureCache.GetTexture(material.Texture);if(scene.TextureCache.IsSingleChannel(texture))flags|=16;if(bucket!=1)flags|=8;if(target.Count>=32768){Unsupported++;continue;}
+                target.Add(new NativeBillboardDraw{Texture=texture,Flags=flags,Bucket=bucket,Vertices=vertices,Data=data});
                 Submitted++;
             }
         }
 
+        private static bool SamePackets(List<NativeBillboardDraw> a, List<NativeBillboardDraw> b)
+        {
+            if (a.Count != b.Count) return false;
+            for (int i = 0; i < a.Count; i++)
+            {
+                var x = a[i]; var y = b[i];
+                if (x.Texture != y.Texture || x.Flags != y.Flags || x.Bucket != y.Bucket || x.Vertices.Length != y.Vertices.Length || x.Data.Length != y.Data.Length) return false;
+                for (int j = 0; j < x.Vertices.Length; j++) if (BitConverter.ToInt32(BitConverter.GetBytes(x.Vertices[j]), 0) != BitConverter.ToInt32(BitConverter.GetBytes(y.Vertices[j]), 0)) return false; // verify mode only
+                for (int j = 0; j < x.Data.Length; j++) if (x.Data[j] != y.Data[j]) return false;
+            }
+            return true;
+        }
         private static int Bucket(MyBillboard.BlendTypeEnum blend) => blend == MyBillboard.BlendTypeEnum.AdditiveBottom ? 0 : blend == MyBillboard.BlendTypeEnum.Standard ? 1 : (int)blend;
         private static Vector3D WorldPosition(MyBillboard billboard)
         {
@@ -172,7 +230,7 @@ namespace ClientPlugin.Rendering.Scene
             if(!MyUtils.GetBillboardQuadAdvancedRotated(out var quad,origin,radiusX,radiusY,0,camera))return;
             Enqueue(new MyBillboard{Material=material,Color=ApplyMaterial(color,material,origin),Position0=quad.Point0,Position1=quad.Point1,Position2=quad.Point2,Position3=quad.Point3,BlendType=blendType,ColorIntensity=1,SoftParticleDistanceScale=1,CustomViewProjection=-1,UVSize=Vector2.One});
         }
-        private void Enqueue(MyBillboard billboard) { lock (generated) generated.Add(billboard); }
+        private void Enqueue(MyBillboard billboard) { var target = capture; if (target != null) { target.Add(billboard); return; } lock (generated) generated.Add(billboard); }
         private Vector4 ApplyMaterial(Vector4 color, MyStringId id, Vector3D origin)
         {
             var material = MyTransparentMaterials.GetMaterial(id);

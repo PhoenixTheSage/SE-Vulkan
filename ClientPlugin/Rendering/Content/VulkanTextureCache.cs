@@ -59,6 +59,21 @@ namespace ClientPlugin.Rendering.Content
         public int Count => entries.Count + generated.Count + cubes.Count * 6;
         public event Action<string, Exception> LoadFailed;
 
+        // Resident-only reads for forked producers. Off the owner thread, a plain GetTexture miss queues
+        // the load and returns 0, which differs from the owner thread's synchronous load. Inside a
+        // ResidentOnly scope a miss throws TextureNotResident instead, before changing any state, so the
+        // producer can fall back to the render thread and emit exactly what serial emission would.
+        // Resident hits read only the concurrent maps; generated-texture removals happen in message
+        // processing on the owner thread, never while a forked producer runs.
+        public sealed class TextureNotResident : Exception { public TextureNotResident(string path) : base("Texture is not resident: " + path) { } }
+        [ThreadStatic] private static bool residentOnly;
+        public readonly struct ResidentScope : IDisposable
+        {
+            private readonly bool previous, active;
+            internal ResidentScope(bool previous) { this.previous = previous; active = true; residentOnly = true; }
+            public void Dispose() { if (active) residentOnly = previous; }
+        }
+        public static ResidentScope ResidentOnly() => new ResidentScope(residentOnly);
         public VulkanTextureCache(NativeBackend backend) { this.backend = backend; ownerThread = Thread.CurrentThread.ManagedThreadId; }
 
         public void BindOwnerThread() => Volatile.Write(ref ownerThread, Thread.CurrentThread.ManagedThreadId);
@@ -123,12 +138,13 @@ namespace ClientPlugin.Rendering.Content
             ulong handle;
             Entry dynamic;
             if (generated.TryGetValue(path, out dynamic)) return dynamic.Handle;
-            if (Thread.CurrentThread.ManagedThreadId == Volatile.Read(ref ownerThread) && destroyedGenerated.TryGetValue(path, out handle)) return handle;
+            if ((residentOnly || Thread.CurrentThread.ManagedThreadId == Volatile.Read(ref ownerThread)) && destroyedGenerated.TryGetValue(path, out handle)) return handle;
             var keys = Keys(path);
             string resolved = keys.Resolved;
             string key = keys.For(srgb, gui);
             Entry existing;
             if (entries.TryGetValue(key, out existing) && (existing.Handle != 0 || existing.Failed)) return existing.Handle;
+            if (residentOnly) throw new TextureNotResident(path);
             if (Thread.CurrentThread.ManagedThreadId != Volatile.Read(ref ownerThread))
             {
                 if (requested.TryAdd(key, 0)) pending.Enqueue(new KeyValuePair<string, uint>(resolved, (srgb ? 1u : 0u) | (gui ? 2u : 0u)));
