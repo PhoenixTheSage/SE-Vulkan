@@ -27,11 +27,14 @@ public sealed partial class NativeBackend
     {
         var key=new RecipeKey{Pipeline=pipeline,Bytes=checked((uint)bytes),Mesh=mesh,Color=color,Normal=normal,Extensions=extensions,Alpha=alpha};
         if(hint!=null&&hint.Alive&&ReferenceEquals(hint.Owner,this)&&hint.Key.Equals(key))return hint;
+        // Forked producers (voxel emit-ahead) may resolve recipes while the render thread traverses actors.
+        lock(worldRecipes){
         if(worldRecipes.TryGetValue(key,out hint)&&hint.Alive)return hint;
         if(registerRecipe==null)registerRecipe=(RegisterRecipeFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_register_world_recipe"),typeof(RegisterRecipeFn));
         var definition=new RecipeDefinition{Size=56,Pipeline=pipeline,Bytes=key.Bytes,Mesh=mesh,Color=color,Normal=normal,Extensions=extensions,Alpha=alpha};
         Check(registerRecipe(context,ref definition,out ulong handle),context);
         hint=new WorldRecipe{Owner=this,Alive=true,Handle=handle,Key=key};worldRecipes[key]=hint;return hint;
+        }
     }
     private WorldRecipe PacketRecipe(in WorldPacket packet){var recipe=packet.Recipe;return EnsureWorldRecipe(ref recipe,packet.Pipeline,packet.Mesh,packet.Color,packet.Normal,packet.Extensions,packet.Alpha,packet.Constants.Length);}
     // Advanced whenever handles may retire; native cell parts then recommit.

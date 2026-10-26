@@ -164,6 +164,21 @@ partial class Program
             backend.BeginPacketCollection();for(int i=0;i<3;++i)backend.AddWorldPacket(0,1,10,11,12,alpha,WorldConstants.Object(backend.WorldLayouts[0],MatrixD.Identity,Vector3.One,Vector3.Zero,1,0,null));
             backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,projection,64,64,light),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(projection)));
         }
+        {   // Per-producer emitters (plan 2.1): packets from a worker-bound emitter, spliced at the producer's
+            // serial position, give the same packet signature as serial emission; a misplaced splice does not.
+            backend.PacketSignatureEnabled=true;
+            byte[] Constants(int i)=>WorldConstants.Object(backend.WorldLayouts[0],MatrixD.CreateTranslation(i,0,0),Vector3.One,Vector3.Zero,1,0,null);
+            void Emit(int i)=>backend.AddWorldPacket(0,1,10,11,12,10,Constants(i),flags:i==3?512u:0u,cascadeMask:(uint)i);
+            ulong Frame(){backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,projection,64,64,light),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(projection)));
+                backend.BeginFrame(projection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black);backend.EndFrame();return backend.LastPacketSignature;}
+            backend.BeginPacketCollection();for(int i=0;i<6;i++)Emit(i);ulong serial=Frame();
+            ulong Forked(bool misplaced){var emitter=backend.CreateEmitter();backend.BeginPacketCollection();Emit(0);Emit(1);
+                var worker=new System.Threading.Thread(()=>{using(backend.BindEmitter(emitter))for(int i=2;i<5;i++)Emit(i);});worker.Start();worker.Join();
+                Check(emitter.Count==3,"emitter collects the worker's packets");if(!misplaced)backend.SpliceEmitter(emitter);Emit(5);if(misplaced)backend.SpliceEmitter(emitter);return Frame();}
+            Check(Forked(false)==serial&&backend.LastPacketSignatureCount==6,"worker emitter spliced at its serial position matches serial packets");
+            Check(Forked(true)!=serial,"packet signature detects a misplaced splice");
+            backend.PacketSignatureEnabled=false;
+        }
         backend.TextureValidationCacheEnabled=true;QueueValidationPackets();var reusedValidation=backend.GetQueueValidationStats();
         Check(Marshal.SizeOf<NativeQueueValidationStats>()==32 && reusedValidation.Enabled==1 && reusedValidation.Draws==3 && reusedValidation.Hits==2 && reusedValidation.TextureChecks==4 && reusedValidation.MeshChecks==3,"one queue reuses only texture-tuple validation and still checks every mesh");
         backend.BeginFrame(projection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black);backend.EndFrame();byte[] reusedPixels=backend.Readback(64,64);
@@ -575,7 +590,7 @@ partial class Program
         Check(registerModelRaw(nativeContext,new[]{new RawModelPart{Recipe=rawRecipeHandle}},1,canonicalModelObject,(uint)canonicalModelObject.Length,out ulong rawModelHandle)==0,"raw native model registration publishes a valid generational handle");
         void EmptyModelFrame(){backend.BulkModelsEnabled=false;backend.BeginPacketCollection();backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,projection,64,64,light),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(projection)));}
         EmptyModelFrame();Check(appendModelsRaw(nativeContext,new[]{new NativeModelInstance{Model=rawModelHandle,Cell=0,Order=1}},1,null,0,null)!=0,"bulk model frame rejects invalid cell ownership");
-        EmptyModelFrame();Check(appendModelsRaw(nativeContext,new[]{new NativeModelInstance{Model=rawModelHandle,Cell=16,Order=1,Reserved=2}},1,null,0,null)!=0,"bulk model frame rejects a group order after its own submission");
+        EmptyModelFrame();Check(appendModelsRaw(nativeContext,new[]{new NativeModelInstance{Model=rawModelHandle,Cell=16,Order=1,Reserved=2}},1,null,0,null)==0,"bulk model frame accepts a session-stable group order above its own submission");
         EmptyModelFrame();Check(appendModelsRaw(nativeContext,new[]{new NativeModelInstance{Model=rawModelHandle,Cell=16,Order=1,Reserved=1}},1,null,0,null)==0,"bulk model frame accepts its explicit first-seen group order");
         EmptyModelFrame();Check(appendModelsRaw(nativeContext,new[]{new NativeModelInstance{Model=rawModelHandle,Cell=16,Order=2},new NativeModelInstance{Model=rawModelHandle,Cell=16,Order=1}},2,null,0,null)!=0,"bulk model frame rejects reversed instance publication order");
         Check(clearModelsRaw(nativeContext)==0,"native model registry clears outside recording");EmptyModelFrame();Check(appendModelsRaw(nativeContext,new[]{new NativeModelInstance{Model=rawModelHandle,Cell=16,Order=1}},1,null,0,null)!=0,"retired model handle cannot survive registry reset");

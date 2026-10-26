@@ -24,6 +24,9 @@ public sealed class VulkanVoxelMaterials : IDisposable
     // Separate native resource namespaces; do not collide with model/texture handles.
     private long epoch;private readonly HashSet<MyVoxelMaterialTriple> used=new HashSet<MyVoxelMaterialTriple>(MyVoxelMaterialTriple.Comparer);
     public void BeginFrame(){epoch++;used.Clear();}
+    // Set while voxel emission runs on a worker: anything that would create a
+    // group (texture cache, eviction) throws OwnerThreadRequired before changing state.
+    internal bool OffOwner;
     private ulong next=0x7000000000000000;
     private ulong randomTexture;
     private readonly ulong[] defaults=new ulong[3];
@@ -86,6 +89,7 @@ public sealed class VulkanVoxelMaterials : IDisposable
         distinctSet.Clear();distinctOrder.Clear();foreach(var triple in triples)if(distinctSet.Add(triple))distinctOrder.Add(triple);
         if(VulkanVoxels.FastPathEnabled&&preparedVersion==groupVersion&&distinctOrder.Count==preparedOrder.Count){bool same=true;for(int i=0;i<distinctOrder.Count&&same;i++)same=MyVoxelMaterialTriple.Comparer.Equals(distinctOrder[i],preparedOrder[i]);
             if(same){foreach(var key in preparedKeys){groups[key].Used=epoch;used.Add(key);}return;}}
+        if(OffOwner)throw new VulkanVoxels.OwnerThreadRequired();
         int version=groupVersion;preparedKeys.Clear();
         var pages=new List<(HashSet<byte> Ids,MyVoxelMaterialTriple Key)>();
         foreach(var triple in distinctOrder){
@@ -106,6 +110,7 @@ public sealed class VulkanVoxelMaterials : IDisposable
         if(LookupCacheEnabled && resolved.TryGetValue(triple,out var cached)){
             used.Add(cached.Key);cached.Used=epoch;return cached.Id;
         }
+        if(OffOwner)throw new VulkanVoxels.OwnerThreadRequired();
         byte[] ids=new[]{triple.I0,triple.I1,triple.I2}.Where(i=>i!=255).Distinct().ToArray();if(ids.Length==0)throw new InvalidDataException("Empty voxel material triple.");
         foreach(var pair in groups)if(ids.All(i=>pair.Value.Materials.Contains(i))){used.Add(pair.Key);pair.Value.Used=epoch;if(LookupCacheEnabled)resolved[triple]=pair.Value;return pair.Value.Id;}
         used.Add(triple);ulong id=Create(ids,triple,512);if(LookupCacheEnabled)resolved[triple]=groups[triple];return id;

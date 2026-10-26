@@ -60,7 +60,7 @@ public static class RendererCpuProfiler
     public static void BeginFrame()
     {
         if(!Enabled)return;
-        Array.Clear(Current,0,Current.Length);readTicks=0;owner=GetCurrentThreadId();active=true;sequence++;
+        Array.Clear(Current,0,Current.Length);readTicks=0;owner=GetCurrentThreadId();ownerManaged=Environment.CurrentManagedThreadId;active=true;sequence++;
         Array.Clear(currentMessageTicks,0,MessageTypes);Array.Clear(currentMessageCalls,0,MessageTypes);messageDepth=0;
         gen0=GC.CollectionCount(0);gen1=GC.CollectionCount(1);gen2=GC.CollectionCount(2);
         frame=Measure(Phase.Frame);
@@ -73,7 +73,9 @@ public static class RendererCpuProfiler
         Array.Copy(currentMessageTicks,completedMessageTicks,MessageTypes);Array.Copy(currentMessageCalls,completedMessageCalls,MessageTypes);
         completedGen0=GC.CollectionCount(0)-gen0;completedGen1=GC.CollectionCount(1)-gen1;completedGen2=GC.CollectionCount(2)-gen2;
     }
-    public static Scope Measure(Phase phase,bool counters=true)=>Enabled&&active?new Scope(phase,counters):default;
+    // Scopes belong to the render thread; a forked producer's calls on a worker are not measured.
+    public static Scope Measure(Phase phase,bool counters=true)=>Enabled&&active&&Environment.CurrentManagedThreadId==ownerManaged?new Scope(phase,counters):default;
+    static int ownerManaged;
     public static Snapshot Capture()
         =>Describe(Completed,1,completedSequence,completedOwner,completedReadTicks);
     static Snapshot Describe(Counter[] values,long frames,long lastSequence,uint thread,long overhead)

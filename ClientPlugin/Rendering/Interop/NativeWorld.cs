@@ -295,6 +295,7 @@ public sealed partial class NativeBackend
     {
         if(WorldShaderVariants.IsMeshDecal(pipeline))flags|=512u|16384u; // Stock mesh decals do not enter depth/forward passes.
         if(!WorldReady || !WorldLayouts.ContainsKey(pipeline))throw new InvalidOperationException("The stock world pipeline is not ready.");
+        var emitter=boundEmitter;if(emitter!=null&&ReferenceEquals(emitter.Owner,this))return AddEmitterPacket(emitter,pipeline,mesh,color,normal,extensions,alpha,constants,instances,instanceCount,flags,cascadeMask,origin,radius,recycleConstants,recipe,recordLogical);
         if(worldPackets.Count>=65536)throw new InvalidOperationException("World packet batch exceeds 65536 draws.");
         if(recordLogical)NoteLogicalDraw(pipeline,mesh,instanceCount,flags,cascadeMask);
         uint order=++modelSubmissionOrder;NoteMainGroupOrder(flags,order);
@@ -312,7 +313,7 @@ public sealed partial class NativeBackend
     public void QueueWorld(byte[] frame,float[] projection,float[] inverse)
     {
         if(frame==null || frame.Length!=1280 || projection==null || projection.Length!=16 || inverse==null || inverse.Length!=16)throw new ArgumentException("Invalid stock frame matrices/constants.");
-        FinalizeModelBatches();
+        FinalizeModelBatches();NotePacketSignature();
         if(worldPackets.Count==0){Check(WorldApi.Queue(context,frame,(uint)frame.Length,projection,inverse,null,0),context);QueueMainOrder();QueueNativeModels();QueueTransparency();QueueDecals();QueueHighlights();QueueShadowExclusions();return;}
         if(RetainedSubmissionEnabled && !ObjectRetentionEnabled){QueueWorldBlob(frame,projection,inverse);return;}
         long packedAt=PacketProfilingEnabled?System.Diagnostics.Stopwatch.GetTimestamp():0;

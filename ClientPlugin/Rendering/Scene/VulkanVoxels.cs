@@ -75,21 +75,43 @@ public sealed partial class VulkanVoxels : IDisposable
     // foliage and visibility. Everything the plan reads is fixed before the shadow fit returns.
     public static bool PlanAheadEnabled=System.Environment.GetEnvironmentVariable("SE_VULKAN_VOXEL_PLAN_AHEAD")!="0";
     RenderJobs.Job? planTask;Vector3D planCamera;
+    // Emit-ahead (job graph, plan item 2.2; SE_VULKAN_VOXEL_EMIT_AHEAD=0 turns it off): the plan job
+    // continues into material preparation and emission into its own packet emitter, overlapping the
+    // actor traversal. Draw splices the emitter where voxels used to emit, so the merged packet list
+    // is unchanged. Anything that needs the render thread (a material group or foliage material that
+    // must be created through the texture cache) aborts the worker emission before changing state,
+    // and Draw emits on the render thread as before.
+    public static bool EmitAheadEnabled=System.Environment.GetEnvironmentVariable("SE_VULKAN_VOXEL_EMIT_AHEAD")!="0";
+    internal sealed class OwnerThreadRequired:Exception {}
+    NativeBackend.PacketEmitter emitter;readonly List<uint> aheadVisible=new();bool emittedAhead;
+    public long EmitAheadFrames {get;private set;}public long EmitAheadFallbacks {get;private set;}
+    void EmitAhead(Vector3D camera)
+    {
+        emitter??=backend.CreateEmitter();var draws=Draws;aheadVisible.Clear();Materials.OffOwner=Foliage.OffOwner=true;
+        try{using(backend.BindEmitter(emitter)){Materials.BeginFrame();Foliage.BeginFrame();Emit(camera,null);}emittedAhead=true;}
+        catch(OwnerThreadRequired){backend.DiscardEmitter(emitter,false);Draws=draws;}
+        catch{backend.DiscardEmitter(emitter,false);Draws=draws;throw;}
+        finally{Materials.OffOwner=Foliage.OffOwner=false;}
+    }
+    void MarkVisible(HashSet<uint> visible,uint id){if(visible!=null)visible.Add(id);else aheadVisible.Add(id);}
     public void BeginPlan(Vector3D camera,BoundingFrustumD frustum)
     {
         RequireOwner();DropPlan();
         if(!FastPathEnabled||!PlanAheadEnabled||!backend.WorldLayouts.TryGetValue(20,out var single)||!backend.WorldLayouts.TryGetValue(21,out var triple))return;
         // First use of a layout fills shared reflection caches; do it on this thread.
         VoxelObjectConstants.Warm(single);VoxelObjectConstants.Warm(triple);
-        planCamera=camera;planTask=RenderJobs.Start(()=>Plan(camera,frustum,false));
+        planCamera=camera;bool ahead=EmitAheadEnabled;emittedAhead=false;planTask=RenderJobs.Start(()=>{Plan(camera,frustum,false);if(ahead)EmitAhead(camera);});
     }
-    void DropPlan(){var task=planTask;planTask=null;if(task==null)return;task.Value.Join();foreach(var item in cellScratch)RecycleConstants(item);}
+    void DropPlan(){var task=planTask;planTask=null;if(task==null)return;task.Value.Join();if(emittedAhead){emittedAhead=false;backend.DiscardEmitter(emitter,true);}foreach(var item in cellScratch)RecycleConstants(item);}
     void RecycleConstants(CellDraw item){for(int i=0;i<item.PartCount;i++)ReflectedConstantBuffer.Recycle(partConstants[item.PartStart+i]);}
     public void Draw(Vector3D camera,BoundingFrustumD frustum,HashSet<uint> visible)
     {
-        RequireOwner();Materials.BeginFrame();Foliage.BeginFrame();
-        if(planTask!=null&&planCamera==camera){var task=planTask.Value;planTask=null;task.Wait();Emit(camera,visible);return;}
-        DropPlan();
+        RequireOwner();
+        if(planTask!=null&&planCamera==camera){var task=planTask.Value;planTask=null;task.Wait();
+            if(emittedAhead){emittedAhead=false;backend.SpliceEmitter(emitter);foreach(uint id in aheadVisible)visible.Add(id);EmitAheadFrames++;return;}
+            if(EmitAheadEnabled)EmitAheadFallbacks++;
+            Materials.BeginFrame();Foliage.BeginFrame();Emit(camera,visible);return;}
+        Materials.BeginFrame();Foliage.BeginFrame();DropPlan();
         if(!FastPathEnabled){DrawTwoPass(camera,frustum,visible);return;}
         Plan(camera,frustum,true);Emit(camera,visible);
     }
@@ -136,7 +158,7 @@ public sealed partial class VulkanVoxels : IDisposable
         foreach(var item in cellScratch)
         {
             var actor=item.Actor;var cell=item.Cell;MatrixD matrix=item.Matrix;double distance=item.Distance;bool outside=item.Outside,outsideProbe=item.OutsideProbe;
-            if(!ReferenceEquals(actor,seenActor)){if(seen)visible.Add(seenActor.Id);seenActor=actor;seen=false;}
+            if(!ReferenceEquals(actor,seenActor)){if(seen)MarkVisible(visible,seenActor.Id);seenActor=actor;seen=false;}
             for(int i=0;i<item.PartCount;i++)
             {
                 var part=cell.Parts[i];var objectConstants=partConstants[item.PartStart+i];
@@ -147,7 +169,7 @@ public sealed partial class VulkanVoxels : IDisposable
             }
             seen|=!outside;
         }
-        if(seen)visible.Add(seenActor.Id);
+        if(seen)MarkVisible(visible,seenActor.Id);
         cellScratch.Clear();partConstants.Clear();
         Foliage.EndFrame();
     }

@@ -33,6 +33,8 @@ public sealed partial class VulkanScene
     // Full resident preparation AND native group recording. This switch never
     // re-enters the prepared color packet producer for supported actors.
     public bool NativePassSceneEnabled {get;set;}=NativePassPolicy.Enabled;
+    // Same-process toggle for the frozen-light lane's packet signature gate.
+    public bool VoxelEmitAheadEnabled {get=>VulkanVoxels.EmitAheadEnabled;set=>VulkanVoxels.EmitAheadEnabled=value;}
     // Async pass packing and deferred cell emission (native defaults follow their
     // environment switches); the setter exists for same-process parity lanes.
     bool asyncNativeWork=System.Environment.GetEnvironmentVariable("SE_VULKAN_ASYNC_PASS_PACKING")!="0"&&System.Environment.GetEnvironmentVariable("SE_VULKAN_DEFERRED_CELL_EMISSION")!="0";

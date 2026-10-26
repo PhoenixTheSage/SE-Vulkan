@@ -27,10 +27,14 @@ public sealed class VulkanFoliage : IDisposable
     public long GeneratedPoints {get;private set;}
     public VulkanFoliage(NativeBackend backend,VulkanTextureCache textures,VulkanVoxelMaterials materials){this.backend=backend;this.textures=textures;this.materials=materials;}
     public void BeginFrame()=>packets.Clear();
+    // Set while voxel emission runs on a worker; see VulkanVoxelMaterials.OffOwner.
+    internal bool OffOwner;
     public void EndFrame()=>backend.QueueFoliage(packets,table);
     private Material Get(byte id)
     {
-        if(resident.TryGetValue(id,out var cached)){if(cached.Version==materials.Version)return cached;backend.RemoveResource(5,cached.Color);backend.RemoveResource(5,cached.Normal);resident.Remove(id);}
+        if(resident.TryGetValue(id,out var cached)&&cached.Version==materials.Version)return cached;
+        if(OffOwner)throw new VulkanVoxels.OwnerThreadRequired();
+        if(cached!=null){backend.RemoveResource(5,cached.Color);backend.RemoveResource(5,cached.Normal);resident.Remove(id);}
         if(!materials.TryGetFoliage(id,out var definition) || definition.Entries==null || definition.Entries.Length==0)throw new InvalidDataException("Foliage definition missing for material "+id);
         if(definition.Entries.Length>256)throw new InvalidDataException("Foliage texture count exceeds atlas limit.");
         var material=new Material{Version=materials.Version,Color=next++,Normal=next++,Kind=definition.Type==MyFoliageType.Grass?0u:1u};
