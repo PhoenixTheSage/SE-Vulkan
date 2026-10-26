@@ -26,10 +26,10 @@ public sealed partial class NativeBackend
         if(cached!=null){cached.Group=group;cached.Owner=this;cached.Epoch=mainGroupEpoch;}
         return group;
     }
-    // Stable main order (SE_VULKAN_STABLE_MAIN_ORDER=1): a group keeps the order number its key got when
+    // Stable main order (default; SE_VULKAN_STABLE_MAIN_ORDER=0 restores per-frame declaration order): a group keeps the order number its key got when
     // first seen this session, so pass-owned actors need no per-frame declaration. Their orders live in
     // native as resident owner orders, updated only when an actor's pass commit changes.
-    public bool StableMainOrderEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_STABLE_MAIN_ORDER")=="1";
+    public bool StableMainOrderEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_STABLE_MAIN_ORDER")!="0";
     readonly Dictionary<object,uint> stableOrders=new();uint nextStableOrder;
     uint StableOrder(object key){if(!stableOrders.TryGetValue(key,out uint order)){if(nextStableOrder>=0x7FFFFFF0u)throw new InvalidOperationException("Stable main order space exhausted.");stableOrders.Add(key,order=++nextStableOrder);}return order;}
     readonly Dictionary<uint,uint> residentOwners=new();readonly Dictionary<uint,uint> residentSets=new();readonly HashSet<uint> residentRemovals=new();

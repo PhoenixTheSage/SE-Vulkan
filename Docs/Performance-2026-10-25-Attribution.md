@@ -434,3 +434,18 @@ fell to about 8.5 ms. The frame now loses it to contention and to
 rather than moving it: stable main order (pending a DX11 visual check),
 recording cost (3.1/3.2), or a non-waiting `BeginFrame`.
 
+
+## Stable main order: on by default after a DX11 visual check
+
+The coplanar edges the stable order changed were compared, zoomed, against a
+DX11 capture of the same saved view
+(`TestResults/StableMainOrder-FloorTrim-vs-DX11-2026-10-25.png`):
+
+- **Floor trim:** the old per-frame order draws a dark dashed z-fighting line
+  under the light trim. DX11 has no such line, and neither does the stable
+  order: it matches DX11.
+- **Doorframe:** the changed pixels are single edge pixels, with no visible
+  difference from DX11 under either order.
+
+`SE_VULKAN_STABLE_MAIN_ORDER` now defaults on; `=0` restores the per-frame
+declaration order.
