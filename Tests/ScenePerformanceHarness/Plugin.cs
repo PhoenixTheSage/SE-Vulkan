@@ -65,7 +65,21 @@ public sealed partial class Plugin : IPlugin
     static bool frameGroupOcclusion;
     static object groupOcclusionSnapshot;
     // Shared native job pool counters at the first and latest sampled frames.
-    static NativeJobStats? JobStatsFirst,JobStatsLast;static long jobStatsCounter;
+    static object JobStatsFirst,JobStatsLast;static long jobStatsCounter;
+    // Separate and not inlined: pinned baseline plugins predate GetJobStats, and a missing
+    // member must fail only this call, not the JIT of SampleFrame.
+    static bool jobStatsAvailable=true;
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static void WriteJobStats(string reports){
+        var jobFirst=(NativeJobStats)JobStatsFirst;var jobLast=(NativeJobStats)JobStatsLast;{
+            // A loop, not a lambda: a closure over NativeJobStats would be a type that fails to load against older plugins.
+            var kinds=new List<object>();for(int k=0;k<(int)jobLast.KindCount;k++){var a=jobFirst.Kinds[k];var b=jobLast.Kinds[k];ulong jobs=b.Jobs-a.Jobs;
+                kinds.Add(new{Kind=k<NativeJobStats.KindNames.Length?NativeJobStats.KindNames[k]:k.ToString(),Jobs=jobs,Helped=b.Helped-a.Helped,MeanWaitUs=jobs>0?(b.WaitNs-a.WaitNs)/(double)jobs/1000:0,MaxWaitUs=b.MaxWaitNs/1000.0,MeanRunUs=jobs>0?(b.RunNs-a.RunNs)/(double)jobs/1000:0,RunMs=(b.RunNs-a.RunNs)/1e6});}
+            File.WriteAllText(Path.Combine(reports,"job-stats.json"),JsonSerializer.Serialize(new{jobLast.Workers,jobLast.StageThreads,jobLast.PeakQueued,Kinds=kinds,
+                Scope="Shared native job pool between the first and latest sampled frames. Wait: queued to started. Helped: run by the joining thread. MaxWait and PeakQueued cover the window."},new JsonSerializerOptions{WriteIndented=true}));}
+    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static void SampleJobStats(object renderer){var jobBackend=(NativeBackend)BackendField.GetValue(renderer);if(JobStatsFirst==null)JobStatsFirst=jobBackend.GetJobStats(true);else if(++jobStatsCounter%TelemetryStride==0)JobStatsLast=jobBackend.GetJobStats();}
     static volatile bool actorLodsEnabled;
     static bool frameActorLods;
     static volatile bool submissionEnabled;
@@ -265,7 +279,7 @@ public sealed partial class Plugin : IPlugin
     {
         long now = Stopwatch.GetTimestamp(), previous = previousPresent;previousPresent = now;RenderFrameEvents.Log.End(profileFrameSequence,(now-drawStarted)*1000.0/Stopwatch.Frequency);
         if (!sampling || frameBatching!=batchingEnabled || frameHints!=hintsEnabled || frameWide!=wideEnabled || frameVoxelLookup!=voxelLookupEnabled || frameVoxelObject!=voxelObjectEnabled || frameTextureValidation!=textureValidationEnabled || Sandbox.MySandboxGame.IsPaused || drawStarted == 0 || previous == 0) return;
-        if(__instance is MyVulkanRender){var jobBackend=(NativeBackend)BackendField.GetValue(__instance);if(JobStatsFirst==null)JobStatsFirst=jobBackend.GetJobStats(true);else if(++jobStatsCounter%TelemetryStride==0)JobStatsLast=jobBackend.GetJobStats();}
+        if(__instance is MyVulkanRender&&jobStatsAvailable)try{SampleJobStats(__instance);}catch(MissingMethodException){jobStatsAvailable=false;}catch(EntryPointNotFoundException){jobStatsAvailable=false;}
         if(gpuSceneSnapshot==null&&__instance is MyVulkanRender)gpuSceneSnapshot=((VulkanScene)SceneField.GetValue(__instance)).GetGpuSceneStats();
         if(gpuAdmissionSnapshot==null&&__instance is MyVulkanRender&&Environment.GetEnvironmentVariable("SE_VULKAN_GPU_OPAQUE_TIMING")=="1")gpuAdmissionSnapshot=AuditGpuAdmission((VulkanScene)SceneField.GetValue(__instance));
         ObserveWorkloadDiagnostics(__instance);if(captureWorkloadFrame){workloadSnapshot=__instance is MyVulkanRender?AuditVulkan(__instance):AuditDx11();captureWorkloadFrame=false;}
@@ -356,11 +370,7 @@ public sealed partial class Plugin : IPlugin
         if(expected=="Vulkan"){GeometryStorageStats storage;lock(Gate)storage=geometryStorage;File.WriteAllText(Path.Combine(reports,"geometry-storage.json"),JsonSerializer.Serialize(storage,new JsonSerializerOptions{IncludeFields=true,WriteIndented=true}));}
         if(BulkModelFrames.Count>0){var rows=BulkModelFrames.ToArray();var averages=typeof(NativeModelGroupStats).GetFields().Where(f=>f.Name!="Size"&&f.Name!="AbiVersion").ToDictionary(f=>f.Name,f=>rows.Average(v=>Convert.ToDouble(f.GetValue(v))));File.WriteAllText(Path.Combine(reports,"bulk-models.json"),JsonSerializer.Serialize(new{Frames=rows.Length,Averages=averages},new JsonSerializerOptions{WriteIndented=true}));}
         if(PresentSamples.Count>0){var rows=PresentSamples.ToArray();var values=rows.Where(r=>r.IntervalNs>0).Select(r=>r.IntervalNs/1e6).OrderBy(v=>v).ToArray();double Q(double q)=>values[(int)Math.Ceiling(q*values.Length)-1];File.WriteAllText(Path.Combine(reports,"present-completions.json"),JsonSerializer.Serialize(new{Samples=rows.Length,LostSamples=lostPresentSamples,MeanMs=values.Average(),P95Ms=Q(.95),P99Ms=Q(.99),FirstSequence=rows.First().Sequence,LastSequence=rows.Last().Sequence,Scope="Actual queue-present call completion intervals; no scanout claim and no wait for unfinished present. Benchmark telemetry enabled equally for comparison phases."},new JsonSerializerOptions{WriteIndented=true}));}
-        if(JobStatsFirst is NativeJobStats jobFirst&&JobStatsLast is NativeJobStats jobLast){
-            var kinds=Enumerable.Range(0,(int)jobLast.KindCount).Select(k=>{var a=jobFirst.Kinds[k];var b=jobLast.Kinds[k];ulong jobs=b.Jobs-a.Jobs;
-                return new{Kind=k<NativeJobStats.KindNames.Length?NativeJobStats.KindNames[k]:k.ToString(),Jobs=jobs,Helped=b.Helped-a.Helped,MeanWaitUs=jobs>0?(b.WaitNs-a.WaitNs)/(double)jobs/1000:0,MaxWaitUs=b.MaxWaitNs/1000.0,MeanRunUs=jobs>0?(b.RunNs-a.RunNs)/(double)jobs/1000:0,RunMs=(b.RunNs-a.RunNs)/1e6};}).ToArray();
-            File.WriteAllText(Path.Combine(reports,"job-stats.json"),JsonSerializer.Serialize(new{jobLast.Workers,jobLast.StageThreads,jobLast.PeakQueued,Kinds=kinds,
-                Scope="Shared native job pool between the first and latest sampled frames. Wait: queued to started. Helped: run by the joining thread. MaxWait and PeakQueued cover the window."},new JsonSerializerOptions{WriteIndented=true}));}
+        if(JobStatsFirst!=null&&JobStatsLast!=null)try{WriteJobStats(reports);}catch(MissingMethodException){}catch(TypeLoadException){}
         if(PresentFlows.Count>1){NativePresentFlowStats[] flow;lock(Gate)flow=PresentFlows.ToArray();var first=flow[0];var last=flow[flow.Length-1];ulong completed=last.CompletedCalls-first.CompletedCalls,intervals=last.TotalIntervalNs-first.TotalIntervalNs;File.WriteAllText(Path.Combine(reports,"present-flow.json"),JsonSerializer.Serialize(new{Frames=flow.Length,Enabled=asyncPresentEnabled,CompletedCalls=completed,CompletionIntervalMeanMs=completed>0?intervals/(double)completed/1000000:-1,CompletedPresentCallFps=intervals>0?completed*1e9/intervals:0,MeanCallMs=completed>0?(last.TotalCallNs-first.TotalCallNs)/(double)completed/1000000:-1,First=first,Last=last,Scope="Native vkQueuePresentKHR call completion cadence, not scanout FPS. Counts may lag submitted frames by one. Distinct from render-thread EndFrame return cadence; GPU and completed present throughput must be verified."},new JsonSerializerOptions{IncludeFields=true,WriteIndented=true}));}
         if(PacketFrames.Count>0)
         {

@@ -449,3 +449,78 @@ DX11 capture of the same saved view
 
 `SE_VULKAN_STABLE_MAIN_ORDER` now defaults on; `=0` restores the per-frame
 declaration order.
+
+## Steps 1–3 batch benchmark (2026-10-26)
+
+What it measures:
+
+- step 1, the shared native job pool;
+- step 2, managed render jobs on SE's VeryHigh workers;
+- step 3, voxel emit-ahead and the flare and billboard fork.
+
+All lanes use the product flag set and pinned binaries:
+
+- `TestResults/Step0-binaries` is `9afdc09`, before step 1, built in a
+  worktree with identical compiled shaders;
+- `TestResults/Step3-binaries` is `73e74b3`.
+
+Results: `TestResults/Steps1to3-Paired-2026-10-26.json` and
+`TestResults/Steps1to3-Baseline-Paired-2026-10-26.json`.
+
+Present interval, ms:
+
+| Lane | Runs (mean / P95) |
+|---|---|
+| S0, before step 1 | 8.50 / 11.58, 8.93 / 11.43 |
+| S3, steps 1–3, same set as S0 | 8.76 / 10.80, 8.74 / 11.15 |
+| S3, first set | 8.25 / 9.99, 8.45 / 10.77 |
+| S3 with `SE_VULKAN_JOB_PRIORITY=above` | 8.35 / 10.17, 8.26 / 9.84 |
+| DX11 | 4.23 / 4.99, 4.23 / 4.87 |
+
+- **Mean:** no measurable change. Interleaved with S0, S3 averages 8.75
+  against 8.72 ms; the host moved single runs by about 0.4 ms.
+- **P95:** about 0.5 ms better (11.0 against 11.5 ms in the same set).
+- **Priority:** above-normal native worker priority made no measurable
+  difference, so it stays opt-in.
+
+The first S0 attempts never sampled. The harness, built from HEAD,
+referenced `NativeJobStats` from a lambda closure, and Pulsar's type scan
+rejected the harness against the old plugin. The job and signature hooks now
+live in separate, non-inlined methods without closures, so pinned baselines
+load again.
+
+CpuDetail, S0C → S3C (`Vulkan-b690c247…` → `Vulkan-a4bf115a…`), ms per frame:
+
+| Phase | S0C | S3C | Change |
+|---|---|---|---|
+| Draw (render thread) | 8.10 | 7.83 | −0.27 |
+| Voxels and billboards | 0.76 | 0.12 | −0.64 |
+| FrameSlot (`BeginFrame` wait) | 1.22 | 1.07 | −0.16 |
+| Scene | 3.77 | 4.01 | +0.24 |
+| Lighting setup | 0.46 | 0.69 | +0.23 |
+
+- The moved work left the render thread: voxel emission 0.55 and flares 0.10.
+- About half of it came back as slower overlapping phases:
+  - The voxel emit-ahead job runs during the scene update: transforms
+    +0.04, occlusion +0.06, pass commits +0.05.
+  - The flare and billboard job runs during lighting setup.
+- This is the sessions 5–6 pattern, smaller now that the work runs on a
+  capped pool.
+
+Job pool telemetry (`job-stats.json`, `Vulkan-f9701cdf…`):
+
+- Every kind waits 30–40 µs from queue to start.
+- Pass-view jobs: about 9 per frame, 204 µs each.
+- Joining threads almost never ran their own jobs. That 30–40 µs is wake-up
+  latency on each render-thread fan-out.
+
+What this says about the next step:
+
+- Moving 0.6–0.7 ms of render-thread work saved about 0.3 ms, and the cadence
+  did not move.
+- The largest single wait on the render thread is now FrameSlot: about
+  1.1 ms in `BeginFrame` waiting for the recording stage.
+- Step 4 (per-frame recording slots, so `BeginFrame` waits only when the GPU
+  is two frames behind) addresses that directly. It is the next item.
+- Cheaper fan-out (spin briefly before sleeping, or one notify per batch)
+  would trim the 30–40 µs per parallel-for.
