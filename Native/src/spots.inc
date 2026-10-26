@@ -91,9 +91,35 @@ void render_spot_shadows(VkCommandBuffer cmd,WorldSlot& slot,const std::vector<u
     std::vector<uint32_t> eligible,eligible_dynamic;eligible.reserve(world.current().order.size());
     for(uint32_t j:world.current().order){uint32_t flags=world.current().draws[j].packet.flags;if(flags&(512|8192|0x2000000u))continue;eligible.push_back(j);if(flags&0x1000000u)eligible_dynamic.push_back(j);}
     bool exclusions=!spots.exclusions.empty();
+    // SE_VULKAN_SPOT_GRID=1: eligible casters are bucketed once per frame in a 32 m grid (by origin, radius up to
+    // one cell; larger, unbounded or non-finite draws stay in an always-visited list). A light visits the cells
+    // within its range plus one cell, then restores eligible order and runs the same tests, so caster lists
+    // are unchanged. Lights whose reach spans more cells than there are casters scan the full list.
+    constexpr float grid_cell=32.f;
+    std::unordered_map<uint64_t,std::vector<uint32_t>> grid;std::vector<uint32_t> grid_always;
+    auto cell_of=[&](float v){return int64_t(std::floor(v/grid_cell));};
+    auto cell_key=[](int64_t x,int64_t y,int64_t z){return (uint64_t(x&0x1fffff)<<42)|(uint64_t(y&0x1fffff)<<21)|uint64_t(z&0x1fffff);};
+    if(spot_grid&&eligible.size()>256){
+        for(uint32_t k=0;k<eligible.size();++k){const auto& packet=world.current().draws[eligible[k]].packet;
+            bool bounded=packet.radius>=0&&packet.radius<=grid_cell&&std::isfinite(packet.origin[0])&&std::isfinite(packet.origin[1])&&std::isfinite(packet.origin[2]);
+            if(!bounded){grid_always.push_back(k);continue;}
+            grid[cell_key(cell_of(packet.origin[0]),cell_of(packet.origin[1]),cell_of(packet.origin[2]))].push_back(k);}
+    }
+    bool use_grid=!grid.empty();
     auto prepare_casters=[&](uint32_t light,bool include_static){
         auto& statics=spots.static_casters[light];auto& dynamics=spots.dynamic_casters[light];statics.clear();dynamics.clear();
-        for(uint32_t j:include_static?eligible:eligible_dynamic){auto& draw=world.current().draws[j];bool dynamic=(draw.packet.flags&0x1000000u)!=0;
+        const std::vector<uint32_t>* list=include_static?&eligible:&eligible_dynamic;std::vector<uint32_t> candidates;
+        if(use_grid){float reach=lights[light].range+grid_cell;const float* at=lights[light].position;
+            if(std::isfinite(reach)&&reach>=0&&std::isfinite(at[0])&&std::isfinite(at[1])&&std::isfinite(at[2])){
+                int64_t lo[3],hi[3];for(int a=0;a<3;++a){lo[a]=cell_of(at[a]-reach);hi[a]=cell_of(at[a]+reach);}
+                double cells=double(hi[0]-lo[0]+1)*double(hi[1]-lo[1]+1)*double(hi[2]-lo[2]+1);
+                if(cells<double(grid.size())){candidates=grid_always;
+                    for(int64_t x=lo[0];x<=hi[0];++x)for(int64_t y=lo[1];y<=hi[1];++y)for(int64_t z=lo[2];z<=hi[2];++z){auto found=grid.find(cell_key(x,y,z));if(found!=grid.end())candidates.insert(candidates.end(),found->second.begin(),found->second.end());}
+                    std::sort(candidates.begin(),candidates.end());
+                    for(auto& k:candidates)k=eligible[k];
+                    if(!include_static)candidates.erase(std::remove_if(candidates.begin(),candidates.end(),[&](uint32_t j){return (world.current().draws[j].packet.flags&0x1000000u)==0;}),candidates.end());
+                    list=&candidates;}}}
+        for(uint32_t j:*list){auto& draw=world.current().draws[j];bool dynamic=(draw.packet.flags&0x1000000u)!=0;
             float delta[]{draw.packet.origin[0]-lights[light].position[0],draw.packet.origin[1]-lights[light].position[1],draw.packet.origin[2]-lights[light].position[2]};if(!spot_sphere_visible(delta,lights[light].direction,lights[light].range,lights[light].cone_cosine,draw.packet.radius))continue;
             if(exclusions&&spots.exclusions.count((uint64_t(light)<<32)|j))continue;
             (dynamic?dynamics:statics).push_back(j);

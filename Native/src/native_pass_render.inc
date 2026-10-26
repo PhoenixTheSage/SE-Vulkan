@@ -40,15 +40,17 @@ void prepare_pass_frame(const SevkSceneFrame& input,const SevkPassView* views,ui
     for(uint32_t i=0;i<count;i++){auto& p=views[i];if(p.kind>2||p.flags>15||p.light>=64||p.padding||p.minimum_lod<0||!std::isfinite(p.minimum_size_squared)||p.minimum_size_squared<0)throw std::runtime_error("invalid current pass view");native_pass::View v{};v.id=p.id;v.kind=native_pass::Kind(p.kind);v.enabled=p.flags&1;v.frustum.enabled=p.flags&2;v.only_dynamic=p.flags&4;v.only_static=p.flags&8;v.lod={p.minimum_lod,p.shift,p.visible_shift};v.minimum_size_squared=p.minimum_size_squared;v.maximum_distance=p.maximum_distance;for(uint32_t j=0;j<6;j++){const double* values=p.planes+j*4;for(uint32_t k=0;k<4;k++)if(!std::isfinite(values[k]))throw std::runtime_error("nonfinite native view plane");v.frustum.planes[j]={values[0],values[1],values[2],values[3]};}if(v.id>=15&&v.only_static)pass_scene.spot_views[p.light]=v.id;frame.views.push_back(v);}
     pass_scene.ready=false;if(async)pass_scene.scene.prepare_async(std::move(frame));else pass_scene.scene.prepare(std::move(frame));
 }
-VkDescriptorSet pass_material(WorldSlot& slot,const native_pass::Group& group){
-    auto& key=group.key;WorldSetKey material{key.colour,key.normal,key.extensions,key.alpha,0,0,128,4};auto cached=slot.material_cache.find(material);if(cached!=slot.material_cache.end())return cached->second;bool keep=false;auto set=world_cached_set(slot,world.material_layout,keep);
+VkDescriptorSet pass_material(WorldSlot& slot,const native_pass::Group& group,bool* kept=nullptr){
+    auto& key=group.key;WorldSetKey material{key.colour,key.normal,key.extensions,key.alpha,0,0,128,4};auto cached=slot.material_cache.find(material);if(cached!=slot.material_cache.end())return cached->second;bool keep=false;auto set=world_cached_set(slot,world.material_layout,keep);if(kept)*kept=keep;
     world_write_buffer(set,0,slot.frame,1280,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,1,slot.projections,64,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);world_write_buffer(set,2,pass_scene.objects[slot_index],128,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);const uint64_t ids[]{key.colour,key.normal,key.extensions,key.alpha};for(uint32_t i=0;i<4;i++)world_write_image(set,128+i,textures.at(ids[i]).image.view);world_write_image(set,156,stock.dither.view);for(uint32_t i:{258u,259u})world_write_image(set,i,{},standard_sampler(i),true);if(keep)slot.material_cache.emplace(material,set);return set;
 }
 void prepare_pass_gpu(WorldSlot& slot){
     auto previous_rows=std::move(pass_scene.history_rows);pass_scene.history_rows.clear();pass_scene.history_offsets.clear();
     if(pass_scene.history_frame==UINT64_MAX || pass_scene.history_frame+1!=stats.submitted_frames)previous_rows.clear();pass_scene.history_frame=stats.submitted_frames;
     if(opaque_stock.ready)prepare_opaque_stock(slot);cpu_lap("prepare pass streams");
-    pass_scene.offsets.clear();pass_scene.materials.clear();if(!pass_ready_now())return;auto& groups=pass_groups();if(groups.empty())return;auto& streams=pass_streams();uint64_t bytes=0;for(auto& stream:streams)bytes+=stream->instances.size();for(auto& group:groups)if(!world.meshes.count(group.key.mesh))throw std::runtime_error("native pass publication lost geometry dependency");if(bytes>256ull*1024*1024)throw std::runtime_error("native pass stream budget");
+    pass_scene.offsets.clear();pass_scene.materials.clear();if(!pass_ready_now())return;auto& groups=pass_groups();if(groups.empty())return;auto& streams=pass_streams();uint64_t bytes=0;for(auto& stream:streams)bytes+=stream->instances.size();auto& reuse=pass_scene.reuse[slot_index];bool same=pass_material_reuse&&reuse.valid&&reuse.material_revision==slot.material_revision&&reuse.material_epoch==slot.material_epoch&&reuse.mesh_revision==world_mesh_revision&&reuse.keys.size()==groups.size();
+    if(same)for(size_t i=0;i<groups.size();++i)if(reuse.keys[i]!=groups[i].key||reuse.kinds[i]!=groups[i].kind){same=false;break;}
+    if(!same)for(auto& group:groups)if(!world.meshes.count(group.key.mesh))throw std::runtime_error("native pass publication lost geometry dependency");if(bytes>256ull*1024*1024)throw std::runtime_error("native pass stream budget");
     world_buffer(pass_scene.instances[slot_index],bytes,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);world_buffer(pass_scene.objects[slot_index],128,VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);std::memcpy(pass_scene.objects[slot_index].mapped,pass_scene.placeholder.data(),128);check(vmaFlushAllocation(allocator,pass_scene.objects[slot_index].memory,0,128),"flush native pass placeholder");uint32_t cursor=0;
     std::vector<uint32_t> stream_offsets;stream_offsets.reserve(streams.size());for(auto& stream:streams){stream_offsets.push_back(cursor);cursor+=uint32_t(stream->instances.size());}
     // Large frames copy the streams on the pool; every stream lands at the offset computed above.
@@ -56,7 +58,12 @@ void prepare_pass_gpu(WorldSlot& slot){
     auto copy_stream=[&](uint32_t i){const auto& data=streams[i]->instances;if(!data.empty())std::memcpy(stream_base+stream_offsets[i],data.data(),data.size());};
     if(bytes>=256*1024&&streams.size()>1)sevk_jobs::parallel_for(sevk_jobs::Upload,sevk_jobs::Priority::High,4,uint32_t(streams.size()),copy_stream);
     else for(uint32_t i=0;i<streams.size();++i)copy_stream(i);
-    for(auto& group:groups){pass_scene.offsets.push_back(stream_offsets.at(group.stream->index));pass_scene.materials.push_back(group.kind==native_pass::Kind::Forward?VK_NULL_HANDLE:pass_material(slot,group));}check(vmaFlushAllocation(allocator,pass_scene.instances[slot_index].memory,0,bytes),"flush frame-owned native view streams");
+    for(auto& group:groups)pass_scene.offsets.push_back(stream_offsets.at(group.stream->index));
+    // Unchanged groups on an unchanged slot cache reuse last frame's sets (no mesh or material-cache lookups).
+    if(same)pass_scene.materials=reuse.materials;
+    else{bool all_kept=true;for(auto& group:groups){bool kept=true;pass_scene.materials.push_back(group.kind==native_pass::Kind::Forward?VK_NULL_HANDLE:pass_material(slot,group,&kept));all_kept&=kept;}
+        reuse.valid=pass_material_reuse&&all_kept;if(reuse.valid){reuse.keys.resize(groups.size());reuse.kinds.resize(groups.size());for(size_t i=0;i<groups.size();++i){reuse.keys[i]=groups[i].key;reuse.kinds[i]=groups[i].kind;}
+            reuse.materials=pass_scene.materials;reuse.material_revision=slot.material_revision;reuse.material_epoch=slot.material_epoch;reuse.mesh_revision=world_mesh_revision;}}check(vmaFlushAllocation(allocator,pass_scene.instances[slot_index].memory,0,bytes),"flush frame-owned native view streams");
     // History is matched by generational actor identity, independently of
     // material groups, stream positions and camera-relative row updates.
     // Only motion consumers read it (object_motion_wanted); without one the per-row map is not rebuilt, and a

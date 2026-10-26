@@ -49,6 +49,7 @@ public sealed class MyVulkanRender : IMyRender
     private readonly VulkanPostprocess postprocess=new();
     private readonly VulkanProbes probes=new();
     private readonly VulkanResolution resolution=new();
+    private NativeSpriteBlit[] mainSprites=Array.Empty<NativeSpriteBlit>();
     private MyRenderSettings renderConfiguration=MyRenderSettings.Default;
     private MatrixD cameraWorld=MatrixD.Identity;
     private BoundingFrustumD voxelFrustum,voxelDrawFrustum;
@@ -328,7 +329,7 @@ public sealed class MyVulkanRender : IMyRender
             FrameProfiler.Lap(FrameProfiler.Section.FrameSlot);
             if (!frameOpen) { shadows.CancelPreparedFrame();FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); return; }
             renderStats.Draw(sprites, BackBufferResolution.X);
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Sprites))backend.DrawSprites(sprites.MainPackets(BackBufferResolution.X, BackBufferResolution.Y));
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Sprites)){int spriteCount=sprites.MainPacketsInto(ref mainSprites,BackBufferResolution.X,BackBufferResolution.Y);backend.DrawSprites(mainSprites,spriteCount);}
             debugLines.Submit(backend, camera);
             FrameProfiler.Lap(FrameProfiler.Section.Sprites);
             previousDraw = CurrentDrawTime;

@@ -3,8 +3,8 @@
 #include <cstring>
 void require(bool ok,const char* text){if(!ok)throw std::runtime_error(text);}
 template<class F>void rejects(F&& fn,const char* text){bool failed=false;try{fn();}catch(const std::runtime_error&){failed=true;}require(failed,text);}
-int main(){
-    try{
+static void run(){
+    {
     using namespace native_pass;Scene scene;
     auto family=scene.register_family({10});
     Model model{{Part{1,10,11,12,0,0,3,1,0,false,false,true},Part{1,20,21,22,0,3,3,2,0,false,false,true},Part{1,30,31,32,33,6,3,3,1,true,false,true}}};
@@ -117,6 +117,11 @@ int main(){
     recycled.prepare(recycled_frame);recycled.publish({});ColourInstance replacement_row{};std::memcpy(&replacement_row,recycled.instance_streams()[0]->instances.data(),64);
     require(replacement_row.transform.rows[3]==2&&replacement_row.key[0]==0x3800,"recreated owner replaces retained pose and appearance rather than reusing retired bytes");
     require(recycled.static_spot_updates()==(uint64_t(1)<<15),"recreated owner invalidates the prior static spotlight pose");
-    std::cout<<"Native resident per-view producer checks passed\n";
-    }catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';return 1;}
+    }
+}
+int main(){
+    // Every check runs with and without per-actor LOD readiness dedupe; the outputs must not differ.
+    try{for(bool dedupe:{false,true}){native_pass::Scene::default_lod_dedupe=dedupe;run();}
+        std::cout<<"Native resident per-view producer checks passed\n";}
+    catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';return 1;}
 }

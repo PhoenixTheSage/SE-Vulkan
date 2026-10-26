@@ -164,6 +164,12 @@ public sealed partial class NativeBackend : IDisposable
         return status == 0;
     }
 
+    public unsafe void DrawSprites(NativeSpriteBlit[] sprites, int count)
+    {
+        if (count <= 0) return;
+        if (count > sprites.Length) throw new ArgumentOutOfRangeException(nameof(count));
+        fixed (NativeSpriteBlit* data = sprites) Check(api.DrawSpritesBlit(context, data, (uint)count), context);
+    }
     public void DrawSprites(NativeSprite[] sprites)
     {
         if (sprites != null && sprites.Length > 0) Check(api.DrawSprites(context, sprites, (uint)sprites.Length), context);
@@ -422,6 +428,24 @@ public struct NativeLight
     [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)] public float[] PositionRange, ColorIntensity, DirectionCone;
     public uint Flags, Reserved0, Reserved1, Reserved2;
 }
+// Blittable twin of NativeSprite with the same native layout, for the per-frame main batch.
+[StructLayout(LayoutKind.Sequential, Pack = 8)]
+public unsafe struct NativeSpriteBlit
+{
+    public ulong Texture;
+    public fixed float Destination[4], Uv[4], Color[4];
+    public float Angle;
+    public fixed float Origin[2];
+    public fixed int Clip[4];
+    public uint Flags;
+    public NativeSprite ToSprite()
+    {
+        var sprite = new NativeSprite { Texture = Texture, Angle = Angle, Flags = Flags, Destination = new float[4], Uv = new float[4], Color = new float[4], Origin = new float[2], Clip = new int[4] };
+        for (int i = 0; i < 4; ++i) { sprite.Destination[i] = Destination[i]; sprite.Uv[i] = Uv[i]; sprite.Color[i] = Color[i]; sprite.Clip[i] = Clip[i]; }
+        sprite.Origin[0] = Origin[0]; sprite.Origin[1] = Origin[1];
+        return sprite;
+    }
+}
 [StructLayout(LayoutKind.Sequential, Pack = 8)]
 public struct NativeSprite
 {
@@ -455,6 +479,7 @@ internal sealed class NativeFunctions
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] internal delegate int BeginFrameFn(IntPtr ctx, ref NativeFrame info);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] internal delegate int DrawMeshFn(IntPtr ctx, ref NativeMeshDraw draw);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] internal delegate int DrawSpritesFn(IntPtr ctx, [In] NativeSprite[] sprites, uint count);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] internal unsafe delegate int DrawSpritesBlitFn(IntPtr ctx, NativeSpriteBlit* sprites, uint count);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] internal delegate int SetLightsFn(IntPtr ctx, [In] NativeLight[] lights, uint count);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] internal delegate int SetShadowsFn(IntPtr ctx, float[] matrices, uint count, float[] splits);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] internal delegate int RenderTextureFn(IntPtr ctx, ulong id, uint width, uint height, float[] clear, [In] NativeSprite[] sprites, uint count);
@@ -475,7 +500,7 @@ internal sealed class NativeFunctions
     internal UploadMeshFn UploadMesh;
     internal BeginFrameFn BeginFrame;
     internal DrawMeshFn DrawMesh;
-    internal DrawSpritesFn DrawSprites;
+    internal DrawSpritesFn DrawSprites; internal DrawSpritesBlitFn DrawSpritesBlit;
     internal SetLightsFn SetLights;
     internal SetShadowsFn SetShadows;
     internal RenderTextureFn RenderTexture;
@@ -493,7 +518,7 @@ internal sealed class NativeFunctions
         ApiVersion = Get<ApiVersionFn>("sevk_api_version"); Probe = Get<ProbeFn>("sevk_probe"); Create = Get<CreateFn>("sevk_create");
         Resize = Get<ResizeFn>("sevk_resize"); ResizeOutput = Get<ResizeOutputFn>("sevk_resize_output"); UploadTexture = Get<UploadTextureFn>("sevk_upload_texture"); UploadMesh = Get<UploadMeshFn>("sevk_upload_mesh");
         UploadTextureMips = Get<UploadTextureMipsFn>("sevk_upload_texture_mips");
-        BeginFrame = Get<BeginFrameFn>("sevk_begin_frame"); DrawMesh = Get<DrawMeshFn>("sevk_draw_mesh"); DrawSprites = Get<DrawSpritesFn>("sevk_draw_sprites");
+        BeginFrame = Get<BeginFrameFn>("sevk_begin_frame"); DrawMesh = Get<DrawMeshFn>("sevk_draw_mesh"); DrawSprites = Get<DrawSpritesFn>("sevk_draw_sprites"); DrawSpritesBlit = Get<DrawSpritesBlitFn>("sevk_draw_sprites");
         SetLights = Get<SetLightsFn>("sevk_set_lights"); RenderTexture = Get<RenderTextureFn>("sevk_render_texture");
         RenderTextureAspect = Get<RenderTextureAspectFn>("sevk_render_texture_aspect");
         SetShadows = Get<SetShadowsFn>("sevk_set_shadow_cascades");

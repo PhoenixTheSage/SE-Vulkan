@@ -11,7 +11,7 @@ using VRageRender.Messages;
 namespace ClientPlugin.Rendering;
 
 /// <summary>Copies sprite messages into owner-thread packets; never keeps pooled messages.</summary>
-internal sealed class VulkanSprites
+internal sealed partial class VulkanSprites
 {
     private sealed class FontEntry { public MyFont Font; public Color Mask; public bool Premultiplied; public readonly Dictionary<int, string> BitmapPaths = new(); }
     private readonly struct Packet
@@ -35,43 +35,60 @@ internal sealed class VulkanSprites
     public event Action<string> Warning;
     public VulkanSprites(VulkanTextureCache textures) { this.textures = textures; }
     public void BeginFrame() { main.Sprites.Clear(); main.Clips.Clear(); }
-    public NativeSprite[] MainPackets(int width, int height)
+    // Main-batch placement shared by MainPackets and the plugin's blittable MainPacketsInto
+    // (VulkanSprites.Blit.cs): transformed destination and origin, and the clip rectangle.
+    struct MainPlacement {public float X,Y,Width,Height,OriginX,OriginY;public int ClipX,ClipY,ClipWidth,ClipHeight;}
+    struct MainViewport {public bool ValidScale;public float OffsetX,OffsetY;}
+    MainViewport BeginMain(int width, int height)
     {
-        if (width <= 0 || height <= 0) return Array.Empty<NativeSprite>();
-        var result = new List<NativeSprite>(main.Sprites.Count);
         bool validScale = !float.IsNaN(ViewportScale) && !float.IsInfinity(ViewportScale) && ViewportScale >= 0;
         if (!validScale) Warn("Invalid main sprite viewport scale: " + ViewportScale);
         // MyRender11.ScaleMainViewport centers a scaled bounded viewport. Its
         // IgnoreBounds batches use the full viewport; explicit scissors remain
         // active in either viewport (MySpritesManager.Render).
-        float offsetX = (width - width * ViewportScale) * .5f, offsetY = (height - height * ViewportScale) * .5f;
+        return new MainViewport { ValidScale = validScale, OffsetX = (width - width * ViewportScale) * .5f, OffsetY = (height - height * ViewportScale) * .5f };
+    }
+    bool PlaceMain(in MainViewport viewport, bool ignoreBounds, in NativeSprite sprite, int width, int height, out MainPlacement placed)
+    {
+        placed = default;
+        if (!ignoreBounds && (!viewport.ValidScale || ViewportScale == 0)) return false;
+        float scale = ignoreBounds ? 1 : ViewportScale;
+        float x = ignoreBounds ? 0 : viewport.OffsetX, y = ignoreBounds ? 0 : viewport.OffsetY;
+        placed.X = sprite.Destination[0] * scale + x; placed.Y = sprite.Destination[1] * scale + y;
+        placed.Width = sprite.Destination[2] * scale; placed.Height = sprite.Destination[3] * scale;
+        placed.OriginX = sprite.Origin[0] * scale; placed.OriginY = sprite.Origin[1] * scale;
+        Rectangle bounds = new Rectangle(0, 0, width, height);
+        if (!ignoreBounds)
+        {
+            // Raster samples at pixel centers. Match the floating viewport
+            // clip when emulating it with a full native viewport/scissor.
+            int left = (int)Math.Ceiling(x - .5f), top = (int)Math.Ceiling(y - .5f);
+            int right = (int)Math.Ceiling(x + width * scale - .5f), bottom = (int)Math.Ceiling(y + height * scale - .5f);
+            bounds = Rectangle.Intersect(bounds, new Rectangle(left, top, right - left, bottom - top));
+        }
+        if (sprite.Clip[2] >= 0)
+        {
+            // Stock truncates transformed left/top and right/bottom, rather
+            // than truncating transformed dimensions independently.
+            float left = sprite.Clip[0] * scale + x, top = sprite.Clip[1] * scale + y;
+            int l = (int)left, t = (int)top, r = (int)(left + sprite.Clip[2] * scale), b = (int)(top + sprite.Clip[3] * scale);
+            bounds = Rectangle.Intersect(bounds, new Rectangle(l, t, r - l, b - t));
+        }
+        placed.ClipX = bounds.X; placed.ClipY = bounds.Y; placed.ClipWidth = Math.Max(0, bounds.Width); placed.ClipHeight = Math.Max(0, bounds.Height);
+        return true;
+    }
+    public NativeSprite[] MainPackets(int width, int height)
+    {
+        if (width <= 0 || height <= 0) return Array.Empty<NativeSprite>();
+        var result = new List<NativeSprite>(main.Sprites.Count);
+        var viewport = BeginMain(width, height);
         foreach (var packet in main.Sprites)
         {
-            if (!packet.IgnoreBounds && (!validScale || ViewportScale == 0)) continue;
-            float scale = packet.IgnoreBounds ? 1 : ViewportScale;
-            float x = packet.IgnoreBounds ? 0 : offsetX, y = packet.IgnoreBounds ? 0 : offsetY;
+            if (!PlaceMain(viewport, packet.IgnoreBounds, packet.Sprite, width, height, out var placed)) continue;
             var copy = Copy(packet.Sprite);
-            copy.Destination[0] = copy.Destination[0] * scale + x; copy.Destination[1] = copy.Destination[1] * scale + y;
-            copy.Destination[2] *= scale; copy.Destination[3] *= scale;
-            copy.Origin[0] *= scale; copy.Origin[1] *= scale;
-            Rectangle bounds = new Rectangle(0, 0, width, height);
-            if (!packet.IgnoreBounds)
-            {
-                // Raster samples at pixel centers. Match the floating viewport
-                // clip when emulating it with a full native viewport/scissor.
-                int left = (int)Math.Ceiling(x - .5f), top = (int)Math.Ceiling(y - .5f);
-                int right = (int)Math.Ceiling(x + width * scale - .5f), bottom = (int)Math.Ceiling(y + height * scale - .5f);
-                bounds = Rectangle.Intersect(bounds, new Rectangle(left, top, right - left, bottom - top));
-            }
-            if (copy.Clip[2] >= 0)
-            {
-                // Stock truncates transformed left/top and right/bottom, rather
-                // than truncating transformed dimensions independently.
-                float left = copy.Clip[0] * scale + x, top = copy.Clip[1] * scale + y;
-                int l = (int)left, t = (int)top, r = (int)(left + copy.Clip[2] * scale), b = (int)(top + copy.Clip[3] * scale);
-                bounds = Rectangle.Intersect(bounds, new Rectangle(l, t, r - l, b - t));
-            }
-            copy.Clip = new[] { bounds.X, bounds.Y, Math.Max(0, bounds.Width), Math.Max(0, bounds.Height) };
+            copy.Destination[0] = placed.X; copy.Destination[1] = placed.Y; copy.Destination[2] = placed.Width; copy.Destination[3] = placed.Height;
+            copy.Origin[0] = placed.OriginX; copy.Origin[1] = placed.OriginY;
+            copy.Clip = new[] { placed.ClipX, placed.ClipY, placed.ClipWidth, placed.ClipHeight };
             result.Add(copy);
         }
         return result.ToArray();

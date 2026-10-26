@@ -170,7 +170,7 @@ void queue_world(const void* frame,uint32_t frame_bytes,const float* projection,
 }
 VkDescriptorSet world_set(WorldSlot& s,VkDescriptorSetLayout layout,VkDescriptorPool private_pool=nullptr){std::unique_lock<std::mutex> owner(world_descriptor_mutex,std::defer_lock);if(!private_pool)owner.lock();VkDescriptorSetAllocateInfo a{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};a.descriptorPool=private_pool?private_pool:s.pool;a.descriptorSetCount=1;a.pSetLayouts=&layout;VkDescriptorSet result{};check(vkAllocateDescriptorSets(device,&a,&result),"allocate world frame descriptors");return result;}
 VkDescriptorSet world_cached_set(WorldSlot& s,VkDescriptorSetLayout layout,bool& keep){VkDescriptorSetAllocateInfo a{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};a.descriptorPool=s.material_pool;a.descriptorSetCount=1;a.pSetLayouts=&layout;VkDescriptorSet result{};if(vkAllocateDescriptorSets(device,&a,&result)==VK_SUCCESS){keep=true;return result;}keep=false;a.descriptorPool=s.pool;check(vkAllocateDescriptorSets(device,&a,&result),"allocate world material descriptors");return result;}
-void release_cached_materials(WorldSlot& s){++s.material_epoch;if(s.material_pool)check(vkResetDescriptorPool(device,s.material_pool,0),"recycle cached world descriptors");s.material_cache.clear();s.material_stale=false;s.dirty_textures.clear();s.dirty_arrays.clear();s.dirty_voxels.clear();++performance.material_resets;}
+void release_cached_materials(WorldSlot& s){++s.material_epoch;++s.material_revision;if(s.material_pool)check(vkResetDescriptorPool(device,s.material_pool,0),"recycle cached world descriptors");s.material_cache.clear();s.material_stale=false;s.dirty_textures.clear();s.dirty_arrays.clear();s.dirty_voxels.clear();++performance.material_resets;}
 void recycle_cached_materials(){for(auto& s:world.slots)s.material_stale=true;}
 void recycle_cached_texture(uint64_t id){invalidate_world_recipes(0,id);for(auto& s:world.slots)s.dirty_textures.insert(id);if(world.shadow_alpha_textures.count(id))saved_shadows=false;}
 void recycle_cached_array(uint64_t id){invalidate_world_recipes(5,id);for(auto& s:world.slots)s.dirty_arrays.insert(id);}
@@ -185,7 +185,7 @@ void release_dirty_materials(WorldSlot& s){
                             :s.dirty_textures.count(k.a)||s.dirty_textures.count(k.b)||s.dirty_textures.count(k.c)||s.dirty_textures.count(k.d);
         if(dirty){retired_sets.push_back(it->second);it=s.material_cache.erase(it);}else ++it;
     }
-    if(!retired_sets.empty())check(vkFreeDescriptorSets(device,s.material_pool,uint32_t(retired_sets.size()),retired_sets.data()),"free replaced material descriptors");
+    if(!retired_sets.empty()){++s.material_revision;check(vkFreeDescriptorSets(device,s.material_pool,uint32_t(retired_sets.size()),retired_sets.data()),"free replaced material descriptors");}
     s.dirty_textures.clear();s.dirty_arrays.clear();s.dirty_voxels.clear();
 }
 void world_write_buffer(VkDescriptorSet set,uint32_t binding,Buffer& buffer,uint64_t bytes,VkDescriptorType type){VkDescriptorBufferInfo b{buffer.handle,0,bytes};VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};w.dstSet=set;w.dstBinding=binding;w.descriptorCount=1;w.descriptorType=type;w.pBufferInfo=&b;vkUpdateDescriptorSets(device,1,&w,0,nullptr);}
@@ -365,7 +365,7 @@ void record_old_main(VkCommandBuffer cmd,WorldSlot& slot,uint32_t phase){
             performance.main_commands+=count.commands;world.indirect_stats.main_groups+=count.groups;world.indirect_stats.grouped_draws+=count.packets;i=end;
         }else{performance.main_commands+=record_opaque_stock_view(cmd,slot,0,false,nullptr,nullptr,0,nullptr,int(phase),entry.index,&indexed_set);i++;}}
 }
-void record_new_main(VkCommandBuffer cmd,WorldSlot& slot){
+void record_new_main(VkCommandBuffer cmd,WorldSlot& slot,const VkRenderingInfo* resume=nullptr){
     const auto& selection=world.current().main_selection;const auto* plan=world.indirect_stats.enabled?&world.current().indirect_plans[0]:nullptr;
     const auto& owners=world.current().main_owner_orders;
     struct Entry {uint32_t order,part,kind,index;};std::vector<Entry> entries;
@@ -386,12 +386,57 @@ void record_new_main(VkCommandBuffer cmd,WorldSlot& slot){
     }
     if(pass_ready_now()){const auto& groups=pass_groups();for(uint32_t i=0;i<groups.size();++i){const auto& group=groups[i];if(group.key.view!=0||group.kind!=native_pass::Kind::Colour)continue;uint32_t order=UINT32_MAX;for(uint32_t owner:group.stream->owners)order=std::min(order,owner_order(owner));entries.push_back({order==UINT32_MAX?UINT32_MAX-1:order,order==UINT32_MAX?i:group.main_part,2,i});}}
     std::stable_sort(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return std::tie(a.order,a.part)<std::tie(b.order,b.part);});
-    VkDescriptorSet indexed_set{};
-    for(uint32_t i=0;i<entries.size();){const auto& entry=entries[i];if(entry.kind==0){uint32_t end=i+1;while(end<entries.size()&&entries[end].kind==0&&entries[end].index==entries[end-1].index+1)++end;
-            auto count=plan?record_world_selection(cmd,slot,selection,-1,plan,world.current().indirect_bases[0],false,4,entry.index,entries[end-1].index+1):record_world_selection(cmd,slot,std::span(selection).subspan(entry.index,end-i),-1,nullptr,0,false,4);
-            performance.main_commands+=count.commands;world.indirect_stats.main_groups+=count.groups;world.indirect_stats.grouped_draws+=count.packets;i=end;
-        }else{performance.main_commands+=entry.kind==1?record_opaque_stock_view(cmd,slot,0,false,nullptr,nullptr,0,nullptr,4,entry.index,&indexed_set):record_pass_view(cmd,slot,0,false,nullptr,nullptr,0,nullptr,4,entry.index,false);++i;}
-    }
+    // Records entries [begin,end) into target; runs of consecutive managed draws stay one selection call. Splitting
+    // a run at a range boundary records the same draws in the same order.
+    struct Counts{uint64_t commands{},groups{},packets{};};
+    auto record_range=[&](VkCommandBuffer target,uint32_t begin,uint32_t end_entry,VkDescriptorSet* indexed_set,Counts& counts){
+        for(uint32_t i=begin;i<end_entry;){const auto& entry=entries[i];if(entry.kind==0){uint32_t end=i+1;while(end<end_entry&&entries[end].kind==0&&entries[end].index==entries[end-1].index+1)++end;
+                auto count=plan?record_world_selection(target,slot,selection,-1,plan,world.current().indirect_bases[0],false,4,entry.index,entries[end-1].index+1):record_world_selection(target,slot,std::span(selection).subspan(entry.index,end-i),-1,nullptr,0,false,4);
+                counts.commands+=count.commands;counts.groups+=count.groups;counts.packets+=count.packets;i=end;
+            }else{counts.commands+=entry.kind==1?record_opaque_stock_view(target,slot,0,false,nullptr,nullptr,0,nullptr,4,entry.index,indexed_set):record_pass_view(target,slot,0,false,nullptr,nullptr,0,nullptr,4,entry.index,false);++i;}
+        }
+    };
+    // SE_VULKAN_PARALLEL_MAIN=1: contiguous entry ranges record into secondaries on the job pool and execute in
+    // order inside a resumed rendering instance (load ops). GPU-opaque stock entries allocate shared descriptors,
+    // so those frames stay serial, as do small ones.
+    bool stock_entries=std::any_of(entries.begin(),entries.end(),[](const Entry& e){return e.kind==1;});
+    uint32_t workers=parallel_main&&resume&&!stock_entries&&entries.size()>=384?std::min<uint32_t>(4,std::min<uint32_t>(uint32_t(entries.size()/192),sevk_jobs::shared().worker_count()+1)):0u;
+    world.main_tasks=0;
+    if(workers<2){Counts counts;VkDescriptorSet indexed_set{};record_range(cmd,0,uint32_t(entries.size()),&indexed_set,counts);
+        performance.main_commands+=uint32_t(counts.commands);world.indirect_stats.main_groups+=uint32_t(counts.groups);world.indirect_stats.grouped_draws+=uint32_t(counts.packets);return;}
+    std::array<VkCommandBuffer,4> secondaries{};std::array<Counts,4> counts{};
+    for(uint32_t k=0;k<workers;++k){auto& pool=world.main_pools[slot_index][k];
+        if(!pool){VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};info.queueFamilyIndex=queue_family;check(vkCreateCommandPool(device,&info,nullptr,&pool),"create frame-owned main pool");}
+        // This slot's previous frame has completed, as for the spot pools.
+        check(vkResetCommandPool(device,pool,0),"reset completed main pool");auto& list=world.main_commands[slot_index][k];
+        if(list.empty()){VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};allocation.commandPool=pool;allocation.level=VK_COMMAND_BUFFER_LEVEL_SECONDARY;allocation.commandBufferCount=1;list.emplace_back();check(vkAllocateCommandBuffers(device,&allocation,&list.back()),"allocate main secondary");}
+        secondaries[k]=list[0];}
+    // Inherited formats: the three stock GBuffer targets, the motion target, then declared pack attachments.
+    std::vector<VkFormat> formats(resume->colorAttachmentCount,VK_FORMAT_UNDEFINED);
+    for(uint32_t c=0;c<resume->colorAttachmentCount;++c){if(!resume->pColorAttachments[c].imageView)continue;
+        formats[c]=c<3?stock_formats[c]:c==3?VK_FORMAT_R16G16_SFLOAT:attach_vk_format(world.attach[c-4].format);}
+    auto record=[&](uint32_t k){critical_profile::Bind lane(&critical.workers[12+k]);tl_suppress_marks=true;struct Restore{~Restore(){tl_suppress_marks=false;}} restore;
+        VkCommandBuffer target=secondaries[k];
+        VkCommandBufferInheritanceRenderingInfo rendering{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO};rendering.colorAttachmentCount=resume->colorAttachmentCount;rendering.pColorAttachmentFormats=formats.data();
+        rendering.depthAttachmentFormat=resume->pDepthAttachment&&resume->pDepthAttachment->imageView?VK_FORMAT_D32_SFLOAT:VK_FORMAT_UNDEFINED;rendering.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
+        VkCommandBufferInheritanceInfo inheritance{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,&rendering};
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT|VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;begin.pInheritanceInfo=&inheritance;
+        check(vkBeginCommandBuffer(target,&begin),"begin main secondary");world_viewport(target,resume->renderArea.extent.width,resume->renderArea.extent.height);
+        uint32_t first=uint32_t(uint64_t(entries.size())*k/workers),last=uint32_t(uint64_t(entries.size())*(k+1)/workers);
+        record_range(target,first,last,nullptr,counts[k]);check(vkEndCommandBuffer(target),"end main secondary");};
+    sevk_jobs::Group jobs;for(uint32_t k=1;k<workers;++k)sevk_jobs::shared().submit(jobs,sevk_jobs::Spot,sevk_jobs::Priority::High,[&record,k]{record(k);});
+    std::exception_ptr failure;try{record(0);}catch(...){failure=std::current_exception();}
+    try{jobs.wait();}catch(...){if(!failure)failure=std::current_exception();}
+    if(failure)std::rethrow_exception(failure);
+    // Same attachments, loaded: one instance for the secondaries, then inline again for the rest of the pass.
+    std::vector<VkRenderingAttachmentInfo> colors(resume->pColorAttachments,resume->pColorAttachments+resume->colorAttachmentCount);for(auto& c:colors)if(c.imageView)c.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD;
+    VkRenderingAttachmentInfo depth{};if(resume->pDepthAttachment){depth=*resume->pDepthAttachment;depth.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD;}
+    VkRenderingInfo loaded=*resume;loaded.pColorAttachments=colors.data();loaded.pDepthAttachment=resume->pDepthAttachment?&depth:nullptr;
+    vkCmdEndRendering(cmd);loaded.flags=VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT;vkCmdBeginRendering(cmd,&loaded);
+    vkCmdExecuteCommands(cmd,workers,secondaries.data());vkCmdEndRendering(cmd);
+    loaded.flags=0;vkCmdBeginRendering(cmd,&loaded);world_viewport(cmd,resume->renderArea.extent.width,resume->renderArea.extent.height);
+    world.main_tasks=workers;++world.parallel_main_frames;
+    for(auto& c:counts){performance.main_commands+=uint32_t(c.commands);world.indirect_stats.main_groups+=uint32_t(c.groups);world.indirect_stats.grouped_draws+=uint32_t(c.packets);}
 }
 void render_guest_depth_views(VkCommandBuffer cmd,WorldSlot& slot) {
     if(!guest.depth_configured)return;
@@ -578,7 +623,7 @@ void render_world(){
         performance.main_commands+=count.commands;world.indirect_stats.main_groups+=count.groups;world.indirect_stats.grouped_draws+=count.packets;
         performance.main_commands+=record_pass_view(cmd,slot,0,false,nullptr,nullptr,0,nullptr,int(phase));
     }
-    cpu_lap("gbuffer new main");if(world_new_main_ordered())record_new_main(cmd,slot);
+    cpu_lap("gbuffer new main");if(world_new_main_ordered())record_new_main(cmd,slot,&r);
     cpu_lap("gbuffer counters");for(uint32_t i:world.current().main_selection)main_packet(i,false);
     if(voxel_frame)++world.voxel_frames;frame_mark("foliage");render_foliage(cmd,slot);gbuffer_velocity_end();vkCmdEndRendering(cmd);frame_mark("object motion");if(object_motion_wanted()){prepare_world_history(slot);render_object_motion(cmd,slot);}else skip_object_motion(cmd,slot);frame_mark("gbuffer attachment");render_gbuffer_attachments(cmd,slot);work.main_us=profile_take();
     for(uint32_t i=0;i<4;++i){bool depth=i==3;barrier(cmd,world.gbuffer[i].handle,depth?VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,depth?VK_IMAGE_ASPECT_DEPTH_BIT:VK_IMAGE_ASPECT_COLOR_BIT,depth?VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT:VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,depth?VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT:VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT),VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);}

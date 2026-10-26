@@ -218,6 +218,7 @@ public sealed partial class VulkanScene
         if(passViewArray.Length<views.Count)passViewArray=new NativePassView[Math.Max(views.Count,passViewArray.Length*2)];views.CopyTo(passViewArray);
         fixed(NativePassView* a=earlyViews)fixed(NativePassView* b=passViewArray)return SameBytes((byte*)a,(byte*)b,views.Count*sizeof(NativePassView));
     }
+    readonly NativePassPreparationBuffer passPreparation=new();NativePassQueryResult[] passResults=Array.Empty<NativePassQueryResult>();NativePassTransparent[] passTransparent=Array.Empty<NativePassTransparent>();
     public unsafe void PublishNativePassScene()
     {
         PublishGpuScene();if(!nativePassActive){if(gpuActive)FinishPassVisibility();return;}using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPublication);
@@ -231,21 +232,22 @@ public sealed partial class VulkanScene
         }
         bool pending=true;
         try{
-            NativePassPreparation preparation;
+            var preparation=passPreparation;
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassResources)){
-                preparation=backend.GetPassPreparation();foreach(var request in preparation.Missing)ResolvePassLevel(nativePassFamilyByHandle[request.Family],(int)request.Lod);
+                backend.GetPassPreparation(preparation);for(int i=0;i<preparation.MissingCount;i++){var request=preparation.Missing[i];ResolvePassLevel(nativePassFamilyByHandle[request.Family],(int)request.Lod);}
             }
-            NativePassQueryResult[] results;
+            int resultCount=preparation.QueryCount;
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassQueries)){
-            results=new NativePassQueryResult[preparation.Queries.Length];
-            for(int i=0;i<results.Length;i++){var query=preparation.Queries[i];ulong hidden=0;if(actors.TryGetValue(query.Representative,out var actor)){if((query.Views&1)!=0&&QueryGroupVisibility(query.Representative))hidden|=1;uint cascades=(uint)(query.Views>>1)&255u;hidden|=(ulong)(cascades&~FilterShadowGroupCascades(actor,cascades))<<1;}results[i]=new NativePassQueryResult{Group=query.Group,HiddenViews=hidden};}
+            if(passResults.Length<resultCount)passResults=new NativePassQueryResult[Math.Max(resultCount,passResults.Length*2)];var results=passResults;
+            for(int i=0;i<resultCount;i++){var query=preparation.Queries[i];ulong hidden=0;if(actors.TryGetValue(query.Representative,out var actor)){if((query.Views&1)!=0&&QueryGroupVisibility(query.Representative))hidden|=1;uint cascades=(uint)(query.Views>>1)&255u;hidden|=(ulong)(cascades&~FilterShadowGroupCascades(actor,cascades))<<1;}results[i]=new NativePassQueryResult{Group=query.Group,HiddenViews=hidden};}
             }
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPublish))backend.PublishPassFrame(results,results.Length);pending=false;
-            if(NativeMixedOpaqueEnabled)foreach(var ticket in backend.GetPassTransparentRequests())DrawNativePassGlass(ticket);
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPublish))backend.PublishPassFrame(passResults,resultCount);pending=false;
+            if(NativeMixedOpaqueEnabled){int tickets=backend.GetPassTransparentRequests(ref passTransparent);for(int i=0;i<tickets;i++)DrawNativePassGlass(passTransparent[i]);}
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassFallbacks)){
-            foreach(var fallback in backend.GetPassPreparation().Fallbacks)if(actors.TryGetValue(fallback.Owner,out var data)){
+            backend.GetPassPreparation(preparation);
+            for(int f=0;f<preparation.FallbackCount;f++){var fallback=preparation.Fallbacks[f];if(actors.TryGetValue(fallback.Owner,out var data)){
                 nativePassFallbacks++;RemoveNativePassActor(data,gpu:false);data.NewLod.Import(fallback.Lod);DirtyNativePass(data);DrawNativePassFallback(data);
-            }
+            }}
             }
         }finally{if(pending)backend.CancelPassFrame();}
         PublishCells();
@@ -260,6 +262,9 @@ public sealed partial class VulkanScene
     }
     // Reused each frame; the native prepare copies the views it is given.
     readonly List<NativePassView> passViews=new();NativePassView[] passViewArray=new NativePassView[32];
+    // View frusta are rebuilt every frame: reuse one object per probe face (0-5) and per spot (6+); PassView only reads planes.
+    readonly List<BoundingFrustumD> frustumPool=new();
+    BoundingFrustumD PooledFrustum(int index,MatrixD matrix){while(frustumPool.Count<=index)frustumPool.Add(new BoundingFrustumD(MatrixD.Identity));var frustum=frustumPool[index];frustum.Matrix=matrix;return frustum;}
     private List<NativePassView> BuildNativeViews(out NativePassFrame frame)=>BuildNativeViews(out frame,backend.CurrentProbeConfig.Projections,backend.CurrentProbeFaceMask());
     private unsafe List<NativePassView> BuildNativeViews(out NativePassFrame frame,float[] probeProjections,uint probeFaces)
     {
@@ -271,8 +276,8 @@ public sealed partial class VulkanScene
         views.Add(PassView(0,0,frustum,actorLodSettings.GBuffer));
         for(int c=0;c<8;c++)if((ShadowSystem.UpdateMask&(1u<<c))!=0){var lod=c<actorLodSettings.CascadeDepths.Length?actorLodSettings.CascadeDepths[c]:actorLodSettings.SingleDepth;float threshold=ShadowSystem.Settings.Cascades[c].SkippingSmallObjectThreshold,factor=ShadowSystem.ProjectionFactors[c];views.Add(PassView((uint)c+1,1,ShadowSystem.CasterFrustum(c),lod,minimum:threshold*threshold/(factor*factor)));}
         uint faces=probeFaces;
-        if(ProbeDrawDistance>0)for(int face=0;face<6;face++)if((faces&(1u<<face))!=0){var p=probeProjections;int at=face*16;var relative=new MatrixD(p[at],p[at+1],p[at+2],p[at+3],p[at+4],p[at+5],p[at+6],p[at+7],p[at+8],p[at+9],p[at+10],p[at+11],p[at+12],p[at+13],p[at+14],p[at+15]);var world=MatrixD.CreateTranslation(-Environment.CameraPosition)*relative;views.Add(PassView((uint)face+9,2,new BoundingFrustumD(world),actorLodSettings.Forward,maximum:ProbeDrawDistance));}
-        for(int slot=0;slot<liveSpots.Count;slot++){var spot=liveSpots[slot];views.Add(PassView((uint)(15+slot*2),1,new BoundingFrustumD(spot.WorldProjection),actorLodSettings.SingleDepth,1|8,(uint)spot.Index));views.Add(PassView((uint)(16+slot*2),1,new BoundingFrustumD(spot.WorldProjection),actorLodSettings.SingleDepth,1|4,(uint)spot.Index));}
+        if(ProbeDrawDistance>0)for(int face=0;face<6;face++)if((faces&(1u<<face))!=0){var p=probeProjections;int at=face*16;var relative=new MatrixD(p[at],p[at+1],p[at+2],p[at+3],p[at+4],p[at+5],p[at+6],p[at+7],p[at+8],p[at+9],p[at+10],p[at+11],p[at+12],p[at+13],p[at+14],p[at+15]);var world=MatrixD.CreateTranslation(-Environment.CameraPosition)*relative;views.Add(PassView((uint)face+9,2,PooledFrustum(face,world),actorLodSettings.Forward,maximum:ProbeDrawDistance));}
+        for(int slot=0;slot<liveSpots.Count;slot++){var spot=liveSpots[slot];var spotFrustum=PooledFrustum(6+slot,spot.WorldProjection);views.Add(PassView((uint)(15+slot*2),1,spotFrustum,actorLodSettings.SingleDepth,1|8,(uint)spot.Index));views.Add(PassView((uint)(16+slot*2),1,spotFrustum,actorLodSettings.SingleDepth,1|4,(uint)spot.Index));}
         }
         return views;
     }

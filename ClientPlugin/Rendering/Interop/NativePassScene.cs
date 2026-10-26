@@ -28,6 +28,8 @@ namespace ClientPlugin.Rendering.Interop;
 [StructLayout(LayoutKind.Sequential,Pack=8)]public struct NativePassGroupAudit {public uint View,Kind,Shader,First,Count,Instances,OwnerOffset,Flags;public ulong Mesh,Color,Normal,Extensions,Alpha;}
 [StructLayout(LayoutKind.Sequential,Pack=8)]public struct NativePassProfile {public uint Size,AbiVersion;public ulong Prepares,Publishes,CommittedActors,SelectedActors,EmittedRows,StreamBytes,Groups;public double CommitsUs,PrepareUs,RequestsUs,PublishUs,EmitUs,SpotsUs;public ulong AppearanceEntries;public double ActorParseUs,ActorApplyUs;}
 public sealed class NativePassPreparation {public NativePassQuery[] Queries;public NativePassMissing[] Missing;public NativePassFallback[] Fallbacks;}
+// Reused per frame by publication: arrays keep their capacity; the counts say how much is valid.
+public sealed class NativePassPreparationBuffer {public NativePassQuery[] Queries=Array.Empty<NativePassQuery>();public NativePassMissing[] Missing=Array.Empty<NativePassMissing>();public NativePassFallback[] Fallbacks=Array.Empty<NativePassFallback>();public int QueryCount,MissingCount,FallbackCount;}
 
 public sealed partial class NativeBackend {
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int PassPipelineFn(IntPtr ctx,uint id,byte[] vs,ulong vb,byte[] ps,ulong pb);
@@ -73,6 +75,15 @@ public sealed partial class NativeBackend {
     // Same as PreparePassFrame, on the native pass worker; the preparation readers and publish join it.
     public unsafe void PreparePassFrameAsync(ref NativePassFrame frame,NativePassView[] views,int count){if(count<0||count>views.Length)throw new ArgumentOutOfRangeException();passPrepareAsync??=PassFunction<PassPrepareFn>("sevk_pass_prepare_async");fixed(NativePassView* input=views)Check(passPrepareAsync(context,ref frame,(IntPtr)input,(uint)count),context);}
     public unsafe void PreparePassFrame(ref NativePassFrame frame,NativePassView[] views,int count){if(count<0||count>views.Length)throw new ArgumentOutOfRangeException();passPrepare??=PassFunction<PassPrepareFn>("sevk_pass_prepare");fixed(NativePassView* input=views)Check(passPrepare(context,ref frame,(IntPtr)input,(uint)count),context);}
+    static void Grow<T>(ref T[] array,uint count){if(array.Length<count)array=new T[Math.Max((int)count,array.Length*2)];}
+    // Allocation-free variants for the per-frame publication path.
+    public unsafe void GetPassPreparation(NativePassPreparationBuffer buffer){
+        passGet??=PassFunction<PassGetFn>("sevk_pass_get_preparation");Check(passGet(context,IntPtr.Zero,0,out uint q,IntPtr.Zero,0,out uint m,IntPtr.Zero,0,out uint f),context);
+        Grow(ref buffer.Queries,q);Grow(ref buffer.Missing,m);Grow(ref buffer.Fallbacks,f);
+        fixed(NativePassQuery* queries=buffer.Queries)fixed(NativePassMissing* missing=buffer.Missing)fixed(NativePassFallback* fallback=buffer.Fallbacks)Check(passGet(context,(IntPtr)queries,q,out q,(IntPtr)missing,m,out m,(IntPtr)fallback,f,out f),context);
+        buffer.QueryCount=(int)q;buffer.MissingCount=(int)m;buffer.FallbackCount=(int)f;
+    }
+    public int GetPassTransparentRequests(ref NativePassTransparent[] buffer){passTransparent??=PassFunction<PassTransparentFn>("sevk_pass_transparent_requests");Check(passTransparent(context,null,0,out uint count),context);if(count==0)return 0;Grow(ref buffer,count);Check(passTransparent(context,buffer,count,out count),context);return (int)count;}
     public unsafe NativePassPreparation GetPassPreparation(){
         passGet??=PassFunction<PassGetFn>("sevk_pass_get_preparation");Check(passGet(context,IntPtr.Zero,0,out uint q,IntPtr.Zero,0,out uint m,IntPtr.Zero,0,out uint f),context);
         var result=new NativePassPreparation{Queries=new NativePassQuery[q],Missing=new NativePassMissing[m],Fallbacks=new NativePassFallback[f]};

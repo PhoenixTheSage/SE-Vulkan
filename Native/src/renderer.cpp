@@ -176,6 +176,10 @@ struct PassGpuState {
     std::array<Buffer,2> instances{},objects{},history_instances{};std::array<uint8_t,128> placeholder{};
     std::unordered_map<uint64_t,std::array<float,12>> history_rows;std::vector<uint32_t> history_offsets;uint64_t history_frame=UINT64_MAX;
     std::vector<uint32_t> offsets;std::vector<VkDescriptorSet> materials;std::array<uint32_t,64> spot_views{};uint64_t static_dirty{};
+    // Per-slot material reuse (SE_VULKAN_PASS_MATERIAL_REUSE=1): the last frame's group keys and their cached sets,
+    // valid while the slot's material cache, its epoch and the world mesh set are unchanged.
+    struct Reuse{std::vector<native_pass::GroupKey> keys;std::vector<native_pass::Kind> kinds;std::vector<VkDescriptorSet> materials;uint64_t material_revision{},material_epoch{},mesh_revision{};bool valid{};};
+    std::array<Reuse,2> reuse{};
 };
 struct AtlasTransient { uint64_t completion{};std::vector<VkDescriptorSet> sets;std::vector<VkImageView> views; };
 struct OpaqueReferenceState {
@@ -229,7 +233,7 @@ struct WorldSetKey {
     bool operator==(const WorldSetKey& other) const { return a==other.a && b==other.b && c==other.c && d==other.d && e==other.e && f==other.f && bytes==other.bytes && kind==other.kind; }
 };
 struct WorldSetHash { size_t operator()(const WorldSetKey& key) const noexcept { size_t h=0; auto mix=[&](uint64_t value){ h^=std::hash<uint64_t>{}(value)+0x9e3779b9+(h<<6)+(h>>2); }; mix(key.a);mix(key.b);mix(key.c);mix(key.d);mix(key.e);mix(key.f);mix((uint64_t(key.bytes)<<32)|key.kind); return h; } };
-struct WorldSlot { uint64_t material_epoch=1;Buffer frame,projections,objects,instances,point_lights,tiles,spots,glue,dimensions,history_projection,history_instances;uint64_t instance_bytes_used{},history_instance_bytes{};
+struct WorldSlot { uint64_t material_epoch=1,material_revision=0;Buffer frame,projections,objects,instances,point_lights,tiles,spots,glue,dimensions,history_projection,history_instances;uint64_t instance_bytes_used{},history_instance_bytes{};
     // Host copies of the bytes uploaded to frame/projection/object/instance
     // memory. That memory may be uncached device-local BAR; CPU readers
     // (motion history, spot fade hashing) must never read it back.
@@ -317,6 +321,8 @@ struct WorldState {ModelState models;
     std::unordered_map<uint32_t,uint32_t> resident_main_owners;
     bool parallel_spots{};uint32_t spot_tasks{};
     VkCommandPool spot_pools[2][8]{};std::vector<VkCommandBuffer> spot_commands[2][8];uint32_t spot_used[2][8]{};
+    // Parallel NEW main recording (SE_VULKAN_PARALLEL_MAIN): one pool and secondary per worker per slot.
+    VkCommandPool main_pools[2][4]{};std::vector<VkCommandBuffer> main_commands[2][4];uint32_t main_tasks{};
     // Object/instance upload copies overlap material lookup and the draw sort.
     bool parallel_upload{};
     uint32_t active_submission{};
@@ -327,7 +333,7 @@ struct WorldState {ModelState models;
     int32_t recording_submission=-1;
     WorldSubmission& current(){return recording_submission>=0&&!tl_scene_side?submissions[recording_submission]:submissions[active_submission];}
     const WorldSubmission& current() const{return recording_submission>=0&&!tl_scene_side?submissions[recording_submission]:submissions[active_submission];}
-    uint32_t cascade_tasks{},cascade_task_commands{};uint64_t sort_reuses{};
+    uint32_t cascade_tasks{},cascade_task_commands{};uint64_t sort_reuses{},parallel_main_frames{};
     WorldObjectRecords object_records;bool retained_objects{};uint64_t object_uploaded_bytes{};
     bool geometry_arena_requested{};
     std::vector<GeometryPage> vertex_pages,index_pages;
@@ -524,6 +530,10 @@ struct Renderer {uint32_t recipe_generation=1;
     // releases api_mutex, and scene calls (call_scene) for the next frame proceed while it records.
     static inline thread_local bool tl_recording_thread=false;
     bool early_release=env_flag("SE_VULKAN_EARLY_RELEASE",true);
+    // Spot caster grid (spots.inc); off until benchmarked.
+    bool spot_grid=env_flag("SE_VULKAN_SPOT_GRID",false);
+    bool pass_material_reuse=env_flag("SE_VULKAN_PASS_MATERIAL_REUSE",false);uint64_t world_mesh_revision{};
+    bool parallel_main=env_flag("SE_VULKAN_PARALLEL_MAIN",false);
     std::atomic<bool> record_released{false};std::unique_lock<std::mutex>* record_lock{};std::unique_lock<std::mutex>* scene_lock{};
     uint64_t early_releases{};
     struct RecordingView {bool valid{};std::vector<native_pass::Group> groups;std::vector<std::shared_ptr<native_pass::InstanceStream>> streams;bool pass_ready{};std::array<uint32_t,64> spot_views{};uint64_t static_dirty{};} rec_view;
@@ -660,7 +670,9 @@ struct Renderer {uint32_t recipe_generation=1;
         if(r.open&&timing_reports_active&&std::strcmp(r.open,"frame begin")!=0){double us=std::chrono::duration<double,std::micro>(now-r.at).count();auto it=std::find_if(r.laps.begin(),r.laps.end(),[&](const auto& l){return l.first==r.open;});
             if(it==r.laps.end()){r.laps.push_back({r.open,{0.0,0}});it=r.laps.end()-1;}it->second.first+=us;++it->second.second;}
         r.at=now;r.open=name;if(std::strcmp(name,"frame end")==0){r.open=nullptr;if(timing_reports_active)++r.frames;}}
-    void frame_mark(const char* name){auto cmd=slots[slot_index].command;gpu_mark(cmd,name,next_completion+1);gpu_pass_mark(cmd,name);cpu_lap(name);
+    // Workers recording secondaries (parallel NEW main) must not write marks into the primary command buffer.
+    static inline thread_local bool tl_suppress_marks=false;
+    void frame_mark(const char* name){if(tl_suppress_marks)return;auto cmd=slots[slot_index].command;gpu_mark(cmd,name,next_completion+1);gpu_pass_mark(cmd,name);cpu_lap(name);
         if(profile_markers && vkCmdBeginDebugUtilsLabelEXT && vkCmdEndDebugUtilsLabelEXT){
             if(profile_label_open)vkCmdEndDebugUtilsLabelEXT(cmd);
             VkDebugUtilsLabelEXT label{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};label.pLabelName=name;
@@ -884,6 +896,7 @@ struct Renderer {uint32_t recipe_generation=1;
         const char* pass_env=std::getenv("SE_VULKAN_PARALLEL_PASS");pass_scene.scene.set_parallel(pass_env?std::strcmp(pass_env,"1")==0:std::thread::hardware_concurrency()>=4);
         const char* cell_emit_env=std::getenv("SE_VULKAN_DEFERRED_CELL_EMISSION");deferred_cell_emission=!cell_emit_env||std::strcmp(cell_emit_env,"0")!=0;
         const char* selection_env=std::getenv("SE_VULKAN_PARALLEL_SELECTION");pass_scene.scene.parallel_selection=!selection_env||std::strcmp(selection_env,"0")!=0;
+        pass_scene.scene.lod_dedupe=env_flag("SE_VULKAN_PASS_LOD_DEDUPE",false);
         const char* packing_env=std::getenv("SE_VULKAN_ASYNC_PASS_PACKING");pass_scene.scene.set_async_packing(packing_env?std::strcmp(packing_env,"0")!=0:std::thread::hardware_concurrency()>=4);
         // The worker holds api_mutex while recording, so record_running identifies its joins.
         if(pipeline_census)pass_scene.scene.on_blocked=[this](double us){int lane=record_running?1:0;++packing_blocked[lane];packing_blocked_us[lane]+=uint64_t(us);
@@ -2038,7 +2051,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if (kind == 0) { {std::lock_guard s(stream_mutex);pending_streams.erase(id);} auto it = textures.find(id); if (it != textures.end()) { retired.push_back({ next_completion,it->second,{} }); textures.erase(it); recycle_cached_texture(id); } }
         else if(kind == 1) { auto it = meshes.find(id); if (it != meshes.end()) { retired.push_back({ next_completion,{},it->second }); meshes.erase(it); } }
         else if(kind==2) { auto it = stock.meshes.find(id); if (it != stock.meshes.end()) { retired.push_back({ next_completion,{},it->second }); stock.meshes.erase(it); } }
-        else if(kind==3) { auto it=world.meshes.find(id);if(it!=world.meshes.end()){retired.push_back({next_completion,{},it->second});world.meshes.erase(it);} }
+        else if(kind==3) { auto it=world.meshes.find(id);if(it!=world.meshes.end()){retired.push_back({next_completion,{},it->second});world.meshes.erase(it);++world_mesh_revision;} }
         else if(kind==5){auto it=world.arrays.find(id);if(it!=world.arrays.end()){Texture t{};t.image=it->second;retired.push_back({next_completion,t,{}});world.arrays.erase(it);recycle_cached_array(id);}}
         else if(kind==7){auto it=environment.luts.find(id);if(it!=environment.luts.end()){Texture t{};t.image=it->second.image;retired.push_back({next_completion,t,{}});environment.luts.erase(it);}}
         else if(kind==6){auto it=world.voxel_materials.find(id);if(it!=world.voxel_materials.end()){Mesh m{};m.vertices=it->second.constants;retired.push_back({next_completion,{},m});world.voxel_materials.erase(it);recycle_cached_voxel(id);}}
@@ -2417,7 +2430,7 @@ void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) acti
                     if(SymFromAddr(process,DWORD64(address),&offset,info)&&std::strncmp(info->Name,"sevk_",5)==0){auto& e=exports[info->Name];for(int i=0;i<3;i++)e[i]+=site[i];}}}
             {std::map<std::string,std::array<uint64_t,2>> locks;if(symbols){alignas(SYMBOL_INFO) char lb[sizeof(SYMBOL_INFO)+256]{};auto* li=reinterpret_cast<SYMBOL_INFO*>(lb);
                 for(auto& [address,site]:r->lock_sites){li->SizeOfStruct=sizeof(SYMBOL_INFO);li->MaxNameLen=255;DWORD64 offset=0;if(SymFromAddr(process,DWORD64(address),&offset,li)&&std::strncmp(li->Name,"sevk_",5)==0){auto& e=locks[li->Name];e[0]+=site[0];e[1]+=site[1];}}}
-                std::fprintf(f,",\"LockWaitUs\":%llu,\"RecordEndSinceLaunchUs\":%llu,\"RecordEnds\":%llu,\"LockRequestSinceLaunchUs\":%llu,\"LockBlocked\":%llu,\"PostSubmitUs\":[%llu,%llu,%llu,%llu,%llu],\"SortReuses\":%llu,\"LockSites\":[",(unsigned long long)r->lock_wait_us,(unsigned long long)r->tl_record_end_us,(unsigned long long)r->tl_record_ends,(unsigned long long)r->lock_request_since_launch_us,(unsigned long long)r->lock_blocked,(unsigned long long)r->tl_post_us[0],(unsigned long long)r->tl_post_us[1],(unsigned long long)r->tl_post_us[2],(unsigned long long)r->tl_post_us[3],(unsigned long long)r->tl_post_us[4],(unsigned long long)r->world.sort_reuses);bool lf=true;for(auto& [name,site]:locks){std::fprintf(f,"%s{\"Export\":\"%s\",\"Waits\":%llu,\"Us\":%llu}",lf?"":",",name.c_str(),(unsigned long long)site[0],(unsigned long long)site[1]);lf=false;}std::fprintf(f,"]");}
+                std::fprintf(f,",\"LockWaitUs\":%llu,\"RecordEndSinceLaunchUs\":%llu,\"RecordEnds\":%llu,\"LockRequestSinceLaunchUs\":%llu,\"LockBlocked\":%llu,\"PostSubmitUs\":[%llu,%llu,%llu,%llu,%llu],\"SortReuses\":%llu,\"ParallelMainFrames\":%llu,\"LockSites\":[",(unsigned long long)r->lock_wait_us,(unsigned long long)r->tl_record_end_us,(unsigned long long)r->tl_record_ends,(unsigned long long)r->lock_request_since_launch_us,(unsigned long long)r->lock_blocked,(unsigned long long)r->tl_post_us[0],(unsigned long long)r->tl_post_us[1],(unsigned long long)r->tl_post_us[2],(unsigned long long)r->tl_post_us[3],(unsigned long long)r->tl_post_us[4],(unsigned long long)r->world.sort_reuses,(unsigned long long)r->world.parallel_main_frames);bool lf=true;for(auto& [name,site]:locks){std::fprintf(f,"%s{\"Export\":\"%s\",\"Waits\":%llu,\"Us\":%llu}",lf?"":",",name.c_str(),(unsigned long long)site[0],(unsigned long long)site[1]);lf=false;}std::fprintf(f,"]");}
             std::fprintf(f,",\"CallSites\":[");bool first=true;for(auto& [name,site]:exports){std::fprintf(f,"%s{\"Export\":\"%s\",\"Calls\":%llu,\"Us\":%llu,\"PresentUs\":%llu}",first?"":",",name.c_str(),(unsigned long long)site[0],(unsigned long long)site[1],(unsigned long long)site[2]);first=false;}std::fprintf(f,"]");}
         if(symbols)SymCleanup(process);
 #endif

@@ -127,8 +127,10 @@ GBufferVelocityConstants gbuffer_velocity_frame_constants(WorldSlot& slot){
     c.size[0]=float(extent.width);c.size[1]=float(extent.height);c.inv_size[0]=1.f/c.size[0];c.inv_size[1]=1.f/c.size[1];c.probe_mode=gbuffer_velocity_probe;return c;
 }
 uint32_t gbuffer_velocity_store(const GBufferVelocityConstants& c){
-    if(gbuffer_velocity.cursor>=gbuffer_velocity.capacity)throw std::runtime_error("GBuffer velocity draw outside its prepared frame budget");
-    uint32_t offset=gbuffer_velocity.cursor++*gbuffer_velocity.stride;std::memcpy(static_cast<uint8_t*>(gbuffer_velocity.constants[slot_index].mapped)+offset,&c,sizeof(c));return offset;
+    // Atomic: parallel NEW main workers each take their own block; the order of blocks does not matter.
+    uint32_t index=std::atomic_ref<uint32_t>(gbuffer_velocity.cursor).fetch_add(1,std::memory_order_relaxed);
+    if(index>=gbuffer_velocity.capacity)throw std::runtime_error("GBuffer velocity draw outside its prepared frame budget");
+    uint32_t offset=index*gbuffer_velocity.stride;std::memcpy(static_cast<uint8_t*>(gbuffer_velocity.constants[slot_index].mapped)+offset,&c,sizeof(c));return offset;
 }
 // Writes one draw's AnomalyVelocity block and returns its dynamic offset.
 uint32_t gbuffer_velocity_draw(WorldSlot& slot,const WorldDraw& draw){

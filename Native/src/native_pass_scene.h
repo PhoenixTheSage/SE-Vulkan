@@ -165,6 +165,9 @@ public:
     void set_parallel(bool enabled){settle();if(enabled&&!jobs)jobs=std::make_unique<ViewJobs>();else if(!enabled)jobs.reset();}
     bool parallel()const{return jobs!=nullptr;}
     bool parallel_selection=true;
+    // Per-actor LOD readiness dedupe in preparation and publication (output identical).
+    static inline bool default_lod_dedupe=false; // tests run both settings
+    bool lod_dedupe=default_lod_dedupe;
     void prepare(Frame current){idle();prepare_body(std::move(current));}
     // Early preparation: the same selection on the background worker. Its readers (query, missing and
     // fallback accessors, publish, cancel and every resident mutation) join it first.
@@ -197,9 +200,12 @@ public:
             // Query results can change the per-view visible LOD shift. Resolve both
             // choices now; publication reuses this selector without advancing it.
             CpuScope resources(profiling,out.requests_us);
+            // lod_dedupe: each LOD of this family is checked once per actor (views mostly share one); request()
+            // keeps first-seen order, so the request list is unchanged.
+            uint64_t checked=0;auto need=[&](int lod){if(lod_dedupe&&lod<64){uint64_t bit=uint64_t(1)<<lod;if(checked&bit)return;checked|=bit;}if(!model_ready(family.levels[lod]))out.requests.push_back({actor.family,uint32_t(lod)});};
             for(auto& view:frame.views)if(selection.views&(uint64_t(1)<<view.id))for(bool main:{false,true}){
-                int lod=lod_for(family,view,selection,main);if(!model_ready(family.levels[lod]))out.requests.push_back({actor.family,uint32_t(lod)});
-                if(view.kind==Kind::Colour&&selection.next.previous>=0){int old=std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift)));if(!model_ready(family.levels[old]))out.requests.push_back({actor.family,uint32_t(old)});}
+                need(lod_for(family,view,selection,main));
+                if(view.kind==Kind::Colour&&selection.next.previous>=0)need(std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift))));
             }
         };
         uint32_t slots=actors.slots(),count=jobs&&slots>=2?std::min(16u,std::max(2u,(slots+255)/256)):1u;std::vector<Chunk> chunks(count);
@@ -262,7 +268,9 @@ public:
         auto run_chunk=[&](uint32_t c){auto& out=chunks[c];
             for(uint32_t s=uint32_t(uint64_t(total_selected)*c/count),end=uint32_t(uint64_t(total_selected)*(c+1)/count);s<end;++s){auto& selection=selected[s];
             auto& actor=actors.get(selection.handle);auto& family=families.get(actor.family);uint64_t view_mask=selection.views & ~(actor.group?hidden_views(actor.group):0);bool main=false;for(auto& view:frame.views)if(view.kind==Kind::Colour&&(view_mask&(uint64_t(1)<<view.id)))main=true;
-            bool missing_model=false;for(auto& view:frame.views)if(view_mask&(uint64_t(1)<<view.id)){int lod=lod_for(family,view,selection,main);if(!model_ready(family.levels[lod]))missing_model=true;if(view.kind==Kind::Colour&&selection.next.previous>=0){int old=std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift)));if(!model_ready(family.levels[old]))missing_model=true;}}
+            bool missing_model=false;uint64_t checked=0;
+            auto ready=[&](int lod){if(lod_dedupe&&lod<64){uint64_t bit=uint64_t(1)<<lod;if(checked&bit)return true;checked|=bit;}return model_ready(family.levels[lod]);};
+            for(auto& view:frame.views)if(view_mask&(uint64_t(1)<<view.id)){if(!ready(lod_for(family,view,selection,main))){missing_model=true;break;}if(view.kind==Kind::Colour&&selection.next.previous>=0&&!ready(std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift))))){missing_model=true;break;}}
             if(missing_model){out.fallbacks.push_back({selection.handle,actor.owner,actor.lod});continue;}
             for(auto& view:frame.views)if(view_mask&(uint64_t(1)<<view.id)){
                 int lod=lod_for(family,view,selection,main);bool transition=view.kind==Kind::Colour&&selection.next.previous>=0&&selection.next.transition>0;

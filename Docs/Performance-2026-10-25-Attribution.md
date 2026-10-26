@@ -1556,3 +1556,132 @@ with no consumer. That gap is filed in Anomaly's `wiki/Framework-gaps.md`
 ("Idle framework cost on Vulkan"), for consumer-driven activation on both
 backends. The second plugin-set run was 1.4 ms slower than the first;
 repeat the pair before quoting a final number.
+
+## Step 8: code for plan items 1–6, not yet benchmarked (2026-10-26)
+
+All new paths are behind toggles that are off by default, except the
+allocation fixes, which change no output. Lanes in `bench-sets.ps1`: `NPG`,
+`NPM`, `NPD`, `NPMAIN`, `NPEP2`, and `NP8` / `NP8C` with all of them on.
+
+| Item | Change | Toggle | Expected (from the step 7 profile) |
+|---|---|---|---|
+| Spot casters | 32 m grid over the eligible casters, built once per frame; each light visits only cells in its reach, then restores eligible order and runs the same tests | `SE_VULKAN_SPOT_GRID=1` | Recording: the per-light scan of every caster (spot lap 0.66–0.74 ms before the step 7 prefilter) |
+| Pass materials | Per-slot reuse of last frame's material sets when the group keys and kinds, the slot cache (new `material_revision`, bumped on reset and on dirty-texture removal), its epoch and the world mesh set (`world_mesh_revision`) are unchanged; only when every set was cached | `SE_VULKAN_PASS_MATERIAL_REUSE=1` | Part of "prepare pass streams" (0.40 ms) |
+| Pass LOD readiness | Each LOD of an actor's family is checked once in preparation (requests) and publication (missing models); request order is unchanged | `SE_VULKAN_PASS_LOD_DEDUPE=1` | Part of prepare 449 µs (requests 154 µs) and publish 551 µs |
+| Parallel NEW main | Sorted main entries split into up to four contiguous ranges, each recorded into a secondary on the job pool, executed in order inside a resumed rendering instance with load ops | `SE_VULKAN_PARALLEL_MAIN=1` | Recording: GBuffer NEW main 0.63–0.69 ms |
+| Early prepare | Existing toggle, worth re-measuring now that publication no longer waits for the lock | `SE_VULKAN_EARLY_PASS_PREPARE=1` | Prepare (about 0.45 ms) off the render thread |
+| Publication allocation | Reused preparation buffers, query results and transparent tickets; the second preparation read reuses them too | always on | Part of 74 KB per frame |
+| Sprites | `NativeSpriteBlit`, a blittable twin of `NativeSprite` with the same layout; the main batch fills a reused buffer, with no per-sprite array clones and no element-wise marshaling | always on | About 70 KB per frame, plus marshaling CPU |
+| View frusta | Probe-face and spot frusta are pooled and updated through `BoundingFrustumD.Matrix` | always on | A few KB per frame |
+
+Supporting changes:
+
+- the GBuffer velocity cursor is atomic, so workers each take a block;
+- `frame_mark` is suppressed on worker threads (thread-local);
+- main-pass workers use profiler lanes 12–15 and per-slot command pools,
+  reset like the spot pools;
+- the native pass-scene unit test now runs every check with LOD dedupe off
+  and on.
+
+Parallel main stays serial when:
+- GPU-opaque stock entries are present (they allocate shared descriptors);
+- the frame has fewer than 384 entries;
+- there is only one worker.
+
+Checks (correctness only):
+
+- Native CTests 19/19.
+- The GPU suites under validation pass with defaults and again with every new
+  toggle on: NativePass 126, SceneSubmission 267, ShadowOcclusion 36, Probe
+  427, WorldPass 542, Interop 16, HudBillboard 0 errors, BillboardPackets
+  43/43.
+- Validation gameplay runs, 0 errors: defaults `Vulkan-269dd92d…`, all
+  toggles `Vulkan-84abb0a6…`.
+- SpriteGpuTests 29/29 under validation. `MainPackets` now shares placement
+  with the blittable path. The plugin-only half is in
+  `VulkanSprites.Blit.cs`, because the test projects compile
+  `VulkanSprites.cs` alone.
+- SpritePacketTests does not build, already at HEAD: its recording backend
+  lacks `UploadWorldCubeMips`, which `VulkanTextureCache.cs` calls.
+- **Engagement.** An NP8 run with the pipeline report (`Vulkan-8db1542c…`,
+  new `ParallelMainFrames` counter) recorded the main pass in parallel on
+  12,111 of 12,111 pipelined frames.
+  - It showed a 5.46 ms interval (P95 7.61), against about 6.0 for comparable
+    single runs with the report on.
+  - This is one uncontrolled run, not a benchmark.
+
+Not done, with reasons:
+
+- **QueueWorld skip.** Copying the previous submission would race with
+  recording, which still reads it during early release. A separate cache
+  would copy about as much as it saves. Attribute `NativeWorldQueue` and
+  `BlobPack` first.
+- **Harness sampling.** The frame-gap report already puts it at 0.09 ms per
+  frame.
+- **1a, parallel traversal (0.35–0.40 ms).** Needs the scoped-emitter refactor
+  in the plan. The scene update's largest piece, group occlusion (0.31 ms),
+  recomputes dirty group bounds over all members. Growing them incrementally
+  is easy; shrinking needs a recompute. Measure before changing it.
+- **Lights (30 KB per frame).** `NativeLight` and `NativeSpot` need the same
+  blittable-twin treatment as sprites.
+- **Phase 4.** Design only; see the plan.
+- **No pinned Step7 build.** Exporting the commit cannot configure CMake (its
+  native dependencies are untracked). Compare `NP8` against `NP`, `S6` and
+  DX11.
+
+### Step 8 benchmark (2026-10-26, idle box, both orders)
+
+`TestResults/Step8-Orbit-Paired-2026-10-26.json` and
+`TestResults/Step8-Interior-Paired-2026-10-26.json`. Interval mean / P95, ms:
+
+| Lane | Orbit | Interior |
+|---|---|---|
+| NP, current defaults (steps 7–8, plugin-wait fixes, allocation fixes) | 5.28 / 7.31, 5.36 / 7.51 → **5.32** | 5.32 / 7.49, 5.71 / 8.05 → **5.52** |
+| NP8, all step 8 toggles | 5.44 / 7.77, 5.35 / 7.28 → 5.40 | 5.35 / 7.48, 5.51 / 7.59 → 5.43 |
+| S6 (pinned) | 7.03 / 11.34, 6.33 / 8.57 → 6.68 | 6.56 / 9.00, 7.28 / 11.96 → 6.92 |
+| DX11 | 4.31 / 5.25, 4.23 / 5.05 → **4.27** | 4.31 / 5.20, 4.30 / 5.16 → **4.31** |
+
+- **Current defaults against step 6:** −1.36 ms (orbit) and −1.40 ms
+  (interior). The gap to DX11 is now about 1.05–1.2 ms on the mean and about
+  2.3 ms on P95.
+- **The step 8 toggles do not move the cadence** (+0.08 orbit, −0.09
+  interior; both within noise). No single-toggle pairs were run.
+
+Recording laps (`record-laps`; step 6 `NPT` against `NP8C`, ms per frame):
+
+| Lap | Step 6 | NP8 | Change |
+|---|---|---|---|
+| Spot shadows | 0.661 | 0.488 | −0.17 (step 7 prefilter plus grid) |
+| GBuffer NEW main | 0.654 | 0.453 | −0.20 (parallel recording) |
+| Prepare pass streams | 0.405 | 0.411 | none (material reuse has no effect) |
+| Total | 3.32 | 3.08 | −0.24 |
+
+Render thread (CpuDetail, step 7 `Vulkan-85e727b4…` against NP8C
+`Vulkan-49d73068…`):
+
+| Phase | Step 7 (ms / KB) | Step 8 (ms / KB) |
+|---|---|---|
+| Frame | 6.76 / 385 | 5.93 / 297 |
+| Draw | 6.17 / 381 | 5.40 / 293 |
+| Native pass publication | 1.77 / 74 | 1.69 / 61 |
+| Sprites | 0.15 / 70 | ~0 / 0 |
+| QueueWorld | 0.67 | 0.63 |
+| Messages | 0.42 / 70 | 0.35 / 70 |
+| Particle draw | 0.38 / 60 | 0.32 / 60 |
+
+GC-tagged frames fell from 222 in 4,374 to 199 in 4,982.
+
+Conclusions:
+
+- **The render thread is the wall.** Recording has about 0.24 ms more
+  headroom now, so the cadence does not move with recording cuts.
+- **Spot grid and parallel main** work as intended (−0.37 ms of recording,
+  validation clean). Keep them as opt-ins, and turn them on when render-thread
+  cuts bring recording back to the wall.
+- **Pass LOD dedupe has no effect** (requests 154 → 160 µs; prepare 449 →
+  444 µs). Readiness checks are not the cost; the per-view loops are.
+- **Pass material reuse has no effect** on "prepare pass streams". That lap
+  is dominated by the stream copy, flush and offsets, not material lookups.
+- **The allocation fixes are real:** about 88 KB less per frame, sprite
+  marshaling is gone, and fewer frames are tagged with a GC. P95 still
+  trails DX11 by about 2.3 ms.
