@@ -392,3 +392,45 @@ Both stay in the tree as opt-in switches, and their contract checks pass.
 Revisit them once recording has headroom (plan 3.1/3.2), or with `BeginFrame`
 made non-waiting.
 
+## Session 6: early pass preparation (opt-in)
+
+This is plan option (b): predict the probe faces instead of moving `LightingSetup`.
+
+- `VulkanProbes.Plan` is a side-effect-free copy of `Configure`'s hold, reset
+  and origin decision. It gives the flags and face projections `Configure`
+  will publish.
+- Right after the actor traversal, `BeginNativePassPrepare` builds the views
+  from that plan and calls the new `sevk_pass_prepare_async`, which runs
+  the selection on the pass background worker.
+- Publication rebuilds the views from the published probe state. It keeps the
+  early preparation only if frame and views are byte-identical; otherwise it
+  cancels and prepares again.
+- The query, missing and fallback accessors join only an in-flight
+  preparation (a `preparing` flag). The first version also joined publish's
+  async packing, which added 0.5 ms to fallbacks.
+- `SE_VULKAN_EARLY_PASS_PREPARE=1` enables it.
+
+Results:
+
+- Prediction: 7,157 frames kept, 0 re-prepared (`vulkan-status.txt`, "Early pass
+  preparation"). Validation-layer gameplay run: 0 errors.
+- NativePassGpuTests 126: worker preparation draws the same colour and depth
+  as synchronous preparation.
+- CpuDetail: NativePassPublication 1.40 → 1.00 ms, prepare call 0.44 → 0.01 ms.
+  FrameSlot rose to 0.75 ms.
+- Paired toggle on the same binary, order off, on, on, off
+  (`TestResults/EarlyPassPrepare-Paired-2026-10-25.json`): on 9.22 / 9.29 ms
+  against off 8.50 / 8.67 ms.
+- That is slower by about 0.65 ms in both orders. Likely CPU contention (the
+  prepare fans out over view-job threads while the voxel plan worker, render
+  thread and recording also run) and `BeginFrame` waiting on recording. It is
+  off by default.
+
+### Pattern across sessions 5 and 6
+
+Moving render-thread work onto workers stopped paying once the render thread
+fell to about 8.5 ms. The frame now loses it to contention and to
+`BeginFrame` waits on recording. The next gains need removing work outright
+rather than moving it: stable main order (pending a DX11 visual check),
+recording cost (3.1/3.2), or a non-waiting `BeginFrame`.
+

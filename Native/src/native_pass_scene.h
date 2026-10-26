@@ -160,14 +160,19 @@ public:
     bool async_packing()const{return packer!=nullptr;}
     // Called with the blocked microseconds when a join had to wait (diagnostics).
     std::function<void(double)> on_blocked;
-    void settle()const{if(!packing)return;packing=false;if(!on_blocked||!packer->pending()){packer->wait();return;}
+    void settle()const{if(!packing)return;packing=preparing=false;if(!on_blocked||!packer->pending()){packer->wait();return;}
         auto start=std::chrono::steady_clock::now();packer->wait();on_blocked(std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count());}
     void set_parallel(bool enabled){settle();if(enabled&&!jobs)jobs=std::make_unique<ViewJobs>();else if(!enabled)jobs.reset();}
     bool parallel()const{return jobs!=nullptr;}
     bool parallel_selection=true;
-    void prepare(Frame current){
+    void prepare(Frame current){idle();prepare_body(std::move(current));}
+    // Early preparation: the same selection on the background worker. Its readers (query, missing and
+    // fallback accessors, publish, cancel and every resident mutation) join it first.
+    void prepare_async(Frame current){idle();if(!packer){prepare_body(std::move(current));return;}
+        packing=preparing=true;packer->start([this,frame=std::move(current)]() mutable {prepare_body(std::move(frame));});}
+    void prepare_body(Frame current){
         CpuScope total(profiling,profile.prepare_us);if(profiling)++profile.prepares;
-        idle();if(current.views.size()>64)throw std::runtime_error("pass view budget");uint64_t ids=0;for(auto& view:current.views){if(view.id>=64||(ids&(uint64_t(1)<<view.id)))throw std::runtime_error("duplicate pass view");ids|=uint64_t(1)<<view.id;}
+        if(current.views.size()>64)throw std::runtime_error("pass view budget");uint64_t ids=0;for(auto& view:current.views){if(view.id>=64||(ids&(uint64_t(1)<<view.id)))throw std::runtime_error("duplicate pass view");ids|=uint64_t(1)<<view.id;}
         frame=std::move(current);selected.clear();queries.clear();missing.clear();fallbacks.clear();groups.clear();streams.clear();transparent.clear();
         // Actor ranges select views and LODs into range-local outputs; merging
         // them in range order reproduces the serial selection, query, request
@@ -209,7 +214,8 @@ public:
         }
         pending=true;
     }
-    const auto& query_owners()const{return queries;}const auto& missing_levels()const{return missing;}const auto& explicit_fallbacks()const{return fallbacks;}const auto& render_groups()const{settle();return groups;}const auto& instance_streams()const{settle();return streams;}
+    // These join only an in-flight preparation, not the packing that publish started.
+    const auto& query_owners()const{if(preparing)settle();return queries;}const auto& missing_levels()const{if(preparing)settle();return missing;}const auto& explicit_fallbacks()const{if(preparing)settle();return fallbacks;}const auto& render_groups()const{settle();return groups;}const auto& instance_streams()const{settle();return streams;}
     const auto& transparent_requests()const{return transparent;}
     void publish(std::span<const QueryResult> results){
         settle();CpuScope total(profiling,profile.publish_us);if(profiling)++profile.publishes;
@@ -384,6 +390,6 @@ public:
     void cancel(){settle();if(!pending)throw std::runtime_error("pass cancel without preparation");pending=false;selected.clear();groups.clear();streams.clear();transparent.clear();}
 private:
     // Declared last: destroyed first, joining any packing that still reads members.
-    std::unique_ptr<Background> packer;mutable bool packing{};
+    std::unique_ptr<Background> packer;mutable bool packing{},preparing{};
 };
 }

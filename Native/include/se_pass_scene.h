@@ -35,6 +35,8 @@ SEVK_API int32_t SEVK_CALL sevk_pass_register_actor(void* ctx,const SevkPassActo
 SEVK_API int32_t SEVK_CALL sevk_pass_update_actors(void* ctx,const SevkPassActor* actors,uint32_t count,const SevkPassAppearance* appearance,uint32_t appearance_count);
 SEVK_API int32_t SEVK_CALL sevk_pass_remove(void* ctx,uint32_t kind,uint64_t handle);
 SEVK_API int32_t SEVK_CALL sevk_pass_prepare(void* ctx,const SevkSceneFrame* frame,const SevkPassView* views,uint32_t count);
+/* Same as sevk_pass_prepare, on the pass background worker; preparation readers and publish join it. */
+SEVK_API int32_t SEVK_CALL sevk_pass_prepare_async(void* ctx,const SevkSceneFrame* frame,const SevkPassView* views,uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_pass_get_preparation(void* ctx,SevkPassQuery* queries,uint32_t query_capacity,uint32_t* query_count,SevkPassMissing* missing,uint32_t missing_capacity,uint32_t* missing_count,SevkPassFallback* fallback,uint32_t fallback_capacity,uint32_t* fallback_count);
 SEVK_API int32_t SEVK_CALL sevk_pass_publish(void* ctx,const SevkPassQueryResult* results,uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_pass_cancel(void* ctx);

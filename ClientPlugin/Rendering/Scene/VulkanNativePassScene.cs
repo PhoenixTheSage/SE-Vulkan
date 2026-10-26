@@ -190,12 +190,41 @@ public sealed partial class VulkanScene
         }
         return view;
     }
+    // Early pass preparation (opt-in, see EarlyPassPrepareEnabled):
+    // BeginNativePassPrepare builds the views from the probe plan and starts the native prepare on its
+    // worker before voxel emission and LightingSetup. Publication rebuilds the views from the published
+    // probe state and keeps the early preparation only if both are byte-identical; otherwise it cancels
+    // and prepares again, so the output never depends on the prediction.
+    // Opt-in (SE_VULKAN_EARLY_PASS_PREPARE=1): it predicts every frame here, but paired runs were slower with it.
+    public bool EarlyPassPrepareEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_EARLY_PASS_PREPARE")=="1";
+    public long EarlyPrepareHits {get;private set;}public long EarlyPrepareMisses {get;private set;}
+    bool earlyPrepared;NativePassFrame earlyFrame;NativePassView[] earlyViews=new NativePassView[32];int earlyViewCount;
+    public void BeginNativePassPrepare(float[] probeProjections,uint probeFaces)
+    {
+        earlyPrepared=false;if(!EarlyPassPrepareEnabled||!nativePassActive||gpuActive||probeProjections==null)return;
+        var views=BuildNativeViews(out earlyFrame,probeProjections,probeFaces);earlyViewCount=views.Count;
+        if(earlyViews.Length<earlyViewCount)earlyViews=new NativePassView[earlyViewCount*2];views.CopyTo(earlyViews);
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPrepare))backend.PreparePassFrameAsync(ref earlyFrame,earlyViews,earlyViewCount);earlyPrepared=true;
+    }
+    static unsafe bool SameBytes(byte* a,byte* b,int bytes){for(int i=0;i<bytes;i++)if(a[i]!=b[i])return false;return true;}
+    unsafe bool EarlyPreparationMatches(ref NativePassFrame frame,List<NativePassView> views)
+    {
+        if(views.Count!=earlyViewCount)return false;var early=earlyFrame;var current=frame;
+        if(!SameBytes((byte*)&early,(byte*)&current,sizeof(NativePassFrame)))return false;
+        if(passViewArray.Length<views.Count)passViewArray=new NativePassView[Math.Max(views.Count,passViewArray.Length*2)];views.CopyTo(passViewArray);
+        fixed(NativePassView* a=earlyViews)fixed(NativePassView* b=passViewArray)return SameBytes((byte*)a,(byte*)b,views.Count*sizeof(NativePassView));
+    }
     public unsafe void PublishNativePassScene()
     {
         PublishGpuScene();if(!nativePassActive){if(gpuActive)FinishPassVisibility();return;}using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPublication);
         var views=BuildNativeViews(out NativePassFrame frame);
-        if(passViewArray.Length<views.Count)passViewArray=new NativePassView[Math.Max(views.Count,passViewArray.Length*2)];views.CopyTo(passViewArray);
-        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPrepare))backend.PreparePassFrame(ref frame,passViewArray,views.Count);
+        bool early=earlyPrepared;earlyPrepared=false;
+        if(early&&EarlyPreparationMatches(ref frame,views))EarlyPrepareHits++;
+        else{
+            if(early){EarlyPrepareMisses++;backend.CancelPassFrame();}
+            if(passViewArray.Length<views.Count)passViewArray=new NativePassView[Math.Max(views.Count,passViewArray.Length*2)];views.CopyTo(passViewArray);
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPrepare))backend.PreparePassFrame(ref frame,passViewArray,views.Count);
+        }
         bool pending=true;
         try{
             NativePassPreparation preparation;
@@ -227,7 +256,8 @@ public sealed partial class VulkanScene
     }
     // Reused each frame; the native prepare copies the views it is given.
     readonly List<NativePassView> passViews=new();NativePassView[] passViewArray=new NativePassView[32];
-    private unsafe List<NativePassView> BuildNativeViews(out NativePassFrame frame)
+    private List<NativePassView> BuildNativeViews(out NativePassFrame frame)=>BuildNativeViews(out frame,backend.CurrentProbeConfig.Projections,backend.CurrentProbeFaceMask());
+    private unsafe List<NativePassView> BuildNativeViews(out NativePassFrame frame,float[] probeProjections,uint probeFaces)
     {
         var views=passViews;views.Clear();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassFrameInputs)){
@@ -236,8 +266,8 @@ public sealed partial class VulkanScene
         frame.Global[0]=global.HisteresisRatio;frame.Global[1]=global.TransitionDeadZoneConst;frame.Global[2]=global.TransitionDeadZoneDistanceMult;frame.Global[3]=global.MaxTransitionInSeconds;frame.Global[4]=global.MinTransitionInSeconds;frame.Global[5]=global.ObjectDistanceAdd;frame.Global[6]=global.ObjectDistanceMult;
         views.Add(PassView(0,0,frustum,actorLodSettings.GBuffer));
         for(int c=0;c<8;c++)if((ShadowSystem.UpdateMask&(1u<<c))!=0){var lod=c<actorLodSettings.CascadeDepths.Length?actorLodSettings.CascadeDepths[c]:actorLodSettings.SingleDepth;float threshold=ShadowSystem.Settings.Cascades[c].SkippingSmallObjectThreshold,factor=ShadowSystem.ProjectionFactors[c];views.Add(PassView((uint)c+1,1,ShadowSystem.CasterFrustum(c),lod,minimum:threshold*threshold/(factor*factor)));}
-        var probe=backend.CurrentProbeConfig;uint faces=backend.CurrentProbeFaceMask();
-        if(ProbeDrawDistance>0)for(int face=0;face<6;face++)if((faces&(1u<<face))!=0){var p=probe.Projections;int at=face*16;var relative=new MatrixD(p[at],p[at+1],p[at+2],p[at+3],p[at+4],p[at+5],p[at+6],p[at+7],p[at+8],p[at+9],p[at+10],p[at+11],p[at+12],p[at+13],p[at+14],p[at+15]);var world=MatrixD.CreateTranslation(-Environment.CameraPosition)*relative;views.Add(PassView((uint)face+9,2,new BoundingFrustumD(world),actorLodSettings.Forward,maximum:ProbeDrawDistance));}
+        uint faces=probeFaces;
+        if(ProbeDrawDistance>0)for(int face=0;face<6;face++)if((faces&(1u<<face))!=0){var p=probeProjections;int at=face*16;var relative=new MatrixD(p[at],p[at+1],p[at+2],p[at+3],p[at+4],p[at+5],p[at+6],p[at+7],p[at+8],p[at+9],p[at+10],p[at+11],p[at+12],p[at+13],p[at+14],p[at+15]);var world=MatrixD.CreateTranslation(-Environment.CameraPosition)*relative;views.Add(PassView((uint)face+9,2,new BoundingFrustumD(world),actorLodSettings.Forward,maximum:ProbeDrawDistance));}
         for(int slot=0;slot<liveSpots.Count;slot++){var spot=liveSpots[slot];views.Add(PassView((uint)(15+slot*2),1,new BoundingFrustumD(spot.WorldProjection),actorLodSettings.SingleDepth,1|8,(uint)spot.Index));views.Add(PassView((uint)(16+slot*2),1,new BoundingFrustumD(spot.WorldProjection),actorLodSettings.SingleDepth,1|4,(uint)spot.Index));}
         }
         return views;

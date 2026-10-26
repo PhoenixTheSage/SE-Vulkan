@@ -23,7 +23,9 @@ public sealed partial class NativeBackend
     private ProbeFunctions.SetPrefilterFn probePrefilter;
     public void SetProbes(NativeProbeConfig config)=>SetProbes(config,0);
     public void SetProbes(NativeProbeConfig config,uint skipLevels){if(skipLevels==0)Check(ProbeApi.Set(context,ref config),context);else{probePrefilter??=(ProbeFunctions.SetPrefilterFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_set_probes_prefilter"),typeof(ProbeFunctions.SetPrefilterFn));Check(probePrefilter(context,ref config,skipLevels),context);}CurrentProbeConfig=config;}
-    public uint CurrentProbeFaceMask(){var config=CurrentProbeConfig;if((config.Flags&1)==0||(config.Flags&4)!=0)return 0;if(!ProbesReady||(config.Flags&16)!=0)return 63;var schedule=GetProbeScheduleStats();if((config.Flags&24)==0)return 1u<<((int)GetProbeStats().NextFace%6);return schedule.Stage<6?1u<<(int)schedule.Stage:0;}
+    public uint CurrentProbeFaceMask()=>ProbeFaceMask(CurrentProbeConfig.Flags);
+    // The faces a probe configuration with these flags captures this frame.
+    public uint ProbeFaceMask(uint flags){if((flags&1)==0||(flags&4)!=0)return 0;if(!ProbesReady||(flags&16)!=0)return 63;var schedule=GetProbeScheduleStats();if((flags&24)==0)return 1u<<((int)GetProbeStats().NextFace%6);return schedule.Stage<6?1u<<(int)schedule.Stage:0;}
 
     public NativeProbeStats GetProbeStats(){var s=new NativeProbeStats{Size=64,AbiVersion=AbiVersion};Check(ProbeApi.Stats(context,ref s),context);ProbesReady=s.Ready!=0;return s;}
     public NativeProbeScheduleStats GetProbeScheduleStats(){var s=new NativeProbeScheduleStats{Size=32,AbiVersion=AbiVersion};Check(ProbeApi.Schedule(context,ref s),context);return s;}

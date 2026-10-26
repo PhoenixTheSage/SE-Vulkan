@@ -17,6 +17,20 @@ public sealed class VulkanProbes
     public float LastAmbient {get;private set;}
     public void Process(MyRenderMessageBase message){if(message is MyRenderMessageUpdateRenderEnvironment env){textureMultipliers=env.Data.TextureMultipliers;if(!Settings.Equals(env.Data.EnvironmentProbe) || Resolution!=env.Data.EnvMapResolution)reset=true;Settings=env.Data.EnvironmentProbe;Resolution=env.Data.EnvMapResolution;}if(message.MessageType==MyRenderMessageEnum.UnloadData){reset=true;haveOrigin=false;textureMultipliers=MyTextureDebugMultipliers.Defaults;}}
     public static MatrixD FaceView(int face){Vector3D[] directions={Vector3D.Left,Vector3D.Right,Vector3D.Up,Vector3D.Down,Vector3D.Backward,Vector3D.Forward};return MatrixD.CreateLookAt(Vector3D.Zero,directions[face],face==2?-Vector3D.Backward:face==3?-Vector3D.Forward:Vector3D.Up);}
+    // Side-effect-free copy of Configure's hold/reset/origin decision: the flags and face projections it
+    // will publish this frame, for preparing the native pass scene before LightingSetup.
+    public (uint Flags,float[] Projections) Plan(NativeBackend backend,Vector3D camera,int skipIBLevels,float time)
+    {
+        int resolution=Resolution;bool r=reset||captureSkip!=Math.Max(0,skipIBLevels)||captureResolution!=resolution;
+        var stats=backend.GetProbeStats();var schedule=backend.GetProbeScheduleStats();bool idle=schedule.Busy==0||r||Settings.TimeOut<=0;
+        float next=stats.Cycles!=completedCycle?captureStarted+Math.Max(0,Settings.TimeOut):nextCapture;
+        bool hold=Settings.TimeOut>0 && !r && haveOrigin && stats.Ready!=0 && idle && time<next;
+        float[] matrices;
+        if(hold && heldMatrices!=null)matrices=heldMatrices;
+        else{var projection=(MatrixD)Matrix.CreatePerspectiveFovRhInfiniteComplementary((float)Math.PI/2,1,.01f);matrices=new float[96];var at=hold?origin:camera;
+            for(int face=0;face<6;face++){var view=FaceView(face);view.Translation=Vector3D.TransformNormal(camera-at,view);Array.Copy(NativeBackend.MatrixValues(view*projection),0,matrices,face*16,16);}}
+        return (1u|(r?2u:0)|(hold?4u:0)|(Settings.TimeOut<=0?16u:8u),matrices);
+    }
     public void Configure(NativeBackend backend,Vector3D camera,MyEnvironmentLightData light,MyPostprocessSettings postprocess,MatrixD orientation,ulong brdf,float delta,float time,Func<float> gatherAmbient=null,MyRenderSettings? renderSettings=null)
     {
         int resolution=Resolution;if(resolution<16 || resolution>512 || (resolution&(resolution-1))!=0)throw new ArgumentException("Probe resolution must be a power of two from 16 through 512.");
