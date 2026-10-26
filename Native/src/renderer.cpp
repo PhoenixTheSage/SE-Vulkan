@@ -493,6 +493,15 @@ struct Renderer {uint32_t recipe_generation=1;
     // Async present runs on its own stage thread; present_pending marks an unjoined result.
     sevk_jobs::Stage present_stage;PresentResult present_result{};bool present_pending{};
     bool async_present=!std::getenv("SE_VULKAN_ASYNC_PRESENT") || std::strcmp(std::getenv("SE_VULKAN_ASYNC_PRESENT"),"0")!=0;
+    // Deferred acquire (SE_VULKAN_DEFERRED_ACQUIRE=0 restores acquiring in begin_frame): the swapchain image
+    // is acquired at the start of end_frame, so begin_frame no longer joins the previous async present
+    // (vkQueuePresentKHR blocks for milliseconds) on the render thread. Acquire and present share the
+    // swapchain's host synchronization, so the join moves with the acquire. A frame whose deferred
+    // acquire fails (out of date, exclusive mode lost) is submitted without its swapchain pass and
+    // without presenting; the next begin_frame recreates the swapchain.
+    bool deferred_acquire=!std::getenv("SE_VULKAN_DEFERRED_ACQUIRE") || std::strcmp(std::getenv("SE_VULKAN_DEFERRED_ACQUIRE"),"0")!=0;
+    bool target_ready=true;
+    bool present_after_gpu=!std::getenv("SE_VULKAN_PRESENT_AFTER_GPU") || std::strcmp(std::getenv("SE_VULKAN_PRESENT_AFTER_GPU"),"0")!=0;
     SevkPresentFlowStats present_flow{sizeof(SevkPresentFlowStats),SEVK_ABI_VERSION};
     bool capture_present_samples=std::getenv("SE_VULKAN_PRESENT_SAMPLES") && std::strcmp(std::getenv("SE_VULKAN_PRESENT_SAMPLES"),"1")==0;std::deque<SevkPresentSample> present_samples;
     static uint64_t present_clock(){return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());}
@@ -503,6 +512,7 @@ struct Renderer {uint32_t recipe_generation=1;
         present_flow.last_completed_ns=value.end_ns;present_flow.completed_calls++;present_flow.result=uint32_t(value.result);
         if(value.result==VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT){exclusive_held=false;return;}
         if(value.result==VK_ERROR_OUT_OF_DATE_KHR){surface_dirty=true;}
+        if(value.result==VK_SUBOPTIMAL_KHR)surface_poll_due=true;
         else if(value.result!=VK_SUCCESS && value.result!=VK_SUBOPTIMAL_KHR && propagate)check_gpu(value.result,"present rendered frame");
         if(value.result==VK_SUCCESS||value.result==VK_SUBOPTIMAL_KHR)++stats.presented_frames;
     }
@@ -670,11 +680,14 @@ struct Renderer {uint32_t recipe_generation=1;
         if(m.index_allocation)release_geometry(world.index_pages,m.index_page,m.index_allocation);else destroy_buffer(m.indices);
         m={};
     }
+    // Pipeline report only: time in wait()'s upload flush and in the semaphore wait, and how many flushes.
+    uint64_t wait_flush_us{},wait_sem_us{},wait_flushes{};
     void wait(uint64_t value) {
-        if(batch_command) flush_uploads();
+        if(batch_command){auto at=std::chrono::steady_clock::now();flush_uploads();wait_flush_us+=tl_since(at);++wait_flushes;}
         if (!value) return;
+        auto at=std::chrono::steady_clock::now();
         VkSemaphoreWaitInfo w{ VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO }; w.semaphoreCount = 1; w.pSemaphores = &timeline; w.pValues = &value;
-        check_gpu(vkWaitSemaphores(device, &w, UINT64_MAX), "wait GPU timeline");
+        check_gpu(vkWaitSemaphores(device, &w, UINT64_MAX), "wait GPU timeline");wait_sem_us+=tl_since(at);
     }
     // Shadow masks end_frame leaves for the next frame: a pending resolution
     // change clears the cache, then render_world adds this frame's updates.
@@ -696,13 +709,16 @@ struct Renderer {uint32_t recipe_generation=1;
     static bool upscaler_requested(){{auto& n=ngx_request();std::lock_guard l(n.mu);if(n.enabled&&!n.directory.empty())return true;}{auto& f=fsr_request();std::lock_guard l(f.mu);if(f.enabled&&!f.directory.empty())return true;}return false;}
     // Ordinary calls: recording finished, then deferred calls in issue order.
     void await_recording(std::unique_lock<std::mutex>& lock){record_cv.wait(lock,[&]{return !record_pending&&!record_running;});if(record_failed){record_failed=false;throw std::runtime_error(record_error);}}
-    void flush_deferred(){std::vector<std::function<int32_t(Renderer&)>> work;{std::lock_guard q(deferred_mutex);work.swap(deferred);}for(auto& fn:work)if(fn(*this))throw std::runtime_error("deferred native call failed");}
+    // Deferred calls replay on the first ordinary call after recording; the pipeline report times them.
+    uint64_t deferred_flushes{},deferred_calls{},deferred_us{};
+    void flush_deferred(){std::vector<std::function<int32_t(Renderer&)>> work;{std::lock_guard q(deferred_mutex);work.swap(deferred);}if(work.empty())return;auto flush_at=std::chrono::steady_clock::now();
+        for(auto& fn:work)if(fn(*this))throw std::runtime_error("deferred native call failed");++deferred_flushes;deferred_calls+=work.size();deferred_us+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-flush_at).count());}
     // Starts end_frame on a worker; the caller holds api_mutex, so the worker
     // runs only after this call returns, and before any later ordinary call.
     int end_frame_async(){
         if(!recording||!world.current().queued)return end_frame();
         publish_launch_snapshot();uint32_t predicted=snapshot.cache_mask;bool checked=snapshot.cache_valid;
-        {std::lock_guard q(deferred_mutex);record_in_flight=true;}record_pending=true;
+        {std::lock_guard q(deferred_mutex);record_in_flight=true;}record_pending=true;tl_launch=std::chrono::steady_clock::now();
         record_stage.start([this,predicted,checked]{
             std::unique_lock lock(api_mutex);record_pending=false;record_running=true;
             try{end_frame();++pipelined_frames;if(checked&&(shadow_image_mask&((1u<<shadow_count)-1))!=predicted)++pipelined_mask_mismatches;}
@@ -1326,6 +1342,10 @@ struct Renderer {uint32_t recipe_generation=1;
                 if (!generated) fg_denied = false;
                 tearing_denied = tearing && mode != VK_PRESENT_MODE_IMMEDIATE_KHR; tearing_armed = tearing && mode == VK_PRESENT_MODE_IMMEDIATE_KHR;
             }
+            // Diagnostic override (SE_VULKAN_PRESENT_MODE=immediate|mailbox|fifo), used only when the surface offers the mode.
+            if(const char* forced=std::getenv("SE_VULKAN_PRESENT_MODE")){std::string f(forced);VkPresentModeKHR want=f=="immediate"?VK_PRESENT_MODE_IMMEDIATE_KHR:f=="mailbox"?VK_PRESENT_MODE_MAILBOX_KHR:f=="fifo"?VK_PRESENT_MODE_FIFO_KHR:mode;
+                count=0;check(vkGetPhysicalDeviceSurfacePresentModesKHR(physical,surface,&count,nullptr),"query present modes");std::vector<VkPresentModeKHR> offered(count);check(vkGetPhysicalDeviceSurfacePresentModesKHR(physical,surface,&count,offered.data()),"query present modes");
+                if(std::find(offered.begin(),offered.end(),want)!=offered.end())mode=want;}
             uint32_t images = caps.minImageCount + 1; if (caps.maxImageCount) images = std::min(images, caps.maxImageCount);
             VkSwapchainCreateInfoKHR swap{ VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR }; swap.surface = surface; swap.minImageCount = images;
             swap.imageFormat = color_format; swap.imageColorSpace = chosen->colorSpace; swap.imageExtent = extent; swap.imageArrayLayers = 1;
@@ -1529,8 +1549,16 @@ struct Renderer {uint32_t recipe_generation=1;
     // Win32 currentExtent is the client size. A settings change can resize the HWND
     // after the swapchain was created, and present then keeps the old image in the
     // left of the window. Recreate to the live extent without stopping presentation.
+    // vkGetPhysicalDeviceSurfaceCapabilitiesKHR costs about 1.5 ms per call on Windows, so a presenting
+    // swapchain polls every SE_VULKAN_SURFACE_POLL_FRAMES frames (default 16; 1 polls every frame).
+    // A suboptimal present or acquire, a suspended output or a missing swapchain polls at once;
+    // out-of-date results already resize through surface_dirty.
+    uint32_t surface_poll_frames=[]{const char* v=std::getenv("SE_VULKAN_SURFACE_POLL_FRAMES");long n=v?std::strtol(v,nullptr,10):16;return uint32_t(n<1?1:n>600?600:n);}();
+    uint32_t surface_poll_count{};bool surface_poll_due{};
     void match_surface_extent() {
         if (!surface || recording) return;
+        if (swapchain && !suspended && !surface_poll_due && ++surface_poll_count < surface_poll_frames) return;
+        surface_poll_count=0;surface_poll_due=false;
         VkSurfaceCapabilitiesKHR caps{};
         if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, surface, &caps) != VK_SUCCESS) return;
         if (caps.currentExtent.width == 0xFFFFFFFFu) return;
@@ -1547,11 +1575,18 @@ struct Renderer {uint32_t recipe_generation=1;
         if (vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, &count, formats.data()) != VK_SUCCESS) return false;
         return std::any_of(formats.begin(), formats.begin() + count, [](const auto& f) { return f.format == VK_FORMAT_R16G16B16A16_SFLOAT && f.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT; });
     }
+    // Pipeline report only: begin_frame wall time per stage (surface, uploads, counts, fence, collect, light tiles, descriptors and reset, commands).
+    uint64_t begin_lap_us[8]{};
+    // Pipeline report only, per frame, microseconds: launch->record start, record start->acquired, acquired->submit,
+    // slot submit->fence wait start (age), fence wait, frames whose fence was not yet signaled when begin_frame waited.
+    std::chrono::steady_clock::time_point tl_launch{},tl_submit[2]{};uint64_t tl_us[5]{},tl_frames{},tl_waited{};
+    static uint64_t tl_since(std::chrono::steady_clock::time_point from){return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-from).count());}
     int begin_frame(const SevkFrameInfo& frame) {
+        auto lap_at=std::chrono::steady_clock::now();auto lap=[&](int i){auto now=std::chrono::steady_clock::now();begin_lap_us[i]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(now-lap_at).count());lap_at=now;};
         submitted_frame=frame;jitter_begin_frame();
         guest.depth_ready=0;++guest.catalog_epoch;
-        join_present();
-        match_surface_extent();
+        if(!deferred_acquire)join_present();
+        match_surface_extent();lap(0);
         if (recording) throw std::runtime_error("frame already begun");
         update_mip_bias();
         // A denied HDR request latched for the session, so turning Windows HDR on after launch left the game SDR.
@@ -1569,41 +1604,27 @@ struct Renderer {uint32_t recipe_generation=1;
         // the desktop size while the game still laid the HUD out at the mode.
         if(swapchain&&extent.width&&extent.height&&(want_hdr||drop_hdr||want_immediate)){uint32_t logical_w=sprite_w?sprite_w:extent.width,logical_h=sprite_h?sprite_h:extent.height;resize_output(extent.width,extent.height,logical_w,logical_h,vsync);}
         if(surface_dirty){surface_dirty=false;uint32_t logical_w=sprite_w?sprite_w:extent.width,logical_h=sprite_h?sprite_h:extent.height;if(extent.width&&extent.height)resize_output(extent.width,extent.height,logical_w,logical_h,vsync);}
-        end_uploads();
+        end_uploads();lap(1);
         if (suspended) return 1;
         performance=SevkPerformanceStats{sizeof(SevkPerformanceStats),SEVK_ABI_VERSION};
         performance.queue_us=world.current().queue_us;performance.logical_draws=performance.submitted_draws=uint32_t(queued_draw_count()+(cells_emit_pending&&cells.scene.ready()&&!cells.scene.building()?cells.scene.emitted().size():0));
-        auto& slot = slots[slot_index];
+        auto& slot = slots[slot_index];lap(2);
         auto slot_stamp=std::chrono::steady_clock::now();
         auto slot_take=[&](){auto now=std::chrono::steady_clock::now();uint32_t elapsed=(uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(now-slot_stamp).count();slot_stamp=now;return elapsed;};
-        wait(slot.completion);
+        if(slot.completion&&tl_submit[slot_index].time_since_epoch().count()){uint64_t done{};vkGetSemaphoreCounterValue(device,timeline,&done);tl_us[3]+=tl_since(tl_submit[slot_index]);if(done<slot.completion)++tl_waited;}
+        {auto fence_at=std::chrono::steady_clock::now();wait(slot.completion);tl_us[4]+=tl_since(fence_at);}
         // Display bit 64 (HdrRender LowLatencyMode): DX11 sets MaximumFrameLatency 1, so also drain the previous frame.
         if(display_flags&64)wait(slots[(slot_index+1)%slots.size()].completion);
-        work.wait_us=slot_take(); collect();sample_light_tiles(slot_index);
+        work.wait_us=slot_take();lap(3); collect();lap(4);sample_light_tiles(slot_index);lap(5);
         if (!slot.draw_descriptors.empty()) {
             check(vkFreeDescriptorSets(device, descriptors, static_cast<uint32_t>(slot.draw_descriptors.size()), slot.draw_descriptors.data()), "recycle draw descriptors");
             slot.draw_descriptors.clear();
             slot.materials.clear();
         }
-        if (swapchain) {
-            try_acquire_exclusive(false);
-            VkResult result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, slot.acquired, VK_NULL_HANDLE, &image_index);
-            if (result == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) {
-                exclusive_held = false; try_acquire_exclusive(false);
-                if (exclusive_held) result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, slot.acquired, VK_NULL_HANDLE, &image_index);
-                else return 1;
-            }
-            work.acquire_us=slot_take();
-            if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-                uint32_t logical_w=sprite_w?sprite_w:extent.width,logical_h=sprite_h?sprite_h:extent.height;
-                if(extent.width&&extent.height)resize_output(extent.width,extent.height,logical_w,logical_h,vsync);
-                if(suspended||!swapchain)return 1;
-                result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, slot.acquired, VK_NULL_HANDLE, &image_index);
-                if(result==VK_ERROR_OUT_OF_DATE_KHR)return 1;
-            }
-            if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) check(result, "acquire swap image");
-        } else work.acquire_us=slot_take();
-        check(vkResetCommandPool(device, slot.pool, 0), "reset frame commands"); work.reset_us=slot_take();
+        target_ready=true;
+        if(!deferred_acquire && acquire_frame_image(slot,true))return 1;
+        work.acquire_us=slot_take();
+        check(vkResetCommandPool(device, slot.pool, 0), "reset frame commands"); work.reset_us=slot_take();lap(6);
         NativeFrame constants{}; constants.frame = frame; constants.light_count = std::min(64u,light_count);
         // The preview shader has its own fixed ABI. Stock world lighting reads
         // the complete storage buffer built by world_light_data instead.
@@ -1612,7 +1633,31 @@ struct Renderer {uint32_t recipe_generation=1;
         std::memcpy(slot.uniform.mapped, &constants, sizeof(constants)); check(vmaFlushAllocation(allocator, slot.uniform.memory, 0, sizeof(constants)), "flush frame constants");
         VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }; begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check(vkBeginCommandBuffer(slot.command, &begin), "begin frame command"); frame_mark("frame begin");
-        frame_meshes.clear(); frame_sprites.clear(); frame_lines[0].clear(); frame_lines[1].clear(); recording=true; guest.resources_open=true; return 0;
+        frame_meshes.clear(); frame_sprites.clear(); frame_lines[0].clear(); frame_lines[1].clear(); recording=true; guest.resources_open=true; lap(7); return 0;
+    }
+    // Acquires the slot's swapchain image. begin_frame (can_resize) recreates the swapchain on
+    // OUT_OF_DATE and retries once; end_frame cannot resize an open frame, so it marks the surface
+    // dirty instead. 1 means the frame has no swapchain image.
+    template<class SlotT> int acquire_frame_image(SlotT& slot,bool can_resize){
+        if(!swapchain)return 0;
+        try_acquire_exclusive(false);
+        VkResult result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, slot.acquired, VK_NULL_HANDLE, &image_index);
+        if (result == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) {
+            exclusive_held = false; try_acquire_exclusive(false);
+            if (exclusive_held) result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, slot.acquired, VK_NULL_HANDLE, &image_index);
+            else return 1;
+        }
+        if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+            if(!can_resize){surface_dirty=true;return 1;}
+            uint32_t logical_w=sprite_w?sprite_w:extent.width,logical_h=sprite_h?sprite_h:extent.height;
+            if(extent.width&&extent.height)resize_output(extent.width,extent.height,logical_w,logical_h,vsync);
+            if(suspended||!swapchain)return 1;
+            result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, slot.acquired, VK_NULL_HANDLE, &image_index);
+            if(result==VK_ERROR_OUT_OF_DATE_KHR)return 1;
+        }
+        if (result == VK_SUBOPTIMAL_KHR) surface_poll_due=true;
+        if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) check(result, "acquire swap image");
+        return 0;
     }
     void begin_main_rendering(const SevkFrameInfo& frame,bool load=false) {
         auto& slot=slots[slot_index];
@@ -1802,6 +1847,10 @@ struct Renderer {uint32_t recipe_generation=1;
         // Close that allocation window before recording the world/guest draws.
         guest.resources_open=false;
         auto& slot = slots[slot_index];
+        auto record_at=std::chrono::steady_clock::now();if(tl_launch.time_since_epoch().count())tl_us[0]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(record_at-tl_launch).count());
+        if(deferred_acquire&&swapchain){auto acquire_at=std::chrono::steady_clock::now();join_present();target_ready=acquire_frame_image(slot,false)==0;
+            work.acquire_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-acquire_at).count());}
+        tl_us[1]+=tl_since(record_at);auto acquired_at=std::chrono::steady_clock::now();
         auto perf_stamp=std::chrono::steady_clock::now();
         auto perf_take=[&](){auto now=std::chrono::steady_clock::now();auto us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(now-perf_stamp).count());perf_stamp=now;return us;};
         // Full GPU frame timing starts before resident preparation, not after
@@ -1828,16 +1877,19 @@ struct Renderer {uint32_t recipe_generation=1;
         // Guest passes own dynamic-rendering scopes. AfterUpscale must finish
         // before the swapchain scope used by composition and sprites begins.
         if(world.current().queued)guest_replay(slot.command,6);
-        perf_take();frame_mark("swapchain pass"); begin_main_rendering(*static_cast<SevkFrameInfo*>(slot.uniform.mapped));
+        perf_take();frame_mark("swapchain pass");
+        if(target_ready){
+        begin_main_rendering(*static_cast<SevkFrameInfo*>(slot.uniform.mapped));
         if(world.current().queued) compose_world();
         record_opaque_reference(slot.command);
         frame_mark("meshes");for(const auto& draw:frame_meshes) emit_mesh(draw);
         frame_mark("debug lines");emit_lines(slot.command);
         if(world.current().queued && has_output_billboards()){prepare_output_billboard_depth(slot.command);begin_main_rendering(*static_cast<SevkFrameInfo*>(slot.uniform.mapped),true);render_output_billboards(slot.command,world.slots[slot_index]);}
         performance.compose_us=perf_take();frame_mark("sprites");emit_sprites(slot.command,output_extent,frame_sprites.data(),static_cast<uint32_t>(frame_sprites.size()),sprite_pipeline,additive_pipeline,sprite_premul_pipeline,sprite_premul_additive_pipeline,sprite_w?float(sprite_w):float(output_extent.width),sprite_h?float(sprite_h):float(output_extent.height),true);
-        performance.sprite_us=perf_take();
         vkCmdEndRendering(slot.command);
-        if(capture_requested) {
+        }
+        performance.sprite_us=perf_take();
+        if(capture_requested&&target_ready) {
             if(!readback_supported) throw std::runtime_error("surface does not support transfer-source capture");
             wait(capture_completion);
             if(!capture.handle) capture=make_buffer(uint64_t(extent.width)*extent.height*(color_format==VK_FORMAT_R16G16B16A16_SFLOAT?8:4),VK_BUFFER_USAGE_TRANSFER_DST_BIT,true);
@@ -1854,7 +1906,7 @@ struct Renderer {uint32_t recipe_generation=1;
             VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};dependency.bufferMemoryBarrierCount=1;dependency.pBufferMemoryBarriers=&host;
             vkCmdPipelineBarrier2(slot.command,&dependency);
         }
-        if (swapchain) barrier(slot.command, swap_images[image_index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_ASPECT_COLOR_BIT,
+        if (swapchain&&target_ready) barrier(slot.command, swap_images[image_index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
         if(world.current().queued&&timing_pool){vkCmdWriteTimestamp2(slot.command,VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,timing_pool,slot_index*2+1);timing_valid[slot_index]=true;}
         frame_mark("frame end");if(profile_label_open){vkCmdEndDebugUtilsLabelEXT(slot.command);profile_label_open=false;}
@@ -1869,28 +1921,34 @@ struct Renderer {uint32_t recipe_generation=1;
         // Separate submits are not ordered. The frame samples images whose layout
         // transition is in the upload batch, so it waits on that timeline value.
         std::array<VkSemaphoreSubmitInfo,2> waits{}; uint32_t wait_count=0;
-        if(swapchain)waits[wait_count++]=acquired;
+        if(swapchain&&target_ready)waits[wait_count++]=acquired;
         uint64_t upload_wait=0;if(upload_fence && upload_fence<slot.completion){upload_wait=upload_fence;waits[wait_count].sType=VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;waits[wait_count].semaphore=timeline;waits[wait_count].value=upload_wait;waits[wait_count].stageMask=VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;++wait_count;}
         VkSubmitInfo2 submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 }; submit.commandBufferInfoCount = 1; submit.pCommandBufferInfos = &command;
         submit.signalSemaphoreInfoCount = 1; submit.pSignalSemaphoreInfos = signals.data();
         if(wait_count){submit.waitSemaphoreInfoCount=wait_count;submit.pWaitSemaphoreInfos=waits.data();}
-        if (swapchain) { signals[1].semaphore = present_semaphores[image_index];
+        if (swapchain&&target_ready) { signals[1].semaphore = present_semaphores[image_index];
             signals[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; submit.signalSemaphoreInfoCount = 2; }
-        join_present();VkResult result = vkQueueSubmit2(queue, 1, &submit, VK_NULL_HANDLE);
+        join_present();VkResult result = vkQueueSubmit2(queue, 1, &submit, VK_NULL_HANDLE);tl_us[2]+=tl_since(acquired_at);tl_submit[slot_index]=std::chrono::steady_clock::now();++tl_frames;
         performance.submit_us=perf_take();
         check_gpu(result, "submit rendered frame"); if(upload_wait)upload_fence=0; ++stats.submitted_frames;critical_finish.submitted=true;
         if(capture_requested) {capture_completion=slot.completion;capture_valid=true;capture_requested=false;}
-        depth_initialized = true; last_image_valid = true; last_image_index = image_index;
-        if (swapchain) {
+        depth_initialized = true; if(target_ready){last_image_valid = true; last_image_index = image_index;}
+        if (swapchain&&target_ready) {
             image_initialized[image_index] = true;
             // One immutable task owns the queue until joined before any other
             // queue operation. Per-image semaphore reuse still follows acquire.
-            auto submit_present=[present_queue=queue,chain=swapchain,index=image_index,semaphore=present_semaphores[image_index]](){
+            // Present after GPU completion (SE_VULKAN_PRESENT_AFTER_GPU=0 presents at once): vkQueuePresentKHR blocks
+            // until the frame's rendering finishes and holds a driver lock meanwhile, which stalled every Vulkan call
+            // the render thread made in begin_frame (surface query, timeline wait). Waiting on the timeline first
+            // keeps the present call short; the image still presents once rendering completes.
+            uint64_t present_after=present_after_gpu?slot.completion:0;
+            auto submit_present=[present_queue=queue,chain=swapchain,index=image_index,semaphore=present_semaphores[image_index],present_after,dev=device,line=timeline](){
+                if(present_after){VkSemaphoreWaitInfo w{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};w.semaphoreCount=1;w.pSemaphores=&line;w.pValues=&present_after;vkWaitSemaphores(dev,&w,UINT64_MAX);}
                 VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};present.waitSemaphoreCount=1;present.pWaitSemaphores=&semaphore;present.swapchainCount=1;present.pSwapchains=&chain;present.pImageIndices=&index;
                 uint64_t begin=present_clock();VkResult status=vkQueuePresentKHR(present_queue,&present);return PresentResult{status,begin,present_clock()};
             };
             if(async_present){present_pending=true;present_stage.start([this,submit_present]{present_result=submit_present();});}else accept_present(submit_present());
-        } else offscreen_initialized = true;
+        } else if(!swapchain) offscreen_initialized = true;
         performance.present_us=perf_take();
         present_generated_frame();
         fg_note_game();
@@ -2218,7 +2276,7 @@ void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) acti
         std::fprintf(f,"{\"Frames\":%llu,\"Scope\":\"Recording-thread CPU wall time from each frame mark or lap to the next, per recorded frame.\",\"Laps\":[",(unsigned long long)l.frames);
         for(size_t i=0;i<l.laps.size();++i)std::fprintf(f,"%s{\"Name\":\"%s\",\"Ms\":%.4f,\"Calls\":%llu}",i?",":"",l.laps[i].first.c_str(),l.laps[i].second.first/frames/1000.0,(unsigned long long)l.laps[i].second.second);
         std::fprintf(f,"]}\n");std::fclose(f);}
-    if(const char* path=std::getenv("SE_VULKAN_PIPELINE_REPORT"))if(FILE* f=std::fopen(path,"w")){std::fprintf(f,"{\"PipelinedFrames\":%llu,\"MaskMismatches\":%llu,\"Waits\":%llu,\"WaitUs\":%llu,\"PackingBlocked\":%llu,\"PackingBlockedUs\":%llu,\"PackingWorkerBlocked\":%llu,\"PackingWorkerBlockedUs\":%llu",(unsigned long long)r->pipelined_frames,(unsigned long long)r->pipelined_mask_mismatches,(unsigned long long)r->pipelined_waits,(unsigned long long)r->pipelined_wait_us,(unsigned long long)r->packing_blocked[0],(unsigned long long)r->packing_blocked_us[0],(unsigned long long)r->packing_blocked[1],(unsigned long long)r->packing_blocked_us[1]);
+    if(const char* path=std::getenv("SE_VULKAN_PIPELINE_REPORT"))if(FILE* f=std::fopen(path,"w")){std::fprintf(f,"{\"PipelinedFrames\":%llu,\"MaskMismatches\":%llu,\"Waits\":%llu,\"WaitUs\":%llu,\"PackingBlocked\":%llu,\"PackingBlockedUs\":%llu,\"PackingWorkerBlocked\":%llu,\"PackingWorkerBlockedUs\":%llu,\"DeferredFlushes\":%llu,\"DeferredCalls\":%llu,\"DeferredUs\":%llu,\"BeginLapUs\":[%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu],\"TimelineFrames\":%llu,\"TimelineUs\":[%llu,%llu,%llu,%llu,%llu],\"FenceNotReady\":%llu,\"WaitFlushes\":%llu,\"WaitFlushUs\":%llu,\"WaitSemaphoreUs\":%llu",(unsigned long long)r->pipelined_frames,(unsigned long long)r->pipelined_mask_mismatches,(unsigned long long)r->pipelined_waits,(unsigned long long)r->pipelined_wait_us,(unsigned long long)r->packing_blocked[0],(unsigned long long)r->packing_blocked_us[0],(unsigned long long)r->packing_blocked[1],(unsigned long long)r->packing_blocked_us[1],(unsigned long long)r->deferred_flushes,(unsigned long long)r->deferred_calls,(unsigned long long)r->deferred_us,(unsigned long long)r->begin_lap_us[0],(unsigned long long)r->begin_lap_us[1],(unsigned long long)r->begin_lap_us[2],(unsigned long long)r->begin_lap_us[3],(unsigned long long)r->begin_lap_us[4],(unsigned long long)r->begin_lap_us[5],(unsigned long long)r->begin_lap_us[6],(unsigned long long)r->begin_lap_us[7],(unsigned long long)r->tl_frames,(unsigned long long)r->tl_us[0],(unsigned long long)r->tl_us[1],(unsigned long long)r->tl_us[2],(unsigned long long)r->tl_us[3],(unsigned long long)r->tl_us[4],(unsigned long long)r->tl_waited,(unsigned long long)r->wait_flushes,(unsigned long long)r->wait_flush_us,(unsigned long long)r->wait_sem_us);
 #if defined(_WIN32)
         // Each wait records its innermost frames; only frames resolving to an export are listed.
         HANDLE process=GetCurrentProcess();bool symbols=SymInitialize(process,nullptr,TRUE);
