@@ -108,6 +108,9 @@ int main(int argc, char** argv) {
         const uint16_t hdr_texels[]={0x3800,0x3c00,0xbc00,0x3800,0x0001,0x7c00,0x7e00,0x3c00};
         uint8_t sdr_texels[8]{};sevk::capture_scrgb_rgba8(hdr_texels,sdr_texels,2);
         require(sdr_texels[0]==188&&sdr_texels[1]==255&&sdr_texels[2]==0&&sdr_texels[3]==128&&sdr_texels[4]==0&&sdr_texels[5]==255&&sdr_texels[6]==0&&sdr_texels[7]==255,"HDR PNG preview encodes linear RGB and preserves linear alpha with bounded special values");
+        {   SevkJobStats jobs{sizeof(SevkJobStats),SEVK_ABI_VERSION};require(sizeof(jobs)==512,"job stats ABI packing");
+            require(sevk_get_job_stats(&jobs,1)==0&&jobs.kind_count==7,"job stats need no context");
+            SevkJobStats wrong{8,SEVK_ABI_VERSION};require(sevk_get_job_stats(&wrong,0)<0,"job stats reject a wrong size");}
         if (argc > 1 && std::strcmp(argv[1], "--abi") == 0) { std::cout << "ABI contracts passed\n"; return 0; }
         SevkProbe probe{}; probe.size = sizeof(probe);
         if (sevk_probe(&probe) != 0) { std::cout << "GPU test unavailable: " << probe.detail << '\n'; return 77; }

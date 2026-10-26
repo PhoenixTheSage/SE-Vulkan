@@ -43,7 +43,7 @@ void cells_prepare(const SevkCellFrame& f){settle_cells();
     for(uint32_t c=0;c<8;c++){const auto& in=f.cascades[c];if(in.reserved||in.active>1||in.size_test>1||in.fitted>1)throw std::runtime_error("invalid OLD cell cascade");auto& out=frame.cascades[c];out.active=in.active;out.size_test=in.size_test;out.fitted=in.fitted;out.size_squared=in.size_squared;if(in.fitted)plane_set(in.planes,out.frustum);}
     frame.global.explicit_lod=f.flags&4;frame.global.updates=f.flags&8;frame.global.selection=f.selection;frame.global.maximum_seconds=f.maximum_seconds;frame.global.distance_add=f.distance_add;frame.global.distance_mult=f.distance_mult;
     frame.pass={f.minimum_lod,f.shift,0};frame.coefficient=f.coefficient;frame.delta=f.delta;
-    if(pass_scene.scene.parallel()&&!cells.jobs)cells.jobs=std::make_unique<native_pass::ViewJobs>();else if(!pass_scene.scene.parallel())cells.jobs.reset();
+    if(pass_scene.scene.parallel()&&!cells.jobs)cells.jobs=std::make_unique<native_pass::ViewJobs>(sevk_jobs::CellView);else if(!pass_scene.scene.parallel())cells.jobs.reset();
     cells.scene.prepare(frame,cells.jobs.get());
 }
 void cells_publish(const SevkCellResult* results,uint32_t count){settle_cells();

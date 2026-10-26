@@ -115,7 +115,7 @@ void render_spot_shadows(VkCommandBuffer cmd,WorldSlot& slot,const std::vector<u
         for(uint32_t i=0;i<64;++i){auto config=find_spot(i);if(!config || !(config->flags&1)){retire_image(spots.images[i]);retire_image(spots.frozen[i]);spots.sizes[i]=spots.frozen_sizes[i]=0;spots.frozen_ready[i]=0;spots.frozen_layout[i]=VK_IMAGE_LAYOUT_UNDEFINED;continue;}
             auto& image=spots.images[i];bool fresh=spots.sizes[i]!=spots.resolution || !image.handle;bool rebuild=fresh || ((spots.static_dirty|pass_scene.static_dirty)&(uint64_t(1)<<i)) || !spots.frozen[i].handle || !spots.frozen_ready[i] || spots.frozen_sizes[i]!=spots.resolution;bool dynamic=(spots.dynamic_dirty&(uint64_t(1)<<i))!=0;if(!rebuild && !dynamic)continue;VkImageUsageFlags usage=VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT;if(fresh){retire_image(image);image=make_image(spots.resolution,spots.resolution,VK_FORMAT_D32_SFLOAT,usage,VK_IMAGE_ASPECT_DEPTH_BIT);spots.sizes[i]=spots.resolution;}if(!spots.frozen[i].handle || spots.frozen_sizes[i]!=spots.resolution){retire_image(spots.frozen[i]);spots.frozen[i]=make_image(spots.resolution,spots.resolution,VK_FORMAT_D32_SFLOAT,usage,VK_IMAGE_ASPECT_DEPTH_BIT);spots.frozen_sizes[i]=spots.resolution;spots.frozen_ready[i]=0;spots.frozen_layout[i]=VK_IMAGE_LAYOUT_UNDEFINED;rebuild=true;}
             plans.push_back({i,fresh,rebuild,dynamic});}
-        uint32_t workers=std::min<uint32_t>(uint32_t(plans.size()),std::clamp(std::thread::hardware_concurrency()/4u,1u,4u));
+        uint32_t workers=std::min<uint32_t>(uint32_t(plans.size()),std::min(std::clamp(std::thread::hardware_concurrency()/4u,1u,4u),sevk_jobs::shared().worker_count()+1));
         // Each worker owns one pool per frame slot; this slot's frame has completed.
         for(uint32_t k=0;k<workers;++k){auto& pool=world.spot_pools[slot_index][k];if(!pool){VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};info.queueFamilyIndex=queue_family;check(vkCreateCommandPool(device,&info,nullptr,&pool),"create frame-owned spot pool");}
             check(vkResetCommandPool(device,pool,0),"reset completed spot pool");world.spot_used[slot_index][k]=0;}
@@ -130,9 +130,9 @@ void render_spot_shadows(VkCommandBuffer cmd,WorldSlot& slot,const std::vector<u
             for(size_t p=k;p<plans.size();p+=workers){auto& plan=plans[p];prepare_casters(plan.light,plan.rebuild);
                 auto scope=[&](bool only_dynamic){VkCommandBuffer command=spot_secondary(k);plan.draws+=draw_casters(command,plan.light,only_dynamic);check(vkEndCommandBuffer(command),"end spot secondary");return command;};
                 if(plan.rebuild){plan.statics=scope(false);if(plan.dynamic)plan.dynamics=scope(true);}else plan.dynamics=scope(true);}};
-        std::vector<std::future<void>> jobs;for(uint32_t k=1;k<workers;++k)jobs.push_back(std::async(std::launch::async,record,k));
+        sevk_jobs::Group jobs;for(uint32_t k=1;k<workers;++k)sevk_jobs::shared().submit(jobs,sevk_jobs::Spot,sevk_jobs::Priority::Normal,[&record,k]{record(k);});
         std::exception_ptr failure;try{if(workers)record(0);}catch(...){failure=std::current_exception();}
-        for(auto& job:jobs)try{job.get();}catch(...){if(!failure)failure=std::current_exception();}
+        try{jobs.wait();}catch(...){if(!failure)failure=std::current_exception();}
         if(failure)std::rethrow_exception(failure);
         world.spot_tasks=workers;
         for(auto& plan:plans){uint32_t i=plan.light;auto& image=spots.images[i];bool fresh=plan.fresh,dynamic=plan.dynamic;spots.stats.draws+=plan.draws;performance.spot_commands+=plan.draws;

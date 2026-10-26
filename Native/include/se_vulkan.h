@@ -208,6 +208,20 @@ typedef struct SevkPresentFlowStats {
 } SevkPresentFlowStats;
 SEVK_API int32_t SEVK_CALL sevk_set_async_present(void* context,uint32_t enabled);
 SEVK_API int32_t SEVK_CALL sevk_get_present_flow_stats(void* context,SevkPresentFlowStats* stats);
+/* Process-wide CPU job pool telemetry. Needs no context and never waits for recording.
+ * kinds: 0 pass views, 1 pass packing, 2 OLD cell views, 3 world queue validation, 4 upload copy,
+ * 5 cascade recording, 6 spot recording; 7..11 reserved. jobs, helped (run by the joining
+ * thread), wait_ns (queued to started) and run_ns are cumulative since load. max_wait_ns and
+ * peak_queued cover the time since the last read with reset_max set. workers is the pool size
+ * (SE_VULKAN_JOB_THREADS); stage_threads counts the dedicated recording and present threads. */
+typedef struct SevkJobKindStats {
+    uint64_t jobs,helped,wait_ns,max_wait_ns,run_ns;
+} SevkJobKindStats;
+typedef struct SevkJobStats {
+    uint32_t size,abi_version,workers,stage_threads,peak_queued,kind_count,reserved[2];
+    SevkJobKindStats kinds[12];
+} SevkJobStats;
+SEVK_API int32_t SEVK_CALL sevk_get_job_stats(SevkJobStats* stats,uint32_t reset_max);
 /* Benchmark-only completion samples, monotonically sequenced; no wait for pending present.
  * oldest reports retention loss. Timestamps describe queue-present call completion, not scanout. */
 typedef struct SevkPresentSample {uint64_t sequence,end_ns,interval_ns,call_ns;} SevkPresentSample;

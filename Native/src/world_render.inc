@@ -139,7 +139,7 @@ void queue_world(const void* frame,uint32_t frame_bytes,const float* projection,
     world.current().queue_work.copy_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-copy_at).count());
     auto validate_at=std::chrono::steady_clock::now();
     if(blob && world.parallel_queue && count>=2048){
-        uint32_t workers=std::min(4u,std::max(1u,std::thread::hardware_concurrency()));
+        uint32_t workers=std::min(4u,sevk_jobs::shared().worker_count()+1);
         world.current().queue_work.enabled=1;world.current().queue_work.workers=workers;world.current().draws.resize(count);
         // Validate canonical object slice order before sharing disjoint ranges.
         for(uint32_t i=0;i<count;i++){const auto& d=draws[i];uint64_t at=reinterpret_cast<uintptr_t>(d.object_constants)-1;
@@ -149,10 +149,10 @@ void queue_world(const void* frame,uint32_t frame_bytes,const float* projection,
                 if(world.pipelines[d.pipeline].type>=2){own.instance_n=d.instance_count*64;uint64_t at=reinterpret_cast<uintptr_t>(d.instances)-1;if(at%64 || at+own.instance_n>instance_bytes)throw std::runtime_error("invalid world instance blob offset");own.instance_at=uint32_t(at);}
                 own.packet.object_constants=nullptr;own.packet.instances=nullptr;world.current().draws[i]=own;}
             return stats;};
-        std::vector<std::future<SevkQueueValidationStats>> tasks;tasks.reserve(workers-1);
-        for(uint32_t worker=1;worker<workers;worker++)tasks.emplace_back(std::async(std::launch::async,range,count*worker/workers,count*(worker+1)/workers));
+        std::array<SevkQueueValidationStats,4> lanes{};
+        sevk_jobs::parallel_for(sevk_jobs::QueueValidate,sevk_jobs::Priority::High,workers,workers,[&](uint32_t worker){lanes[worker]=range(count*worker/workers,count*(worker+1)/workers);});
         auto merge=[&](const SevkQueueValidationStats& stats){world.current().validation_stats.draws+=stats.draws;world.current().validation_stats.mesh_checks+=stats.mesh_checks;world.current().validation_stats.texture_checks+=stats.texture_checks;world.current().validation_stats.voxel_checks+=stats.voxel_checks;world.current().validation_stats.hits+=stats.hits;};
-        merge(range(0,count/workers));for(auto& task:tasks)merge(task.get());
+        for(uint32_t worker=0;worker<workers;worker++)merge(lanes[worker]);
     }else{
         world.current().queue_work.workers=1;
     for(uint32_t i=0;i<count;++i){const auto& d=draws[i];validate_world_packet(d,world.current().validation_stats,validated_textures);bool instanced=world.pipelines[d.pipeline].type>=2;
@@ -489,7 +489,7 @@ void render_world(){
         if(!retained){slot.host_objects.assign(current.draw_objects.data(),current.draw_objects.data()+object_bytes);if(object_bytes)std::memcpy(slot.objects.mapped,current.draw_objects.data(),size_t(object_bytes));}
         slot.host_instances.assign(current.instances.data.data(),current.instances.data.data()+instance_bytes);
         if(instance_bytes)std::memcpy(slot.instances.mapped,current.instances.data.data(),instance_bytes);};
-    std::future<void> upload_job;if(world.parallel_upload)upload_job=std::async(std::launch::async,copy_draw_data);else copy_draw_data();
+    sevk_jobs::Group upload_job;if(world.parallel_upload)sevk_jobs::shared().submit(upload_job,sevk_jobs::Upload,sevk_jobs::Priority::Normal,copy_draw_data);else copy_draw_data();
     slot.instance_bytes_used=instance_bytes;
     struct Glue{float inverse[16],matrices[64],splits[4];uint32_t count,width,height,reserved;};static_assert(sizeof(Glue)==352);Glue glue{};std::memcpy(glue.inverse,world.current().inverse.data(),64);std::memcpy(glue.matrices,shadow_matrices,sizeof(glue.matrices));std::memcpy(glue.splits,shadow_splits,sizeof(glue.splits));glue.count=std::min(4u,shadow_count);glue.width=extent.width;glue.height=extent.height;std::memcpy(slot.glue.mapped,&glue,sizeof(glue));
     for(auto* b:{&slot.frame,&slot.projections,&slot.glue})check(vmaFlushAllocation(allocator,b->memory,0,VK_WHOLE_SIZE),"flush batched world uniforms/instances");world_light_data(slot);
@@ -520,7 +520,7 @@ void render_world(){
         }
         if(A.pipeline!=B.pipeline)return A.pipeline<B.pipeline;if(A.mesh!=B.mesh)return A.mesh<B.mesh;if(A.material!=B.material)return A.material<B.material;return a<b;
     });
-    cpu_lap("prepare upload join");if(upload_job.valid())upload_job.get();
+    cpu_lap("prepare upload join");upload_job.wait();
     check(vmaFlushAllocation(allocator,slot.instances.memory,0,VK_WHOLE_SIZE),"flush batched world uniforms/instances");if(!world.retained_objects)check(vmaFlushAllocation(allocator,slot.objects.memory,0,VK_WHOLE_SIZE),"flush legacy world objects");
     cpu_lap("prepare cascade casters");for(auto& casters:world.current().cascade_casters)casters.clear();
     if(scheduled_shadows)shadow_update_mask|=((1u<<shadow_count)-1)&~shadow_image_mask;
@@ -541,14 +541,14 @@ void render_world(){
     if(!scheduled_shadows)for(const auto& draw:world.current().draws){const auto& p=draw.packet;uint32_t stock_membership=p.reserved&((1u<<shadow_count)-1);if((p.flags&(512|8192)) || !stock_membership)continue;if(p.alpha)world.shadow_alpha_textures.insert(p.alpha);any_dynamic|=(p.flags&0x1000000u)!=0;if(p.pipeline>=2560)hash_caster(world_distance_fade_bits());hash_caster(p.mesh);hash_caster(p.pipeline);hash_caster(p.instance_count);hash_caster(stock_membership);hash_caster(p.alpha);hash_caster(p.flags&~0x1000000u);for(float v:p.origin)hash_caster(std::bit_cast<uint32_t>(v));}
     bool reuse_shadows=saved_shadows && !any_dynamic && caster_signature==saved_caster_signature && saved_shadow_count==shadow_count && std::memcmp(saved_shadow_matrices,shadow_matrices,sizeof(saved_shadow_matrices))==0;
     world.cascade_tasks=world.cascade_task_commands=0;
-    std::array<std::future<GeometryRecordCounts>,8> cascade_jobs;
+    std::array<GeometryRecordCounts,8> cascade_counts{};std::array<sevk_jobs::Group,8> cascade_jobs;
     uint32_t updates=scheduled_shadows?shadow_update_mask:reuse_shadows?0u:(1u<<shadow_count)-1;
     bool parallel=world.parallel_cascades && std::popcount(updates)>1;
-    if(parallel){prepare_cascade_commands();for(uint32_t c=0;c<shadow_count;++c)if(updates&(1u<<c)){cascade_jobs[c]=std::async(std::launch::async,[this,c]{return record_cascade_secondary(c);});++world.cascade_tasks;}}
+    if(parallel){prepare_cascade_commands();for(uint32_t c=0;c<shadow_count;++c)if(updates&(1u<<c)){sevk_jobs::shared().submit(cascade_jobs[c],sevk_jobs::Cascade,sevk_jobs::Priority::Normal,[this,c,&cascade_counts]{cascade_counts[c]=record_cascade_secondary(c);});++world.cascade_tasks;}}
     frame_mark("spot shadows");render_spot_shadows(cmd,slot,object_offsets,instance_offsets);work.spot_us=profile_take();frame_mark("cascades");
     if(updates){for(uint32_t c=0;c<shadow_count;++c){if(!(updates&(1u<<c)))continue;auto& image=shadow_images[c];barrier(cmd,image.handle,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT),VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
         VkRenderingAttachmentInfo d{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};d.imageView=image.view;d.imageLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;d.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;d.storeOp=VK_ATTACHMENT_STORE_OP_STORE;d.clearValue.depthStencil={1,0};VkRenderingInfo r{VK_STRUCTURE_TYPE_RENDERING_INFO};r.renderArea={{0,0},{shadow_resolution,shadow_resolution}};r.layerCount=1;r.pDepthAttachment=&d;if(parallel)r.flags=VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT;vkCmdBeginRendering(cmd,&r);world_viewport(cmd,shadow_resolution,shadow_resolution);
-        if(parallel){GeometryRecordCounts count;{critical_profile::Scope join(critical_profile::CascadeJoin);count=cascade_jobs[c].get();}merge_shadow(count);world.cascade_task_commands+=count.commands;vkCmdExecuteCommands(cmd,1,&world.cascade_commands[slot_index][c]);}else emit_cascade(c);vkCmdEndRendering(cmd);barrier(cmd,image.handle,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT),VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);render_shadow_occlusion(cmd,slot,c);}shadow_image_mask|=updates;std::memcpy(saved_shadow_matrices,shadow_matrices,sizeof(saved_shadow_matrices));saved_shadow_count=shadow_count;saved_caster_signature=caster_signature;saved_shadows=true;}render_guest_depth_views(cmd,slot);work.shadow_us=profile_take();frame_mark("gbuffer");
+        if(parallel){GeometryRecordCounts count;{critical_profile::Scope join(critical_profile::CascadeJoin);cascade_jobs[c].wait();count=cascade_counts[c];}merge_shadow(count);world.cascade_task_commands+=count.commands;vkCmdExecuteCommands(cmd,1,&world.cascade_commands[slot_index][c]);}else emit_cascade(c);vkCmdEndRendering(cmd);barrier(cmd,image.handle,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT),VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);render_shadow_occlusion(cmd,slot,c);}shadow_image_mask|=updates;std::memcpy(saved_shadow_matrices,shadow_matrices,sizeof(saved_shadow_matrices));saved_shadow_count=shadow_count;saved_caster_signature=caster_signature;saved_shadows=true;}render_guest_depth_views(cmd,slot);work.shadow_us=profile_take();frame_mark("gbuffer");
     for(uint32_t i=0;i<4;++i){bool d=i==3;barrier(cmd,world.gbuffer[i].handle,world.initialized?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED,d?VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,d?VK_IMAGE_ASPECT_DEPTH_BIT:VK_IMAGE_ASPECT_COLOR_BIT,world.initialized?(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT):VK_PIPELINE_STAGE_2_NONE,world.initialized?VK_ACCESS_2_SHADER_SAMPLED_READ_BIT:0,d?VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT:VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,d?VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT:VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);}
     std::array<VkRenderingAttachmentInfo,7> colors{};for(uint32_t i=0;i<3;++i){colors[i].sType=VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;colors[i].imageView=world.gbuffer[i].view;colors[i].imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;colors[i].loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;colors[i].storeOp=VK_ATTACHMENT_STORE_OP_STORE;}
     colors[0].clearValue.color.float32[3]=1.f;

@@ -10,6 +10,7 @@
 #include "world_object_records.h"
 #include "world_texture_validation_cache.h"
 #include "spot_bounds.h"
+#include "job_system.h"
 #include "native_pass_scene.h"
 #include "old_cells.h"
 #include "gpu_opaque_registry.h"
@@ -475,7 +476,7 @@ struct Renderer {uint32_t recipe_generation=1;
     // while managed frame N+1 continues. Ordinary calls wait for it and then
     // replay deferred calls in issue order; whitelisted void calls queue with
     // copied arguments; a few reads answer from the launch snapshot.
-    std::condition_variable_any record_cv;bool record_pending{},record_running{},record_failed{};std::string record_error;std::future<void> record_job;
+    std::condition_variable_any record_cv;bool record_pending{},record_running{},record_failed{};std::string record_error;sevk_jobs::Stage record_stage;
     std::mutex deferred_mutex;bool record_in_flight{};std::vector<std::function<int32_t(Renderer&)>> deferred;
     struct ReadSnapshot {SevkWorkStats work{};SevkResolutionStats resolution{};SevkShadowFeedback shadow{};uint32_t cache_mask{},cache_count{};bool cache_valid{};std::vector<SevkOcclusionResult> occlusion;uint64_t occlusion_token{};std::vector<SevkFlareResult> flares;float render_fraction=1;};
     std::mutex snapshot_mutex;ReadSnapshot snapshot;uint64_t pipelined_frames{},pipelined_mask_mismatches{},pipelined_waits{},pipelined_wait_us{};
@@ -489,7 +490,8 @@ struct Renderer {uint32_t recipe_generation=1;
     std::vector<VkImage> swap_images; std::vector<VkImageView> swap_views;
     std::vector<VkSemaphore> present_semaphores; std::vector<bool> image_initialized;
     struct PresentResult {VkResult result;uint64_t begin_ns,end_ns;};
-    std::future<PresentResult> pending_present;
+    // Async present runs on its own stage thread; present_pending marks an unjoined result.
+    sevk_jobs::Stage present_stage;PresentResult present_result{};bool present_pending{};
     bool async_present=!std::getenv("SE_VULKAN_ASYNC_PRESENT") || std::strcmp(std::getenv("SE_VULKAN_ASYNC_PRESENT"),"0")!=0;
     SevkPresentFlowStats present_flow{sizeof(SevkPresentFlowStats),SEVK_ABI_VERSION};
     bool capture_present_samples=std::getenv("SE_VULKAN_PRESENT_SAMPLES") && std::strcmp(std::getenv("SE_VULKAN_PRESENT_SAMPLES"),"1")==0;std::deque<SevkPresentSample> present_samples;
@@ -506,10 +508,10 @@ struct Renderer {uint32_t recipe_generation=1;
     }
     void join_present(bool propagate=true){
         critical_profile::Scope critical_join(critical_profile::PresentJoin);
-        if(!pending_present.valid())return;
-        auto begin=present_clock();auto result=pending_present.get();present_flow.last_join_us=uint32_t((present_clock()-begin)/1000);accept_present(result,propagate);
+        if(!present_pending)return;
+        auto begin=present_clock();present_stage.wait();present_pending=false;auto result=present_result;present_flow.last_join_us=uint32_t((present_clock()-begin)/1000);accept_present(result,propagate);
     }
-    void poll_present(){if(pending_present.valid()&&pending_present.wait_for(std::chrono::seconds(0))==std::future_status::ready)join_present();}
+    void poll_present(){if(present_pending&&!present_stage.pending())join_present();}
     Image offscreen{}, depth{}; bool offscreen_initialized{}, depth_initialized{};
     VkDescriptorPool descriptors{}; VkDescriptorSetLayout frame_layout{}, texture_layout{}, shadow_layout{};
     VkPipelineLayout pipeline_layout{}; VkPipeline sprite_pipeline{}, additive_pipeline{}, mesh_pipeline{}, transparent_pipeline{}, mesh_additive_pipeline{};
@@ -701,7 +703,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if(!recording||!world.current().queued)return end_frame();
         publish_launch_snapshot();uint32_t predicted=snapshot.cache_mask;bool checked=snapshot.cache_valid;
         {std::lock_guard q(deferred_mutex);record_in_flight=true;}record_pending=true;
-        record_job=std::async(std::launch::async,[this,predicted,checked]{
+        record_stage.start([this,predicted,checked]{
             std::unique_lock lock(api_mutex);record_pending=false;record_running=true;
             try{end_frame();++pipelined_frames;if(checked&&(shadow_image_mask&((1u<<shadow_count)-1))!=predicted)++pipelined_mask_mismatches;}
             catch(const std::exception& e){record_error=e.what();record_failed=true;}catch(...){record_error="unknown native Vulkan error";record_failed=true;}
@@ -1887,7 +1889,7 @@ struct Renderer {uint32_t recipe_generation=1;
                 VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};present.waitSemaphoreCount=1;present.pWaitSemaphores=&semaphore;present.swapchainCount=1;present.pSwapchains=&chain;present.pImageIndices=&index;
                 uint64_t begin=present_clock();VkResult status=vkQueuePresentKHR(present_queue,&present);return PresentResult{status,begin,present_clock()};
             };
-            if(async_present)pending_present=std::async(std::launch::async,submit_present);else accept_present(submit_present());
+            if(async_present){present_pending=true;present_stage.start([this,submit_present]{present_result=submit_present();});}else accept_present(submit_present());
         } else offscreen_initialized = true;
         performance.present_us=perf_take();
         present_generated_frame();
@@ -2205,7 +2207,7 @@ int32_t SEVK_CALL sevk_get_stats(void* context, SevkStats* stats) { return call(
 }); }
 int32_t SEVK_CALL sevk_readback(void* context, void* rgba8, uint64_t bytes) { return call(context, [&](Renderer& r) { r.readback(rgba8,bytes); return 0; }); }
 int32_t SEVK_CALL sevk_request_readback(void* context) {return call(context,[&](Renderer& r) {if(!r.readback_supported) throw std::runtime_error("capture unsupported by presentation surface");r.capture_requested=true;return 0;});}
-void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) active_context = nullptr; if(context){auto* r=static_cast<Renderer*>(context);if(r->record_job.valid())r->record_job.wait();
+void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) active_context = nullptr; if(context){auto* r=static_cast<Renderer*>(context);r->record_stage.wait();
     // SE_VULKAN_PIPELINE_REPORT=<file>: pipelined frames, cascade-mask prediction misses and waits,
     // plus native pass packing joins that blocked, split into render thread and recording worker.
     if(!r->gpu_pass.path.empty())if(FILE* f=std::fopen(r->gpu_pass.path.c_str(),"w")){const auto& g=r->gpu_pass;double frames=double(std::max<uint64_t>(1,g.frames));
@@ -2274,7 +2276,7 @@ int32_t SEVK_CALL sevk_get_presentation_stats(void* ctx,SevkPresentationStats* s
         r.swapchain?uint32_t(r.actual_present_mode):UINT32_MAX,uint32_t(r.swap_images.size()),r.swapchain_generation};return 0;});}
 int32_t SEVK_CALL sevk_set_async_present(void* ctx,uint32_t enabled){return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("presentation policy cannot change during recording");r.join_present();r.async_present=enabled!=0;return 0;});}
 int32_t SEVK_CALL sevk_get_present_samples(void* ctx,uint64_t after,SevkPresentSample* samples,uint32_t capacity,uint32_t* count,uint64_t* oldest){return call(ctx,[&](Renderer& r){if(!count||!oldest||(!samples&&capacity)||capacity>4096)throw std::runtime_error("invalid present sample buffer");r.poll_present();*count=0;*oldest=r.present_samples.empty()?0:r.present_samples.front().sequence;for(const auto& sample:r.present_samples)if(sample.sequence>after){if(*count==capacity)break;samples[(*count)++]=sample;}return 0;});}
-int32_t SEVK_CALL sevk_get_present_flow_stats(void* ctx,SevkPresentFlowStats* stats){return call(ctx,[&](Renderer& r){if(!stats||stats->size!=sizeof(*stats)||stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("present flow ABI mismatch");r.poll_present();*stats=r.present_flow;stats->enabled=r.async_present?1u:0u;stats->pending=r.pending_present.valid()?1u:0u;return 0;});}
+int32_t SEVK_CALL sevk_get_present_flow_stats(void* ctx,SevkPresentFlowStats* stats){return call(ctx,[&](Renderer& r){if(!stats||stats->size!=sizeof(*stats)||stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("present flow ABI mismatch");r.poll_present();*stats=r.present_flow;stats->enabled=r.async_present?1u:0u;stats->pending=r.present_pending?1u:0u;return 0;});}
 int32_t SEVK_CALL sevk_init_world_pipeline(void* ctx,uint32_t id,const void* vs,uint64_t vb,const void* ps,uint64_t pb){return call(ctx,[&](Renderer& r){r.init_world_pipeline(id,vs,vb,ps,pb);return 0;});}
 int32_t SEVK_CALL sevk_init_object_motion(void* ctx,uint32_t kind,const void* vs,uint64_t vb,const void* ps,uint64_t pb){return call(ctx,[&](Renderer& r){r.init_object_motion(kind,vs,vb,ps,pb);return 0;});}
 int32_t SEVK_CALL sevk_init_indexed_attachment(void* ctx,uint32_t slot,uint32_t format,uint32_t kind,const void* vs,uint64_t vb,const void* ps,uint64_t pb){return call(ctx,[&](Renderer& r){r.init_indexed_attachment(slot,format,kind,vs,vb,ps,pb);return 0;});}
@@ -2397,6 +2399,13 @@ int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32
 }
 int32_t SEVK_CALL sevk_get_resolution_stats(void* ctx,SevkResolutionStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.resolution;return 0;},[&](Renderer& r){r.collect();*stats=r.resolution_stats;return 0;});}
 uint32_t SEVK_CALL sevk_guest_features(void){return 4294967295u;}
+int32_t SEVK_CALL sevk_get_job_stats(SevkJobStats* stats,uint32_t reset_max){
+    if(!stats||stats->size!=sizeof(*stats)||stats->abi_version!=SEVK_ABI_VERSION){global_error="job stats ABI mismatch";return -1;}
+    static_assert(sevk_jobs::KindSlots==12);auto snapshot=sevk_jobs::shared().snapshot(reset_max!=0);
+    stats->workers=snapshot.workers;stats->stage_threads=snapshot.stage_threads;stats->peak_queued=snapshot.peak_queued;stats->kind_count=sevk_jobs::KindCount;stats->reserved[0]=stats->reserved[1]=0;
+    for(uint32_t k=0;k<sevk_jobs::KindSlots;++k){const auto& from=snapshot.kinds[k];stats->kinds[k]={from.jobs,from.helped,from.wait_ns,from.max_wait_ns,from.run_ns};}
+    return 0;
+}
 int32_t SEVK_CALL sevk_set_stage_bindings(void* ctx,const SevkStageBindings* rows,uint32_t count){
     return call(ctx,[&](Renderer& r){r.set_stage_bindings(rows,count);return 0;});
 }
