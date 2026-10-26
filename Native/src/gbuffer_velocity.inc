@@ -70,7 +70,7 @@ bool gbuffer_velocity_begin(VkCommandBuffer cmd,WorldSlot& slot){
     if(gpu_frame){for(uint32_t i=0;i<3;++i){gbuffer_velocity.camera_delta[i]=gbuffer_velocity.camera_valid?float(opaque_reference.frame.camera[i]-gbuffer_velocity.camera[i]):0.f;gbuffer_velocity.camera[i]=opaque_reference.frame.camera[i];}gbuffer_velocity.camera_valid=true;}
     bool live=false,gpu=false;for(const auto& pipeline:world.pipelines)live|=pipeline.velocity;
     if(gpu_frame){for(const auto& pipeline:opaque_stock.newer)gpu|=pipeline.velocity;for(const auto& pipeline:opaque_stock.older)gpu|=pipeline.velocity;}
-    uint32_t cells=0;if(pass_scene.ready){const auto& groups=pass_scene.scene.render_groups();for(const auto& group:groups)if(group.key.view==0&&group.kind==native_pass::Kind::Colour&&group.count()&&pass_scene.pipelines.at(group.key.shader<4?group.key.shader:12+group.key.shader-4).velocity)++cells;}
+    uint32_t cells=0;if(pass_ready_now()){const auto& groups=pass_groups();for(const auto& group:groups)if(group.key.view==0&&group.kind==native_pass::Kind::Colour&&group.count()&&pass_scene.pipelines.at(group.key.shader<4?group.key.shader:12+group.key.shader-4).velocity)++cells;}
     if((!live&&!gpu&&!cells)||!extent.width||!extent.height)return false;
     uint32_t draws=cells;if(live)for(const auto& draw:world.current().draws)if(!(draw.packet.flags&(4096|8192))&&world.pipelines[draw.packet.pipeline].velocity)++draws;
     if(!draws&&!gpu)return false;

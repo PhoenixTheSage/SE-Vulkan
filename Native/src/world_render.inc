@@ -67,24 +67,26 @@ const auto& pipelines=world.pipelines;const auto& meshes=world.meshes;const auto
 
 }
 void begin_next_submission(){
-    world.current().queued=false;
-    world.active_submission^=1u;
+    // During overlap recording holds one submission: every queue (the empty clear and QueueWorld can both run
+    // in one frame) takes the other one and resets it, instead of toggling onto the one being recorded.
+    if(overlap_from_caller())world.active_submission=uint32_t(world.recording_submission)^1u;
+    else{world.current().queued=false;world.active_submission^=1u;}
     world.current().main_owner_orders.clear();
 }
 bool world_new_main_ordered()const{return !world.current().main_owner_orders.empty()||!world.resident_main_owners.empty();}
 // Replaces only the owner map, so it does not settle a deferred world intake.
 void set_world_main_owners(const SevkMainOwnerOrder* owners,uint32_t count){
-    if(recording||!world.current().queued||(!owners&&count)||count>1000000)throw std::runtime_error("main owner orders must precede frame recording");
+    if(frame_open()||!world.current().queued||(!owners&&count)||count>1000000)throw std::runtime_error("main owner orders must precede frame recording");
     std::unordered_map<uint32_t,uint32_t> next;next.reserve(count);for(uint32_t i=0;i<count;++i)if(!owners[i].group||!next.emplace(owners[i].owner,owners[i].group).second)throw std::runtime_error("invalid or duplicate main owner order");world.current().main_owner_orders=std::move(next);
 }
 void set_world_main_order(const SevkMainDrawOrder* orders,uint32_t count){
-    if(pending_world.active){if(recording||count!=pending_world.draws.size()||(!orders&&count))throw std::runtime_error("main group metadata must match the queued legacy draws");
+    if(pending_world.active){if(frame_open()||count!=pending_world.draws.size()||(!orders&&count))throw std::runtime_error("main group metadata must match the queued legacy draws");
         for(uint32_t i=0;i<count;++i)if(!orders[i].group)throw std::runtime_error("main group order must be nonzero");
         pending_world.main_order.assign(orders,orders+count);pending_world.has_main=true;return;}
-    if(recording)throw std::runtime_error("main group metadata must match the queued legacy draws");
+    if(frame_open())throw std::runtime_error("main group metadata must match the queued legacy draws");
     settle_cells();apply_world_main_order(orders,count);
 }
-// The recording guard is the setter's: end_frame settles a deferred intake while recording.
+// The frame_open() guard is the setter's: end_frame settles a deferred intake while frame_open().
 void apply_world_main_order(const SevkMainDrawOrder* orders,uint32_t count){
     if(!world.current().queued||count!=world.current().draws.size()||(!orders&&count))throw std::runtime_error("main group metadata must match the queued legacy draws");
     for(uint32_t i=0;i<count;++i)if(!orders[i].group)throw std::runtime_error("main group order must be nonzero");
@@ -92,8 +94,8 @@ void apply_world_main_order(const SevkMainDrawOrder* orders,uint32_t count){
 }
 // Optional logical owners of the queued draws; they break equal stock OLD keys.
 void set_world_draw_owners(const uint32_t* owners,uint32_t count){
-    if(pending_world.active){if(recording||count!=pending_world.draws.size()||(count&&!owners))throw std::runtime_error("draw owners must match queued draws");pending_world.owners.assign(owners,owners+count);pending_world.has_owners=true;return;}
-    if(recording)throw std::runtime_error("draw owners must match queued draws");
+    if(pending_world.active){if(frame_open()||count!=pending_world.draws.size()||(count&&!owners))throw std::runtime_error("draw owners must match queued draws");pending_world.owners.assign(owners,owners+count);pending_world.has_owners=true;return;}
+    if(frame_open())throw std::runtime_error("draw owners must match queued draws");
     apply_world_draw_owners(owners,count);
 }
 void apply_world_draw_owners(const uint32_t* owners,uint32_t count){
@@ -101,8 +103,8 @@ void apply_world_draw_owners(const uint32_t* owners,uint32_t count){
     for(uint32_t i=0;i<count;i++)world.current().draws[i].owner=owners[i];
 }
 void set_world_old_order(const SevkOldPartOrder* orders,uint32_t count){
-    if(pending_world.active){if(recording||count!=pending_world.draws.size()||(count&&!orders))throw std::runtime_error("OLD metadata must match queued draws");for(uint32_t i=0;i<count;i++)validate_old_order(orders[i]);pending_world.old_order.assign(orders,orders+count);pending_world.has_old=true;return;}
-    if(recording)throw std::runtime_error("OLD metadata must match queued draws");
+    if(pending_world.active){if(frame_open()||count!=pending_world.draws.size()||(count&&!orders))throw std::runtime_error("OLD metadata must match queued draws");for(uint32_t i=0;i<count;i++)validate_old_order(orders[i]);pending_world.old_order.assign(orders,orders+count);pending_world.has_old=true;return;}
+    if(frame_open())throw std::runtime_error("OLD metadata must match queued draws");
     apply_world_old_order(orders,count);
 }
 void apply_world_old_order(const SevkOldPartOrder* orders,uint32_t count){
@@ -113,7 +115,7 @@ void apply_world_old_order(const SevkOldPartOrder* orders,uint32_t count){
 void queue_world(const void* frame,uint32_t frame_bytes,const float* projection,const float* inverse,const SevkWorldDraw* draws,uint32_t count,const uint64_t* object_ids=nullptr,const uint8_t* objects=nullptr,uint32_t object_bytes=0,const uint8_t* instances=nullptr,uint32_t instance_bytes=0){settle_cells();
     critical_profile::Scope critical_queue(critical_profile::QueueOwner,true);
     auto queued_at=std::chrono::steady_clock::now();
-    if(recording)throw std::runtime_error("world packets must precede begin_frame");
+    if(frame_open())throw std::runtime_error("world packets must precede begin_frame");
     begin_next_submission();
     world.current().queue_us=0;world.current().queue_work=SevkQueueWorkStats{sizeof(SevkQueueWorkStats),SEVK_ABI_VERSION};
     world.current().recipe_stats=SevkRecipeStats{sizeof(SevkRecipeStats),SEVK_ABI_VERSION};
@@ -382,7 +384,7 @@ void record_new_main(VkCommandBuffer cmd,WorldSlot& slot){
                 entries.push_back({order==UINT32_MAX?UINT32_MAX-2:order,order==UINT32_MAX?b:part,1,b});}
         }
     }
-    if(pass_scene.ready){const auto& groups=pass_scene.scene.render_groups();for(uint32_t i=0;i<groups.size();++i){const auto& group=groups[i];if(group.key.view!=0||group.kind!=native_pass::Kind::Colour)continue;uint32_t order=UINT32_MAX;for(uint32_t owner:group.stream->owners)order=std::min(order,owner_order(owner));entries.push_back({order==UINT32_MAX?UINT32_MAX-1:order,order==UINT32_MAX?i:group.main_part,2,i});}}
+    if(pass_ready_now()){const auto& groups=pass_groups();for(uint32_t i=0;i<groups.size();++i){const auto& group=groups[i];if(group.key.view!=0||group.kind!=native_pass::Kind::Colour)continue;uint32_t order=UINT32_MAX;for(uint32_t owner:group.stream->owners)order=std::min(order,owner_order(owner));entries.push_back({order==UINT32_MAX?UINT32_MAX-1:order,order==UINT32_MAX?i:group.main_part,2,i});}}
     std::stable_sort(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){return std::tie(a.order,a.part)<std::tie(b.order,b.part);});
     VkDescriptorSet indexed_set{};
     for(uint32_t i=0;i<entries.size();){const auto& entry=entries[i];if(entry.kind==0){uint32_t end=i+1;while(end<entries.size()&&entries[end].kind==0&&entries[end].index==entries[end-1].index+1)++end;

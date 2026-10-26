@@ -119,11 +119,11 @@ void render_gbuffer_attachments(VkCommandBuffer cmd,WorldSlot& slot){
                 vkCmdDrawIndexed(cmd,draw.geometry->index_count,packet.instance_count,0,0,0);
             }
         }
-        if(pass_scene.ready && slot.projections.handle && target.pipe[1]){
+        if(pass_ready_now() && slot.projections.handle && target.pipe[1]){
             vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,target.pipe[1]);
             float push[28]{};push[0]=push[5]=push[10]=push[12]=push[17]=push[22]=1;push[24]=-float(extent.width);push[25]=float(extent.height);
             vkCmdPushConstants(cmd,world.attach_layout,VK_SHADER_STAGE_VERTEX_BIT,0,112,push);
-            const auto& groups=pass_scene.scene.render_groups();
+            const auto& groups=pass_groups();
             for(uint32_t i=0;i<groups.size();++i){const auto& group=groups[i];if(group.key.view!=0 || group.kind!=native_pass::Kind::Colour || !group.count())continue;
                 if(written&&pass_scene.pipelines.at(group.key.shader<4?group.key.shader:12+group.key.shader-4).velocity)continue;
                 const auto& mesh=world.meshes.at(group.key.mesh);

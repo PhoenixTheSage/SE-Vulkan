@@ -20,7 +20,8 @@ void probe_transition(VkCommandBuffer cmd,ProbeCube& cube,VkImageLayout old_layo
 void probe_targets(VkCommandBuffer cmd){
     // Stock generated probes end at 2x2. AmbientSpecular uses the view's
     // level count to choose roughness LOD, so an extra 1x1 changes PBR sampling.
-    if(probes.resolution!=probes.config.resolution){wait(next_completion);cleanup_probe_targets();probes.resolution=probes.config.resolution;probes.mips=uint32_t(std::log2(probes.resolution));for(uint32_t i=0;i<2;++i){probe_cube_create(probes.original[i]);probe_cube_create(probes.filtered[i]);probe_cube_create(probes.final[i]);}for(auto& depth:probes.depth)depth=make_image(probes.resolution,probes.resolution,VK_FORMAT_D32_SFLOAT,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);}
+    // plan_probes already applied the reset a resize implies and advanced the schedule from it: keep that state.
+    if(probes.resolution!=probes.config.resolution){wait(next_completion);bool ready=probes.ready;uint32_t face=probes.face,stage=probes.stage;uint64_t cycles=probes.stats.cycles;cleanup_probe_targets();probes.ready=ready;probes.face=face;probes.stage=stage;probes.stats.cycles=cycles;probes.resolution=probes.config.resolution;probes.mips=uint32_t(std::log2(probes.resolution));for(uint32_t i=0;i<2;++i){probe_cube_create(probes.original[i]);probe_cube_create(probes.filtered[i]);probe_cube_create(probes.final[i]);}for(auto& depth:probes.depth)depth=make_image(probes.resolution,probes.resolution,VK_FORMAT_D32_SFLOAT,VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,VK_IMAGE_ASPECT_DEPTH_BIT);}
     if(!probes.initialized){VkClearColorValue clear{};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,probes.mips,0,6};for(uint32_t i=0;i<2;++i)for(auto* cube:{&probes.original[i],&probes.filtered[i],&probes.final[i]}){probe_transition(cmd,*cube,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);vkCmdClearColorImage(cmd,cube->image.handle,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&clear,1,&range);probe_transition(cmd,*cube,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);}for(auto& depth:probes.depth)barrier(cmd,depth.handle,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_NONE,0,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);probes.initialized=true;}
 }
 VkDescriptorSet probe_processing_set(WorldSlot& slot,uint32_t id,uint32_t offset,const std::array<VkImageView,12>& images){
@@ -74,7 +75,7 @@ void capture_probe_face(VkCommandBuffer cmd,WorldSlot& slot,uint32_t face,const 
     vkCmdEndRendering(cmd);barrier(cmd,probes.depth[probes.work_face].handle,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     for(auto& cube:probes.original)probe_transition(cmd,cube,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     gather_shadow_usage(cmd,slot,1+face,frame,probes.depth[probes.work_face],probes.resolution,probes.resolution);
-    ++probes.stats.faces;probes.face=(face+1)%6;
+    ++probes.stats.faces; // plan_probes advanced probes.face
 }
 void postprocess_probe_face(VkCommandBuffer cmd,WorldSlot& slot,uint32_t face){
     prepare_probe_face(slot,face);
@@ -98,36 +99,60 @@ void prefilter_probe_face(VkCommandBuffer cmd,WorldSlot& slot,uint32_t face){
         probe_transition(cmd,filtered,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 }
-void render_probes(VkCommandBuffer cmd,WorldSlot& slot,const std::vector<uint32_t>& offsets,const std::vector<uint32_t>& instance_offsets){
-    critical_profile::Scope critical_probes(critical_profile::ProbeRecord,true);
-    if(!(probes.config.flags&1))return;probe_targets(cmd);bool stock_timed=(probes.config.flags&8)!=0;
-    if(!(probes.config.flags&4)){
-        if(!(probes.config.flags&24)){
-            uint32_t face=probes.face;capture_probe_face(cmd,slot,face,offsets,instance_offsets);postprocess_probe_face(cmd,slot,face);
-            if(probes.face==0){build_probe_mips(cmd,1);build_probe_mips(cmd,0);for(uint32_t f=0;f<6;++f)prefilter_probe_face(cmd,slot,f);++probes.stats.cycles;}
-        }else{
-            bool immediate=!probes.ready||(probes.config.flags&16);
-            // Stock seeds work once when entering timed mode, not on every
-            // refresh. Startup already populated filtered and final equally.
-            // Preserve completed source faces while publication is blending;
-            // reseeding from that lagging publication reintroduces old views.
-            // Stock finalization postprocesses face zero in the same frame as
-            // the sixth capture, making a timed refresh nineteen frames.
-            uint32_t steps=immediate?20u:probes.stage==5?2u:1u;
-            for(uint32_t n=0;n<steps;++n){uint32_t stage=probes.stage;
-                if(stage<6)capture_probe_face(cmd,slot,stage,offsets,instance_offsets);
-                else if(stage<12)postprocess_probe_face(cmd,slot,stage-6);
-                else if(stage==12)build_probe_mips(cmd,1);
-                else if(stage==13)build_probe_mips(cmd,0);
-                else prefilter_probe_face(cmd,slot,stage-14);
-                if(++probes.stage==20){probes.stage=0;probes.face=0;++probes.stats.cycles;break;}
+// The probe work of a frame is planned before it is recorded: plan_probes advances the probe state (face,
+// stage, cycles, blend kind, ready) and lists the operations, and render_probes records them. Early release
+// plans when recording starts, so the state the render thread reads during the overlap is already final;
+// probes.ready still turns on after the blend is recorded, since this frame's descriptors read it.
+struct ProbeOp {uint8_t kind;uint32_t arg;}; // 0 capture face, 1 postprocess face, 2 build mips, 3 prefilter face
+std::vector<ProbeOp> probe_ops;bool probe_planned{},probe_blend_prepare{},probe_blend{},probe_set_ready{};uint32_t probe_blend_first{},probe_blend_last{};
+SevkProbeStats probe_post{sizeof(SevkProbeStats),SEVK_ABI_VERSION};uint32_t probe_post_stage{};
+void plan_probes(){
+    probe_ops.clear();probe_planned=true;probe_blend_prepare=probe_blend=probe_set_ready=false;
+    if(probes.config.flags&1){bool stock_timed=(probes.config.flags&8)!=0;
+        // probe_targets recreates resized targets after this plan; schedule from the state that reset leaves.
+        if(probes.resolution!=probes.config.resolution){probes.ready=false;probes.face=probes.stage=0;probes.stats.cycles=0;}
+        if(!(probes.config.flags&4)){
+            if(!(probes.config.flags&24)){
+                uint32_t face=probes.face;probe_ops.push_back({0,face});probe_ops.push_back({1,face});probes.face=(face+1)%6;
+                if(probes.face==0){probe_ops.push_back({2,1});probe_ops.push_back({2,0});for(uint32_t f=0;f<6;++f)probe_ops.push_back({3,f});++probes.stats.cycles;}
+            }else{
+                bool immediate=!probes.ready||(probes.config.flags&16);
+                // Stock seeds work once when entering timed mode, not on every
+                // refresh. Startup already populated filtered and final equally.
+                // Preserve completed source faces while publication is blending;
+                // reseeding from that lagging publication reintroduces old views.
+                // Stock finalization postprocesses face zero in the same frame as
+                // the sixth capture, making a timed refresh nineteen frames.
+                uint32_t steps=immediate?20u:probes.stage==5?2u:1u;
+                for(uint32_t n=0;n<steps;++n){uint32_t stage=probes.stage;
+                    if(stage<6){probe_ops.push_back({0,stage});probes.face=(stage+1)%6;}
+                    else if(stage<12)probe_ops.push_back({1,stage-6});
+                    else if(stage==12)probe_ops.push_back({2,1});
+                    else if(stage==13)probe_ops.push_back({2,0});
+                    else probe_ops.push_back({3,stage-14});
+                    if(++probes.stage==20){probes.stage=0;probes.face=0;++probes.stats.cycles;break;}
+                }
             }
         }
+        // Stock retains completed work, then blends one alternating
+        // cube every timed frame as each fully processed face becomes available.
+        if(probes.stage==0 || stock_timed){probe_blend_prepare=true;
+            if(probes.stats.cycles){probe_blend=true;bool alternating=stock_timed && probes.ready;probe_blend_first=alternating?probes.blend_kind:0;probe_blend_last=alternating?probe_blend_first+1:2;if(alternating)probes.blend_kind^=1;probe_set_ready=true;}}
     }
-    // Stock retains completed work, then blends one alternating
-    // cube every timed frame as each fully processed face becomes available.
-    if(probes.stage==0 || stock_timed){prepare_probe_face(slot,0);
-    if(probes.stats.cycles){frame_mark("probe blend");bool alternating=stock_timed && probes.ready;uint32_t first=alternating?probes.blend_kind:0,last=alternating?first+1:2;for(uint32_t k=first;k<last;++k){probe_transition(cmd,probes.final[k],VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);for(uint32_t m=0;m<probes.mips;++m){VkImageView targets[6];std::array<VkImageView,12> input{};for(uint32_t f=0;f<6;++f){targets[f]=probes.final[k].views[f*probes.mips+m];input[f]=probes.filtered[k].views[f*probes.mips+m];}probe_fullscreen(cmd,slot,2,0,probes.resolution>>m,targets,6,input,true);++probes.stats.blend_passes;}probe_transition(cmd,probes.final[k],VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);}if(alternating)probes.blend_kind^=1;probes.ready=true;}
+    probe_post=probes.stats;probe_post.size=sizeof(SevkProbeStats);probe_post.abi_version=SEVK_ABI_VERSION;probe_post.ready=probes.ready||probe_set_ready;probe_post.next_face=probes.face;probe_post_stage=probes.stage;
+}
+void render_probes(VkCommandBuffer cmd,WorldSlot& slot,const std::vector<uint32_t>& offsets,const std::vector<uint32_t>& instance_offsets){
+    critical_profile::Scope critical_probes(critical_profile::ProbeRecord,true);
+    if(!probe_planned)plan_probes();probe_planned=false;
+    if(!(probes.config.flags&1))return;probe_targets(cmd);
+    for(const auto& op:probe_ops){
+        if(op.kind==0)capture_probe_face(cmd,slot,op.arg,offsets,instance_offsets);
+        else if(op.kind==1)postprocess_probe_face(cmd,slot,op.arg);
+        else if(op.kind==2)build_probe_mips(cmd,op.arg);
+        else prefilter_probe_face(cmd,slot,op.arg);
+    }
+    if(probe_blend_prepare){prepare_probe_face(slot,0);
+    if(probe_blend){frame_mark("probe blend");uint32_t first=probe_blend_first,last=probe_blend_last;for(uint32_t k=first;k<last;++k){probe_transition(cmd,probes.final[k],VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);for(uint32_t m=0;m<probes.mips;++m){VkImageView targets[6];std::array<VkImageView,12> input{};for(uint32_t f=0;f<6;++f){targets[f]=probes.final[k].views[f*probes.mips+m];input[f]=probes.filtered[k].views[f*probes.mips+m];}probe_fullscreen(cmd,slot,2,0,probes.resolution>>m,targets,6,input,true);++probes.stats.blend_passes;}probe_transition(cmd,probes.final[k],VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);}probes.ready=true;}
     }
 }
 void render_probe_atmosphere(VkCommandBuffer cmd,WorldSlot& slot,uint32_t face){

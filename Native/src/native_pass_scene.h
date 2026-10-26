@@ -332,6 +332,9 @@ public:
                     bool same_rows=stored.epochs.size()==rows.size()&&stored.states.size()==rows.size();
                     if(same_rows)for(size_t i=0;i<rows.size();++i)if(stored.epochs[i]!=rows[i].actor->depth_epoch||stored.states[i]!=rows[i].state){same_rows=false;break;}
                     if(!same_rows||!same_camera){
+                        // An early-released recording may still read last frame's streams: copy a shared one before rewriting it.
+                        if(stored.base&&stored.base.use_count()>1)stored.base=std::make_shared<InstanceStream>(*stored.base);
+                        for(uint32_t material:activated){auto& shared=stored.materials[material];if(shared&&shared.use_count()>1)shared=std::make_shared<InstanceStream>(*shared);}
                         auto rewrite=[&](InstanceStream& stream,uint32_t material){
                             for(size_t i=0;i<rows.size();++i){
                                 bool dirty=rows[i].actor->depth_epoch!=stored.epochs[i]||(view.kind!=Kind::Depth&&rows[i].state!=stored.states[i]);
@@ -360,6 +363,9 @@ public:
                 auto& view=*batch.view;auto& rows=batch.rows;auto& hidden_materials=std::get<3>(batch_key);
                 if(profiling){profile.emitted_rows+=prepared[index].rows;profile.stream_bytes+=prepared[index].bytes;}
                 auto publish_stream=[&](const std::shared_ptr<InstanceStream>& stream){stream->index=uint32_t(streams.size());stream->identities.clear();stream->identities.reserve(rows.size());for(const auto& row:rows)stream->identities.push_back(row.actor->history_identity);streams.push_back(stream);};
+                // publish_stream rewrites index and identities: copy streams an early-released recording still holds.
+                if(stored.base&&stored.base.use_count()>1)stored.base=std::make_shared<InstanceStream>(*stored.base);
+                for(auto& item:stored.materials)if(item.second&&item.second.use_count()>1)item.second=std::make_shared<InstanceStream>(*item.second);
                 publish_stream(stored.base);for(auto& item:stored.materials)publish_stream(item.second);
                 auto stream_for=[&](uint32_t material){if(view.kind==Kind::Depth)return stored.base;auto it=stored.materials.find(material);return it==stored.materials.end()?stored.base:it->second;};
                 auto append=[&](const Part& part){GroupKey key{view.id,part.shader,part.first,part.count,part.mesh,part.colour,part.normal,part.extensions,part.alpha,part.masked,part.double_sided};

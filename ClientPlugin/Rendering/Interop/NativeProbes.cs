@@ -11,7 +11,7 @@ public sealed partial class NativeBackend
     // Full startup captures complete before main lighting in this frame.
     // ProbesReady deliberately reports only the already-published state.
     public bool ProbesAvailableForFrame {
-        get {var flags=CurrentProbeConfig.Flags;if((flags&1)==0)return false;if(ProbesReady)return true;if((flags&4)!=0)return false;return (flags&24)!=0 || GetProbeStats().NextFace==5;}
+        get {var flags=CurrentProbeConfig.Flags;if((flags&1)==0)return false;if(ProbesReady)return true;if((flags&4)!=0)return false;return (flags&24)!=0 || ProbeNextFace()==5;}
     }
     public void ConfigureProbes(VulkanShaderLibrary library)
     {
@@ -25,8 +25,11 @@ public sealed partial class NativeBackend
     public void SetProbes(NativeProbeConfig config,uint skipLevels){if(skipLevels==0)Check(ProbeApi.Set(context,ref config),context);else{probePrefilter??=(ProbeFunctions.SetPrefilterFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_set_probes_prefilter"),typeof(ProbeFunctions.SetPrefilterFn));Check(probePrefilter(context,ref config,skipLevels),context);}CurrentProbeConfig=config;}
     public uint CurrentProbeFaceMask()=>ProbeFaceMask(CurrentProbeConfig.Flags);
     // The faces a probe configuration with these flags captures this frame.
-    public uint ProbeFaceMask(uint flags){if((flags&1)==0||(flags&4)!=0)return 0;if(ProbeStatsSnapshotEnabled)GetProbeStats();if(!ProbesReady||(flags&16)!=0)return 63;var schedule=GetProbeScheduleStats();if((flags&24)==0)return 1u<<((int)GetProbeStats().NextFace%6);return schedule.Stage<6?1u<<(int)schedule.Stage:0;}
+    public uint ProbeFaceMask(uint flags){if((flags&1)==0||(flags&4)!=0)return 0;uint next=ProbeStatsSnapshotEnabled?ProbeNextFace():0;if(!ProbesReady||(flags&16)!=0)return 63;var schedule=GetProbeScheduleStats();if((flags&24)==0)return 1u<<((int)(ProbeStatsSnapshotEnabled?next:GetProbeStats().NextFace)%6);return schedule.Stage<6?1u<<(int)schedule.Stage:0;}
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int ProbeStateFn(IntPtr ctx,out uint ready,out uint nextFace);ProbeStateFn probeState;
+    // Readiness and next face without the counters: answered during an early-released recording without waiting.
+    uint ProbeNextFace(){probeState??=Marshal.GetDelegateForFunctionPointer<ProbeStateFn>(GetSymbol("sevk_get_probe_state"));Check(probeState(context,out uint ready,out uint next),context);ProbesReady=ready!=0&&!probeResetPending;return next;}
     public NativeProbeStats GetProbeStats(){var s=new NativeProbeStats{Size=64,AbiVersion=AbiVersion};Check(ProbeApi.Stats(context,ref s),context);ProbesReady=s.Ready!=0&&!probeResetPending;return s;}
     // Probe scheduling without waiting on recording (SE_VULKAN_PROBE_STATS_SNAPSHOT=0 restores the waiting
     // reads; ProbeStatsSnapshot on VulkanScene toggles it in-process). VulkanProbes.Configure reads the

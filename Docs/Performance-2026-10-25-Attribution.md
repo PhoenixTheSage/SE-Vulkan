@@ -1239,3 +1239,209 @@ Particle allocation fell from 88 to 60 KB per frame.
   0.405 ms (`Vulkan-bd870f1a…`), so the copy was not the bulk. The rest is
   per render group: material-cache and mesh lookups, offsets, the flush.
   Validation gameplay run `Vulkan-d2f6fd44…`: 0 errors.
+
+## Step 7: early release of the recording lock (2026-10-26)
+
+Step 6 left the render thread waiting about 1.05 ms per frame for recording
+to release `api_mutex`. Step 7 lets recording release the lock once it has
+taken what it reads from the render thread's scene state. Next-frame
+publication then runs while the previous frame records.
+
+### Design
+
+Toggle: `SE_VULKAN_EARLY_RELEASE=0` turns it off. It is on by default since
+the second paired set.
+
+- **Release point.** Recording releases the lock in `end_frame`, right after
+  `settle_cells()`, when the queued world is fully built. It skips the release
+  when a deferred world intake is still pending.
+- **What recording keeps.** Recording keeps the world submission it records.
+  `WorldState::recording_submission` pins that submission for recording and
+  for every job worker it fans out to, and `queue_world_recipes` fills the
+  other one.
+- **What recording snapshots** before releasing:
+  - pass render groups and instance streams (shared pointers);
+  - `pass_scene.ready`, the spot views and the static-dirty mask;
+  - the probe plan.
+
+  Recording reads these through accessors such as `pass_groups()` and
+  `pass_ready_now()`.
+- **Who sees which state.** The render thread marks itself as the scene side
+  (`WorldState::tl_scene_side`) only inside a scene call. So recording and
+  its job workers see the snapshot, and scene calls see live state.
+- **A first version marked the recording thread instead,** with a
+  thread-local pin. Recording fans out to job workers: parallel spots,
+  cascades and view lanes. Those workers saw neither the pin nor the
+  snapshot and read the submission and groups the render thread was
+  rebuilding. The validation gameplay run crashed during load, and the
+  product run failed a frame later.
+- **Scene calls (`call_scene`)** proceed once the snapshot is taken, and apply
+  only scene-only deferred calls meanwhile:
+  - pass prepare, preparation, publish, cancel and transparent requests;
+  - cells prepare, preparation, publish and emit;
+  - `QueueWorld`, the world order, owner and main-owner rows;
+  - probe state.
+- **Deferrable scene calls (`call_deferrable_scene`):** pass actor updates,
+  pass clear-frame and cell pose commits. Other deferred calls keep their FIFO
+  order and replay after recording.
+- **`frame_open()`** replaces the `recording` checks in those calls: during
+  the overlap, the frame being recorded is not the caller's.
+- **Copy-on-write for pass instance streams.** A stream that recording still
+  holds is copied before preparation rewrites rows or publication rewrites
+  its index. Outside the overlap no stream is shared.
+- **Probe planning.** `render_probes` is split into `plan_probes` (advances
+  face, stage, cycles and blend kind, and lists the operations) and an
+  execute phase. Early release plans when it releases, so the render thread's
+  reads during the overlap see the final schedule.
+  - `probes.ready` still turns on after the blend is recorded, since this
+    frame's descriptors read it.
+  - A planned resize applies the reset that `probe_targets` performs. The
+    first version planned before that reset, which wiped the plan and broke
+    ProbeGpuTests' alternating-blend check on the default path as well.
+- **Probe stats.** `sevk_get_probe_stats` waits for recording again, because
+  its counters (geometry draws, prefilter passes and the like) depend on
+  execution. A new `sevk_get_probe_state` returns readiness and next face.
+  The plan fixes both exactly, so the managed face mask reads them without
+  waiting.
+- **Rare paths.** Switching off object retention, the one queue path that
+  clears per-slot state recording uses, waits for the full recording.
+
+### Deferred-call ordering: the highlight crash
+
+The first validation run with early release on by default (`Vulkan-0b092173…`)
+failed with "invalid highlight draw".
+
+- **Cause.** `BeginPacketCollection` clears the world each Draw with an empty
+  `sevk_queue_world`. That clear was a deferred non-scene call. During the
+  overlap, `QueueWorld` (a scene call) ran ahead of it. At `EndUploads`, the
+  queued clear replayed, switched submissions and emptied the new one. The
+  frame's highlights then indexed an empty submission (67 of 0 draws; 2,995
+  in the other).
+- **Why earlier runs missed it.** `sevk_set_spot_redraw` was still an ordinary
+  call, and it usually flushed the queue before `QueueWorld`. Making it
+  deferrable put `QueueWorld` inside the overlap on most frames.
+- **Fixes:**
+  - the empty world queue is a deferrable scene call, ordered with
+    `QueueWorld`;
+  - during the overlap, `begin_next_submission` always takes the submission
+    recording does not hold. The clear plus `QueueWorld` is two switches in
+    one frame, and toggling would have landed the second on the submission
+    being recorded.
+- **Rule.** A deferred non-scene call must not change state that a scene call
+  reads or writes. The other non-scene deferrables (transparency, decals,
+  highlights, occlusion, shadow exclusions, resident owners, probe config,
+  uploads) either index the frame `QueueWorld` built, in FIFO order after
+  their own empty clears, or touch nothing scene calls use.
+- Validation gameplay run after the fix (`Vulkan-050dafc2…`): 0 errors.
+
+### Spot caster culling
+
+The per-light caster scan now:
+
+- filters caster-eligible draws once per frame, keeping the full set and the
+  dynamic set for overlay-only refreshes, in draw order;
+- runs the sphere test before the per-draw exclusion hash lookup, which it
+  skips when there are no exclusions.
+
+The spot dirty-tracking pass got the same reordering. The output order is
+unchanged.
+
+### Checks
+
+- Native CTests 19/19.
+- Under validation, with early release on, and again with the default path:
+  NativePass 126, SceneSubmission 267, ShadowOcclusion 36, Probe 427,
+  WorldPass 542, Interop 16, HudBillboard 0 errors. BillboardPackets 43/43.
+- Validation gameplay runs, 0 errors:
+  - early release: `Vulkan-cd595c56…`, `Vulkan-a22766fa…`;
+  - off: `Vulkan-4db41ead…`.
+- Frozen-light lane (`IndexExcludesOwnedActors`; `Vulkan-e4985097…`,
+  `Vulkan-8575de7f…`), covering the probe plan and spot changes:
+  - every probe, spot and cascade artifact is identical;
+  - view noise is 345 and 441 pixels, against a 486-pixel floor.
+
+### Results
+
+Two paired sets, both orders. The box was noisier than for step 6: DX11 ran
+4.40 ms against 4.26.
+
+- `TestResults/Step7-EarlyRelease-Paired-2026-10-26.json`
+- `TestResults/Step7b-EarlyRelease-Paired-2026-10-26.json`
+
+| Lane | Interval means (ms) | Mean |
+|---|---|---|
+| S6 (pinned) | 6.84, 6.88, 7.10, 7.27 | 7.02 |
+| Step 7, early release off | 7.08, 6.99, 7.20, 7.02 | 7.07 |
+| Step 7, early release | 5.89, 6.59, 6.29, 6.12 | **6.22** |
+| DX11 | 4.43, 4.41, 4.49, 4.28 | 4.40 |
+
+- Early release against S6: **−0.80 ms**, the same direction in every pair.
+- With it off, step 7 matches S6 within noise.
+- The second set already included `sevk_cells_preparation` as a scene call
+  and the probe-state read.
+
+Lock census (pipeline report, per pipelined frame):
+
+| | Step 6 | Early release (first build) | Plus cell preparation as a scene call |
+|---|---|---|---|
+| `api_mutex` wait | about 1.05 ms | 0.014 ms | 0.023 ms |
+| Ordinary calls waiting for recording | — | 0.51/frame, 0.40 ms (`sevk_cells_preparation`) | 0.38/frame, 0.32 ms (`sevk_set_spot_redraw`) |
+| Recording, launch to end | about 3.8 ms | 4.7 ms | 4.8 ms |
+
+Recording now runs longer: it overlaps the render thread's publication
+instead of blocking it, so the two compete for cores. The wait moves to the
+next ordinary call. `sevk_set_spot_redraw` is now deferrable, next to the
+already deferrable `set_spots` and shadow exclusions.
+
+CpuDetail with early release (`Vulkan-e38fce40…`, first build) against S6
+(`Vulkan-579cd12e…`), ms per frame:
+
+| Phase | S6 | Step 7 | Change |
+|---|---|---|---|
+| Frame | 6.56 | 6.23 | −0.33 |
+| Draw | 6.09 | 5.73 | −0.36 |
+| Native pass publication | 2.34 | 1.87 | −0.47 |
+| QueueWorld | 0.54 | 0.57 | +0.03 |
+| Cell publish | 0.24 | 0.30 | +0.06 (the cell preparation wait, since moved) |
+| Occlusion | 0.27 | 0.33 | +0.06 |
+
+Most other phases rose 5–10%, because recording now runs concurrently.
+
+### Default-on confirmation (after the highlight fix)
+
+- Native CTests 19/19. Every validation suite passes as above (Probe
+  427/427).
+- Validation gameplay runs, 0 errors: `Vulkan-050dafc2…` and
+  `Vulkan-3ff572be…`.
+- Frozen-light lane `Vulkan-271b6a97…`: every artifact is identical; view
+  noise is 294 and 346 pixels.
+- Pipeline report (`Vulkan-48d4d230…`, 6.03 ms interval, P95 8.27):
+  - ordinary calls wait 0.08 ms per frame (0.09 waits per frame);
+  - the only sites left are texture uploads, recipe registration and stats;
+  - `api_mutex` wait is 0.02 ms;
+  - recording ends 4.5 ms after launch.
+- Paired set `TestResults/Step7c-Default-Paired-2026-10-26.json`:
+  **inconclusive.** Vortex (the mod manager) was using about one core
+  throughout.
+  - Step 7 runs: 7.19 and 7.43 ms, with P95 about 11.5.
+  - S6 runs: 6.95 and 7.86 ms. S6 itself moved 0.9 ms between its runs.
+  - DX11: 4.41 and 4.30 ms.
+  - Repeat this pair on an idle box before quoting step 7's default-on
+    number. Until then, the 6.22 ms from the two clean sets stands.
+
+### Lessons
+
+- **Thread-local markers must cover the job workers a phase fans out to.**
+  Mark the side that does not fan out (here, the scene calls) and let
+  everything else see the default view.
+- **When an ordinary call stops waiting, the wait moves to the next
+  ordinary call.** Removing a lock wall means walking the call sequence: the
+  census `Sites` list named `sevk_cells_preparation`, then
+  `sevk_set_spot_redraw`.
+- **Moving state mutation earlier (the probe plan) must also move every
+  reset that ran before it** (`probe_targets`).
+- **Scene calls jump ahead of queued non-scene calls.** Any deferred call
+  that changes what scene calls see must be a scene call itself (the empty
+  world clear).
+- **A read that serves both scheduling and statistics should be split.** The
+  scheduling half can be exact early; the counters cannot.

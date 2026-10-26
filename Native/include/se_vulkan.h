@@ -418,6 +418,7 @@ typedef struct SevkProbeStats {uint32_t size,abi_version;uint64_t faces,geometry
 typedef struct SevkProbeScheduleStats {uint32_t size,abi_version,stage,busy;uint64_t cycles,reserved;} SevkProbeScheduleStats;
 SEVK_API int32_t SEVK_CALL sevk_init_probes(void* ctx,uint32_t stage,const void* spirv,uint64_t bytes);
 SEVK_API int32_t SEVK_CALL sevk_set_probes(void* ctx,const SevkProbeConfig* config);
+SEVK_API int32_t SEVK_CALL sevk_get_probe_state(void* ctx,uint32_t* ready,uint32_t* next_face);
 SEVK_API int32_t SEVK_CALL sevk_set_probes_prefilter(void* ctx,const SevkProbeConfig* config,uint32_t skip_levels);
 /* Queued while a pipelined recording is in flight, applied in issue order before the next ordinary call. */
 SEVK_API int32_t SEVK_CALL sevk_set_probes_deferred(void* ctx,const SevkProbeConfig* config,uint32_t skip_levels);

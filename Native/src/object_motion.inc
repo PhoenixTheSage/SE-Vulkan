@@ -143,11 +143,11 @@ void render_object_motion(VkCommandBuffer cmd,WorldSlot& slot){
             vkCmdDrawIndexed(cmd,draw.geometry->index_count,packet.instance_count,0,0,0);
         }
     }
-    if(ready && pass_scene.ready && slot.projections.handle && slot.history_projection.handle && world.motion_pipe[1] && pass_scene.history_instances[slot_index].handle){
+    if(ready && pass_ready_now() && slot.projections.handle && slot.history_projection.handle && world.motion_pipe[1] && pass_scene.history_instances[slot_index].handle){
         vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,world.motion_pipe[1]);
         ObjectMotionPush push{};push.rows[0][0]=push.rows[1][1]=push.rows[2][2]=push.rows[3][0]=push.rows[4][1]=push.rows[5][2]=1;push.screen[0]=float(extent.width);push.screen[1]=float(extent.height);
         vkCmdPushConstants(cmd,world.motion_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(push),&push);
-        const auto& groups=pass_scene.scene.render_groups();
+        const auto& groups=pass_groups();
         for(uint32_t i=0;i<groups.size();++i){const auto& group=groups[i];if(group.key.view!=0 || group.kind!=native_pass::Kind::Colour || !group.count() || pass_scene.history_offsets.at(i)==UINT32_MAX)continue;
             if(written&&pass_scene.pipelines.at(group.key.shader<4?group.key.shader:12+group.key.shader-4).velocity)continue;
             const auto& mesh=world.meshes.at(group.key.mesh);world_model_raster(cmd,0,group.key.double_sided?0x10000000u:0x08000000u);

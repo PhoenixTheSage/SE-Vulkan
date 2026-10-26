@@ -82,7 +82,9 @@ void settle_world(){
 void queue_world_recipes(const void* frame,uint32_t frame_bytes,const float* projection,const float* inverse,const SevkRecipeDraw* draws,uint32_t count,const uint8_t* objects,uint32_t object_bytes,const uint8_t* instances,uint32_t instance_bytes){settle_cells();
     critical_profile::Scope critical_queue(critical_profile::QueueOwner,true);
     auto queued_at=std::chrono::steady_clock::now();
-    if(recording)throw std::runtime_error("world recipe frame/blob contract mismatch");
+    if(frame_open())throw std::runtime_error("world recipe frame/blob contract mismatch");
+    // Switching off object retention clears per-slot versions that recording may be using.
+    if(world.retained_objects)wait_for_recording_end();
     begin_next_submission();
     world.current().queued=false;world.current().draws.clear();
     world.current().recipe_stats=SevkRecipeStats{sizeof(SevkRecipeStats),SEVK_ABI_VERSION,1,count,world.recipe_registered,0,0,0,world.recipe_live,world.recipe_retired};
