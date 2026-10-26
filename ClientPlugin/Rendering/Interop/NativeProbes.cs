@@ -49,9 +49,14 @@ public sealed partial class NativeBackend
     public void SetProbesForConfigure(NativeProbeConfig config,uint skipLevels)
     {
         if(!ProbeStatsSnapshotEnabled){SetProbes(config,skipLevels);GetProbeStats();return;}
+        SetProbesDeferred(config,skipLevels);
+        if((CurrentProbeConfig.Flags&2)!=0){probeResetPending=true;ProbesReady=false;}
+    }
+    // Public and separate so the harness can observe it as it does SetProbes.
+    public void SetProbesDeferred(NativeProbeConfig config,uint skipLevels)
+    {
         probeSetDeferred??=Marshal.GetDelegateForFunctionPointer<ProbeSetDeferredFn>(GetSymbol("sevk_set_probes_deferred"));
         Check(probeSetDeferred(context,ref config,skipLevels),context);CurrentProbeConfig=config;
-        if((config.Flags&2)!=0){probeResetPending=true;ProbesReady=false;}
     }
     // BeginFrame has applied every queued probe configuration.
     void ProbeConfigurationApplied()=>probeResetPending=false;

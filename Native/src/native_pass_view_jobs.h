@@ -19,7 +19,10 @@ namespace native_pass {
 class ViewJobs {
     sevk_jobs::Kind kind;std::atomic<bool> active{};uint32_t lanes;
 public:
-    explicit ViewJobs(sevk_jobs::Kind job_kind=sevk_jobs::PassView):kind(job_kind),lanes(std::min(4u,sevk_jobs::shared().worker_count()+1)){}
+    // Lanes (SE_VULKAN_VIEW_LANES, default 4, capped by the pool): chunked selection merges contiguous ranges in
+    // order, so the output does not depend on the lane count.
+    static uint32_t lane_setting(){const char* v=std::getenv("SE_VULKAN_VIEW_LANES");long n=v?std::strtol(v,nullptr,10):4;return uint32_t(n<1?1:n>16?16:n);}
+    explicit ViewJobs(sevk_jobs::Kind job_kind=sevk_jobs::PassView):kind(job_kind),lanes(std::min(lane_setting(),sevk_jobs::shared().worker_count()+1)){}
     ViewJobs(const ViewJobs&)=delete;ViewJobs& operator=(const ViewJobs&)=delete;
     uint32_t worker_count()const{return lanes-1;}
     void run(uint32_t jobs,std::function<void(uint32_t)> fn){

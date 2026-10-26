@@ -1136,3 +1136,106 @@ Option set, order S5, S5D, S5E, S5W, S5S0, then reversed. Interval means
   prepare, deferred intake) still do not pay.** Recording ends about when
   the render thread needs it, so moving more render-thread work into
   recording or onto workers still competes for the same few milliseconds.
+
+## Step 6: traversal index, particle reflection, view lanes, recording laps (2026-10-26)
+
+### Changes
+
+- **Managed candidate index excludes native-owned actors.** Under stable main
+  order the traversal skipped pass- and cell-owned actors after the spatial
+  query returned them. They are now kept out of the index.
+  - `SyncIndexMembership` runs in the index refresh and wherever ownership
+    changes.
+  - Toggles: `SE_VULKAN_INDEX_OWNED=1` keeps them indexed, or
+    `IndexExcludesOwnedActors` on `VulkanScene` in-process.
+- **Particle light reflection.** The per-light wrappers (`StockLight`,
+  `StockEffect`) memoize their reflected reads for the one update they live
+  for. `m_data` used to be boxed through reflection about 15 times per light
+  per frame.
+- **Probe frame buffers** are reused across non-held frames.
+- **View-job lanes:** `SE_VULKAN_VIEW_LANES` (default 4). Chunked selection
+  merges contiguous ranges in order, so output does not depend on the lane
+  count.
+- **Recording laps:** "prepare pass gpu" (opaque stock prep), "prepare pass
+  streams" (instance copy and pass materials) and "prepare pass history" are
+  now separate.
+- **Native pass instance streams** of 256 KB or more are copied as a pool
+  `parallel_for`, each stream to its precomputed offset.
+- **Lane harness fix:** `Configure`'s snapshot path calls the new public
+  `NativeBackend.SetProbesDeferred`, which the frozen-light lane also hooks.
+  Without it the lane never saw a probe config and failed with "probe capture
+  buffer too small" on every phase with the snapshot on.
+
+### Checks
+
+- Native CTests 19/19.
+- Under validation: NativePass 126, SceneSubmission 267, ShadowOcclusion 36,
+  Probe 427, WorldPass 542, Interop 16, HudBillboard 0 errors.
+- BillboardPackets 43/43.
+- Validation gameplay run `Vulkan-6a094185…`: 0 errors.
+- Frozen-light lane `Vulkan-…` toggling `IndexExcludesOwnedActors`:
+  - every cascade, spot, probe and frame artifact identical;
+  - view noise 158 against a 486-pixel return floor.
+  - `packets.sig` differs even between control and control-return. Removing
+    and re-adding proxies reshapes the tree, so the order of the remaining
+    candidates, and with it packet order, follows index history. Rendered
+    output does not change. This toggle cannot be gated on the packet
+    signature.
+
+### Results
+
+Paired, both orders (`TestResults/Step6-Core-Paired-2026-10-26.json`):
+
+| Lane | Runs (interval mean / P95, ms) | Mean |
+|---|---|---|
+| S5 | 6.97 / 11.29, 6.59 / 8.49 | 6.78 |
+| S6 | 6.69 / 8.60, 6.52 / 8.24 | **6.61** |
+| DX11 | 4.25 / 5.04, 4.26 / 5.05 | 4.26 |
+
+- S6 against S5: −0.17 ms. The same direction in both pairs; within noise.
+- View lanes 8 against 4 (`Step6-Options-Paired-2026-10-26.json`): 6.52 and
+  6.55 against 6.55 and 6.56 ms. No change; the default stays 4.
+
+CpuDetail, S5 (`Vulkan-fdcaac34…`) → S6 (`Vulkan-579cd12e…`), ms per frame:
+
+| Phase | S5 | S6 | Change |
+|---|---|---|---|
+| Draw | 7.08 | 6.09 | −1.00 |
+| Actor traversal | 0.92 | 0.35 | −0.57 |
+| · Candidate query | 0.37 | 0.02 | −0.36 |
+| · Candidate plan | 0.14 | 0 | −0.14 |
+| Particles | 0.38 | 0.34 | −0.04 |
+| QueueWorld | 0.68 | 0.54 | −0.14 |
+| Native pass publication | 1.91 | 2.34 | **+0.43** |
+
+Particle allocation fell from 88 to 60 KB per frame.
+
+### The wall moved back to recording
+
+- The render thread now reaches publication's fresh probe read before
+  recording has released `api_mutex`. Lock waits are about 1.05 ms per frame
+  (pipeline report), and recording ends about 3.8 ms after launch.
+- Render-thread savings ahead of publication turned into that wait. The
+  cadence moved only 0.17 ms.
+- Recording laps (`record-laps`, ms per frame), total about 3.3:
+
+  | Lap | ms |
+  |---|---|
+  | Spot shadows | 0.66–0.74 |
+  | GBuffer NEW main | 0.63–0.69 |
+  | Prepare pass streams (instance copy plus pass materials, which are already cached per slot) | 0.44 |
+  | Voxels | 0.14 |
+  | Probe geometry | 0.12–0.14 |
+  | Prepare geometry | 0.12–0.13 |
+  | Sort (reused on 96% of frames) | 0.12–0.13 |
+  | Transparency | 0.11 |
+  | CSM copy | 0.11 |
+  | Particles | 0.10 |
+  | Materials | 0.07–0.08 |
+
+- The motion history no longer appears in the laps: no consumer, so it is
+  skipped.
+- **Parallel instance-stream copy:** "prepare pass streams" went from 0.44 to
+  0.405 ms (`Vulkan-bd870f1a…`), so the copy was not the bulk. The rest is
+  per render group: material-cache and mesh lookups, offsets, the flush.
+  Validation gameplay run `Vulkan-d2f6fd44…`: 0 errors.

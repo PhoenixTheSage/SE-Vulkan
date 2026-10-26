@@ -47,16 +47,21 @@ VkDescriptorSet pass_material(WorldSlot& slot,const native_pass::Group& group){
 void prepare_pass_gpu(WorldSlot& slot){
     auto previous_rows=std::move(pass_scene.history_rows);pass_scene.history_rows.clear();pass_scene.history_offsets.clear();
     if(pass_scene.history_frame==UINT64_MAX || pass_scene.history_frame+1!=stats.submitted_frames)previous_rows.clear();pass_scene.history_frame=stats.submitted_frames;
-    if(opaque_stock.ready)prepare_opaque_stock(slot);
+    if(opaque_stock.ready)prepare_opaque_stock(slot);cpu_lap("prepare pass streams");
     pass_scene.offsets.clear();pass_scene.materials.clear();if(!pass_scene.ready)return;auto& groups=pass_scene.scene.render_groups();if(groups.empty())return;auto& streams=pass_scene.scene.instance_streams();uint64_t bytes=0;for(auto& stream:streams)bytes+=stream->instances.size();for(auto& group:groups)if(!world.meshes.count(group.key.mesh))throw std::runtime_error("native pass publication lost geometry dependency");if(bytes>256ull*1024*1024)throw std::runtime_error("native pass stream budget");
     world_buffer(pass_scene.instances[slot_index],bytes,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);world_buffer(pass_scene.objects[slot_index],128,VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);std::memcpy(pass_scene.objects[slot_index].mapped,pass_scene.placeholder.data(),128);check(vmaFlushAllocation(allocator,pass_scene.objects[slot_index].memory,0,128),"flush native pass placeholder");uint32_t cursor=0;
-    std::vector<uint32_t> stream_offsets;stream_offsets.reserve(streams.size());for(auto& stream:streams){stream_offsets.push_back(cursor);std::memcpy(static_cast<uint8_t*>(pass_scene.instances[slot_index].mapped)+cursor,stream->instances.data(),stream->instances.size());cursor+=uint32_t(stream->instances.size());}
+    std::vector<uint32_t> stream_offsets;stream_offsets.reserve(streams.size());for(auto& stream:streams){stream_offsets.push_back(cursor);cursor+=uint32_t(stream->instances.size());}
+    // Large frames copy the streams on the pool; every stream lands at the offset computed above.
+    auto* stream_base=static_cast<uint8_t*>(pass_scene.instances[slot_index].mapped);
+    auto copy_stream=[&](uint32_t i){const auto& data=streams[i]->instances;if(!data.empty())std::memcpy(stream_base+stream_offsets[i],data.data(),data.size());};
+    if(bytes>=256*1024&&streams.size()>1)sevk_jobs::parallel_for(sevk_jobs::Upload,sevk_jobs::Priority::High,4,uint32_t(streams.size()),copy_stream);
+    else for(uint32_t i=0;i<streams.size();++i)copy_stream(i);
     for(auto& group:groups){pass_scene.offsets.push_back(stream_offsets.at(group.stream->index));pass_scene.materials.push_back(group.kind==native_pass::Kind::Forward?VK_NULL_HANDLE:pass_material(slot,group));}check(vmaFlushAllocation(allocator,pass_scene.instances[slot_index].memory,0,bytes),"flush frame-owned native view streams");
     // History is matched by generational actor identity, independently of
     // material groups, stream positions and camera-relative row updates.
     // Only motion consumers read it (object_motion_wanted); without one the per-row map is not rebuilt, and a
     // later consumer starts from a reset, as skip_object_motion does for the replay history.
-    if(!object_motion_wanted()){pass_scene.history_frame=UINT64_MAX;return;}
+    if(!object_motion_wanted()){pass_scene.history_frame=UINT64_MAX;return;}cpu_lap("prepare pass history");
     std::vector<uint32_t> history_streams(streams.size(),UINT32_MAX);uint64_t history_bytes=0;pass_scene.history_offsets.assign(groups.size(),UINT32_MAX);
     for(uint32_t i=0;i<groups.size();++i){const auto& group=groups[i];if(group.key.view!=0 || group.kind!=native_pass::Kind::Colour)continue;auto index=group.stream->index;if(history_streams[index]==UINT32_MAX){history_streams[index]=uint32_t(history_bytes);history_bytes+=uint64_t(group.count())*64;}pass_scene.history_offsets[i]=history_streams[index];}
     if(history_bytes){world_buffer(pass_scene.history_instances[slot_index],history_bytes,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT|VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);

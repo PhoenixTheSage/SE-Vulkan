@@ -43,6 +43,8 @@ public sealed partial class Plugin {
         harmony.Patch(AccessTools.Method(typeof(NativeBackend),nameof(NativeBackend.SetSpots)),prefix:new HarmonyMethod(typeof(Plugin),nameof(LightingSetSpots)));
         // The one-argument SetProbes forwards here; patch the complete overload.
         harmony.Patch(AccessTools.Method(typeof(NativeBackend),nameof(NativeBackend.SetProbes),new[]{typeof(NativeProbeConfig),typeof(uint)}),prefix:new HarmonyMethod(typeof(Plugin),nameof(LightingSetProbes)));
+        // Probe configuration queued through the snapshot path (absent in older pinned plugins).
+        var deferredProbes=AccessTools.Method(typeof(NativeBackend),"SetProbesDeferred",new[]{typeof(NativeProbeConfig),typeof(uint)});if(deferredProbes!=null)harmony.Patch(deferredProbes,prefix:new HarmonyMethod(typeof(Plugin),nameof(LightingSetProbes)));
         harmony.Patch(AccessTools.Method(typeof(NativeBackend),nameof(NativeBackend.SetPostprocess)),prefix:new HarmonyMethod(typeof(Plugin),nameof(LightingSetPostprocess)));
         harmony.Patch(AccessTools.Method(typeof(NativeBackend),nameof(NativeBackend.QueueWorld)),prefix:new HarmonyMethod(typeof(Plugin),nameof(LightingQueueWorld)));
         harmony.Patch(AccessTools.Method(typeof(MyVulkanRender),nameof(MyVulkanRender.Present)),prefix:new HarmonyMethod(typeof(Plugin),nameof(LightingPresent)));

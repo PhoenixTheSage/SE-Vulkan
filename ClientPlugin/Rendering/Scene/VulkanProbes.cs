@@ -32,6 +32,8 @@ public sealed class VulkanProbes
             for(int face=0;face<6;face++){var view=FaceView(face);view.Translation=Vector3D.TransformNormal(camera-at,view);Array.Copy(NativeBackend.MatrixValues(view*projection),0,matrices,face*16,16);}}
         return (1u|(r?2u:0)|(hold?4u:0)|(Settings.TimeOut<=0?16u:8u),matrices);
     }
+    // Reused per non-held frame: SetProbes copies them on the call, and held frames keep pointing at the last write.
+    byte[] frameScratch;float[] matrixScratch;
     public void Configure(NativeBackend backend,Vector3D camera,MyEnvironmentLightData light,MyPostprocessSettings postprocess,MatrixD orientation,ulong brdf,float delta,float time,Func<float> gatherAmbient=null,MyRenderSettings? renderSettings=null)
     {
         int resolution=Resolution;if(resolution<16 || resolution>512 || (resolution&(resolution-1))!=0)throw new ArgumentException("Probe resolution must be a power of two from 16 through 512.");
@@ -54,7 +56,7 @@ public sealed class VulkanProbes
         if(hold && heldFrames!=null){frames=heldFrames;matrices=heldMatrices;}
         else using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ProbeFaceFrames))
         {
-            var projection=(MatrixD)Matrix.CreatePerspectiveFovRhInfiniteComplementary((float)Math.PI/2,1,.01f);frames=new byte[7680];matrices=new float[96];
+            var projection=(MatrixD)Matrix.CreatePerspectiveFovRhInfiniteComplementary((float)Math.PI/2,1,.01f);frames=frameScratch??=new byte[7680];matrices=matrixScratch??=new float[96];
             for(int face=0;face<6;face++){var view=FaceView(face);view.Translation=Vector3D.TransformNormal(camera-origin,view);byte[] frame=WorldConstants.Frame(backend.WorldFrameLayout,view,projection,resolution,resolution,light,postprocess.Data.BloomEmissiveness,orientation,time:time,delta:delta,postprocess:postprocess,textureMultipliers:textureMultipliers,renderSettings:renderSettings);Buffer.BlockCopy(frame,0,frames,face*1280,1280);Array.Copy(NativeBackend.MatrixValues(view*projection),0,matrices,face*16,16);}
             heldFrames=frames;heldMatrices=matrices;
         }

@@ -85,11 +85,25 @@ public sealed partial class VulkanScene
             // Enclose the same conservative bounding sphere used by the old
             // shadow/probe distance test, including long/thin models.
             BoundingBoxD sphereBox=new BoundingBoxD(data.Bounds.Center-new Vector3D(radius),data.Bounds.Center+new Vector3D(radius));
-            if(data.Proxy<0)data.Proxy=actorIndex.AddProxy(ref sphereBox,data,0);
+            if(!InManagedIndex(data)){if(data.Proxy>=0){actorIndex.RemoveProxy(data.Proxy);data.Proxy=-1;}}
+            else if(data.Proxy<0)data.Proxy=actorIndex.AddProxy(ref sphereBox,data,0);
             else actorIndex.MoveProxy(data.Proxy,ref sphereBox,Vector3D.Zero);
             if(data.StaticInstances!=null)staticGroups.Add(data);else staticGroups.Remove(data);
         }
         spatialDirty.Clear();
+    }
+    // Under stable main order the traversal skips native-owned actors (pass or cell), so the managed candidate
+    // index leaves them out and the per-frame query stops returning them (SE_VULKAN_INDEX_OWNED=1 keeps them).
+    public static bool IndexExcludesOwned=System.Environment.GetEnvironmentVariable("SE_VULKAN_INDEX_OWNED")!="1";
+    bool InManagedIndex(ActorData data)=>!(IndexExcludesOwned&&backend.StableMainOrderEnabled&&(data.PassOwned||data.CellOwned));
+    // Ownership changed after this frame's index refresh: bring the actor in or out of the index now.
+    void SyncIndexMembership(ActorData data)
+    {
+        if(data.Actor.IsDestroyed||data.Model==null)return;
+        if(!InManagedIndex(data)){if(data.Proxy>=0){actorIndex.RemoveProxy(data.Proxy);data.Proxy=-1;}return;}
+        if(data.Proxy>=0)return;
+        double radius=data.Bounds.HalfExtents.Length();var sphereBox=new BoundingBoxD(data.Bounds.Center-new Vector3D(radius),data.Bounds.Center+new Vector3D(radius));
+        data.Proxy=actorIndex.AddProxy(ref sphereBox,data,0);
     }
     private IEnumerable<ActorData> DrawCandidates(bool native)
     {

@@ -29,15 +29,19 @@ internal static class StockParticles
 }
 internal sealed class StockEffect
 {
+    // Wrappers live for one light update, during which the effect does not change: each reflected read is
+    // taken once (every read used to box through reflection, several times per light per frame).
     private readonly object value;internal StockEffect(object value){this.value=value;}
-    public float GetElapsedTime()=>(float)StockParticles.Call(value,"GetElapsedTime");public float GetLoopTime()=>(float)StockParticles.Call(value,"GetLoopTime");public float GetScale()=>(float)StockParticles.Call(value,"GetScale");
-    public float UserBirthMultiplier=>(float)StockParticles.Get(value,"UserBirthMultiplier");public bool IsStopped=>(bool)StockParticles.Get(value,"IsStopped");public uint ParentID=>(uint)StockParticles.Get(value,"ParentID");public MatrixD WorldMatrix=>(MatrixD)StockParticles.Get(value,"WorldMatrix");public Vector3 Gravity=>(Vector3)StockParticles.Get(value,"Gravity");
+    float? elapsed,loop,scale,multiplier;bool? stopped;uint? parent;MatrixD? world;Vector3? gravity;
+    public float GetElapsedTime()=>elapsed??=(float)StockParticles.Call(value,"GetElapsedTime");public float GetLoopTime()=>loop??=(float)StockParticles.Call(value,"GetLoopTime");public float GetScale()=>scale??=(float)StockParticles.Call(value,"GetScale");
+    public float UserBirthMultiplier=>multiplier??=(float)StockParticles.Get(value,"UserBirthMultiplier");public bool IsStopped=>stopped??=(bool)StockParticles.Get(value,"IsStopped");public uint ParentID=>parent??=(uint)StockParticles.Get(value,"ParentID");public MatrixD WorldMatrix=>world??=(MatrixD)StockParticles.Get(value,"WorldMatrix");public Vector3 Gravity=>gravity??=(Vector3)StockParticles.Get(value,"Gravity");
 }
 internal sealed class StockLight
 {
     private readonly object value;internal StockLight(object value){this.value=value;}
     private T G<T>(string n)=>(T)StockParticles.Get(value,n);private void S<T>(string n,T v)=>StockParticles.Set(value,n,v);
-    public MyParticleLightData m_data=>G<MyParticleLightData>("m_data");public StockEffect m_effect=>new StockEffect(StockParticles.Get(value,"m_effect"));
+    MyParticleLightData? data;StockEffect effect;
+    public MyParticleLightData m_data=>data??=G<MyParticleLightData>("m_data");public StockEffect m_effect=>effect??=new StockEffect(StockParticles.Get(value,"m_effect"));
     public MyActor m_light{get=>G<MyActor>("m_light");set=>S("m_light",value);}public bool Enabled=>G<bool>("Enabled");public string Name=>G<string>("Name");
 public Vector3D m_position{get=>G<Vector3D>("m_position");set=>S("m_position",value);}
 public Vector4 m_color{get=>G<Vector4>("m_color");set=>S("m_color",value);}

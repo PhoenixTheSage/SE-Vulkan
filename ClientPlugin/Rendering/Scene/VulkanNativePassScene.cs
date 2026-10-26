@@ -36,6 +36,7 @@ public sealed partial class VulkanScene
     // Same-process toggle for the frozen-light lane's packet signature gate.
     public bool VoxelEmitAheadEnabled {get=>VulkanVoxels.EmitAheadEnabled;set=>VulkanVoxels.EmitAheadEnabled=value;}
     public bool ProbeStatsSnapshot {get=>NativeBackend.ProbeStatsSnapshotEnabled;set=>NativeBackend.ProbeStatsSnapshotEnabled=value;}
+    public bool IndexExcludesOwnedActors {get=>IndexExcludesOwned;set{if(value==IndexExcludesOwned)return;IndexExcludesOwned=value;foreach(var actor in actors.Values)SyncIndexMembership(actor);}}
     // Async pass packing and deferred cell emission (native defaults follow their
     // environment switches); the setter exists for same-process parity lanes.
     bool asyncNativeWork=System.Environment.GetEnvironmentVariable("SE_VULKAN_ASYNC_PASS_PACKING")!="0"&&System.Environment.GetEnvironmentVariable("SE_VULKAN_DEFERRED_CELL_EMISSION")!="0";
@@ -44,7 +45,7 @@ public sealed partial class VulkanScene
     public bool VoxelPlanAheadEnabled {get=>VulkanVoxels.PlanAheadEnabled;set=>VulkanVoxels.PlanAheadEnabled=value;}
     // Stable main order: pass-owned actors carry a resident main-group order and are skipped by the
     // managed traversal. Turning it on re-commits every pass actor so native gets their orders.
-    public bool StableMainOrderEnabled {get=>backend.StableMainOrderEnabled;set{if(value==backend.StableMainOrderEnabled)return;backend.ClearStableMainOrders();backend.StableMainOrderEnabled=value;if(value)foreach(var actor in actors.Values)if(actor.PassOwned)DirtyNativePass(actor,appearance:false);}}
+    public bool StableMainOrderEnabled {get=>backend.StableMainOrderEnabled;set{if(value==backend.StableMainOrderEnabled)return;backend.ClearStableMainOrders();backend.StableMainOrderEnabled=value;foreach(var actor in actors.Values)SyncIndexMembership(actor);if(value)foreach(var actor in actors.Values)if(actor.PassOwned)DirtyNativePass(actor,appearance:false);}}
     public bool NativeMixedOpaqueEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_NATIVE_MIXED_OPAQUE")!="0";
     public bool GpuHybridPassEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_GPU_OPAQUE_HYBRID")=="1";
     private sealed class PassFamily
@@ -142,7 +143,7 @@ public sealed partial class VulkanScene
     {
         if(gpu)RemoveGpuActor(actor,handoff);if(actor.PassHandle==0)return;
         if(handoff){var state=actor.NewLod.Export();var camera=actor.NewViewCamera;bool have=actor.HaveNewViewCamera;backend.PassActorSelector(actor.PassHandle,false,ref state,ref camera,ref have);actor.NewLod.Import(state);actor.NewViewCamera=camera;actor.HaveNewViewCamera=have;}
-        backend.RemovePassResource(2,actor.PassHandle);actor.PassHandle=0;actor.PassOwned=false;if(backend.StableMainOrderEnabled)backend.RemoveResidentMainOwner(actor.Actor.ID);actor.PassFamily?.Members.Remove(actor);actor.PassFamily=null;actor.PassBindingDirty=true;actor.PassAppearanceDirty=true;
+        backend.RemovePassResource(2,actor.PassHandle);actor.PassHandle=0;actor.PassOwned=false;SyncIndexMembership(actor);if(backend.StableMainOrderEnabled)backend.RemoveResidentMainOwner(actor.Actor.ID);actor.PassFamily?.Members.Remove(actor);actor.PassFamily=null;actor.PassBindingDirty=true;actor.PassAppearanceDirty=true;
         if(actor.HaveShadowPose){MarkSpots(actor.ShadowCenter,actor.ShadowRadius,false);MarkSpots(actor.ShadowCenter,actor.ShadowRadius,true);}
     }
     readonly List<NativePassActor> passUpdates=new();readonly List<NativePassAppearance> passAppearance=new();
@@ -168,7 +169,7 @@ public sealed partial class VulkanScene
             if(data.GpuOwned||!PassActorSupported(data)){RemoveNativePassActor(data,gpu:false);continue;}
             var family=GetPassFamily(data);if(family.Unsupported){RemoveNativePassActor(data,gpu:false);continue;}
             if(!family.Levels.ContainsKey(0))ResolvePassLevel(family,0);
-            if(data.PassHandle==0){var localAppearance=new List<NativePassAppearance>();var input=PassActorInput(data,family,localAppearance);data.PassHandle=backend.RegisterPassActor(ref input,localAppearance.ToArray());data.PassOwned=true;nativePassRegistrations++;}
+            if(data.PassHandle==0){var localAppearance=new List<NativePassAppearance>();var input=PassActorInput(data,family,localAppearance);data.PassHandle=backend.RegisterPassActor(ref input,localAppearance.ToArray());data.PassOwned=true;SyncIndexMembership(data);nativePassRegistrations++;}
             else updates.Add(PassActorInput(data,family,appearance,data.PassAppearanceDirty));
             data.PassAppearanceDirty=false;
             // Same key the traversal would declare for this actor's root.

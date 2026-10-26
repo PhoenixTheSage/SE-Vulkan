@@ -35,7 +35,7 @@ public sealed partial class VulkanScene
     }
     void ReleaseCell(ActorData data,bool handoff)
     {
-        if(!data.CellOwned)return;var lod=backend.RemoveCell(data.CellHandle);data.CellHandle=0;data.CellOwned=false;ownedCells--;
+        if(!data.CellOwned)return;var lod=backend.RemoveCell(data.CellHandle);data.CellHandle=0;data.CellOwned=false;ownedCells--;SyncIndexMembership(data);
         if(!handoff)return;
         data.Lod.Import(new NativeGpuOpaqueSelector{Current=lod.Current,Other=lod.Next,Transition=lod.Transition,Start=lod.Start,Initialized=lod.Initialized,Border=lod.Border});
         var models=data.CellModels;VulkanModel Model(int key)=>key>=0&&models!=null&&key<models.Length?models[key]:null;
@@ -72,7 +72,7 @@ public sealed partial class VulkanScene
         int count=cellInputs.Count;if(count==0)return;
         var handles=cellHandles.ToArray();var output=new ulong[count];
         backend.CommitCells(cellInputs.ToArray(),count,handles,output,cellLevels.ToArray(),cellLevels.Count,cellParts.ToArray(),cellParts.Count,cellThresholds.ToArray(),cellThresholds.Count,cellBytes.ToArray(),cellBytes.Count);
-        for(int i=0;i<count;i++){var data=cellOwners[i];if(!data.CellOwned)ownedCells++;data.CellHandle=output[i];data.CellOwned=true;}
+        for(int i=0;i<count;i++){var data=cellOwners[i];if(!data.CellOwned)ownedCells++;data.CellHandle=output[i];data.CellOwned=true;SyncIndexMembership(data);}
     }
     readonly List<NativeCellPose> cellPoses=new();readonly List<ulong> cellPoseHandles=new();NativeCellPose[] cellPoseArray=Array.Empty<NativeCellPose>();ulong[] cellPoseHandleArray=Array.Empty<ulong>();
     uint CellFlags(ActorData data,bool eligible,bool skinning){var flags=data.Flags;bool castFlag=(flags&RenderFlags.CastShadows)!=0,casts=(flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))==RenderFlags.CastShadows;
