@@ -495,15 +495,21 @@ void render_world(){
     for(auto* b:{&slot.frame,&slot.projections,&slot.glue})check(vmaFlushAllocation(allocator,b->memory,0,VK_WHOLE_SIZE),"flush batched world uniforms/instances");world_light_data(slot);
     performance.upload_us=perf_prepare_take();cpu_lap("prepare materials");
     auto& materials=world.current().materials;materials.clear();materials.reserve(world.current().draws.size());for(auto& draw:world.current().draws){draw.material=draw.recipe?world_recipe_material(slot,draw):world_material(slot,draw);materials.push_back(draw.material);}
-    prepare_pass_gpu(slot);
+    cpu_lap("prepare pass gpu");prepare_pass_gpu(slot);
     performance.descriptors_us=perf_prepare_take();cpu_lap("prepare sort");
     auto& order=world.current().order;order.resize(world.current().draws.size());for(uint32_t n=0;n<order.size();++n)order[n]=n;
     // Compact per-draw copies of every comparator input. The comparator is the
     // same function of them, so std::sort yields the same order without
     // touching the large WorldDraw records on each comparison.
-    struct SortKey{uint64_t old_key,mesh;VkDescriptorSet material;uint32_t phase,main_order,main_part,pipeline,technique,old_valid,owner;bool mesh_decal,old_flag;};
+    struct SortKey{uint64_t old_key,mesh;VkDescriptorSet material;uint32_t phase,main_order,main_part,pipeline,technique,old_valid,owner;bool mesh_decal,old_flag;bool operator==(const SortKey&)const=default;};
     static thread_local std::vector<SortKey> keys;keys.resize(order.size());
     for(uint32_t n=0;n<order.size();++n){const auto& d=world.current().draws[n];const auto& p=d.packet;keys[n]={d.old_order.key,p.mesh,materials[n],world_main_phase(p.pipeline,p.flags),d.main_order?d.main_order:n+1,d.main_part,p.pipeline,world_decal_technique_order(p.pipeline),d.old_order.valid,d.owner,world_mesh_decal(p.pipeline),(p.flags&0x04000000u)!=0};}
+    // Sort reuse (SE_VULKAN_SORT_REUSE=0 sorts every frame): identical keys give an identical order, so when every
+    // key equals this slot's previous frame (materials are per slot), its order is reused.
+    static thread_local std::array<std::vector<SortKey>,2> previous_keys;static thread_local std::array<std::vector<uint32_t>,2> previous_order;
+    static const bool sort_reuse=env_flag("SE_VULKAN_SORT_REUSE",true);
+    bool reused=sort_reuse&&previous_keys[slot_index]==keys&&previous_order[slot_index].size()==order.size();
+    if(reused){order=previous_order[slot_index];++world.sort_reuses;}else
     std::sort(order.begin(),order.end(),[&](uint32_t a,uint32_t b){
         const auto& A=keys[a];const auto& B=keys[b];
         if(A.phase!=B.phase)return A.phase<B.phase;
@@ -520,6 +526,7 @@ void render_world(){
         }
         if(A.pipeline!=B.pipeline)return A.pipeline<B.pipeline;if(A.mesh!=B.mesh)return A.mesh<B.mesh;if(A.material!=B.material)return A.material<B.material;return a<b;
     });
+    if(sort_reuse&&!reused){previous_keys[slot_index]=keys;previous_order[slot_index]=order;}
     cpu_lap("prepare upload join");upload_job.wait();
     check(vmaFlushAllocation(allocator,slot.instances.memory,0,VK_WHOLE_SIZE),"flush batched world uniforms/instances");if(!world.retained_objects)check(vmaFlushAllocation(allocator,slot.objects.memory,0,VK_WHOLE_SIZE),"flush legacy world objects");
     cpu_lap("prepare cascade casters");for(auto& casters:world.current().cascade_casters)casters.clear();

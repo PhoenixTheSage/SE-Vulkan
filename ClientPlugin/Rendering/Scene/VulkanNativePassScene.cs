@@ -35,6 +35,7 @@ public sealed partial class VulkanScene
     public bool NativePassSceneEnabled {get;set;}=NativePassPolicy.Enabled;
     // Same-process toggle for the frozen-light lane's packet signature gate.
     public bool VoxelEmitAheadEnabled {get=>VulkanVoxels.EmitAheadEnabled;set=>VulkanVoxels.EmitAheadEnabled=value;}
+    public bool ProbeStatsSnapshot {get=>NativeBackend.ProbeStatsSnapshotEnabled;set=>NativeBackend.ProbeStatsSnapshotEnabled=value;}
     // Async pass packing and deferred cell emission (native defaults follow their
     // environment switches); the setter exists for same-process parity lanes.
     bool asyncNativeWork=System.Environment.GetEnvironmentVariable("SE_VULKAN_ASYNC_PASS_PACKING")!="0"&&System.Environment.GetEnvironmentVariable("SE_VULKAN_DEFERRED_CELL_EMISSION")!="0";

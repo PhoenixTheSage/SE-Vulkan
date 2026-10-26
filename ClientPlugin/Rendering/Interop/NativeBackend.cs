@@ -156,6 +156,7 @@ public sealed partial class NativeBackend : IDisposable
             Ambient = new[] { ambient.X, ambient.Y, ambient.Z, 1f }, Clear = ColorValues(clear) };
         var status = api.BeginFrame(context, ref frame);
         Check(status, context);
+        ProbeConfigurationApplied();
         collectingPackets = false;
         if (status == 0)
             foreach (var packet in frameMeshes) { var draw = packet; Check(api.DrawMesh(context, ref draw), context); }

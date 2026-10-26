@@ -43,6 +43,8 @@
 #include <string>
 #include <chrono>
 #include <unordered_map>
+// Environment switch: unset keeps fallback; "0" is off, anything else on.
+static bool env_flag(const char* name,bool fallback){const char* v=std::getenv(name);return v?std::strcmp(v,"0")!=0:fallback;}
 #include <vector>
 #include <future>
 #include <functional>
@@ -321,7 +323,7 @@ struct WorldState {ModelState models;
     std::array<WorldSubmission,2> submissions{};
     WorldSubmission& current(){return submissions[active_submission];}
     const WorldSubmission& current() const{return submissions[active_submission];}
-    uint32_t cascade_tasks{},cascade_task_commands{};
+    uint32_t cascade_tasks{},cascade_task_commands{};uint64_t sort_reuses{};
     WorldObjectRecords object_records;bool retained_objects{};uint64_t object_uploaded_bytes{};
     bool geometry_arena_requested{};
     std::vector<GeometryPage> vertex_pages,index_pages;
@@ -478,10 +480,19 @@ struct Renderer {uint32_t recipe_generation=1;
     // copied arguments; a few reads answer from the launch snapshot.
     std::condition_variable_any record_cv;bool record_pending{},record_running{},record_failed{};std::string record_error;sevk_jobs::Stage record_stage;
     std::mutex deferred_mutex;bool record_in_flight{};std::vector<std::function<int32_t(Renderer&)>> deferred;
-    struct ReadSnapshot {SevkWorkStats work{};SevkResolutionStats resolution{};SevkShadowFeedback shadow{};uint32_t cache_mask{},cache_count{};bool cache_valid{};std::vector<SevkOcclusionResult> occlusion;uint64_t occlusion_token{};std::vector<SevkFlareResult> flares;float render_fraction=1;};
+    struct ReadSnapshot {SevkWorkStats work{};SevkResolutionStats resolution{};SevkShadowFeedback shadow{};uint32_t cache_mask{},cache_count{};bool cache_valid{};std::vector<SevkOcclusionResult> occlusion;uint64_t occlusion_token{};std::vector<SevkFlareResult> flares;float render_fraction=1;SevkProbeStats probe_stats{sizeof(SevkProbeStats),SEVK_ABI_VERSION};SevkProbeScheduleStats probe_schedule{sizeof(SevkProbeScheduleStats),SEVK_ABI_VERSION};};
     std::mutex snapshot_mutex;ReadSnapshot snapshot;uint64_t pipelined_frames{},pipelined_mask_mismatches{},pipelined_waits{},pipelined_wait_us{};
     // Wait census (only with SE_VULKAN_PIPELINE_REPORT): native frame address -> waits, microseconds.
     bool pipeline_census=std::getenv("SE_VULKAN_PIPELINE_REPORT")!=nullptr;std::map<void*,std::pair<uint64_t,uint64_t>> pipelined_wait_sites;
+    // Census only: ordinary calls by return frame: calls, us, us while an async present was in flight.
+    std::map<void*,std::array<uint64_t,3>> call_sites;
+    // Census only: time ordinary calls spent acquiring api_mutex (held by recording for all of end_frame), by return frame.
+    std::map<void*,std::array<uint64_t,2>> lock_sites;uint64_t lock_wait_us{};
+    // Census only: launch->record task end, and launch->lock request for blocked calls (waits over 20 us).
+    uint64_t tl_record_end_us{},tl_record_ends{},lock_request_since_launch_us{},lock_blocked{};
+    // Census only: after submit -> present started, generated frame, frame generation, end_frame return, record task end.
+    uint64_t tl_post_us[5]{};std::chrono::steady_clock::time_point tl_post_at{};
+    void tl_post(int i){auto now=std::chrono::steady_clock::now();tl_post_us[i]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(now-tl_post_at).count());tl_post_at=now;}
     std::map<void*,std::pair<uint64_t,uint64_t>> packing_wait_sites;uint64_t packing_blocked[2]{},packing_blocked_us[2]{};
     VkSurfaceKHR surface{}; VkSwapchainKHR swapchain{};
     VkPresentModeKHR actual_present_mode=VK_PRESENT_MODE_FIFO_KHR;uint32_t swapchain_generation{};
@@ -501,6 +512,13 @@ struct Renderer {uint32_t recipe_generation=1;
     // without presenting; the next begin_frame recreates the swapchain.
     bool deferred_acquire=!std::getenv("SE_VULKAN_DEFERRED_ACQUIRE") || std::strcmp(std::getenv("SE_VULKAN_DEFERRED_ACQUIRE"),"0")!=0;
     bool target_ready=true;
+    // Lazy deferred acquire: end_frame acquires only before the first use of the swapchain image (the AfterUpscale
+    // guest stage and swapchain pass, or a guest reading the display image earlier), so recording does not start
+    // by waiting for the previous present to finish.
+    bool frame_image_pending{};
+    bool ensure_frame_image(){if(!frame_image_pending)return target_ready;frame_image_pending=false;auto acquire_at=std::chrono::steady_clock::now();
+        join_present();target_ready=acquire_frame_image(slots[slot_index],false)==0;
+        work.acquire_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-acquire_at).count());return target_ready;}
     bool present_after_gpu=!std::getenv("SE_VULKAN_PRESENT_AFTER_GPU") || std::strcmp(std::getenv("SE_VULKAN_PRESENT_AFTER_GPU"),"0")!=0;
     SevkPresentFlowStats present_flow{sizeof(SevkPresentFlowStats),SEVK_ABI_VERSION};
     bool capture_present_samples=std::getenv("SE_VULKAN_PRESENT_SAMPLES") && std::strcmp(std::getenv("SE_VULKAN_PRESENT_SAMPLES"),"1")==0;std::deque<SevkPresentSample> present_samples;
@@ -705,6 +723,8 @@ struct Renderer {uint32_t recipe_generation=1;
         collect();std::lock_guard lock(snapshot_mutex);auto& s=snapshot;s.resolution=resolution_stats;uint32_t cache=0,update=0;s.cache_valid=predict_shadow_masks(cache,update);
         s.shadow=shadow_feedback();s.shadow.update_mask=update;s.cache_mask=cache;s.cache_count=shadow_count;
         s.occlusion=occlusion.completed;s.occlusion_token=occlusion.completed_token;s.flares=flares.completed;s.render_fraction=render_fraction;
+        s.probe_stats=probes.stats;s.probe_stats.size=sizeof(SevkProbeStats);s.probe_stats.abi_version=SEVK_ABI_VERSION;s.probe_stats.ready=probes.ready;s.probe_stats.next_face=probes.face;
+        s.probe_schedule=SevkProbeScheduleStats{sizeof(SevkProbeScheduleStats),SEVK_ABI_VERSION};s.probe_schedule.stage=probes.stage;s.probe_schedule.busy=probes.stage!=0;s.probe_schedule.cycles=probes.stats.cycles;
     }
     static bool upscaler_requested(){{auto& n=ngx_request();std::lock_guard l(n.mu);if(n.enabled&&!n.directory.empty())return true;}{auto& f=fsr_request();std::lock_guard l(f.mu);if(f.enabled&&!f.directory.empty())return true;}return false;}
     // Ordinary calls: recording finished, then deferred calls in issue order.
@@ -718,13 +738,13 @@ struct Renderer {uint32_t recipe_generation=1;
     int end_frame_async(){
         if(!recording||!world.current().queued)return end_frame();
         publish_launch_snapshot();uint32_t predicted=snapshot.cache_mask;bool checked=snapshot.cache_valid;
-        {std::lock_guard q(deferred_mutex);record_in_flight=true;}record_pending=true;tl_launch=std::chrono::steady_clock::now();
+        {std::lock_guard q(deferred_mutex);record_in_flight=true;}record_pending=true;tl_launch=std::chrono::steady_clock::now();tl_pipelined=true;
         record_stage.start([this,predicted,checked]{
             std::unique_lock lock(api_mutex);record_pending=false;record_running=true;
-            try{end_frame();++pipelined_frames;if(checked&&(shadow_image_mask&((1u<<shadow_count)-1))!=predicted)++pipelined_mask_mismatches;}
+            try{end_frame();tl_post(3);++pipelined_frames;if(checked&&(shadow_image_mask&((1u<<shadow_count)-1))!=predicted)++pipelined_mask_mismatches;}
             catch(const std::exception& e){record_error=e.what();record_failed=true;}catch(...){record_error="unknown native Vulkan error";record_failed=true;}
             {std::lock_guard s(snapshot_mutex);snapshot.work=work;}
-            {std::lock_guard q(deferred_mutex);record_in_flight=false;}record_running=false;lock.unlock();record_cv.notify_all();});
+            {std::lock_guard q(deferred_mutex);record_in_flight=false;}record_running=false;tl_post(4);tl_pipelined=false;tl_record_end_us+=tl_since(tl_launch);++tl_record_ends;lock.unlock();record_cv.notify_all();});
         return 0;
     }
     void collect() {
@@ -932,7 +952,7 @@ struct Renderer {uint32_t recipe_generation=1;
         {VkPhysicalDeviceVulkan13Features supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,&supported};vkGetPhysicalDeviceFeatures2(physical,&query);f13.maintenance4=supported.maintenance4;interface_widening=supported.maintenance4!=0;}
         VkPhysicalDeviceVulkan12Features f12{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &f13 }; f12.timelineSemaphore = VK_TRUE; f12.scalarBlockLayout = VK_TRUE;
         VkPhysicalDeviceVulkan11Features f11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,&f12};
-        VkPhysicalDeviceFeatures2 features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11 }; features.features.robustBufferAccess=VK_TRUE;features.features.depthClamp=VK_TRUE;features.features.independentBlend=VK_TRUE; features.features.textureCompressionBC = VK_TRUE; features.features.geometryShader=VK_TRUE; features.features.shaderStorageImageExtendedFormats=VK_TRUE;
+        VkPhysicalDeviceFeatures2 features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11 }; features.features.robustBufferAccess=env_flag("SE_VULKAN_ROBUST_BUFFER",true)?VK_TRUE:VK_FALSE;features.features.depthClamp=VK_TRUE;features.features.independentBlend=VK_TRUE; features.features.textureCompressionBC = VK_TRUE; features.features.geometryShader=VK_TRUE; features.features.shaderStorageImageExtendedFormats=VK_TRUE;
         // Tenant storage images are typed Unknown so DX11-compatible UAV formats bind (tenant.inc).
         tenant.without_format=optional.features.shaderStorageImageReadWithoutFormat && optional.features.shaderStorageImageWriteWithoutFormat;
         features.features.shaderStorageImageReadWithoutFormat=features.features.shaderStorageImageWriteWithoutFormat=tenant.without_format?VK_TRUE:VK_FALSE;
@@ -965,9 +985,12 @@ struct Renderer {uint32_t recipe_generation=1;
             gbuffer_velocity_supported=unused_attachments.dynamicRenderingUnusedAttachments!=0;
             if(gbuffer_velocity_supported){device_extensions.push_back(VK_EXT_DYNAMIC_RENDERING_UNUSED_ATTACHMENTS_EXTENSION_NAME);unused_attachments.pNext=chain;chain=&unused_attachments;}}
 
-        gpu_checkpoints=has(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);if(gpu_checkpoints)device_extensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+        // GPU crash diagnostics (SE_VULKAN_GPU_DIAGNOSTICS=0 drops NV checkpoints and resource tracking; device fault
+        // reporting stays). Every frame mark records a checkpoint while they are on.
+        bool gpu_diagnostics=env_flag("SE_VULKAN_GPU_DIAGNOSTICS",true);
+        gpu_checkpoints=gpu_diagnostics&&has(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);if(gpu_checkpoints)device_extensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
         VkDeviceDiagnosticsConfigCreateInfoNV diagnostics{VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV};diagnostics.flags=VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV;
-        if(has(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME)){VkPhysicalDeviceDiagnosticsConfigFeaturesNV supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV};VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,&supported};vkGetPhysicalDeviceFeatures2(physical,&query);
+        if(gpu_diagnostics&&has(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME)){VkPhysicalDeviceDiagnosticsConfigFeaturesNV supported{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV};VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,&supported};vkGetPhysicalDeviceFeatures2(physical,&query);
             if(supported.diagnosticsConfig){device_extensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);diagnostics.pNext=chain;chain=&diagnostics;}}
         VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnostics_feature{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV};
         if(chain==&diagnostics){diagnostics_feature.diagnosticsConfig=VK_TRUE;diagnostics_feature.pNext=chain;chain=&diagnostics_feature;}
@@ -1579,6 +1602,7 @@ struct Renderer {uint32_t recipe_generation=1;
     uint64_t begin_lap_us[8]{};
     // Pipeline report only, per frame, microseconds: launch->record start, record start->acquired, acquired->submit,
     // slot submit->fence wait start (age), fence wait, frames whose fence was not yet signaled when begin_frame waited.
+    bool tl_pipelined{}; // timeline counts only pipelined end_frames
     std::chrono::steady_clock::time_point tl_launch{},tl_submit[2]{};uint64_t tl_us[5]{},tl_frames{},tl_waited{};
     static uint64_t tl_since(std::chrono::steady_clock::time_point from){return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-from).count());}
     int begin_frame(const SevkFrameInfo& frame) {
@@ -1847,10 +1871,9 @@ struct Renderer {uint32_t recipe_generation=1;
         // Close that allocation window before recording the world/guest draws.
         guest.resources_open=false;
         auto& slot = slots[slot_index];
-        auto record_at=std::chrono::steady_clock::now();if(tl_launch.time_since_epoch().count())tl_us[0]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(record_at-tl_launch).count());
-        if(deferred_acquire&&swapchain){auto acquire_at=std::chrono::steady_clock::now();join_present();target_ready=acquire_frame_image(slot,false)==0;
-            work.acquire_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-acquire_at).count());}
-        tl_us[1]+=tl_since(record_at);auto acquired_at=std::chrono::steady_clock::now();
+        auto record_at=std::chrono::steady_clock::now();if(tl_pipelined)tl_us[0]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(record_at-tl_launch).count());
+        frame_image_pending=deferred_acquire&&swapchain;
+        if(tl_pipelined)tl_us[1]+=tl_since(record_at);auto acquired_at=std::chrono::steady_clock::now();
         auto perf_stamp=std::chrono::steady_clock::now();
         auto perf_take=[&](){auto now=std::chrono::steady_clock::now();auto us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(now-perf_stamp).count());perf_stamp=now;return us;};
         // Full GPU frame timing starts before resident preparation, not after
@@ -1876,6 +1899,7 @@ struct Renderer {uint32_t recipe_generation=1;
         extent = output_extent;
         // Guest passes own dynamic-rendering scopes. AfterUpscale must finish
         // before the swapchain scope used by composition and sprites begins.
+        ensure_frame_image();
         if(world.current().queued)guest_replay(slot.command,6);
         perf_take();frame_mark("swapchain pass");
         if(target_ready){
@@ -1928,7 +1952,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if(wait_count){submit.waitSemaphoreInfoCount=wait_count;submit.pWaitSemaphoreInfos=waits.data();}
         if (swapchain&&target_ready) { signals[1].semaphore = present_semaphores[image_index];
             signals[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; submit.signalSemaphoreInfoCount = 2; }
-        join_present();VkResult result = vkQueueSubmit2(queue, 1, &submit, VK_NULL_HANDLE);tl_us[2]+=tl_since(acquired_at);tl_submit[slot_index]=std::chrono::steady_clock::now();++tl_frames;
+        join_present();VkResult result = vkQueueSubmit2(queue, 1, &submit, VK_NULL_HANDLE);if(tl_pipelined){tl_us[2]+=tl_since(acquired_at);++tl_frames;}tl_submit[slot_index]=std::chrono::steady_clock::now();tl_post_at=tl_submit[slot_index];
         performance.submit_us=perf_take();
         check_gpu(result, "submit rendered frame"); if(upload_wait)upload_fence=0; ++stats.submitted_frames;critical_finish.submitted=true;
         if(capture_requested) {capture_completion=slot.completion;capture_valid=true;capture_requested=false;}
@@ -1949,10 +1973,10 @@ struct Renderer {uint32_t recipe_generation=1;
             };
             if(async_present){present_pending=true;present_stage.start([this,submit_present]{present_result=submit_present();});}else accept_present(submit_present());
         } else if(!swapchain) offscreen_initialized = true;
-        performance.present_us=perf_take();
-        present_generated_frame();
+        performance.present_us=perf_take();tl_post(0);
+        present_generated_frame();tl_post(1);
         fg_note_game();
-        fg_publish();
+        fg_publish();tl_post(2);
         slot_index = (slot_index + 1) % slots.size(); return suspended ? 1 : 0;
     }
     void remove(uint32_t kind, uint64_t id) {
@@ -2129,12 +2153,23 @@ template<class Fn> int32_t call(void* context, Fn&& fn) {
     // Guest publications can arrive on the game thread while the render thread
     // records/submits. Timeline allocation, pools and queue access share one owner.
     // A pipelined end_frame completes, and deferred calls replay, before any call.
+    auto lock_at=std::chrono::steady_clock::now();
     std::unique_lock lock(renderer->api_mutex);
+#if defined(_WIN32)
+    if(renderer->pipeline_census){uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-lock_at).count());renderer->lock_wait_us+=us;
+        if(us>20){renderer->lock_request_since_launch_us+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(lock_at-renderer->tl_launch).count());++renderer->lock_blocked;void* frames[4]{};CaptureStackBackTrace(0,4,frames,nullptr);for(void* frame:frames){auto& site=renderer->lock_sites[frame];++site[0];site[1]+=us;}}}
+#endif
     try { if(renderer->record_pending||renderer->record_running){auto start=std::chrono::steady_clock::now();renderer->await_recording(lock);uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count());renderer->pipelined_wait_us+=us;++renderer->pipelined_waits;
 #if defined(_WIN32)
         if(renderer->pipeline_census){void* frames[3]{};CaptureStackBackTrace(0,3,frames,nullptr);for(void* frame:frames){auto& site=renderer->pipelined_wait_sites[frame];++site.first;site.second+=us;}}
 #endif
-        } renderer->await_recording(lock); renderer->flush_deferred(); return fn(*renderer); }
+        } renderer->await_recording(lock); renderer->flush_deferred();
+#if defined(_WIN32)
+        if(renderer->pipeline_census){bool presenting=renderer->present_pending&&renderer->present_stage.pending();auto at=std::chrono::steady_clock::now();int32_t result=fn(*renderer);
+            uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-at).count());void* frames[4]{};CaptureStackBackTrace(0,4,frames,nullptr);
+            for(void* frame:frames){auto& site=renderer->call_sites[frame];++site[0];site[1]+=us;if(presenting)site[2]+=us;}return result;}
+#endif
+        return fn(*renderer); }
     catch (const std::exception& e) { renderer->error = e.what(); global_error = renderer->error; return -1; }
     catch (...) { renderer->error = "unknown native Vulkan error"; global_error = renderer->error; return -1; }
 }
@@ -2286,6 +2321,14 @@ void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) acti
                     if(SymFromAddr(process,DWORD64(address),&offset,info)&&std::strncmp(info->Name,"sevk_",5)==0){auto& e=exports[info->Name];e.first+=site.first;e.second+=site.second;}}}
             std::fprintf(f,",\"%s\":[",label);bool first=true;for(auto& [name,site]:exports){std::fprintf(f,"%s{\"Export\":\"%s\",\"Waits\":%llu,\"WaitUs\":%llu}",first?"":",",name.c_str(),(unsigned long long)site.first,(unsigned long long)site.second);first=false;}std::fprintf(f,"]");};
         sites("Sites",r->pipelined_wait_sites);sites("PackingSites",r->packing_wait_sites);
+        {std::map<std::string,std::array<uint64_t,3>> exports;
+            if(symbols){alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO)+256]{};auto* info=reinterpret_cast<SYMBOL_INFO*>(buffer);
+                for(auto& [address,site]:r->call_sites){info->SizeOfStruct=sizeof(SYMBOL_INFO);info->MaxNameLen=255;DWORD64 offset=0;
+                    if(SymFromAddr(process,DWORD64(address),&offset,info)&&std::strncmp(info->Name,"sevk_",5)==0){auto& e=exports[info->Name];for(int i=0;i<3;i++)e[i]+=site[i];}}}
+            {std::map<std::string,std::array<uint64_t,2>> locks;if(symbols){alignas(SYMBOL_INFO) char lb[sizeof(SYMBOL_INFO)+256]{};auto* li=reinterpret_cast<SYMBOL_INFO*>(lb);
+                for(auto& [address,site]:r->lock_sites){li->SizeOfStruct=sizeof(SYMBOL_INFO);li->MaxNameLen=255;DWORD64 offset=0;if(SymFromAddr(process,DWORD64(address),&offset,li)&&std::strncmp(li->Name,"sevk_",5)==0){auto& e=locks[li->Name];e[0]+=site[0];e[1]+=site[1];}}}
+                std::fprintf(f,",\"LockWaitUs\":%llu,\"RecordEndSinceLaunchUs\":%llu,\"RecordEnds\":%llu,\"LockRequestSinceLaunchUs\":%llu,\"LockBlocked\":%llu,\"PostSubmitUs\":[%llu,%llu,%llu,%llu,%llu],\"SortReuses\":%llu,\"LockSites\":[",(unsigned long long)r->lock_wait_us,(unsigned long long)r->tl_record_end_us,(unsigned long long)r->tl_record_ends,(unsigned long long)r->lock_request_since_launch_us,(unsigned long long)r->lock_blocked,(unsigned long long)r->tl_post_us[0],(unsigned long long)r->tl_post_us[1],(unsigned long long)r->tl_post_us[2],(unsigned long long)r->tl_post_us[3],(unsigned long long)r->tl_post_us[4],(unsigned long long)r->world.sort_reuses);bool lf=true;for(auto& [name,site]:locks){std::fprintf(f,"%s{\"Export\":\"%s\",\"Waits\":%llu,\"Us\":%llu}",lf?"":",",name.c_str(),(unsigned long long)site[0],(unsigned long long)site[1]);lf=false;}std::fprintf(f,"]");}
+            std::fprintf(f,",\"CallSites\":[");bool first=true;for(auto& [name,site]:exports){std::fprintf(f,"%s{\"Export\":\"%s\",\"Calls\":%llu,\"Us\":%llu,\"PresentUs\":%llu}",first?"":",",name.c_str(),(unsigned long long)site[0],(unsigned long long)site[1],(unsigned long long)site[2]);first=false;}std::fprintf(f,"]");}
         if(symbols)SymCleanup(process);
 #endif
         std::fprintf(f,"}\n");std::fclose(f);}} delete static_cast<Renderer*>(context); }
@@ -2383,6 +2426,16 @@ int32_t SEVK_CALL sevk_set_probes(void* ctx,const SevkProbeConfig* config){if(!c
 int32_t SEVK_CALL sevk_set_probes_prefilter(void* ctx,const SevkProbeConfig* config,uint32_t skip_levels){if(!config)return -1;return call(ctx,[&](Renderer& r){r.set_probes(*config,skip_levels);return 0;});}
 int32_t SEVK_CALL sevk_get_probe_stats(void* ctx,SevkProbeStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call(ctx,[&](Renderer& r){*stats=r.probes.stats;stats->ready=r.probes.ready;stats->next_face=r.probes.face;return 0;});}
 int32_t SEVK_CALL sevk_get_probe_schedule_stats(void* ctx,SevkProbeScheduleStats* stats){return call(ctx,[&](Renderer& r){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("probe schedule stats ABI mismatch");stats->stage=r.probes.stage;stats->busy=r.probes.stage!=0;stats->cycles=r.probes.stats.cycles;stats->reserved=0;return 0;});}
+// Probe scheduling reads that do not wait for an in-flight recording: they answer from the launch snapshot
+// (the state after the previous completed recording) and otherwise behave like the ordinary reads.
+int32_t SEVK_CALL sevk_get_probe_stats_snapshot(void* ctx,SevkProbeStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;
+    return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.probe_stats;return 0;},[&](Renderer& r){*stats=r.probes.stats;stats->ready=r.probes.ready;stats->next_face=r.probes.face;return 0;});}
+int32_t SEVK_CALL sevk_get_probe_schedule_stats_snapshot(void* ctx,SevkProbeScheduleStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;
+    return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.probe_schedule;return 0;},[&](Renderer& r){stats->stage=r.probes.stage;stats->busy=r.probes.stage!=0;stats->cycles=r.probes.stats.cycles;stats->reserved=0;return 0;});}
+// Probe configuration queued while a recording is in flight and applied in issue order before the next
+// ordinary call (BeginFrame at the latest); otherwise applied at once.
+int32_t SEVK_CALL sevk_set_probes_deferred(void* ctx,const SevkProbeConfig* config,uint32_t skip_levels){if(!config)return -1;
+    return call_deferrable(ctx,[copy=*config,skip_levels](Renderer& r){r.set_probes(copy,skip_levels);return 0;});}
 int32_t SEVK_CALL sevk_readback_probe(void* ctx,uint32_t kind,uint32_t face,uint32_t mip,void* pixels,uint64_t capacity){return call(ctx,[&](Renderer& r){r.readback_probe(kind,face,mip,pixels,capacity);return 0;});}
 int32_t SEVK_CALL sevk_init_stock_shadows(void* ctx,const void* data,uint64_t bytes){return call(ctx,[&](Renderer& r){r.init_stock_shadows(data,bytes);return 0;});}
 int32_t SEVK_CALL sevk_init_shadow_usage(void* ctx,const void* data,uint64_t bytes){return call(ctx,[&](Renderer& r){r.init_shadow_usage(data,bytes);return 0;});}

@@ -14,6 +14,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#if defined(_M_X64)||defined(__x86_64__)
+#include <immintrin.h>
+#endif
 
 // One process-wide worker pool for the renderer's CPU fan-out, in place of
 // per-subsystem threads and per-frame std::async. Fixed worker count
@@ -45,6 +48,16 @@ constexpr uint32_t KindSlots=12;
 struct KindStats {uint64_t jobs{},helped{},wait_ns{},max_wait_ns{},run_ns{};};
 struct Snapshot {uint32_t workers{},peak_queued{},stage_threads{};std::array<KindStats,KindSlots> kinds{};};
 
+inline void cpu_relax(){
+#if defined(_M_X64)||defined(__x86_64__)
+    _mm_pause();
+#else
+    std::this_thread::yield();
+#endif
+}
+// Spin before sleeping (SE_VULKAN_JOB_SPIN_US, default 0). Measured 2026-10-26: a 30 us spin left queue waits
+// unchanged (fan-outs arrive milliseconds apart, after the window), so it only burned CPU; kept for experiments.
+inline uint64_t spin_ns_setting(){const char* v=std::getenv("SE_VULKAN_JOB_SPIN_US");long us=v?std::strtol(v,nullptr,10):0;return uint64_t(us<0?0:us>1000?1000:us)*1000;}
 inline uint64_t now_ns(){return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());}
 
 class System;
@@ -65,6 +78,7 @@ class System {
     struct Task {std::function<void()> fn;Group* group;Kind kind;uint64_t queued_ns;};
     std::mutex mutex;std::condition_variable work_ready,done;
     std::deque<Task> queues[2];std::vector<std::thread> threads;bool stopping{};
+    std::atomic<uint32_t> queued{};uint32_t sleepers{};uint64_t spin_ns=spin_ns_setting();
     std::mutex stats_mutex;Snapshot stats;std::atomic<uint32_t> stages{};
     void record(Kind kind,uint64_t queued,uint64_t start,uint64_t end,bool helped){
         std::lock_guard lock(stats_mutex);auto& k=stats.kinds[kind<KindSlots?kind:KindSlots-1];++k.jobs;if(helped)++k.helped;
@@ -75,12 +89,13 @@ class System {
         record(task.kind,task.queued_ns,start,now_ns(),helped);task.fn={};
         {std::lock_guard lock(mutex);task.group->pending.fetch_sub(1,std::memory_order_acq_rel);}done.notify_all();
     }
-    bool take(Task& out){for(auto& queue:queues)if(!queue.empty()){out=std::move(queue.front());queue.pop_front();return true;}return false;}
+    bool take(Task& out){for(auto& queue:queues)if(!queue.empty()){out=std::move(queue.front());queue.pop_front();queued.fetch_sub(1,std::memory_order_relaxed);return true;}return false;}
     bool take_own(Group& group,Task& out){
-        for(auto& queue:queues)for(auto it=queue.begin();it!=queue.end();++it)if(it->group==&group){out=std::move(*it);queue.erase(it);return true;}
+        for(auto& queue:queues)for(auto it=queue.begin();it!=queue.end();++it)if(it->group==&group){out=std::move(*it);queue.erase(it);queued.fetch_sub(1,std::memory_order_relaxed);return true;}
         return false;}
-    void worker(){for(;;){Task task;
-        {std::unique_lock lock(mutex);work_ready.wait(lock,[&]{return stopping||!queues[0].empty()||!queues[1].empty();});if(!take(task))return;}
+    void worker(){for(;;){Task task;bool got=false;
+        if(spin_ns){uint64_t until=now_ns()+spin_ns;while(now_ns()<until){if(queued.load(std::memory_order_acquire)){std::unique_lock lock(mutex);if(take(task)){got=true;break;}if(stopping)return;}cpu_relax();}}
+        if(!got){std::unique_lock lock(mutex);++sleepers;work_ready.wait(lock,[&]{return stopping||!queues[0].empty()||!queues[1].empty();});--sleepers;if(!take(task))return;}
         execute(task,false);}}
 public:
     explicit System(uint32_t workers){stats.workers=workers;
@@ -90,17 +105,20 @@ public:
     void stop(){{std::lock_guard lock(mutex);stopping=true;}work_ready.notify_all();for(auto& thread:threads)if(thread.joinable())thread.join();threads.clear();}
     uint32_t worker_count()const{return uint32_t(threads.size());}
     void submit(Group& group,Kind kind,Priority priority,std::function<void()> fn){
+        bool wake=false;
         {std::lock_guard lock(mutex);if(stopping)throw std::runtime_error("job system stopped");
             if(group.owner&&group.owner!=this)throw std::runtime_error("job group belongs to another system");group.owner=this;
-            group.pending.fetch_add(1,std::memory_order_acq_rel);queues[priority==Priority::High?0:1].push_back({std::move(fn),&group,kind,now_ns()});
-            uint32_t queued=uint32_t(queues[0].size()+queues[1].size());std::lock_guard s(stats_mutex);stats.peak_queued=std::max(stats.peak_queued,queued);}
-        work_ready.notify_one();
+            group.pending.fetch_add(1,std::memory_order_acq_rel);queues[priority==Priority::High?0:1].push_back({std::move(fn),&group,kind,now_ns()});queued.fetch_add(1,std::memory_order_release);
+            wake=sleepers>0;uint32_t depth=uint32_t(queues[0].size()+queues[1].size());std::lock_guard s(stats_mutex);stats.peak_queued=std::max(stats.peak_queued,depth);}
+        if(wake)work_ready.notify_one();
     }
     // Runs the group's queued jobs on this thread, then waits for the ones
     // other workers took.
     void help(Group& group){
-        for(;;){Task task;
-            {std::unique_lock lock(mutex);if(!take_own(group,task)){done.wait(lock,[&]{return group.pending.load(std::memory_order_acquire)==0||std::any_of(std::begin(queues),std::end(queues),[&](const auto& q){return std::any_of(q.begin(),q.end(),[&](const Task& t){return t.group==&group;});});});
+        for(;;){Task task;bool own;
+            {std::unique_lock lock(mutex);own=take_own(group,task);}
+            if(!own&&spin_ns){uint64_t until=now_ns()+spin_ns;while(group.pending.load(std::memory_order_acquire)!=0&&now_ns()<until)cpu_relax();if(group.pending.load(std::memory_order_acquire)==0)return;}
+            if(!own){std::unique_lock lock(mutex);if(!take_own(group,task)){done.wait(lock,[&]{return group.pending.load(std::memory_order_acquire)==0||std::any_of(std::begin(queues),std::end(queues),[&](const auto& q){return std::any_of(q.begin(),q.end(),[&](const Task& t){return t.group==&group;});});});
                 if(group.pending.load(std::memory_order_acquire)==0)return;continue;}}
             execute(task,true);}
     }

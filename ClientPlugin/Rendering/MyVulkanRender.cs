@@ -298,10 +298,10 @@ public sealed class MyVulkanRender : IMyRender
                 MatrixD projection=cameraProjection;projection.M13=projection.M14-projection.M13;projection.M23=projection.M24-projection.M23;projection.M33=projection.M34-projection.M33;projection.M43=projection.M44-projection.M43;
                 var frameLight=light;
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightingSetup)){
-                environment.GameplayFrame=gameplayFrame; environment.Draw(camera,cameraView*projection,light.SunLightDirection);
-                BackendRuntime.RaisePreparation();
-                postprocess.Configure(backend,worldResolution.X,worldResolution.Y,renderConfiguration.User.AntialiasingMode==MyAntialiasingMode.FXAA,string.IsNullOrEmpty(postprocess.Settings.DirtTexture)?0:scene.TextureCache.GetTexture(postprocess.Settings.DirtTexture,false),cameraView,projection,renderConfiguration.User.AmbientOcclusionEnabled);
-                probes.Configure(backend,camera,light,postprocess.Settings,scene.BackgroundOrientation,scene.TextureCache.GetTexture("Textures/Miscellaneous/ambient_brdf.dds",false),animationDelta,(float)CurrentDrawTime.Seconds,()=>scene.GatherProbeAmbient(light.AmbientLightsGatherRadius,probes.Settings),renderSettings:renderConfiguration);
+                environment.GameplayFrame=gameplayFrame; using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EnvironmentDraw))environment.Draw(camera,cameraView*projection,light.SunLightDirection);
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GuestPreparation))BackendRuntime.RaisePreparation();
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PostprocessConfigure))postprocess.Configure(backend,worldResolution.X,worldResolution.Y,renderConfiguration.User.AntialiasingMode==MyAntialiasingMode.FXAA,string.IsNullOrEmpty(postprocess.Settings.DirtTexture)?0:scene.TextureCache.GetTexture(postprocess.Settings.DirtTexture,false),cameraView,projection,renderConfiguration.User.AmbientOcclusionEnabled);
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ProbesConfigure))probes.Configure(backend,camera,light,postprocess.Settings,scene.BackgroundOrientation,scene.TextureCache.GetTexture("Textures/Miscellaneous/ambient_brdf.dds",false),animationDelta,(float)CurrentDrawTime.Seconds,()=>scene.GatherProbeAmbient(light.AmbientLightsGatherRadius,probes.Settings),renderSettings:renderConfiguration);
                 frameLight.AmbientForwardPass+=probes.LastAmbient;
                 FrameProfiler.Lap(FrameProfiler.Section.Setup);
                 }

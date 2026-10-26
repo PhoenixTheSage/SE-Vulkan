@@ -25,9 +25,36 @@ public sealed partial class NativeBackend
     public void SetProbes(NativeProbeConfig config,uint skipLevels){if(skipLevels==0)Check(ProbeApi.Set(context,ref config),context);else{probePrefilter??=(ProbeFunctions.SetPrefilterFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_set_probes_prefilter"),typeof(ProbeFunctions.SetPrefilterFn));Check(probePrefilter(context,ref config,skipLevels),context);}CurrentProbeConfig=config;}
     public uint CurrentProbeFaceMask()=>ProbeFaceMask(CurrentProbeConfig.Flags);
     // The faces a probe configuration with these flags captures this frame.
-    public uint ProbeFaceMask(uint flags){if((flags&1)==0||(flags&4)!=0)return 0;if(!ProbesReady||(flags&16)!=0)return 63;var schedule=GetProbeScheduleStats();if((flags&24)==0)return 1u<<((int)GetProbeStats().NextFace%6);return schedule.Stage<6?1u<<(int)schedule.Stage:0;}
+    public uint ProbeFaceMask(uint flags){if((flags&1)==0||(flags&4)!=0)return 0;if(ProbeStatsSnapshotEnabled)GetProbeStats();if(!ProbesReady||(flags&16)!=0)return 63;var schedule=GetProbeScheduleStats();if((flags&24)==0)return 1u<<((int)GetProbeStats().NextFace%6);return schedule.Stage<6?1u<<(int)schedule.Stage:0;}
 
-    public NativeProbeStats GetProbeStats(){var s=new NativeProbeStats{Size=64,AbiVersion=AbiVersion};Check(ProbeApi.Stats(context,ref s),context);ProbesReady=s.Ready!=0;return s;}
+    public NativeProbeStats GetProbeStats(){var s=new NativeProbeStats{Size=64,AbiVersion=AbiVersion};Check(ProbeApi.Stats(context,ref s),context);ProbesReady=s.Ready!=0&&!probeResetPending;return s;}
+    // Probe scheduling without waiting on recording (SE_VULKAN_PROBE_STATS_SNAPSHOT=0 restores the waiting
+    // reads; ProbeStatsSnapshot on VulkanScene toggles it in-process). VulkanProbes.Configure reads the
+    // schedule from the launch snapshot, the state after the previous completed recording, and queues its
+    // configuration as a deferrable call. The face mask still reads fresh state at publication, where the
+    // wait now happens; a queued reset counts as not ready until BeginFrame applies it.
+    public static bool ProbeStatsSnapshotEnabled=Environment.GetEnvironmentVariable("SE_VULKAN_PROBE_STATS_SNAPSHOT")!="0";
+    bool probeResetPending;
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int ProbeStatsSnapshotFn(IntPtr ctx,ref NativeProbeStats stats);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int ProbeScheduleSnapshotFn(IntPtr ctx,ref NativeProbeScheduleStats stats);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int ProbeSetDeferredFn(IntPtr ctx,ref NativeProbeConfig config,uint skipLevels);
+    ProbeStatsSnapshotFn probeStatsSnapshot;ProbeScheduleSnapshotFn probeScheduleSnapshot;ProbeSetDeferredFn probeSetDeferred;
+    public NativeProbeStats GetProbeScheduleStatsForConfigure(out NativeProbeScheduleStats schedule)
+    {
+        if(!ProbeStatsSnapshotEnabled){var fresh=GetProbeStats();schedule=GetProbeScheduleStats();return fresh;}
+        probeStatsSnapshot??=Marshal.GetDelegateForFunctionPointer<ProbeStatsSnapshotFn>(GetSymbol("sevk_get_probe_stats_snapshot"));probeScheduleSnapshot??=Marshal.GetDelegateForFunctionPointer<ProbeScheduleSnapshotFn>(GetSymbol("sevk_get_probe_schedule_stats_snapshot"));
+        var s=new NativeProbeStats{Size=64,AbiVersion=AbiVersion};Check(probeStatsSnapshot(context,ref s),context);
+        schedule=new NativeProbeScheduleStats{Size=32,AbiVersion=AbiVersion};Check(probeScheduleSnapshot(context,ref schedule),context);return s;
+    }
+    public void SetProbesForConfigure(NativeProbeConfig config,uint skipLevels)
+    {
+        if(!ProbeStatsSnapshotEnabled){SetProbes(config,skipLevels);GetProbeStats();return;}
+        probeSetDeferred??=Marshal.GetDelegateForFunctionPointer<ProbeSetDeferredFn>(GetSymbol("sevk_set_probes_deferred"));
+        Check(probeSetDeferred(context,ref config,skipLevels),context);CurrentProbeConfig=config;
+        if((config.Flags&2)!=0){probeResetPending=true;ProbesReady=false;}
+    }
+    // BeginFrame has applied every queued probe configuration.
+    void ProbeConfigurationApplied()=>probeResetPending=false;
     public NativeProbeScheduleStats GetProbeScheduleStats(){var s=new NativeProbeScheduleStats{Size=32,AbiVersion=AbiVersion};Check(ProbeApi.Schedule(context,ref s),context);return s;}
     public byte[] ReadbackProbe(uint kind,uint face,uint mip,int resolution){int size=resolution>>(int)mip;var pixels=new byte[checked(size*size*8)];Check(ProbeApi.Readback(context,kind,face,mip,pixels,(ulong)pixels.Length),context);return pixels;}
 }

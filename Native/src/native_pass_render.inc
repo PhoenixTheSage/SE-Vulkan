@@ -54,6 +54,9 @@ void prepare_pass_gpu(WorldSlot& slot){
     for(auto& group:groups){pass_scene.offsets.push_back(stream_offsets.at(group.stream->index));pass_scene.materials.push_back(group.kind==native_pass::Kind::Forward?VK_NULL_HANDLE:pass_material(slot,group));}check(vmaFlushAllocation(allocator,pass_scene.instances[slot_index].memory,0,bytes),"flush frame-owned native view streams");
     // History is matched by generational actor identity, independently of
     // material groups, stream positions and camera-relative row updates.
+    // Only motion consumers read it (object_motion_wanted); without one the per-row map is not rebuilt, and a
+    // later consumer starts from a reset, as skip_object_motion does for the replay history.
+    if(!object_motion_wanted()){pass_scene.history_frame=UINT64_MAX;return;}
     std::vector<uint32_t> history_streams(streams.size(),UINT32_MAX);uint64_t history_bytes=0;pass_scene.history_offsets.assign(groups.size(),UINT32_MAX);
     for(uint32_t i=0;i<groups.size();++i){const auto& group=groups[i];if(group.key.view!=0 || group.kind!=native_pass::Kind::Colour)continue;auto index=group.stream->index;if(history_streams[index]==UINT32_MAX){history_streams[index]=uint32_t(history_bytes);history_bytes+=uint64_t(group.count())*64;}pass_scene.history_offsets[i]=history_streams[index];}
     if(history_bytes){world_buffer(pass_scene.history_instances[slot_index],history_bytes,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT|VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);

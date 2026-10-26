@@ -1,4 +1,5 @@
 using System;
+using ClientPlugin.Diagnostics;
 using ClientPlugin.Rendering.Interop;
 using ClientPlugin.Rendering.Shaders;
 using VRageMath;
@@ -39,24 +40,24 @@ public sealed class VulkanProbes
         // Stock UpdateCullQuery retains timed capture/publication history on
         // camera movement, including teleports. AddProbe uses the current
         // camera for each face; movement does not request AddAllProbes.
-        var stats=backend.GetProbeStats();
-        var schedule=backend.GetProbeScheduleStats();bool idle=schedule.Busy==0||reset||Settings.TimeOut<=0;
+        NativeProbeStats stats;NativeProbeScheduleStats schedule;
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ProbeNative))stats=backend.GetProbeScheduleStatsForConfigure(out schedule);bool idle=schedule.Busy==0||reset||Settings.TimeOut<=0;
         if(stats.Cycles!=completedCycle){completedCycle=stats.Cycles;nextCapture=captureStarted+Math.Max(0,Settings.TimeOut);}
         bool hold=Settings.TimeOut>0 && !reset && haveOrigin && stats.Ready!=0 && idle && time<nextCapture;
         if(reset || !haveOrigin){origin=camera;haveOrigin=true;nextCapture=time;completedCycle=0;}
         // Stock AddProbe uses the current camera for each captured face,
         // including movement during a staged refresh.
         if(!hold)origin=camera;
-        if(!hold&&idle){captureStarted=time;nextCapture=time+Math.Max(0,Settings.TimeOut);LastAmbient=gatherAmbient?.Invoke()??0;}
+        if(!hold&&idle){captureStarted=time;nextCapture=time+Math.Max(0,Settings.TimeOut);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ProbeAmbient))LastAmbient=gatherAmbient?.Invoke()??0;}
         light.AmbientForwardPass+=LastAmbient;
         byte[] frames; float[] matrices;
         if(hold && heldFrames!=null){frames=heldFrames;matrices=heldMatrices;}
-        else
+        else using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ProbeFaceFrames))
         {
             var projection=(MatrixD)Matrix.CreatePerspectiveFovRhInfiniteComplementary((float)Math.PI/2,1,.01f);frames=new byte[7680];matrices=new float[96];
             for(int face=0;face<6;face++){var view=FaceView(face);view.Translation=Vector3D.TransformNormal(camera-origin,view);byte[] frame=WorldConstants.Frame(backend.WorldFrameLayout,view,projection,resolution,resolution,light,postprocess.Data.BloomEmissiveness,orientation,time:time,delta:delta,postprocess:postprocess,textureMultipliers:textureMultipliers,renderSettings:renderSettings);Buffer.BlockCopy(frame,0,frames,face*1280,1280);Array.Copy(NativeBackend.MatrixValues(view*projection),0,matrices,face*16,16);}
             heldFrames=frames;heldMatrices=matrices;
         }
-        backend.SetProbes(new NativeProbeConfig{Size=8096,AbiVersion=NativeBackend.AbiVersion,Resolution=(uint)resolution,Flags=1u|(reset?2u:0)|(hold?4u:0)|(Settings.TimeOut<=0?16u:8u),Brdf=brdf,Blend=Settings.TimeOut<=0?1:1/Math.Max(10f,1f/delta*Settings.TimeOut),Frames=frames,Projections=matrices},(uint)skipLevels);backend.GetProbeStats();reset=false;
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ProbeNative))backend.SetProbesForConfigure(new NativeProbeConfig{Size=8096,AbiVersion=NativeBackend.AbiVersion,Resolution=(uint)resolution,Flags=1u|(reset?2u:0)|(hold?4u:0)|(Settings.TimeOut<=0?16u:8u),Brdf=brdf,Blend=Settings.TimeOut<=0?1:1/Math.Max(10f,1f/delta*Settings.TimeOut),Frames=frames,Projections=matrices},(uint)skipLevels);reset=false;
     }
 }

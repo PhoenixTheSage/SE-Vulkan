@@ -419,8 +419,13 @@ typedef struct SevkProbeScheduleStats {uint32_t size,abi_version,stage,busy;uint
 SEVK_API int32_t SEVK_CALL sevk_init_probes(void* ctx,uint32_t stage,const void* spirv,uint64_t bytes);
 SEVK_API int32_t SEVK_CALL sevk_set_probes(void* ctx,const SevkProbeConfig* config);
 SEVK_API int32_t SEVK_CALL sevk_set_probes_prefilter(void* ctx,const SevkProbeConfig* config,uint32_t skip_levels);
+/* Queued while a pipelined recording is in flight, applied in issue order before the next ordinary call. */
+SEVK_API int32_t SEVK_CALL sevk_set_probes_deferred(void* ctx,const SevkProbeConfig* config,uint32_t skip_levels);
 SEVK_API int32_t SEVK_CALL sevk_get_probe_stats(void* ctx,SevkProbeStats* stats);
 SEVK_API int32_t SEVK_CALL sevk_get_probe_schedule_stats(void* ctx,SevkProbeScheduleStats* stats);
+/* Same reads answered from the launch snapshot (state after the previous completed recording) while one is in flight. */
+SEVK_API int32_t SEVK_CALL sevk_get_probe_stats_snapshot(void* ctx,SevkProbeStats* stats);
+SEVK_API int32_t SEVK_CALL sevk_get_probe_schedule_stats_snapshot(void* ctx,SevkProbeScheduleStats* stats);
 /* Explicit verification capture: waits for completion, returns RGBA16F bytes.
  * kind 0/1 original close/far, 2/3 filtered, 4/5 blended final. */
 SEVK_API int32_t SEVK_CALL sevk_readback_probe(void* ctx,uint32_t kind,uint32_t face,uint32_t mip,void* pixels,uint64_t capacity);

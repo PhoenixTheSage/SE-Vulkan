@@ -524,3 +524,615 @@ What this says about the next step:
   is two frames behind) addresses that directly. It is the next item.
 - Cheaper fan-out (spin briefly before sleeping, or one notify per batch)
   would trim the 30–40 µs per parallel-for.
+
+## Scheduler restructure, steps 1–4 (2026-10-25 and 26)
+
+Moved here from the plan when it was rewritten. Commits: `44328e4` (step 1),
+`2a6f4b3` (step 2), `ada12c4` and `73e74b3` (step 3), `a8d927c` (step 4).
+
+### What DX11 does
+
+`MyRenderScheduler` builds one dependency graph per frame:
+
+- It runs as a single `DependencyBatch` on **SE's ParallelTasks pool** at
+  `WorkPriority.VeryHigh`, capped at `RenderThreadCount`, so it shares
+  workers with the simulation instead of competing with it.
+- Each view is a chain: cull, then preprocess and prepare, then record into a
+  deferred context. Different views run in parallel. There is no separate
+  "record everything" stage.
+- Big views get N recording jobs, using last frame's proxy count; small
+  views get one.
+- Job objects come from pools, so building the graph allocates nothing.
+- The render thread helps execute the batch, then `Done()` executes the
+  command lists in order.
+
+### What Vulkan did before step 1
+
+There was no shared scheduler. On 16 logical cores, these all ran without
+coordination:
+
+- **Native:** two `ViewJobs` pools with 3 threads each (pass scene, OLD
+  cells), the `Background` packing thread, and a new `std::async` thread every
+  frame for each of:
+  - recording;
+  - each cascade (up to 4);
+  - spots (up to 4);
+  - upload;
+  - the world-queue split (up to 3);
+  - async present.
+- **Managed:** `Task.Run` (voxel plan-ahead) and `Parallel.For` (main groups).
+- **Game:** SE's own simulation, ParallelTasks and Havok threads.
+
+There were no priorities and no cap. A thread that joins blocks instead of
+running work.
+
+The recording task also holds `api_mutex` for all of `end_frame`, and every
+ordinary native call waits for it (`await_recording`). The pipeline is
+therefore only one frame deep: anything moved into recording shows up as
+`FrameSlot` wait on the render thread.
+
+### Steps
+
+1. **One native job system** (`Native/src/job_system.h`; done, see below).
+   - A fixed worker pool (`SE_VULKAN_JOB_THREADS`; default half the logical
+     processors less one, 1–7).
+   - Two priorities: render-thread joins high, recording-side work normal.
+   - A waiter runs its own group's queued jobs instead of blocking, and never
+     another group's, so a waiter holding a lock cannot run work that needs
+     it.
+   - Per-kind telemetry: jobs, helped, queue wait (mean and max), run time.
+   - Every `ViewJobs`, `Background` and `std::async` site is ported.
+     Recording and present become persistent `Stage` threads outside the
+     cap: they block, so they must not occupy pool workers.
+
+   Gate: native tests, focused GPU suites under validation, and a
+   validation gameplay run. Benchmark with step 3, per the batch rule.
+
+2. **Managed producers on SE's pool, like DX11.**
+   - Use one `DependencyBatch` at `VeryHigh` with a `MaximumThreads` cap for
+     voxel plan-ahead, main groups and the 2.2 producers.
+   - The native pool and the managed batch together stay within the logical
+     processors minus the game's main, render and recording threads.
+   - Read the `job-stats.json` queue waits before and after to size both.
+
+3. **2.1 emitters, then 2.2 fork-join** on that batch. Each producer (voxels,
+   particles, decals and billboards, lighting and probe setup, actor
+   traversal) gets its own packet list, merged in a fixed order. Gate:
+   byte-identical merged packet signature. **First batch benchmark after
+   this step.**
+
+4. **Per-view native chains instead of one recording stage** (3.0–3.3,
+   restated).
+   - Each view becomes a prepare-then-record job writing secondary command
+     buffers: cascades and spots (exist), probes, and main view ranges (3.1).
+   - Persistent material sets (3.2) remove most of `prepare`.
+   - Recording state moves from under `api_mutex` into per-frame slots, so
+     `BeginFrame` waits only when the GPU is two frames behind.
+   - Revisit the opt-in deferrals from sessions 5 and 6 (world intake, cell
+     publish, early prepare) once this lands. **Second batch benchmark.**
+
+5. **Phase 4 frame-build stage.** The render thread does messages and
+   changes, submits the graph and joins it.
+
+The graph only helps if its longest chain fits inside 4.17 ms, so removing
+work continues in parallel: 2.3 native voxel cells, 2.4 scene update that
+only touches changed actors, 3.2, and GC-free frames.
+
+Rough expectation, unmeasured: steps 1–4 reach about 5–6 ms, and step 5 plus
+removing work gets below 4.17 ms.
+
+### Step 1 status
+
+`job_system.h` provides `System`, `Group`, `parallel_for` and `Stage`:
+
+- `ViewJobs` and `Background` keep their APIs and lane counts, now on the
+  shared pool.
+- Queue validation, upload, cascades and spots submit groups.
+- Recording and present use `Stage` threads.
+- `sevk_get_job_stats` takes no context and never waits for recording.
+- The harness writes `job-stats.json` for the sampled window.
+- `vulkan-status.txt` gains a "Native job pool" line.
+- Native test: `job_system` (CTest).
+
+Checks:
+
+- Native CTests 19/19.
+- Zero core and sync validation errors in NativePassGpuTests,
+  ShadowOcclusionGpuTests and SceneSubmissionGpuTests (267/267 with the
+  default stable order, after the fix below).
+- Validation-layer gameplay run `Vulkan-c6d9f04a…`: layer enabled, 0 errors.
+
+First telemetry, from that run (validation inflates run times, so read it for
+shape):
+
+- 7 workers, 2 stage threads, peak queue 6.
+- Mean queue wait 35–46 µs for every kind, with a 194 µs maximum.
+- No job was helped: workers always picked up first.
+- PassView jobs run about 187 µs each, so the wake-up cost is about 25% of a
+  job.
+- Candidates once the benchmark confirms it: spin briefly before sleeping, or
+  submit a whole fan-out with a single notify.
+
+### Step 2 status
+
+SE's scheduler, read from the decompiled code (`MySandboxGame`,
+`PrioritizedScheduler`):
+
+- `NumberOfCores` is the physical core count when there are more than 8
+  logical processors, clamped to 16. The scheduler gets `NumberOfCores/2`
+  threads per worker array.
+- **VeryHigh** maps to its own array at **Highest** OS priority. High, Normal
+  and Low share a Normal-priority array; VeryLow gets a lower array of twice
+  the size.
+- DX11's `DependencyBatch` uses VeryHigh with `RenderThreadCount`, which
+  defaults to `int.MaxValue`. In practice it runs on the 4 Highest-priority
+  workers (8 physical cores here).
+
+Done:
+
+- `RenderJobs` (`ClientPlugin/Rendering/RenderJobs.cs`): `Start` and `For` on
+  `ParallelTasks` at VeryHigh.
+  - Waiting uses `WaitOrExecute`, so a job no worker has taken runs on the
+    waiter; failures rethrow.
+  - Without a game scheduler (standalone tests), or with
+    `SE_VULKAN_MANAGED_JOBS=0`, it falls back to the .NET thread pool.
+- Voxel plan-ahead (`Task.Run`) and main-group candidate planning
+  (`Parallel.For`) use it. These are the only managed render fan-outs today.
+  The 2.2 producers will use it too.
+- Budget: native pool 7 + SE VeryHigh 4 + render and recording threads = 13
+  of 16 logical processors. The game's Normal and VeryLow arrays still
+  compete by OS priority.
+- `SE_VULKAN_JOB_PRIORITY=above|highest` raises the native pool's OS
+  priority. It is opt-in until the batch benchmark compares it; DX11's
+  render workers run at Highest.
+- `vulkan-status.txt` reports which scheduler managed jobs used.
+
+Little gain is expected from this step alone: it moves two sites. Its
+purpose is that step 3's producers land on the right pool.
+
+### Step 3 status (first producer)
+
+**2.1, per-producer emitters** (`ClientPlugin/Rendering/Interop/NativeEmitters.cs`):
+
+- A producer on a worker binds a `PacketEmitter` to its thread. On that
+  thread, `AddWorldPacket` appends to the emitter with emitter-local orders
+  and top-level scope state (no main group, part, OLD order or owner).
+- `SpliceEmitter` runs on the render thread, at the producer's old serial
+  position.
+  - It offsets the emitter's orders by `modelSubmissionOrder` and appends.
+  - It refuses to splice inside a main-group, owner or logical scope, which
+    keeps the merged list identical to serial emission.
+- The recipe slow path (`EnsureWorldRecipe`) now locks; the cached-handle fast
+  path does not.
+- Renderer CPU profiler scopes count only on the render thread.
+
+**Packet signature gate** (`SE_VULKAN_PACKET_SIGNATURE=1`,
+`PacketSignatureEnabled`): FNV-1a at `QueueWorld` over every world packet's
+fields, recipe handle, main group order, constants and instances.
+
+- WorldPassGpuTests: a worker emitter spliced at its serial position equals
+  serial emission; a misplaced splice changes the signature.
+- The frozen-light lane writes `packets.sig` per phase; `lightingdiff.py`
+  compares `.sig` and `.bin` files too.
+
+**2.2, first producer: voxel emit-ahead** (`SE_VULKAN_VOXEL_EMIT_AHEAD=0` turns
+it off):
+
+- The plan job continues into material preparation and emission into the
+  voxel emitter, overlapping the actor traversal. `Draw` splices it and adds
+  the visible ids.
+- A material group or foliage material that needs the texture cache throws
+  `OwnerThreadRequired` before changing state. The emitter is dropped, and
+  `Draw` emits on the render thread as before.
+
+Checks:
+
+- WorldPassGpuTests 542/542 under validation. This includes the bulk-model
+  order check, updated for the earlier stable-order fix, which had broken it.
+- Frozen-light lane `Vulkan-c22fee0e…` toggling `VoxelEmitAheadEnabled`
+  off/on/off:
+  - `packets.sig` is `BE7ACEE2E1A366F7` (2,126 packets) in all three phases;
+  - every cascade, spot, probe and frame artifact is byte-identical;
+  - view noise is 254 pixels against a 241-pixel return floor.
+- Validation gameplay run `Vulkan-fa73ebbb…`: 0 errors. Emit-ahead frames
+  688, fallbacks 4 (the first frames, while material groups were created).
+
+Expected gain: the remaining voxel emission (≈0.6 ms) moves off the render
+thread while the traversal (≈1.1 ms) runs. Not benchmarked yet.
+
+**Why the other producers are not forked yet:**
+
+- Billboards, flares, particles, decals and the lighting and probe setup all
+  resolve textures through `VulkanTextureCache`, which requires the owner
+  render thread.
+- Particles also feed lights into the scene.
+- Forking them needs a thread-safe read path for textures that are already
+  resident, with misses deferred to the render thread. That path is hot
+  (see the `ConcurrentDictionary.Count` regression), so build it as its own
+  step.
+- The actor traversal itself (≈1.1 ms) emits inside main-group, owner and OLD
+  scopes. Chunked parallel traversal needs emitters that carry scope state.
+  That is the 2.1 generalization, and the largest remaining managed item.
+
+### Step 3 status (texture read path, flares and billboards)
+
+**Resident-only texture reads** (`VulkanTextureCache.ResidentOnly()`):
+
+- The cache already read its concurrent maps off the owner thread. On a
+  miss, though, it queued a load and returned 0, while the owner thread
+  loads synchronously. A forked producer would therefore emit different
+  packets on a miss frame.
+- Inside the scope, a miss throws `TextureNotResident` before changing
+  state, and the producer falls back to the render thread.
+- Destroyed generated textures are read too: they change only in message
+  processing.
+
+**Measured producer costs** (CpuDetail `Vulkan-a4f595b5…`, ms/frame):
+
+| Producer | ms |
+|---|---|
+| Billboards | below 0.03 |
+| Decals | below 0.03 |
+| Flares | 0.085 |
+| Particles | 0.31 |
+
+The four producers named in 2.2 add up to about 0.43 ms, not the
+1.2–1.8 ms the plan expected from the graph. That estimate assumed voxels
+and the traversal; the traversal remains the large item.
+
+**Flares and billboards fork** (`SE_VULKAN_EFFECTS_AHEAD=0` turns it off):
+
+- The render thread collects billboards at their serial point: shared,
+  persistent and generated, with the generated queue drained.
+- A `RenderJobs` job then runs the flares. Their glare billboards go to a
+  thread-local capture list and are appended after the collected billboards,
+  the order the queue gave them.
+- The job prepares and emits billboard packets into a pending list under
+  `ResidentOnly`. It overlaps lighting setup and native pass publication
+  (≈1.1 ms), which read lights and actors but do not write them.
+- `FinishAhead`, before `QueueWorld`, appends the pending list. After a miss
+  it re-emits on the render thread from the same prepared frame.
+- Guest billboards added during preparation still land in the next frame,
+  as before.
+- The packet signature now covers billboard packets.
+
+**Not forked:**
+
+- **Particles (0.31 ms):** the stock particle manager's light updates feed the
+  scene update inside `scene.Draw`, so particles must finish first. They
+  could only overlap the shadow fit.
+- **Decals (below 0.03 ms):** they run before the scene update and read
+  parent actors it may move. Moving them later could change their output.
+
+Checks:
+
+- BillboardPacketTests 42/42: forked flares and billboards match serial
+  packets, both when the worker's packets are kept and when a texture miss
+  re-emits.
+- HudBillboardGpuTests under validation: 0 errors.
+- Self-check (`SE_VULKAN_EFFECTS_VERIFY=1`): `FinishAhead` re-emits the same
+  prepared frame on the render thread and compares every packet field.
+  Validation gameplay run `Vulkan-10b6f9e8…`:
+  - 0 validation errors;
+  - 708 forked frames, 1 fallback (the first texture load);
+  - 708 matches, 0 mismatches over 22,411 billboards.
+- The frozen-light lane cannot gate billboards across phases. HUD and flare
+  billboard content changed between the two serial phases (control vs
+  control-return) of `Vulkan-…` (lane run with `EffectsAhead`). Billboards
+  therefore get their own signature (`billboards.txt`), and `packets.sig`
+  stays world-only. The world packet count was unchanged (2,126).
+
+### Batch benchmark, steps 1–3 (2026-10-26)
+
+See `Docs/Performance-2026-10-25-Attribution.md`, "Steps 1–3 batch benchmark".
+
+- Present mean: unchanged within noise (8.75 against 8.72 ms, same set).
+- P95: about 0.5 ms better.
+- Render-thread Draw: −0.27 ms. About half the moved work came back as
+  slower overlapping phases.
+- `SE_VULKAN_JOB_PRIORITY=above`: no difference.
+- DX11 in the same session: 4.23 ms.
+- Next: step 4. FrameSlot (`BeginFrame` waiting on recording) is about
+  1.1 ms, now the largest single render-thread wait.
+
+### Step 4 status: the FrameSlot wait was a driver lock, not recording
+
+The plan assumed `BeginFrame` waited on the recording stage. Measured with
+the pipeline report (`SE_VULKAN_PIPELINE_REPORT`), which now times
+deferred-call replay, `begin_frame` stages, the frame timeline and
+`wait()`:
+
+- **No recording waits.** `Waits` was 0 over about 8,000 pipelined frames.
+- **Deferred-call replay:** about 30 calls and 0.36 ms per frame, at the
+  first ordinary call.
+- **`begin_frame` stages:**
+  - the surface query (`match_surface_extent`, every frame) cost 1.52 ms;
+  - after it was throttled, the slot fence wait cost 1.3 ms, although the
+    fence was already signaled on every frame (`FenceNotReady` 0);
+  - `vkWaitSemaphores` alone took 0.83 ms on a satisfied value, with no
+    upload flushes.
+- **Cause:** the async present thread sits in `vkQueuePresentKHR` for about
+  3.9 ms per frame, until the frame's rendering completes. While it is
+  there, the driver stalls the render thread's Vulkan calls. Present mode
+  made no difference: immediate against mailbox measured the same.
+
+Changes:
+
+1. **Deferred acquire** (`SE_VULKAN_DEFERRED_ACQUIRE=0` restores the old
+   behavior):
+   - the acquire, the exclusive-mode grab and the present join move from
+     `begin_frame` to the start of `end_frame` (the recording worker when
+     pipelined);
+   - a frame whose acquire fails there is submitted without its swapchain
+     pass or present, and the next `begin_frame` recreates the swapchain.
+2. **Surface polling** (`SE_VULKAN_SURFACE_POLL_FRAMES`, default 16): the
+   capabilities query runs every 16 frames while presenting normally, every
+   frame while suspended or without a swapchain, and at once after a
+   suboptimal present or acquire.
+3. **Present after GPU completion** (`SE_VULKAN_PRESENT_AFTER_GPU=0`
+   restores the old behavior): the present thread waits on the frame's
+   timeline value, then calls `vkQueuePresentKHR`.
+4. **Diagnostic override:** `SE_VULKAN_PRESENT_MODE=immediate|mailbox|fifo`.
+
+Single CpuDetail run, before → after all three (ms per frame):
+
+| Phase | Before | After | Change |
+|---|---|---|---|
+| FrameSlot | 1.19 | 0.13 | −1.07 |
+| Render-thread Draw | 7.88 | 7.44 | −0.44 |
+| Scene | 3.87 | 4.17 | +0.30 |
+| Lighting setup | 0.79 | 1.03 | +0.24 |
+
+- The present call fell from 3.9 to 1.1 ms; deferred replay from 0.37 to
+  0.21 ms; the interval from 8.52 to 8.14 ms.
+- The remaining 1.1 ms present call still stalls whatever Vulkan calls the
+  render thread makes during it. It now overlaps scene and lighting-setup
+  native calls, which explains the two increases.
+- Next: find which Vulkan calls the render thread still makes outside
+  `BeginFrame`, defer them, or move the present to a point where the render
+  thread makes none. Confirm with the paired batch benchmark.
+
+The original step 4 idea, recording state in per-frame slots, waits until
+recording actually becomes the wall. It is not the wall today.
+
+Regression found on the way, from the stable-main-order default (`9afdc09`):
+SceneSubmissionGpuTests' bulk-model scene pair fails with "invalid model
+instance handle/order/cell". Bulk instances carry their main-group order in
+`reserved`, and `append_models` still required `reserved <= order`, which
+holds only for per-frame first-seen orders. `reserved` is only the main sort
+key; the merge with legacy draws uses `order`. Fixed by dropping that check,
+since legacy packets already carry stable main orders.
+
+## Why the scheduler steps did not move the cadence (2026-10-26)
+
+Plan item 2.2 promised −1.2 to −1.8 ms. Steps 1–3 delivered −0.27 ms of
+render-thread Draw in CpuDetail and no change in the present mean. Four
+measured reasons:
+
+1. **The forkable work was small.**
+   - Voxels, particles, decals, billboards and flares add up to about 1.0 ms.
+   - Only 0.65 ms could move without changing output: voxel emission 0.55
+     and flares 0.10.
+   - Particles feed lights into the scene update and must finish first.
+     Decals read actors the update moves.
+   - The 1.2–1.8 ms estimate assumed the actor traversal (about 0.9 ms) would
+     fork too. It cannot until emitters carry main-group, owner and OLD-order
+     scope.
+2. **About half of the moved work returned as slower overlapping phases.**
+   Scene rose 0.24 ms and lighting setup 0.23 ms.
+3. **Saved render-thread time turned into waiting.** Each frame's render
+   thread meets two gates later in the frame:
+   - the driver lock held by `vkQueuePresentKHR` (step 4, fixed);
+   - `api_mutex`, held by the recording thread for all of `end_frame`
+     (below).
+
+   Time saved before a gate only made the render thread arrive earlier and
+   wait longer. The cadence stayed set by the gates.
+4. **The job pool reorganized threads without removing work.** Its value is
+   the cap, priorities and telemetry, not a speedup. Each fan-out also pays
+   30–40 µs of worker wake-up.
+
+The lesson for the plan: measure where the render thread waits before moving
+work off it. Work moved ahead of a wait buys nothing until the wait is gone.
+
+## Render-thread native call census and the hidden recording wait (2026-10-26)
+
+New pipeline report fields (`SE_VULKAN_PIPELINE_REPORT=<path>`; diagnostics
+only, written at shutdown):
+
+- `CallSites`: every ordinary native call by `sevk_*` export, with time
+  in the function body and the part of it that overlapped an async present.
+- `LockSites` and `LockWaitUs`: time spent acquiring `api_mutex`, by export.
+- `RecordEndSinceLaunchUs`, `PostSubmitUs`, `TimelineUs`: frame timeline.
+  Counted for pipelined frames only, after a first version averaged in
+  menu and loading frames.
+- `DeferredUs` and `BeginLapUs`: deferred-call replay and `begin_frame`
+  stages.
+
+Findings (`Vulkan-…` runs on 2026-10-26, about 8,000 pipelined frames each):
+
+- **Ordinary call bodies take 2.4 ms of the render thread per frame**,
+  excluding load-time init:
+
+  | Export | ms/frame |
+  |---|---|
+  | `sevk_pass_publish` | 0.50 |
+  | `sevk_pass_prepare` | 0.42 |
+  | `sevk_begin_frame` | 0.27 |
+  | `sevk_queue_world_recipes` | 0.21 |
+  | `sevk_cells_prepare` | 0.13 |
+  | `sevk_cells_publish` | 0.09 |
+
+  These durations match their CpuDetail values from before step 4, so they
+  are not inflated by the present's driver lock.
+- **`sevk_get_recipe_stats` is harness-only.** It is 0.19 ms (422 µs per call)
+  because it settles cells, and it is called only by the harness's telemetry
+  sampling.
+- **The harness sample itself is about 0.52 ms per frame.** It sits inside
+  Vulkan's present interval but not DX11's, so every Vulkan/DX11 comparison
+  carries that bias.
+- **The pipelined-wait counter missed the real wait.** `Waits` reads 0
+  because an ordinary call blocks on acquiring `api_mutex`; by the time it
+  gets the lock, recording has finished.
+  - Measured directly, ordinary calls spend **1.2–1.6 ms per frame acquiring
+    `api_mutex`**.
+  - 1.09 ms of that is `sevk_get_probe_stats`, the first ordinary call in
+    lighting setup, waiting about 1.4 ms on 79% of frames.
+- **Pipelined recording holds `api_mutex` for about 5.2 ms after launch.**
+  The tail after the queue submit is 0.014 ms, so this is recording itself.
+- **Lighting setup is probe configuration.** `ProbesConfigure` takes
+  0.8–1.4 ms, of which:
+  - `ProbeNative` (`GetProbeStats`, `GetProbeScheduleStats`, `SetProbes`):
+    0.82 ms, the lock wait;
+  - the six face frames: 0.055 ms;
+  - the ambient gather: about 0.
+- **The lighting setup increases after step 3 were this lock wait.** Turning
+  the flare and billboard fork on or off did not change it (0.9–1.5 ms
+  either way).
+
+So recording is a wall after all. It gates the render thread at its first
+ordinary native call each frame, and that call has been in lighting setup
+since the earlier calls became deferrable.
+
+## Step 5: the recording gate and a batch of cleanups (2026-10-26)
+
+All in one pass, tested together at the end.
+
+### Probe scheduling reads from the launch snapshot
+
+- `VulkanProbes.Configure` reads stats and schedule from the launch snapshot
+  (`sevk_get_probe_stats_snapshot`, `sevk_get_probe_schedule_stats_snapshot`)
+  and queues its configuration (`sevk_set_probes_deferred`).
+- The probe face mask still reads fresh state at publication. A queued reset
+  counts as not ready until `BeginFrame` applies it.
+- Toggles: `SE_VULKAN_PROBE_STATS_SNAPSHOT=0`, or `ProbeStatsSnapshot` on
+  `VulkanScene` in-process.
+- Frozen-light lane `Vulkan-65f5fff9…`: `packets.sig` `5F90615AFF9239D2`
+  (2,126 packets) in all phases; every artifact identical; view noise 148
+  against a 471-pixel return floor. ProbeGpuTests under validation: pass.
+- Effect: `ProbeNative` 0.82 → 0.015 ms and lighting setup about 1.0 →
+  0.23 ms. The wait moved to the fresh read at publication (+1.27 ms there),
+  as predicted. Draw did not change until recording got shorter.
+
+### Lazy deferred acquire
+
+- The pipelined timeline, now counted for pipelined frames only:
+  - launch → record start: 0.31 ms;
+  - record start → image acquired: 1.07 ms;
+  - acquired → submit: 3.8 ms.
+- The 1.07 ms was step 4's deferred acquire: recording began by joining the
+  previous present, which since present-after-GPU waits for the GPU and then
+  presents.
+- `ensure_frame_image()` now acquires just before the AfterUpscale guest
+  stage and swapchain pass, or earlier if a guest reads the display image.
+- Effect (single CpuDetail run):
+  - recording releases `api_mutex` at 4.09 ms after launch (was 5.20);
+  - render-thread lock waits 1.26 → 0.49 ms per frame;
+  - Draw 7.55 → 7.08 ms; interval 8.20 → 7.81 ms.
+  - Validation gameplay run: 0 errors.
+
+### Smaller changes
+
+- **Job pool:** workers spin for up to `SE_VULKAN_JOB_SPIN_US` (default 30;
+  0 sleeps at once) before sleeping; a submit notifies only when a worker
+  sleeps; a joining thread spins the same way.
+- **GPU diagnostics switch:** `SE_VULKAN_GPU_DIAGNOSTICS=0` drops NV
+  checkpoints and resource tracking; `SE_VULKAN_ROBUST_BUFFER=0` drops
+  `robustBufferAccess`. Both stay on by default until benchmarked.
+- **Harness:** the frame after each telemetry read (1 in 16) is left out of
+  the interval statistics, because those reads delay the next frame's start
+  and DX11 frames pay nothing similar. `SkippedTelemetryFrames` is in
+  `result.json`; `SE_VULKAN_HARNESS_KEEP_TELEMETRY_FRAMES=1` keeps them.
+  Intervals from before this change are not directly comparable.
+- **Native pass history:** `prepare_pass_gpu` rebuilt a per-row map of
+  previous actor transforms every frame. It is only read by motion consumers,
+  so it is skipped without one (`object_motion_wanted`), and a later consumer
+  starts from a reset.
+- **Sort reuse:** world draw sorting reuses this slot's previous order when
+  every sort key is identical. `SE_VULKAN_SORT_REUSE=0` sorts every frame;
+  `SortReuses` is in the pipeline report.
+- **Recording laps:** "prepare pass gpu" is now its own lap. "Prepare
+  materials" had included it.
+
+### Not done: parallel NEW main recording (plan 3.1)
+
+The main record path shares mutable state:
+
+- GBuffer velocity writes per-draw data at a running cursor, so its offsets
+  depend on recording order;
+- frame marks and CPU laps are written from inside the draw loop;
+- the stock and forward paths allocate descriptor sets from one pool.
+
+Prerequisites: precompute velocity offsets in prepare, give main-pass workers
+their own descriptor pools, and lift the marks out of the loop.
+
+### Checks (all under validation where noted)
+
+- Native CTests 19/19.
+- Under validation: NativePassGpuTests 126, SceneSubmissionGpuTests 267,
+  ShadowOcclusionGpuTests 36, ProbeGpuTests 427, WorldPassGpuTests 542,
+  InteropTests 16, HudBillboardGpuTests 0 errors.
+- BillboardPacketTests 43/43.
+- Validation gameplay run `Vulkan-9f630754…`: 0 errors.
+
+### Batch benchmark, steps 4–5 (2026-10-26)
+
+Pinned binaries:
+
+- `TestResults/Step3-binaries` (`73e74b3`, before step 4);
+- `TestResults/Step5-binaries` (the step 5 tree).
+
+All lanes use the current harness, which drops the frame after each
+telemetry read. Results:
+
+- `TestResults/Step5-Core-Paired-2026-10-26.json`;
+- `TestResults/Step5-Options-Paired-2026-10-26.json`.
+
+Core set, order S3, S5, DX, DX, S5, S3 (present interval mean / P95, ms):
+
+| Lane | Run 1 | Run 2 | Mean |
+|---|---|---|---|
+| S3 | 8.02 / 9.52 | 8.64 / 10.84 | 8.33 / 10.18 |
+| S5 | 6.87 / 9.23 | 7.38 / 10.44 | **7.12** / 9.84 |
+| DX11 | 4.23 / 4.88 | 4.33 / 5.23 | 4.28 / 5.06 |
+
+- Steps 4–5 together: **−1.2 ms** (−1.15 and −1.26 in the two pairs).
+- The gap to DX11 is now about 2.8 ms (was about 4.1 ms).
+
+Option set, order S5, S5D, S5E, S5W, S5S0, then reversed. Interval means
+(ms; P95 in the run files):
+
+| Lane | Mean | P95 |
+|---|---|---|
+| S5 | 6.98 | 9.05 |
+| S5D, GPU diagnostics and robust buffer access off | 6.98 | 8.87 |
+| S5E, early pass prepare on | 7.05 | 10.63 (one 12.7 run) |
+| S5W, deferred world intake and cell publish on | 7.04 | 9.11 |
+| S5S0, job-pool spin off | 7.12 | 9.16 |
+
+- No option moved the mean outside the 6.80–7.17 ms spread of the S5 runs.
+  Defaults stay: diagnostics on, early prepare and deferrals off.
+- Spin made no difference to queue waits: 31–41 µs with it, 28–37 µs
+  without. Its default is now 0.
+- `SkippedTelemetryFrames` was 275 of 4,129 sampled frames in an S5 run.
+
+### Lessons from steps 4–5
+
+- **Gates move, they don't vanish.** Each fix exposed the next gate, which
+  only per-call lock timing could show:
+  1. the present's driver lock;
+  2. the probe read waiting on `api_mutex`;
+  3. the publication read;
+  4. recording length.
+
+  The cadence fell only when recording itself got shorter (lazy acquire).
+- **A wait on a lock is not a wait counter.** Measure lock acquisition.
+- **Timeline averages must exclude non-pipelined frames.** Menu and loading
+  frames hid the 1.07 ms acquire join.
+- **Spinning workers did not shorten the 30–40 µs queue wait.** Fan-outs are
+  too far apart for a short spin. The wait comes from somewhere else
+  (thread scheduling or the stats path), not from waking a worker.
+- **Options that looked promising while the render thread waited (early
+  prepare, deferred intake) still do not pay.** Recording ends about when
+  the render thread needs it, so moving more render-thread work into
+  recording or onto workers still competes for the same few milliseconds.
