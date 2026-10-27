@@ -41,7 +41,7 @@ public sealed partial class VulkanScene
     private bool HasHighlight(uint id)=>highlights.ContainsKey(id)||overlappingHighlights.Contains(id);
     private void SubmitHighlight(uint draw,ActorData actor,VulkanModelPart part,uint sourceStart,uint count,uint instances)
     {
-        uint id=actor.Actor.ID;SubmitShadowExclusion(draw,id);if(actor.SuppressViewHighlight)return;
+        uint id=actor.Id;SubmitShadowExclusion(draw,id);if(actor.SuppressViewHighlight)return;
         if(highlights.TryGetValue(id,out var list))foreach(var h in list)
         {
             int selected=h.Instance<0?0:h.Instance-(actor.InstanceBuffer!=uint.MaxValue?actor.InstanceStart:0);if(selected<0 || selected>=instances)continue;uint instance=(uint)selected;

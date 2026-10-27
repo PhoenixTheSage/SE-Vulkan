@@ -49,9 +49,9 @@ public sealed partial class VulkanScene
         if(GuestDepthFrusta.Length==0)return;
         try {
             foreach(var actor in actors.Values) {
-                if(actor.Actor.IsDestroyed || !IsVisible(actor.Actor) ||
+                if(BuildFrameOf(actor).Destroyed || !BuildFrameOf(actor).Visible ||
                    (actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))!=RenderFlags.CastShadows)continue;
-                if(actor.Model==null)throw new InvalidOperationException("Guest depth caster model unavailable: "+actor.Actor.ID);
+                if(actor.Model==null)throw new InvalidOperationException("Guest depth caster model unavailable: "+actor.Id);
                 if(actor.InstanceBuffer!=uint.MaxValue && !instances.ContainsKey(actor.InstanceBuffer))
                     throw new InvalidOperationException("Guest depth instance buffer unavailable: "+actor.InstanceBuffer);
                 // Batch bounds are not authoritative for every instance. Keep
@@ -68,7 +68,7 @@ public sealed partial class VulkanScene
                     if(count==0)continue;
                     if(type==0 && actor.StaticInstances==null && actor.InstanceBuffer==uint.MaxValue && model.BlendWeights?.Length>0 && actor.SkinMatrices==null)
                         throw new InvalidOperationException("Guest depth character pose unavailable");
-                    var world=actor.Actor.WorldMatrix;world.Translation-=FrameView.CameraPosition;
+                    var world=BuildFrameOf(actor).World;world.Translation-=FrameView.CameraPosition;
                     foreach(var part in model.Parts) {
                         if(!DepthGeometrySegments.DrawsDepth(part.Technique) || (part.Flags&4)!=0)continue;
                         actor.Materials.TryGetValue(part.MaterialName??string.Empty,out var material);

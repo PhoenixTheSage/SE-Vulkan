@@ -16,7 +16,7 @@ public sealed partial class VulkanScene
         var planProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NewViewPlan,false);
         newViewStats.Actors++;actorViewSliceCount=0;
         float coefficient=lodFov>0?(float)(Math.Tan(lodFov*.5)/Math.Tan(70*Math.PI/360))*1080/Math.Max(1,target.PresentationHeight):1;
-        float scale=(float)actor.Actor.WorldMatrixForwardScale;if(!(scale>0))scale=1;
+        float scale=(float)BuildFrameOf(actor).ForwardScale;if(!(scale>0))scale=1;
         Vector3 translation=(Vector3)(world.Translation-FrameView.CameraPosition);float distance=(translation.Length()/scale*coefficient+actorLodSettings.Global.ObjectDistanceAdd)*actorLodSettings.Global.ObjectDistanceMult;
         bool immediate=!actor.HaveNewViewCamera || Vector3D.Distance(actor.NewViewCamera,FrameView.CameraPosition)>actorLodSettings.Global.MaxDistanceForSmoothCameraMovement;
         actor.NewLod.Update(distance,actor.Model.LodDistances,actorLodSettings.Global,FrameView.LastFrameDelta,immediate);actor.NewViewCamera=FrameView.CameraPosition;actor.HaveNewViewCamera=true;
@@ -48,7 +48,7 @@ public sealed partial class VulkanScene
                 actor.ExtraViewFlags=(view.Spots?0u:0x2000000u)|((view.Cascades==0&&!view.Spots)?512u:0u);
                 DrawWorld(target,actor,world,!view.Main,false,!view.Probe,bounds,view.Cascades);newViewStats.Representations++;}
         }finally{actor.ExtraViewFlags=0;actor.SuppressViewHighlight=false;}
-        if(HasHighlight(actor.Actor.ID)){SelectRepresentation(actor,actor.Model,255);actor.LodAlpha=0;actor.ExtraViewFlags=8192u|512u|0x2000000u;
+        if(HasHighlight(actor.Id)){SelectRepresentation(actor,actor.Model,255);actor.LodAlpha=0;actor.ExtraViewFlags=8192u|512u|0x2000000u;
             try{DrawWorld(target,actor,world,false,false,true,bounds,0);}finally{actor.ExtraViewFlags=0;}newViewStats.HighlightActors++;}
         return true;
     }

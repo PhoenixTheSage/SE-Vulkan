@@ -31,7 +31,7 @@ public sealed partial class VulkanScene
     {
         if(data.Model==null||data.InstanceBuffer==uint.MaxValue||!instances.TryGetValue(data.InstanceBuffer,out var buffer)||buffer.Cubes==null)return false;
         if(data.StaticInstances!=null||data.SkinMatrices!=null||data.Dithering!=0||data.GpuOwned||data.PassOwned||!KnownStockOldPipeline(data))return false;
-        uint id=data.Actor.ID;return !HasHighlight(id)&&!buildLights.Excluded.Contains(id);
+        uint id=data.Id;return !HasHighlight(id)&&!buildLights.Excluded.Contains(id);
     }
     void ReleaseCell(ActorData data,bool handoff)
     {
@@ -52,7 +52,7 @@ public sealed partial class VulkanScene
         if(backend.WorldRecipeRevision!=cellRecipeRevision){cellRecipeRevision=backend.WorldRecipeRevision;foreach(var data in actors.Values)if(data.CellOwned&&data.CellRecipes!=null)foreach(var recipe in data.CellRecipes)if(!recipe.Alive){cellDirty.Add(data);break;}}
         cellsActive=allowed;
         foreach(var data in cellPoseDirty){
-            if(cellDirty.Contains(data)||data.Actor.IsDestroyed||!actors.ContainsKey(data.Actor.ID))continue;
+            if(cellDirty.Contains(data)||BuildFrameOf(data).Destroyed||!actors.ContainsKey(data.Id))continue;
             if(data.CellOwned&&allowed&&CellSupported(data))AppendPose(data);else cellDirty.Add(data);
         }
         cellPoseDirty.Clear();
@@ -64,7 +64,7 @@ public sealed partial class VulkanScene
         if(cellDirty.Count==0)return;
         cellInputs.Clear();cellHandles.Clear();cellOwners.Clear();cellLevels.Clear();cellParts.Clear();cellThresholds.Clear();cellBytes.Clear();
         foreach(var data in cellDirty){
-            if(data.Actor.IsDestroyed||!actors.ContainsKey(data.Actor.ID))continue;
+            if(BuildFrameOf(data).Destroyed||!actors.ContainsKey(data.Id))continue;
             if(!allowed||!CellSupported(data)||!AppendCell(data)){ReleaseCell(data,true);continue;}
             cellOwners.Add(data);
         }
@@ -76,13 +76,13 @@ public sealed partial class VulkanScene
     }
     readonly List<NativeCellPose> cellPoses=new();readonly List<ulong> cellPoseHandles=new();NativeCellPose[] cellPoseArray=Array.Empty<NativeCellPose>();ulong[] cellPoseHandleArray=Array.Empty<ulong>();
     uint CellFlags(ActorData data,bool eligible,bool skinning){var flags=data.Flags;bool castFlag=(flags&RenderFlags.CastShadows)!=0,casts=(flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))==RenderFlags.CastShadows;
-        return (IsVisible(data.Actor)?1u:0u)|((flags&RenderFlags.SkipInMainView)!=0?2u:0u)|(castFlag?4u:0u)|(casts?8u:0u)|(data.DynamicShadow?16u:0u)|(data.Actor.Parent!=null?32u:0u)|(eligible?64u:0u)|(skinning?128u:0u)|((flags&RenderFlags.DrawOutsideViewDistance)!=0?256u:0u);}
+        return (BuildFrameOf(data).Visible?1u:0u)|((flags&RenderFlags.SkipInMainView)!=0?2u:0u)|(castFlag?4u:0u)|(casts?8u:0u)|(data.DynamicShadow?16u:0u)|(BuildFrameOf(data).HasParent?32u:0u)|(eligible?64u:0u)|(skinning?128u:0u)|((flags&RenderFlags.DrawOutsideViewDistance)!=0?256u:0u);}
     unsafe void AppendPose(ActorData data)
     {
         var pose=new NativeCellPose{Size=344,Flags=CellFlags(data,false,instances[data.InstanceBuffer].EnabledSkinning),Group=data.OcclusionGroup?.QueryId??0};
         var bounds=data.Bounds;pose.Bounds[0]=bounds.Min.X;pose.Bounds[1]=bounds.Min.Y;pose.Bounds[2]=bounds.Min.Z;pose.Bounds[3]=bounds.Max.X;pose.Bounds[4]=bounds.Max.Y;pose.Bounds[5]=bounds.Max.Z;
-        var local=data.Actor.LocalAabb;pose.LocalMinimum[0]=local.Min.X;pose.LocalMinimum[1]=local.Min.Y;pose.LocalMinimum[2]=local.Min.Z;pose.LocalMaximum[0]=local.Max.X;pose.LocalMaximum[1]=local.Max.Y;pose.LocalMaximum[2]=local.Max.Z;
-        var world=data.Actor.WorldMatrix;var inverse=data.Actor.WorldMatrixInv;for(int r=0;r<4;r++)for(int c=0;c<4;c++){pose.World[r*4+c]=world[r,c];pose.Inverse[r*4+c]=inverse[r,c];}
+        var actorFrame=BuildFrameOf(data);var local=actorFrame.LocalAabb;pose.LocalMinimum[0]=local.Min.X;pose.LocalMinimum[1]=local.Min.Y;pose.LocalMinimum[2]=local.Min.Z;pose.LocalMaximum[0]=local.Max.X;pose.LocalMaximum[1]=local.Max.Y;pose.LocalMaximum[2]=local.Max.Z;
+        var world=actorFrame.World;var inverse=actorFrame.WorldInv;for(int r=0;r<4;r++)for(int c=0;c<4;c++){pose.World[r*4+c]=world[r,c];pose.Inverse[r*4+c]=inverse[r,c];}
         cellPoses.Add(pose);cellPoseHandles.Add(data.CellHandle);
     }
     readonly List<NativeCell> cellInputs=new();readonly List<ulong> cellHandles=new();readonly List<ActorData> cellOwners=new();
@@ -119,12 +119,12 @@ public sealed partial class VulkanScene
         }
         int available=buffer.Cubes.Length,start=Math.Max(0,data.InstanceStart);uint count=(uint)Math.Max(0,Math.Min((long)available-start,Math.Max(0,data.InstanceCount)));
         var stream=new byte[checked((int)count*64)];for(int i=0;i<count;i++)WriteCubeInstance(stream,i,buffer.Cubes[start+i],colorizeHsv);
-        var input=new NativeCell{Size=416,Owner=data.Actor.ID,Group=data.OcclusionGroup?.QueryId??0,InstanceCount=count,InstanceOffset=(ulong)cellBytes.Count,LevelOffset=(uint)levelStart,LevelCount=(uint)levelCount,ThresholdOffset=(uint)cellThresholds.Count,ThresholdCount=eligible?(uint)root.LodDistances.Length:0};
+        var input=new NativeCell{Size=416,Owner=data.Id,Group=data.OcclusionGroup?.QueryId??0,InstanceCount=count,InstanceOffset=(ulong)cellBytes.Count,LevelOffset=(uint)levelStart,LevelCount=(uint)levelCount,ThresholdOffset=(uint)cellThresholds.Count,ThresholdCount=eligible?(uint)root.LodDistances.Length:0};
         cellBytes.AddRange(stream);if(eligible)cellThresholds.AddRange(root.LodDistances);
         input.Flags=CellFlags(data,eligible,buffer.EnabledSkinning);
         var bounds=data.Bounds;input.Bounds[0]=bounds.Min.X;input.Bounds[1]=bounds.Min.Y;input.Bounds[2]=bounds.Min.Z;input.Bounds[3]=bounds.Max.X;input.Bounds[4]=bounds.Max.Y;input.Bounds[5]=bounds.Max.Z;
-        var local=data.Actor.LocalAabb;input.LocalMinimum[0]=local.Min.X;input.LocalMinimum[1]=local.Min.Y;input.LocalMinimum[2]=local.Min.Z;input.LocalMaximum[0]=local.Max.X;input.LocalMaximum[1]=local.Max.Y;input.LocalMaximum[2]=local.Max.Z;
-        var world=data.Actor.WorldMatrix;var inverse=data.Actor.WorldMatrixInv;for(int r=0;r<4;r++)for(int c=0;c<4;c++){input.World[r*4+c]=world[r,c];input.Inverse[r*4+c]=inverse[r,c];}
+        var actorFrame=BuildFrameOf(data);var local=actorFrame.LocalAabb;input.LocalMinimum[0]=local.Min.X;input.LocalMinimum[1]=local.Min.Y;input.LocalMinimum[2]=local.Min.Z;input.LocalMaximum[0]=local.Max.X;input.LocalMaximum[1]=local.Max.Y;input.LocalMaximum[2]=local.Max.Z;
+        var world=actorFrame.World;var inverse=actorFrame.WorldInv;for(int r=0;r<4;r++)for(int c=0;c<4;c++){input.World[r*4+c]=world[r,c];input.Inverse[r*4+c]=inverse[r,c];}
         var selector=data.Lod.Export();int Key(VulkanModel model)=>model==null?-1:distinct.IndexOf(model);
         input.Lod=new NativeCellLod{Current=selector.Current,Next=selector.Other,Transition=selector.Transition,Start=selector.Start,Initialized=selector.Initialized,Border=selector.Border,ShadowCurrent=Key(data.LodShadowModel),ShadowNext=Key(data.LodShadowNext),ShadowAlpha=data.LodShadowAlpha};
         if(input.Lod.Current<0||input.Lod.Current>=levelCount||input.Lod.Next<0||input.Lod.Next>=levelCount){input.Lod.Current=input.Lod.Next=0;input.Lod.Transition=0;input.Lod.Initialized=0;input.Lod.Border=0;}

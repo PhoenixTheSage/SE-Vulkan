@@ -2006,3 +2006,100 @@ which is harmless on one thread:
 - **Timing:** not measured. The order change moves the voxel plan-ahead
   start after the scene update. It is measured with the thread split, not
   per milestone.
+
+## Phase 4 frame split, milestone 2, slice 1: actor frames (2026-10-27)
+
+Milestone 2 makes Build stop reading state that Apply mutates. It is larger
+than one change. Build reaches into:
+- the game's `MyActor` objects, at about 45 sites;
+- the shared `actors` dictionary, at about 40;
+- the candidate tree and the occlusion-group structures;
+- most `ActorData` fields.
+
+It is done in slices, each gated by a verify mode and the same-process lane.
+
+### Slice 1: what changed
+
+- **`ActorFrame`** (new, `VulkanActorFrames.cs`): a per-actor copy of the game
+  actor state Build reads.
+  - Fields: world matrix (with its `WorldMatrixIndex` and forward scale), local
+    box, has-parent, resolved ancestor visibility, destroyed, and the scene's
+    `Bounds`.
+  - Two per actor, one per frame parity. The end of `UpdateScene` refreshes
+    the Apply parity, and `LatchFrame` hands it to Build.
+  - Build also gets the inverse world matrix (cached per frame) and the
+    game's parented camera distance from the copy.
+  - The game's `WorldMatrix` and `WorldMatrixInv` getters compute lazily, so
+    even reading them from Build would be a write.
+- **Build reads only the copy** for every scene actor: traversal, candidate
+  planning (parallel workers), actor LODs, size culling, new actor views,
+  native pass inputs, fallbacks and glass, cell poses, GPU-scene inputs,
+  group bounds, guest depth, guest scene API, ray-scene capture.
+- **`ActorData.Id`** caches the game actor id at creation (36 sites), so Build
+  never touches the `MyActor` for its id.
+- **Refresh is dirty-driven.**
+  - The first version refreshed every actor every frame and cost **2.1 ms**
+    per frame (CpuDetail `ActorSnapshot`): visibility moved every frame, so
+    every ancestor chain was re-resolved.
+  - Transform, geometry, visibility and parent changes (descendants included)
+    all reach `spatialDirty`, which `RefreshSpatialIndex` drains. The
+    snapshot now refreshes the actors noted there, plus creations and
+    removals, in the frame they change and in the next one, so both parity
+    slots catch up. Cost: **0.039 ms** per frame (orbit, CpuDetail run
+    `Vulkan-7607c526…`, Draw 5.45 ms).
+- **Ray-scene capture box:** it used the game's `WorldAabb`, which the game's
+  updater refreshes in `UpdateProxy` a frame after the change is noted. That
+  is the one field the dirty funnel misses: the first verify runs found
+  23–30 thousand mismatches, all on it. The capture now uses the scene's own
+  `Bounds` (the same local box transformed by the world matrix). It differs
+  only for actors whose box the game aggregates from children. Only the
+  SE-RT guest reads it.
+- **Verify mode** `SE_VULKAN_FRAME_PACKET_VERIFY=1`: at Build start it compares
+  every actor's Build frame with the live actor (world, forward scale, local
+  box, parent, visibility, destroyed, bounds). The result is reported as
+  "Frame packet verify" in `vulkan-status.txt`.
+
+### Gates
+
+- **Verify mode, product defaults, 0 mismatches on both worlds:**
+  - orbit `Vulkan-9d33e916…` was rerun after the `WorldAabb` fix (59.97
+    million checks);
+  - interior: 57.04 million checks.
+- **Same-process frozen-light lane** (`ApplyBuildOrder` old/new/old,
+  `Vulkan-373dff8a…`):
+  - `packets.sig` is `3D2C288D3BDF751B` (2,126 packets) in all three phases;
+  - every other artifact is byte-identical;
+  - view noise is 202 pixels against a 590-pixel return floor.
+- **GPU suites under validation:** SceneSubmission 267, NativePass 126,
+  ShadowOcclusion 36, Probe 427, WorldPass 542/542, Interop 16, HudBillboard
+  with 0 validation errors, BillboardPacket 43.
+- **Validation gameplay run** `Vulkan-b9a26873…`: validation enabled, 0
+  errors.
+- **Test update:** SceneSubmission's ray-scene check runs the scene update
+  and latch before each capture.
+
+### Remaining slices of milestone 2
+
+1. **Scene containers.**
+   - A Build view of the `actors` dictionary, latched from an Apply change
+     log.
+   - The candidate tree query (`actorIndex`), which Apply moves and Build
+     queries.
+   - Occlusion-group membership, rebuilt in Build from live parent chains
+     (`VulkanGroupOcclusion.cs:46`).
+   - Static groups.
+   - Message-time native removals (`RemoveNativePassActor` and `ReleaseCell`
+     from `SetModel` and `Remove`), deferred to Build's prologue.
+2. **`ActorData` fields Build reads.**
+   - Model, flags, instances, static instances, skin, `DynamicShadow`, colour,
+     HSV, dithering.
+   - Materials, which are mutated in place and need copy-on-write.
+   - Build-owned LOD, key and skinned-mesh state; message resets become
+     per-actor events.
+3. **Message-owned scene state:** `colorizeHsv`, bloom emissiveness, skybox,
+   highlights, `actorLodSettings`, the `instances` dictionary, `FrameCounter`.
+4. **Leftover live reads:**
+   - billboard owner actors (`VulkanBillboards.cs:123`);
+   - light owners in the guest scene API;
+   - manual-cull group actors in probe ambient;
+   - the once-a-second `CharacterStatus` diagnostic.

@@ -76,7 +76,7 @@ public sealed partial class VulkanScene
         foreach(var p in model.Parts)if(!(p.Technique==MyMeshDrawTechnique.MESH||p.Technique==MyMeshDrawTechnique.ALPHA_MASKED||p.Technique==MyMeshDrawTechnique.ALPHA_MASKED_SINGLE_SIDED||p.Technique==MyMeshDrawTechnique.DECAL_CUTOUT||(mixed&&p.Technique==MyMeshDrawTechnique.GLASS)))return false;
         return true;
     }
-    private bool PassActorSupported(ActorData actor)=>actor.Model!=null&&!KnownStockOldPipeline(actor)&&actor.InstanceBuffer==uint.MaxValue&&actor.StaticInstances==null&&actor.SkinMatrices==null&&actor.Dithering==0&&!HasHighlight(actor.Actor.ID)&&!buildLights.Excluded.Contains(actor.Actor.ID)&&PassModelSupported(actor.Model,NativeMixedOpaqueEnabled)&&models.IsStockNewModel(actor.Model);
+    private bool PassActorSupported(ActorData actor)=>actor.Model!=null&&!KnownStockOldPipeline(actor)&&actor.InstanceBuffer==uint.MaxValue&&actor.StaticInstances==null&&actor.SkinMatrices==null&&actor.Dithering==0&&!HasHighlight(actor.Id)&&!buildLights.Excluded.Contains(actor.Id)&&PassModelSupported(actor.Model,NativeMixedOpaqueEnabled)&&models.IsStockNewModel(actor.Model);
 
     private PassFamily GetPassFamily(ActorData actor)
     {
@@ -124,10 +124,10 @@ public sealed partial class VulkanScene
     }
     private unsafe NativePassActor PassActorInput(ActorData data,PassFamily family,List<NativePassAppearance> appearance,bool replaceAppearance=true)
     {
-        var matrix=data.Actor.WorldMatrix;var bounds=data.Bounds;
-        var actor=new NativePassActor{Handle=data.PassHandle,Owner=data.Actor.ID,Family=family.Handle,Group=data.OcclusionGroup?.QueryId??0,Scale=(float)data.Actor.WorldMatrixForwardScale,Lod=data.NewLod.Export(),HaveCamera=data.HaveNewViewCamera?1u:0u,AppearanceOffset=(uint)appearance.Count};
+        var actorFrame=BuildFrameOf(data);var matrix=actorFrame.World;var bounds=data.Bounds;
+        var actor=new NativePassActor{Handle=data.PassHandle,Owner=data.Id,Family=family.Handle,Group=data.OcclusionGroup?.QueryId??0,Scale=(float)actorFrame.ForwardScale,Lod=data.NewLod.Export(),HaveCamera=data.HaveNewViewCamera?1u:0u,AppearanceOffset=(uint)appearance.Count};
         if(!(actor.Scale>0))actor.Scale=1;
-        actor.Flags=32u|(IsVisible(data.Actor)?1u:0u)|((data.Flags&RenderFlags.SkipInMainView)!=0?2u:0u)|((data.Flags&RenderFlags.SkipInForward)!=0?4u:0u)|((data.Flags&RenderFlags.CastShadows)!=0?8u:0u)|((data.Flags&RenderFlags.SkipInDepth)==0?16u:0u)|(data.DynamicShadow?64u:0u);
+        actor.Flags=32u|(actorFrame.Visible?1u:0u)|((data.Flags&RenderFlags.SkipInMainView)!=0?2u:0u)|((data.Flags&RenderFlags.SkipInForward)!=0?4u:0u)|((data.Flags&RenderFlags.CastShadows)!=0?8u:0u)|((data.Flags&RenderFlags.SkipInDepth)==0?16u:0u)|(data.DynamicShadow?64u:0u);
         actor.Translation[0]=matrix.M41;actor.Translation[1]=matrix.M42;actor.Translation[2]=matrix.M43;
         actor.Bounds[0]=bounds.Min.X;actor.Bounds[1]=bounds.Min.Y;actor.Bounds[2]=bounds.Min.Z;actor.Bounds[3]=bounds.Max.X;actor.Bounds[4]=bounds.Max.Y;actor.Bounds[5]=bounds.Max.Z;
         actor.Basis[0]=(float)matrix.M11;actor.Basis[1]=(float)matrix.M21;actor.Basis[2]=(float)matrix.M31;actor.Basis[3]=(float)matrix.M12;actor.Basis[4]=(float)matrix.M22;actor.Basis[5]=(float)matrix.M32;actor.Basis[6]=(float)matrix.M13;actor.Basis[7]=(float)matrix.M23;actor.Basis[8]=(float)matrix.M33;
@@ -143,7 +143,7 @@ public sealed partial class VulkanScene
     {
         if(gpu)RemoveGpuActor(actor,handoff);if(actor.PassHandle==0)return;
         if(handoff){var state=actor.NewLod.Export();var camera=actor.NewViewCamera;bool have=actor.HaveNewViewCamera;backend.PassActorSelector(actor.PassHandle,false,ref state,ref camera,ref have);actor.NewLod.Import(state);actor.NewViewCamera=camera;actor.HaveNewViewCamera=have;}
-        backend.RemovePassResource(2,actor.PassHandle);actor.PassHandle=0;actor.PassOwned=false;SyncIndexMembership(actor);if(backend.StableMainOrderEnabled)backend.RemoveResidentMainOwner(actor.Actor.ID);actor.PassFamily?.Members.Remove(actor);actor.PassFamily=null;actor.PassBindingDirty=true;actor.PassAppearanceDirty=true;
+        backend.RemovePassResource(2,actor.PassHandle);actor.PassHandle=0;actor.PassOwned=false;SyncIndexMembership(actor);if(backend.StableMainOrderEnabled)backend.RemoveResidentMainOwner(actor.Id);actor.PassFamily?.Members.Remove(actor);actor.PassFamily=null;actor.PassBindingDirty=true;actor.PassAppearanceDirty=true;
         if(actor.HaveShadowPose){MarkSpots(actor.ShadowCenter,actor.ShadowRadius,false);MarkSpots(actor.ShadowCenter,actor.ShadowRadius,true);}
     }
     readonly List<NativePassActor> passUpdates=new();readonly List<NativePassAppearance> passAppearance=new();
@@ -164,7 +164,7 @@ public sealed partial class VulkanScene
         previousNativeExclusions.Clear();previousNativeExclusions.UnionWith(buildLights.Excluded);
         var updates=passUpdates;var appearance=passAppearance;updates.Clear();appearance.Clear();
         foreach(var data in nativePassDirty){
-            if(data.Actor.IsDestroyed||!actors.ContainsKey(data.Actor.ID))continue;
+            if(BuildFrameOf(data).Destroyed||!actors.ContainsKey(data.Id))continue;
             // The GPU and native CPU selectors own disjoint actor sets.
             if(data.GpuOwned||!PassActorSupported(data)){RemoveNativePassActor(data,gpu:false);continue;}
             var family=GetPassFamily(data);if(family.Unsupported){RemoveNativePassActor(data,gpu:false);continue;}
@@ -173,7 +173,7 @@ public sealed partial class VulkanScene
             else updates.Add(PassActorInput(data,family,appearance,data.PassAppearanceDirty));
             data.PassAppearanceDirty=false;
             // Same key the traversal would declare for this actor's root.
-            if(backend.StableMainOrderEnabled)backend.SetResidentMainOwner(data.Actor.ID,(data.Flags&RenderFlags.SkipInMainView)==0?MainGroupKey(data,true):null);
+            if(backend.StableMainOrderEnabled)backend.SetResidentMainOwner(data.Id,(data.Flags&RenderFlags.SkipInMainView)==0?MainGroupKey(data,true):null);
         }
         nativePassDirty.Clear();if(updates.Count!=0){
             // Reused buffers: the native call copies what it needs before returning.
@@ -339,16 +339,16 @@ public sealed partial class VulkanScene
     }
     private void DrawNativePassFallback(ActorData data)
     {
-        if(data.Model==null||!IsVisible(data.Actor))return;var bounds=data.Bounds;bool probeOnly=(data.Flags&RenderFlags.SkipInMainView)!=0||frustum!=null&&frustum.Contains(bounds)==ContainmentType.Disjoint;
+        if(data.Model==null||!BuildFrameOf(data).Visible)return;var bounds=data.Bounds;bool probeOnly=(data.Flags&RenderFlags.SkipInMainView)!=0||frustum!=null&&frustum.Contains(bounds)==ContainmentType.Disjoint;
         double distance=Vector3D.Distance(bounds.Center,FrameView.CameraPosition);bool outside=ProbeDrawDistance<=0||distance>ProbeDrawDistance+bounds.HalfExtents.Length();
-        bool hidden=!probeOnly&&QueryActorVisibility(data.Actor.ID,bounds);if(!probeOnly)visible.Add(data.Actor.ID);
-        DrawActorLods(backend,data,data.Actor.WorldMatrix,probeOnly,hidden,outside,bounds);
+        bool hidden=!probeOnly&&QueryActorVisibility(data.Id,bounds);if(!probeOnly)visible.Add(data.Id);
+        DrawActorLods(backend,data,BuildFrameOf(data).World,probeOnly,hidden,outside,bounds);
     }
     private void DrawNativePassGlass(NativePassTransparent ticket)
     {
         if(!RenderSettings.DrawTransparentModelsInstanced)return;
         if(!actors.TryGetValue(ticket.Owner,out var actor)||!actor.PassOwned||actor.PassHandle!=ticket.Actor)return;
-        var model=models.GetLod(actor.Model,(int)ticket.Lod);var world=actor.Actor.WorldMatrix;world.Translation-=FrameView.CameraPosition;
+        var model=models.GetLod(actor.Model,(int)ticket.Lod);var world=BuildFrameOf(actor).World;world.Translation-=FrameView.CameraPosition;
         using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GlassParts,false);
         foreach(var part in model.Parts){
             if(part.Technique!=MyMeshDrawTechnique.GLASS)continue;

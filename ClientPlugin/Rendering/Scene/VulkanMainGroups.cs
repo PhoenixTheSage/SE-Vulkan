@@ -54,7 +54,7 @@ public sealed partial class VulkanScene
         foreach(var data in list)if(data.Model!=null&&!data.Model.NewPipelineEligible.HasValue)models.IsStockNewModel(data.Model);
         var plans=candidatePlans;const int chunk=128;bool stable=backend.StableMainOrderEnabled;
         RenderJobs.For((list.Count+chunk-1)/chunk,c=>{
-            for(int i=c*chunk,end=Math.Min(list.Count,i+chunk);i<end;i++){var data=list[i];if(stable&&(data.PassOwned||data.CellOwned)){plans[i]=default;continue;}bool visible=data.Model!=null&&IsVisible(data.Actor);
+            for(int i=c*chunk,end=Math.Min(list.Count,i+chunk);i<end;i++){var data=list[i];if(stable&&(data.PassOwned||data.CellOwned)){plans[i]=default;continue;}bool visible=data.Model!=null&&BuildFrameOf(data).Visible;
                 plans[i]=new CandidatePlan{Visible=visible,Key=visible&&(data.Flags&RenderFlags.SkipInMainView)==0?MainGroupKey(data,true):null};}
         });
     }

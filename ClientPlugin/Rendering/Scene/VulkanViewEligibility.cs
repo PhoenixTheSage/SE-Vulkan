@@ -30,7 +30,7 @@ public sealed partial class VulkanScene
     {
         selectedCascades=null;viewEligibilityStats.TestedActors++;
         // Keep unknown aggregate/skinned ownership and the independent highlight consumer.
-        if(actor.StaticInstances!=null || actor.SkinMatrices!=null || !actor.SubmissionOpaque || HasHighlight(actor.Actor.ID)){
+        if(actor.StaticInstances!=null || actor.SkinMatrices!=null || !actor.SubmissionOpaque || HasHighlight(actor.Id)){
             viewEligibilityStats.ConservativeActors++;return true;
         }
         if(!probeOnly && !occluded){viewEligibilityStats.MainActors++;return true;}

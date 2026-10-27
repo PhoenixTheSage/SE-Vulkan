@@ -75,6 +75,7 @@ public sealed partial class VulkanScene
     {
         foreach(var data in spatialDirty)
         {
+            NoteActorFrame(data);
             if(data.Actor.IsDestroyed || data.Model==null){if(data.Proxy>=0){actorIndex.RemoveProxy(data.Proxy);data.Proxy=-1;}continue;}
             // Message-authored and RenderDirect-authored local bounds take
             // ownership from model bounds. A quality toggle must preserve them.

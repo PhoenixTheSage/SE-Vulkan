@@ -58,6 +58,7 @@ public sealed partial class VulkanScene
         sizeFallbackProjection=Next.SizeFallbackProjection;sizeFov=Next.SizeFov;sizeNear=Next.SizeNear;sizeOffsetX=Next.SizeOffsetX;sizeOffsetY=Next.SizeOffsetY;haveSizeProjection=Next.HaveSizeProjection;
         FrameView=Environment;
         (applyLights,buildLights)=(buildLights,applyLights);
+        LatchActorFrames();
     }
     public void EndBuild()=>building=false;
     // Build prologue: the native light and spot submission of the latched frame.

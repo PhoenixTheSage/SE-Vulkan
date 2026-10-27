@@ -53,7 +53,7 @@ public sealed partial class VulkanScene
             // anything that touched an extreme falls back to the full recompute. Moves, geometry and visibility
             // changes (MarkVisibility recurses into children) all reach DirtyGroup, and membership changes go full.
             if(IncrementalGroupBounds && !group.FullDirty && group.Bounds.Min.IsValid() && group.Bounds.Max.IsValid() && group.Bounds.Min.X<=group.Bounds.Max.X && RefreshGroupIncremental(group)){group.DirtyMembers.Clear();if(VerifyGroupBounds)VerifyGroup(group);continue;}
-            var box=BoundingBoxD.CreateInvalid();foreach(var member in group.Members){bool contributes=!member.Actor.IsDestroyed && IsVisible(member.Actor);if(contributes)box.Include(member.Bounds);member.GroupContributes=contributes;member.GroupContribution=member.Bounds;}
+            var box=BoundingBoxD.CreateInvalid();foreach(var member in group.Members){bool contributes=!BuildFrameOf(member).Destroyed && BuildFrameOf(member).Visible;if(contributes)box.Include(member.Bounds);member.GroupContributes=contributes;member.GroupContribution=member.Bounds;}
             group.Bounds=box;group.FullDirty=false;group.DirtyMembers.Clear();}
         dirtyOcclusionGroups.Clear();
     }
@@ -62,7 +62,7 @@ public sealed partial class VulkanScene
     static long groupVerified,groupMismatches;
     private void VerifyGroup(GroupVisibility group)
     {
-        var full=BoundingBoxD.CreateInvalid();foreach(var member in group.Members)if(!member.Actor.IsDestroyed && IsVisible(member.Actor))full.Include(member.Bounds);
+        var full=BoundingBoxD.CreateInvalid();foreach(var member in group.Members)if(!BuildFrameOf(member).Destroyed && BuildFrameOf(member).Visible)full.Include(member.Bounds);
         groupVerified++;if(full.Min!=group.Bounds.Min||full.Max!=group.Bounds.Max)groupMismatches++;
         if((groupVerified&255)==0)ClientPlugin.Diagnostics.VulkanDiagnostics.Set("Group bounds verify",groupMismatches==0?ClientPlugin.Diagnostics.SubsystemState.Active:ClientPlugin.Diagnostics.SubsystemState.Failed,"incremental="+groupVerified+"; mismatches="+groupMismatches);
     }
@@ -79,7 +79,7 @@ public sealed partial class VulkanScene
         }
         foreach(var member in group.DirtyMembers)
         {
-            bool contributes=!member.Actor.IsDestroyed && IsVisible(member.Actor);
+            bool contributes=!BuildFrameOf(member).Destroyed && BuildFrameOf(member).Visible;
             if(contributes)box.Include(member.Bounds);
             member.GroupContributes=contributes;member.GroupContribution=member.Bounds;
         }

@@ -95,13 +95,14 @@ public sealed partial class VulkanScene
         var meshes = new List<object[]>(); var meshIndices = new Dictionary<VulkanModel, int>(); var instances = new List<object[]>();
         foreach (var actor in actors.Values)
         {
-            if (actor.Actor == null || actor.Actor.IsDestroyed || !IsVisible(actor.Actor)) continue;
+            if (actor.Actor == null || BuildFrameOf(actor).Destroyed || !BuildFrameOf(actor).Visible) continue;
             var model = actor.RenderModel ?? actor.Model;
             // Light and other model-less actors are not render geometry (DX11 enumerates renderable components only).
             if (model == null) continue;
             // The actor's world AABB, as DX11 InRange uses; before its first update fall back to the model bounds.
-            var bounds = actor.Actor.WorldAabb;
-            if (!bounds.Valid || bounds.Size.LengthSquared() <= 0) bounds = ((BoundingBoxD)model.Bounds).TransformFast(actor.Actor.WorldMatrix);
+            // The scene's own box (the game's WorldAabb is refreshed by its updater a frame later, outside the actor frames).
+            var bounds = BuildFrameOf(actor).Bounds;
+            if (!bounds.Valid || bounds.Size.LengthSquared() <= 0) bounds = ((BoundingBoxD)model.Bounds).TransformFast(BuildFrameOf(actor).World);
             if (!bounds.Valid || bounds.DistanceSquared(center) > RayRange * RayRange) continue;
             // Matches DX11: instanced and unresolved geometry are present as unknown occupants.
             bool known = model.Vertices != null && model.Parts.Count != 0 && actor.StaticInstances == null && actor.SkinMatrices == null;
@@ -130,8 +131,8 @@ public sealed partial class VulkanScene
                     variants[p] = new object[] { part, multiplier, textures, Array.Empty<float>(), RayOptics(part) };
                 }
             }
-            var world = actor.Actor.WorldMatrix; world.Translation -= center;
-            instances.Add(new object[] { actor.Actor.ID, meshIndex, RayMatrix((Matrix)world), variants,
+            var world = BuildFrameOf(actor).World; world.Translation -= center;
+            instances.Add(new object[] { actor.Id, meshIndex, RayMatrix((Matrix)world), variants,
                 new[] { (float)(bounds.Min.X - center.X), (float)(bounds.Min.Y - center.Y), (float)(bounds.Min.Z - center.Z),
                     (float)(bounds.Max.X - center.X), (float)(bounds.Max.Y - center.Y), (float)(bounds.Max.Z - center.Z) } });
         }

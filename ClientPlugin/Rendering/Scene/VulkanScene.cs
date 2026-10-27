@@ -31,6 +31,9 @@ namespace ClientPlugin.Rendering.Scene
             // The box this actor last contributed to its occlusion group (incremental group bounds).
             public BoundingBoxD GroupContribution;public bool GroupContributes;
             public MyActor Actor;
+            // The game actor id, cached at creation: Build never reads the MyActor (frame split, milestone 2).
+            public uint Id;
+            public readonly ActorFrame[] Frames={new ActorFrame(),new ActorFrame()};
             public uint CandidateStamp;
             public VulkanModel Model;
             public StockOldModelIdentity OldModel;
@@ -178,7 +181,7 @@ namespace ClientPlugin.Rendering.Scene
             {
                 if (data.Skeleton == null || data.Model == null) continue;
                 var bounds = data.Actor.CalculateAabb();
-                text.Append(" id=").Append(data.Actor.ID).Append(" visible=").Append(IsVisible(data.Actor))
+                text.Append(" id=").Append(data.Id).Append(" visible=").Append(IsVisible(data.Actor))
                     .Append(" frustum=").Append(frustum == null ? "none" : frustum.Contains(bounds).ToString())
                     .Append(" world=").Append(data.Actor.WorldMatrix.Translation).Append(" skin=").Append(data.SkinnedBounds)
                     .Append(" palette=").Append(data.SkinMatrices?.Length ?? 0).Append(" flags=").Append(data.Flags).Append(';');
@@ -491,7 +494,7 @@ namespace ClientPlugin.Rendering.Scene
             actor.Construct(name ?? "Vulkan actor " + id); actor.SetID(id); actor.SetMatrix(ref world);
             actor.OnRotationChanged += angle => Interlocked.Increment(ref renderDirectRotationUpdates);
             actor.SetVisibility((flags & RenderFlags.Visible) != 0);
-            var data = new ActorData { Actor = actor, Flags = flags };
+            var data = new ActorData { Actor = actor, Id = id, Flags = flags };NoteActorFrame(data);
             actors.Add(id, data);
             var observer=new ResidentActorObserver(this);observer.Construct();actor.AddComponent<ResidentActorObserver>(observer);
             groupMembershipDirty=true;
@@ -556,6 +559,7 @@ namespace ClientPlugin.Rendering.Scene
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.SpatialIndex))RefreshSpatialIndex();
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightsAndExclusions)){SelectFrameLights();PrepareExcludedActors();}
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ShadowPoses))RefreshShadowPoses();
+            SnapshotActors();
             FrameProfiler.Lap(FrameProfiler.Section.SceneUpdate);
         }
         public void BeginBuild()=>building=true;
@@ -569,6 +573,7 @@ namespace ClientPlugin.Rendering.Scene
             farCascadeStats=new FarCascadePolicyStats{Enabled=StockFarCascadesEnabled?1u:0u};
             if(ActorSizeCullingEnabled)PrepareSizeProjection(target);
             actorLodStats=new ActorLodStats{Enabled=ActorLodsEnabled?1u:0u};
+            if(FramePacketVerifyEnabled)VerifyActorFrames();
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightsAndExclusions)){frameShadowExclusions.Clear();CommitLights(target);}
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Skybox))skybox.Draw(FrameView.CameraPosition);
             profileCullTicks = profilePackTicks = profileMaterialTicks = 0;
@@ -590,14 +595,14 @@ namespace ClientPlugin.Rendering.Scene
                 if(stableOrder&&(data.PassOwned||data.CellOwned)){candidateIndex++;continue;}
                 bool ancestorsVisible;object ownerKey;
                 if(planned){var plan=candidatePlans[candidateIndex++];ancestorsVisible=plan.Visible;ownerKey=plan.Key;}
-                else{ancestorsVisible=data.Model!=null&&IsVisible(data.Actor);ownerKey=ancestorsVisible&&(data.Flags&RenderFlags.SkipInMainView)==0?MainGroupKey(data,true):null;}
-                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.MainOwnerDeclare,false))if(ownerKey!=null)target.DeclareMainOwner(data.Actor.ID,ownerKey);
-                if(data.GpuOwned){if((data.Flags&RenderFlags.SkipInMainView)==0&&(frustum==null||frustum.Contains(data.Bounds)!=ContainmentType.Disjoint))visible.Add(data.Actor.ID);continue;}if(data.PassOwned||data.CellOwned)continue;
+                else{ancestorsVisible=data.Model!=null&&BuildFrameOf(data).Visible;ownerKey=ancestorsVisible&&(data.Flags&RenderFlags.SkipInMainView)==0?MainGroupKey(data,true):null;}
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.MainOwnerDeclare,false))if(ownerKey!=null)target.DeclareMainOwner(data.Id,ownerKey);
+                if(data.GpuOwned){if((data.Flags&RenderFlags.SkipInMainView)==0&&(frustum==null||frustum.Contains(data.Bounds)!=ContainmentType.Disjoint))visible.Add(data.Id);continue;}if(data.PassOwned||data.CellOwned)continue;
                 long actorStarted = Stopwatch.GetTimestamp();
                 bool actorVisible;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorAncestorVisibility,false))actorVisible=ancestorsVisible&&((data.Flags&RenderFlags.SkipInMainView)==0 || NewActorViewsEnabled);
                 if (!actorVisible) { profileCullTicks += Stopwatch.GetTimestamp() - actorStarted; continue; }
                 var viewProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorViewGate,false);
-                MatrixD world = data.Actor.WorldMatrix;
+                MatrixD world = BuildFrameOf(data).World;
                 BoundingBoxD bounds = data.Bounds;
                 bool probeOnly=(data.Flags&RenderFlags.SkipInMainView)!=0 || frustum != null && data.StaticInstances == null && frustum.Contains(bounds) == ContainmentType.Disjoint;
                 double objectDistance=System.Math.Sqrt(Vector3D.DistanceSquared(bounds.Center,FrameView.CameraPosition));
@@ -605,12 +610,12 @@ namespace ClientPlugin.Rendering.Scene
                 viewProfile.Dispose();
                 if(probeOnly && (!target.WorldReady || outsideProbe && ((data.Flags&RenderFlags.CastShadows)==0 || objectDistance>ShadowDrawDistance+bounds.HalfExtents.Length()))){ profileCullTicks += Stopwatch.GetTimestamp() - actorStarted; continue; }
                 if(target.WorldReady&&CullActorByStockSize(target,data,bounds,probeOnly)){
-                    if(!HasHighlight(data.Actor.ID)){profileCullTicks+=Stopwatch.GetTimestamp()-actorStarted;continue;}
+                    if(!HasHighlight(data.Id)){profileCullTicks+=Stopwatch.GetTimestamp()-actorStarted;continue;}
                     sizeCullStats.HighlightOnlyActors++;
                 }
-                if(!probeOnly)visible.Add(data.Actor.ID);
+                if(!probeOnly)visible.Add(data.Id);
                 if (target.WorldReady) {
-                    bool occluded;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorOcclusionTest,false))occluded=!probeOnly && QueryActorVisibility(data.Actor.ID,bounds);
+                    bool occluded;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorOcclusionTest,false))occluded=!probeOnly && QueryActorVisibility(data.Id,bounds);
                     uint? selectedCascades=null;
                     if(ViewEligibilityEnabled && !RetainForAnyView(data,bounds,probeOnly,occluded,outsideProbe,out selectedCascades)){profileCullTicks+=Stopwatch.GetTimestamp()-actorStarted;continue;}
                     DrawnActors++;profileCullTicks += Stopwatch.GetTimestamp() - actorStarted;
@@ -667,7 +672,7 @@ namespace ClientPlugin.Rendering.Scene
         private void DrawWorld(NativeBackend target, ActorData actor, MatrixD world,bool probeOnly,bool occluded,bool outsideProbe,BoundingBoxD bounds,uint? selectedCascades=null)
         {
             var setupProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.DrawWorldSetup,false);
-            using var logicalOwner=target.WithLogicalOwner(actor.Actor.ID);using var packetOwner=target.WithPacketOwner(actor.Actor.ID);
+            using var logicalOwner=target.WithLogicalOwner(actor.Id);using var packetOwner=target.WithPacketOwner(actor.Id);
             using var mainGroup=target.WithMainGroup(MainGroupKey(actor));
             long packedAt = Stopwatch.GetTimestamp();
             bool casts=(actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))==RenderFlags.CastShadows;
@@ -683,7 +688,7 @@ namespace ClientPlugin.Rendering.Scene
             long materialsAt = Stopwatch.GetTimestamp();
             world.Translation-=FrameView.CameraPosition;
             float? oldDecalDistance=null;bool glassDepthPolicyReady=false,oldGlassSource=false;
-            if(target.RetainedSubmissionEnabled && type!=1 && actor.SubmissionOpaque && !HasHighlight(actor.Actor.ID) && !buildLights.Excluded.Contains(actor.Actor.ID))
+            if(target.RetainedSubmissionEnabled && type!=1 && actor.SubmissionOpaque && !HasHighlight(actor.Id) && !buildLights.Excluded.Contains(actor.Id))
             {
                 using var actorProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PreparedActors,false);
                 SubmitPreparedActor(target,actor,world,type,stream,count,casts,probeOnly,occluded,outsideProbe,cascades,origin,radius,dithered);
@@ -700,7 +705,7 @@ namespace ClientPlugin.Rendering.Scene
                 using var partProfile=RendererCpuProfiler.Measure(glass?RendererCpuProfiler.Phase.GlassParts:RendererCpuProfiler.Phase.LegacyOpaqueParts,false);
                 if(probeOnly && glass)continue; // Installed RenderForward captures atmosphere, not glass.
                 MyTransparentMaterial glassMaterial=null;if(glass && !MyTransparentMaterials.TryGetMaterial(VRage.Utils.MyStringId.GetOrCompute(part.MaterialName??string.Empty),out glassMaterial)){UnsupportedMaterialDraws++;continue;}
-                if(glass&&!glassDepthPolicyReady){oldGlassSource=KnownStockOldPipeline(actor)||actor.StaticInstances!=null||actor.SkinMatrices!=null||!models.IsStockNewModel(actor.Model);oldDecalDistance=oldGlassSource?(HasEntityDecals?.Invoke(actor.Actor.ID)==true?((Vector3)world.Translation).LengthSquared():float.PositiveInfinity):(float?)null;glassDepthPolicyReady=true;}
+                if(glass&&!glassDepthPolicyReady){oldGlassSource=KnownStockOldPipeline(actor)||actor.StaticInstances!=null||actor.SkinMatrices!=null||!models.IsStockNewModel(actor.Model);oldDecalDistance=oldGlassSource?(HasEntityDecals?.Invoke(actor.Id)==true?((Vector3)world.Translation).LengthSquared():float.PositiveInfinity):(float?)null;glassDepthPolicyReady=true;}
                 if(glass&&!(oldGlassSource?RenderSettings.DrawTransparentModels:RenderSettings.DrawTransparentModelsInstanced))continue;
                 MaterialOverride material=null;if(actor.Materials.Count!=0)actor.Materials.TryGetValue(part.MaterialName??string.Empty,out material);
                 if(material!=null && ((material.Flags.Add&RenderFlags.SkipInMainView)!=0 || (material.Flags.Remove&RenderFlags.Visible)!=0))continue;
@@ -725,11 +730,11 @@ namespace ClientPlugin.Rendering.Scene
                     {
                         // Every row is rewritten; Object copies the palette into the packet constants.
                         var bones=boneScratch??=new float[60*16];var row=boneRowScratch??=new float[16];for(int i=0;i<60;++i){Matrix bone=i<skin.Bones.Length && skin.Bones[i]<actor.SkinMatrices.Length?actor.SkinMatrices[skin.Bones[i]]:Matrix.Identity;NativeBackend.MatrixValues(bone,row);Array.Copy(row,0,bones,i*16,16);}
-                        if(glass)target.AddGlassPacket(transparentType,skin.Mesh,TextureCache.GetTexture(material?.Textures.ColorMetalFileName??glassMaterial.Texture),TextureCache.GetTexture(material?.Textures.NormalGlossFileName??glassMaterial.GlossTexture,false),Constants(bones),NativeBackend.GlassMaterial(glassMaterial,actor.RenderModel.Bounds.HalfExtents.X,RenderSettings),triangleFaceCulling:glassMaterial.TriangleFaceCulling,oldDecalDistanceSquared:oldDecalDistance);else {uint draw=target.AddWorldPacket(pipeline,skin.Mesh,color,normal,extensions,alpha,Constants(bones),null,1,flags,cascades,origin,radius);SubmitHighlight(draw,actor,part,skin.StartIndex,skin.IndexCount,1);}if(glass && !actor.SuppressViewHighlight && HasHighlight(actor.Actor.ID)){uint draw=target.AddWorldPacket(type,skin.Mesh,color,normal,extensions,alpha,Constants(bones),null,1,8192);SubmitHighlight(draw,actor,part,skin.StartIndex,skin.IndexCount,1);}DrawnMeshes++;
+                        if(glass)target.AddGlassPacket(transparentType,skin.Mesh,TextureCache.GetTexture(material?.Textures.ColorMetalFileName??glassMaterial.Texture),TextureCache.GetTexture(material?.Textures.NormalGlossFileName??glassMaterial.GlossTexture,false),Constants(bones),NativeBackend.GlassMaterial(glassMaterial,actor.RenderModel.Bounds.HalfExtents.X,RenderSettings),triangleFaceCulling:glassMaterial.TriangleFaceCulling,oldDecalDistanceSquared:oldDecalDistance);else {uint draw=target.AddWorldPacket(pipeline,skin.Mesh,color,normal,extensions,alpha,Constants(bones),null,1,flags,cascades,origin,radius);SubmitHighlight(draw,actor,part,skin.StartIndex,skin.IndexCount,1);}if(glass && !actor.SuppressViewHighlight && HasHighlight(actor.Id)){uint draw=target.AddWorldPacket(type,skin.Mesh,color,normal,extensions,alpha,Constants(bones),null,1,8192);SubmitHighlight(draw,actor,part,skin.StartIndex,skin.IndexCount,1);}DrawnMeshes++;
                     }
                     actor.SkinDirty=false;
                 }
-                else {if(glass)target.AddGlassPacket(transparentType,part.Mesh,TextureCache.GetTexture(material?.Textures.ColorMetalFileName??glassMaterial.Texture),TextureCache.GetTexture(material?.Textures.NormalGlossFileName??glassMaterial.GlossTexture,false),Constants(),NativeBackend.GlassMaterial(glassMaterial,actor.RenderModel.Bounds.HalfExtents.X,RenderSettings),stream,count,glassMaterial.TriangleFaceCulling,oldDecalDistance);else {uint draw=target.AddWorldPacket(pipeline,part.Mesh,color,normal,extensions,alpha,Constants(),stream,count,flags,cascades,origin,radius);SubmitHighlight(draw,actor,part,0,(uint)part.Indices.Length,count);}if(glass && !actor.SuppressViewHighlight && HasHighlight(actor.Actor.ID)){uint draw=target.AddWorldPacket(type,part.Mesh,color,normal,extensions,alpha,Constants(),stream,count,8192);SubmitHighlight(draw,actor,part,0,(uint)part.Indices.Length,count);}DrawnMeshes++;}
+                else {if(glass)target.AddGlassPacket(transparentType,part.Mesh,TextureCache.GetTexture(material?.Textures.ColorMetalFileName??glassMaterial.Texture),TextureCache.GetTexture(material?.Textures.NormalGlossFileName??glassMaterial.GlossTexture,false),Constants(),NativeBackend.GlassMaterial(glassMaterial,actor.RenderModel.Bounds.HalfExtents.X,RenderSettings),stream,count,glassMaterial.TriangleFaceCulling,oldDecalDistance);else {uint draw=target.AddWorldPacket(pipeline,part.Mesh,color,normal,extensions,alpha,Constants(),stream,count,flags,cascades,origin,radius);SubmitHighlight(draw,actor,part,0,(uint)part.Indices.Length,count);}if(glass && !actor.SuppressViewHighlight && HasHighlight(actor.Id)){uint draw=target.AddWorldPacket(type,part.Mesh,color,normal,extensions,alpha,Constants(),stream,count,8192);SubmitHighlight(draw,actor,part,0,(uint)part.Indices.Length,count);}DrawnMeshes++;}
                 if(dithered)DitheredDraws++;
             }
             profileMaterialTicks += Stopwatch.GetTimestamp() - materialsAt;
@@ -805,7 +810,7 @@ namespace ClientPlugin.Rendering.Scene
             Vector3 tint = MaterialTint(WorldShaderVariants.BasePipeline(pipeline)%5,material?.Color ?? actor.Color);
             Vector3 hsv = actor.Hsv + colorizeHsv;
             float emissive = material?.Emissivity ?? 1;
-            bool identityDraw=HasHighlight(actor.Actor.ID) || buildLights.Excluded.Contains(actor.Actor.ID);
+            bool identityDraw=HasHighlight(actor.Id) || buildLights.Excluded.Contains(actor.Id);
             bool batchRigid=target.RigidBatchingEnabled && pipeline<20 && pipeline%5==0 && stream==null && count==1 && !identityDraw;
             if(batchRigid && frame.BatchHint==null)frame.BatchHint=new NativeBackend.RigidBatchHint();
             if (frame.Live && frame.Constants != null && frame.MaterialRevision == actor.MaterialRevision && frame.Pipeline == pipeline && frame.Tint == tint && frame.Hsv == hsv && frame.Emissive == emissive && frame.Dither == actor.Dithering)
@@ -1041,6 +1046,7 @@ namespace ClientPlugin.Rendering.Scene
             ActorData actor;
             if (actors.TryGetValue(id, out actor))
             {
+                NoteActorFrame(actor);
                 RemoveNativePassActor(actor,false);nativePassDirty.Remove(actor);ReleaseCell(actor,false);cellDirty.Remove(actor);cellPoseDirty.Remove(actor);
                 InvalidateOcclusion("Removal");
                 groupMembershipDirty=true;occlusionGroups.Remove(actor.Actor);

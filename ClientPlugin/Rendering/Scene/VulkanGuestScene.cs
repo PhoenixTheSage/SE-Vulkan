@@ -10,7 +10,7 @@ public sealed partial class VulkanScene
 {
     internal object[] CaptureGuestCharacter(uint actorId)
     {
-        if (actorId == 0 || !actors.TryGetValue(actorId, out var actor) || actor.Actor.IsDestroyed || actor.Model == null)
+        if (actorId == 0 || !actors.TryGetValue(actorId, out var actor) || BuildFrameOf(actor).Destroyed || actor.Model == null)
             return new object[] { Array.Empty<float>(), Array.Empty<float>(), Array.Empty<double>(), Array.Empty<double>(), "no controlled render character" };
         float[] Copy(VulkanModel model)
         {
@@ -31,7 +31,7 @@ public sealed partial class VulkanScene
         }
         var maskModel = actor.RenderModel ?? actor.Model;
         float[] mask = ReferenceEquals(atlasModel, maskModel) ? atlas : Copy(maskModel);
-        var m = actor.Actor.WorldMatrix;
+        var m = BuildFrameOf(actor).World;
         var box = actor.Bounds;
         return new object[] { atlas, mask,
             new double[] { m.M11,m.M12,m.M13,m.M14,m.M21,m.M22,m.M23,m.M24,m.M31,m.M32,m.M33,m.M34,m.M41,m.M42,m.M43,m.M44 },
@@ -73,7 +73,7 @@ public sealed partial class VulkanScene
         foreach (var pair in actors)
         {
             var actor = pair.Value;
-            if (actor.Model == null || actor.Actor.IsDestroyed) continue;
+            if (actor.Model == null || BuildFrameOf(actor).Destroyed) continue;
             var box = actor.Bounds;
             var center = box.Center;
             var half = box.HalfExtents;

@@ -28,7 +28,8 @@ partial class Program
         var layout=new MyLightLayout{Range=20,Color=new Vector3(1,.5f,.25f),Falloff=1,DiffuseFactor=1,GlossFactor=.5f};
         scene.Process(new MyRenderMessageUpdateRenderLight{Data=new UpdateRenderLightData{ID=9010,Position=camera+new Vector3D(0,2,0),SpotLightOn=true,SpotIntensity=1,
             SpotLight=new MySpotLightLayout{Direction=Vector3.Forward,Up=Vector3.Up,ApertureCos=.8f,Light=layout}}});
-        object[] Capture()=>(object[])capture.Invoke(scene,null)!;
+        // The capture is Build work: it reads the actor frames, so each capture first runs the scene update and latch.
+        object[] Capture(){scene.UpdateScene();scene.LatchFrame();scene.BeginBuild();return (object[])capture.Invoke(scene,null)!;}
         object[] Frame(object[] c,uint index)=>new object[]{1,1,index,c[5],c[0],c[1],c[2],null!,new[]{64,64},new float[12],new float[16],new float[16],Array.Empty<object[]>(),c[3],c[4],null!};
         var first=Capture();var meshes=(object[][])first[0];var instances=(object[][])first[1];var lights=(float[])first[2];
         var ours=instances.Where(i=>(uint)i[0]>=9001&&(uint)i[0]<=9003).ToArray();
