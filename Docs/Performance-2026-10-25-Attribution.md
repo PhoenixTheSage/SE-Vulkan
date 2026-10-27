@@ -1823,3 +1823,73 @@ The render thread does about 5.4 ms of serial managed and native work per
 frame. Getting under 4.17 ms needs that work to overlap the next frame
 (Phase 4, frame-build stage) or a deep incremental rewrite of publication
 (the full 1b design). Small cuts will not close a 1.2 ms gap.
+
+## Phase 4 step 1: overlapped native publication (2026-10-27)
+
+"Complete Phase 4" was scoped to what can run without a frame-packet snapshot.
+The full Apply/Build split needs one, because the traversal reads game-owned
+`MyActor` objects that `ProcessMessages` mutates for the next frame. This step
+is the intra-frame part: the native publish leaves the render thread's
+critical path inside the same frame.
+
+### What it does (`SE_VULKAN_OVERLAP_PUBLICATION=1`, opt-in)
+
+- The native pass preparation starts right after the native commits, from the
+  probe plan, so it overlaps the actor traversal.
+- After the traversal, `BeginNativePassPublication` resolves missing levels and
+  runs the occlusion queries on the render thread (same order as before), then
+  launches the native publish as a render job.
+- The publish overlaps voxels, flares and lighting setup.
+  `FinishNativePassPublication` joins it, rebuilds the probe views from the
+  configured probes, and on a mismatch (a probe reset, about 17 frames per run)
+  prepares and publishes again synchronously. Then it emits glass and
+  fallbacks, publishes the cells and ends visibility.
+- New profiler phase `PublicationJoin`; the diagnostic line reports
+  republishes and the job's queue, run, join-wait and slack times.
+
+Validation with the toggle on: GPU suites pass, the VAL gameplay run has 0
+errors, and the frozen-light lane is clean.
+
+### Measurements
+
+Job timing (orbit, one run): queue 0.028 ms, run 0.664 ms, join wait
+0.288 ms, ready early 0.071 ms. The publish job runs longer than the work it
+overlaps (about 0.4 ms of voxels and lighting setup), and the render thread
+waits about 0.29 ms at the join.
+
+Lock census (NPOVP): `LockBlocked` 1,424 over 8,222 frames. Almost all of it
+is two lighting-setup calls waiting behind the publish, which holds
+`api_mutex` for the whole selection:
+- `sevk_set_probe_atmosphere`: 658 waits, 346 ms;
+- `sevk_get_flare_results`: 659 waits, 345 ms.
+
+That averages about 0.08 ms per frame. Moving the probe-view check before the
+join gains nothing: `ProbeFaceMask` makes native calls, which block on the
+same lock.
+
+Paired runs, quiet box (about 9% CPU), present interval mean / P95, ms:
+
+| World | NP (off) | NPOV (on) |
+|---|---|---|
+| Orbit | 5.47 / 7.84, 5.32 / 7.42, 5.55 / 7.90 (mean 5.45) | 5.78 / 8.16, 5.19 / 7.25, 5.42 / 7.28 (mean 5.46) |
+| Interior | 5.44 / 7.48, 5.47 / 7.50 (mean 5.455) | 5.43 / 7.43, 5.42 / 7.58 (mean 5.425) |
+
+Results: `TestResults/Phase4Step1-Orbit-2026-10-27.json`,
+`TestResults/Phase4Step1-Interior-2026-10-27.json`.
+
+### Conclusion
+
+Flat within noise on both worlds, so the toggle stays opt-in. The overlap can
+save at most about 0.4 ms (the overlapped window). It loses roughly that much
+to the join wait (0.29 ms), the lighting-setup calls that block on
+`api_mutex` (0.08 ms), and job-pool contention with the forked flares and
+billboards, which inflates the publish from about 0.5 to 0.66 ms.
+
+Making it pay would need:
+- the publish to run under its own pass-scene lock instead of `api_mutex`;
+- the queries to move off the traversal's shared occlusion buffers, so the
+  publish can start before the traversal.
+
+Even then, the ceiling is about 0.4 ms. That confirms the plan: only the
+cross-frame Apply/Build split, with a frame-packet snapshot, is sized to the
+1.2 ms gap.

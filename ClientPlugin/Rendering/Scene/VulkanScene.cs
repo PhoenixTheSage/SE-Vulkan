@@ -561,6 +561,7 @@ namespace ClientPlugin.Rendering.Scene
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Occlusion)){visible.Clear();if(target.WorldReady)BeginOcclusion();}
             if(target.WorldReady)BeginShadowGroupOcclusion();
             CommitNativePassActors();CommitCells();
+            if(target.WorldReady)BeginEarlyPassPrepare(); // overlap mode: the preparation runs during the traversal
             profileCullTicks += Stopwatch.GetTimestamp() - cullStarted;
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorTraversal)){
             IEnumerable<ActorData> drawCandidates;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CandidateQuery))drawCandidates=DrawCandidates(target.WorldReady);

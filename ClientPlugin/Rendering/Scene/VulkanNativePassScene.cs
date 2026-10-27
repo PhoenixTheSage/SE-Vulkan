@@ -220,37 +220,92 @@ public sealed partial class VulkanScene
         fixed(NativePassView* a=earlyViews)fixed(NativePassView* b=passViewArray)return SameBytes((byte*)a,(byte*)b,views.Count*sizeof(NativePassView));
     }
     readonly NativePassPreparationBuffer passPreparation=new();NativePassQueryResult[] passResults=Array.Empty<NativePassQueryResult>();NativePassTransparent[] passTransparent=Array.Empty<NativePassTransparent>();
-    public unsafe void PublishNativePassScene()
+    // Phase 4 step 1 (SE_VULKAN_OVERLAP_PUBLICATION=1, needs early preparation): the native preparation starts right
+    // after the native commits (overlapping the traversal, through PrepareInputs), and the native publish runs as a
+    // render job between BeginNativePassPublication (after the traversal) and FinishNativePassPublication (after
+    // lighting setup), overlapping voxels, flares and lighting setup. The publish uses the views prepared from the
+    // probe plan; Finish rebuilds them from the configured probes and, on a mismatch (rare: a probe reset), publishes
+    // again synchronously, so the frame never keeps a prediction that differs. Queries still run after the traversal,
+    // in the same order as before.
+    public static readonly bool OverlapPublicationEnabled=System.Environment.GetEnvironmentVariable("SE_VULKAN_OVERLAP_PUBLICATION")=="1";
+    // The probe plan for the early preparation: (face projections, face mask). Set by the renderer.
+    public Func<(float[] Projections,uint Faces)> PrepareInputs;
+    bool overlapPublication,publishPending,deferredPublication;int publishCount;RenderJobs.Job? publishJob;public long PublicationRepublishes{get;private set;}
+    void BeginEarlyPassPrepare(){if(!OverlapPublicationEnabled||!EarlyPassPrepareEnabled||PrepareInputs==null||!nativePassActive||gpuActive)return;var inputs=PrepareInputs();BeginNativePassPrepare(inputs.Projections,inputs.Faces);earlyFromScene=true;}
+    bool earlyFromScene;
+    // Overlapped publish timing (ms per publish): queue delay before a worker took it, its run time, the render
+    // thread's wait at the join, and how long the result waited for the join.
+    long publishQueueTicks,publishRunTicks,publishJoinTicks,publishSlackTicks,publishEnd,publishJobs;
+    public string PublicationTiming(){double k=1000.0/System.Diagnostics.Stopwatch.Frequency/Math.Max(1,publishJobs);return "queue "+(publishQueueTicks*k).ToString("0.000")+" ms, run "+(publishRunTicks*k).ToString("0.000")+" ms, join wait "+(publishJoinTicks*k).ToString("0.000")+" ms, ready early "+(publishSlackTicks*k).ToString("0.000")+" ms";}
+    public void PublishNativePassScene(){BeginNativePassPublication(false);FinishNativePassPublication();}
+    // Prepared (or prepares), resolves missing levels and queries, and publishes, as a job when overlapping.
+    public unsafe void BeginNativePassPublication(bool overlap=true)
     {
-        PublishGpuScene();if(!nativePassActive){if(gpuActive)FinishPassVisibility();return;}using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPublication);
-        var views=BuildNativeViews(out NativePassFrame frame);
-        bool early=earlyPrepared;earlyPrepared=false;
-        if(early&&EarlyPreparationMatches(ref frame,views))EarlyPrepareHits++;
+        overlapPublication=false;publishJob=null;deferredPublication=false;
+        // Overlap only from a scene-started early preparation; it is checked against the configured probes in Finish.
+        // Without one, the whole publication waits for Finish (after probes.Configure), exactly as before.
+        if(overlap&&!(earlyPrepared&&earlyFromScene)){deferredPublication=true;earlyFromScene=false;return;}
+        PublishGpuScene();if(!nativePassActive)return;using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPublication);
+        bool early=earlyPrepared;
+        if(overlap){overlapPublication=true;earlyPrepared=false;}
         else{
-            if(early){EarlyPrepareMisses++;backend.CancelPassFrame();}
-            if(passViewArray.Length<views.Count)passViewArray=new NativePassView[Math.Max(views.Count,passViewArray.Length*2)];views.CopyTo(passViewArray);
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPrepare))backend.PreparePassFrame(ref frame,passViewArray,views.Count);
+            var views=BuildNativeViews(out NativePassFrame frame);earlyPrepared=false;
+            if(early&&EarlyPreparationMatches(ref frame,views))EarlyPrepareHits++;
+            else{
+                if(early){EarlyPrepareMisses++;backend.CancelPassFrame();}
+                if(passViewArray.Length<views.Count)passViewArray=new NativePassView[Math.Max(views.Count,passViewArray.Length*2)];views.CopyTo(passViewArray);
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPrepare))backend.PreparePassFrame(ref frame,passViewArray,views.Count);
+            }
         }
-        bool pending=true;
-        try{
-            var preparation=passPreparation;
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassResources)){
-                backend.GetPassPreparation(preparation);for(int i=0;i<preparation.MissingCount;i++){var request=preparation.Missing[i];ResolvePassLevel(nativePassFamilyByHandle[request.Family],(int)request.Lod);}
+        earlyFromScene=false;publishPending=true;
+        try{ResolveAndQuery();}
+        catch{publishPending=false;backend.CancelPassFrame();throw;}
+        if(overlapPublication){int count=publishCount;long launched=System.Diagnostics.Stopwatch.GetTimestamp();publishJob=RenderJobs.Start(()=>{long start=System.Diagnostics.Stopwatch.GetTimestamp();backend.PublishPassFrame(passResults,count);long end=System.Diagnostics.Stopwatch.GetTimestamp();publishQueueTicks+=start-launched;publishRunTicks+=end-start;publishEnd=end;});}
+        else{try{using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPublish))backend.PublishPassFrame(passResults,publishCount);publishPending=false;}catch{publishPending=false;backend.CancelPassFrame();throw;}}
+    }
+    void ResolveAndQuery()
+    {
+        var preparation=passPreparation;
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassResources)){
+            backend.GetPassPreparation(preparation);for(int i=0;i<preparation.MissingCount;i++){var request=preparation.Missing[i];ResolvePassLevel(nativePassFamilyByHandle[request.Family],(int)request.Lod);}
+        }
+        int resultCount=preparation.QueryCount;
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassQueries)){
+        if(passResults.Length<resultCount)passResults=new NativePassQueryResult[Math.Max(resultCount,passResults.Length*2)];var results=passResults;
+        for(int i=0;i<resultCount;i++){var query=preparation.Queries[i];ulong hidden=0;if(actors.TryGetValue(query.Representative,out var actor)){if((query.Views&1)!=0&&QueryGroupVisibility(query.Representative))hidden|=1;uint cascades=(uint)(query.Views>>1)&255u;hidden|=(ulong)(cascades&~FilterShadowGroupCascades(actor,cascades))<<1;}results[i]=new NativePassQueryResult{Group=query.Group,HiddenViews=hidden};}
+        }
+        publishCount=resultCount;
+    }
+    // Joins an overlapped publish, republishes if the configured probe views differ from the plan, then emits
+    // glass and fallbacks, publishes the cells and ends visibility.
+    public unsafe void FinishNativePassPublication()
+    {
+        if(deferredPublication){deferredPublication=false;BeginNativePassPublication(false);}
+        if(!nativePassActive){if(gpuActive)FinishPassVisibility();return;}
+        using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPublication);
+        if(publishJob is RenderJobs.Job job){publishJob=null;
+            try{long joinStart=System.Diagnostics.Stopwatch.GetTimestamp();using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PublicationJoin))job.Wait();long joined=System.Diagnostics.Stopwatch.GetTimestamp();publishJoinTicks+=joined-joinStart;publishSlackTicks+=Math.Max(0,joinStart-publishEnd);publishJobs++;publishPending=false;}
+            catch{publishPending=false;throw;}
+            var views=BuildNativeViews(out NativePassFrame frame);
+            if(EarlyPreparationMatches(ref frame,views))EarlyPrepareHits++;
+            else{
+                // The probe configuration differs from the plan: prepare and publish again from the configured views.
+                EarlyPrepareMisses++;PublicationRepublishes++;
+                if(passViewArray.Length<views.Count)passViewArray=new NativePassView[Math.Max(views.Count,passViewArray.Length*2)];views.CopyTo(passViewArray);
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPrepare))backend.PreparePassFrame(ref frame,passViewArray,views.Count);
+                try{ResolveAndQuery();using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPublish))backend.PublishPassFrame(passResults,publishCount);}
+                catch{backend.CancelPassFrame();throw;}
             }
-            int resultCount=preparation.QueryCount;
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassQueries)){
-            if(passResults.Length<resultCount)passResults=new NativePassQueryResult[Math.Max(resultCount,passResults.Length*2)];var results=passResults;
-            for(int i=0;i<resultCount;i++){var query=preparation.Queries[i];ulong hidden=0;if(actors.TryGetValue(query.Representative,out var actor)){if((query.Views&1)!=0&&QueryGroupVisibility(query.Representative))hidden|=1;uint cascades=(uint)(query.Views>>1)&255u;hidden|=(ulong)(cascades&~FilterShadowGroupCascades(actor,cascades))<<1;}results[i]=new NativePassQueryResult{Group=query.Group,HiddenViews=hidden};}
-            }
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassPublish))backend.PublishPassFrame(passResults,resultCount);pending=false;
-            if(NativeMixedOpaqueEnabled){int tickets=backend.GetPassTransparentRequests(ref passTransparent);for(int i=0;i<tickets;i++)DrawNativePassGlass(passTransparent[i]);}
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassFallbacks)){
-            backend.GetPassPreparation(preparation);
-            for(int f=0;f<preparation.FallbackCount;f++){var fallback=preparation.Fallbacks[f];if(actors.TryGetValue(fallback.Owner,out var data)){
-                nativePassFallbacks++;RemoveNativePassActor(data,gpu:false);data.NewLod.Import(fallback.Lod);DirtyNativePass(data);DrawNativePassFallback(data);
-            }}
-            }
-        }finally{if(pending)backend.CancelPassFrame();}
+        }
+        else if(publishPending){publishPending=false;}
+        var preparation=passPreparation;
+        if(NativeMixedOpaqueEnabled){int tickets=backend.GetPassTransparentRequests(ref passTransparent);for(int i=0;i<tickets;i++)DrawNativePassGlass(passTransparent[i]);}
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassFallbacks)){
+        backend.GetPassPreparation(preparation);
+        for(int f=0;f<preparation.FallbackCount;f++){var fallback=preparation.Fallbacks[f];if(actors.TryGetValue(fallback.Owner,out var data)){
+            nativePassFallbacks++;RemoveNativePassActor(data,gpu:false);data.NewLod.Import(fallback.Lod);DirtyNativePass(data);DrawNativePassFallback(data);
+        }}
+        }
         PublishCells();
         FinishPassVisibility();
     }
