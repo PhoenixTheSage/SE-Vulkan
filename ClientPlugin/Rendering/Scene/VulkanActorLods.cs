@@ -49,10 +49,10 @@ public sealed partial class VulkanScene
             // Native actors do not install DX11 cull proxies, so their stock
             // cached WorldAabb is empty when unparented. Use our authoritative
             // transformed local bound for that branch of the same distance rule.
-            float squared=actor.Actor.Parent==null?(float)bounds.DistanceSquared(Environment.CameraPosition):actor.Actor.CalculateCameraDistanceSquared();
+            float squared=actor.Actor.Parent==null?(float)bounds.DistanceSquared(FrameView.CameraPosition):actor.Actor.CalculateCameraDistanceSquared();
             float distance=(float)Math.Sqrt(squared);distance=(distance*coefficient+actorLodSettings.Global.ObjectDistanceAdd)*actorLodSettings.Global.ObjectDistanceMult;
             if(actor.InstanceBuffer!=uint.MaxValue && instances.TryGetValue(actor.InstanceBuffer,out var buffer) && buffer.Cubes!=null && buffer.EnabledSkinning)distance*=.25f;
-            actor.Lod.Update(distance,actor.Model.LodDistances,actorLodSettings.Global,actorLodSettings.GBuffer,Environment.LastFrameDelta);lod=actor.Lod.Current;alpha=actor.Lod.Transition;
+            actor.Lod.Update(distance,actor.Model.LodDistances,actorLodSettings.Global,actorLodSettings.GBuffer,FrameView.LastFrameDelta);lod=actor.Lod.Current;alpha=actor.Lod.Transition;
             actorLodStats.SelectedActors++;if(lod!=0)actorLodStats.ReducedActors++;if(alpha!=0)actorLodStats.TransitionActors++;
         }
         var current= models.GetLod(actor.Model,lod);VulkanModel next=eligible&&alpha!=0?models.GetLod(actor.Model,actor.Lod.Next):null;

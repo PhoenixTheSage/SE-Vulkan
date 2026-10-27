@@ -59,7 +59,7 @@ public sealed partial class VulkanScene
         var lightIds = new List<uint>();
         var bounds = new List<double>();
         var actorIds = new List<uint>();
-        var camera = Environment.CameraPosition;
+        var camera = FrameView.CameraPosition;
         var anchor = camera;
         foreach (var light in lights)
         {

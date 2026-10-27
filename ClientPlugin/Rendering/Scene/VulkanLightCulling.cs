@@ -13,7 +13,6 @@ public sealed partial class VulkanScene
     readonly List<MyManualCullTreeData> lightQueryGroups=new List<MyManualCullTreeData>();
     readonly List<bool> lightGroupContained=new List<bool>();
     readonly List<StockLightSelection.Group> lightPointGroups=new List<StockLightSelection.Group>();
-    BoundingFrustumD lightFarFrustum;
     readonly struct LightFrustum
     {
         readonly Plane[] planes;
@@ -32,14 +31,14 @@ public sealed partial class VulkanScene
     static void RemoveLightAtFast<T>(List<T> list,int at){list[at]=list[list.Count-1];list.RemoveAt(list.Count-1);}
     void CullLightGroup(MyManualCullTreeData data,BoundingFrustum local)
     {
-        int count=data.BruteCull.Count;bool brute=count<=RenderSettings.CullGroupsThreshold;
+        int count=data.BruteCull.Count;bool brute=count<=Next.RenderSettings.CullGroupsThreshold;
         ref var state=ref data.RenderCullData[0];
         var clip=new LightFrustum(local);
-        if(RenderSettings.UseIncrementalCulling){
-            if(brute||state.ActiveActorsLastFrame>=count*RenderSettings.IncrementalCullingTreeFallbackThreshold){
+        if(Next.RenderSettings.UseIncrementalCulling){
+            if(brute||state.ActiveActorsLastFrame>=count*Next.RenderSettings.IncrementalCullingTreeFallbackThreshold){
                 var active=state.ActiveActors;var culled=state.CulledActors;var results=(CullResults)state.ActiveResults;int oldCount=active.Count;
                 for(int i=0;i<culled.Count;i++)if(clip.Contains(culled[i].Aabb)){var item=culled[i];item.UserData.Add(results,true);RemoveLightAtFast(culled,i);active.Add(item);i--;}
-                int check=oldCount>=RenderSettings.IncrementalCullFrames?oldCount/RenderSettings.IncrementalCullFrames:oldCount;
+                int check=oldCount>=Next.RenderSettings.IncrementalCullFrames?oldCount/Next.RenderSettings.IncrementalCullFrames:oldCount;
                 int offset=state.IterationOffset;if(offset>=oldCount)offset=0;int end=Math.Min(oldCount,offset+check);
                 for(int i=offset;i<end;i++)if(!clip.Contains(active[i].Aabb)){var item=active[i];item.UserData.Remove(results);culled.Add(item);RemoveLightAtFast(active,i);end--;i--;}
                 state.IterationOffset=end;state.ActiveActorsLastFrame=active.Count;lightQuery.Append(results);
@@ -55,14 +54,14 @@ public sealed partial class VulkanScene
     (List<VulkanLightComponent> Points,List<VulkanLightComponent> Spots) SelectLights()
     {
         lightQuery.Clear();lightPointGroups.Clear();lightQueryGroups.Clear();lightGroupContained.Clear();
-        if(frustum==null){
+        if(Next.Frustum==null){
             // Offscreen callers that supply no view retain an unbounded query.
             foreach(var light in lights)if(light.Owner!=null&&IsVisible(light.Owner)){if(light.PointOn)lightQuery.Points.Add(light);if(light.SpotOn)lightQuery.Spots.Add(light);}
         }else{
-            if(RenderSettings.DrawNonMergeInstanced){
-                var view=frustum;DynamicRenderablesDBVH.OverlapAllFrustum(ref view,(MyCullResultsBase)lightQuery);
-                var far=lightFarFrustum??view;DynamicRenderablesFarDBVH.OverlapAllFrustum(ref far,(MyCullResultsBase)lightQuery);
-                if(RenderSettings.DrawGroups){
+            if(Next.RenderSettings.DrawNonMergeInstanced){
+                var view=Next.Frustum;DynamicRenderablesDBVH.OverlapAllFrustum(ref view,(MyCullResultsBase)lightQuery);
+                var far=Next.LightFarFrustum??view;DynamicRenderablesFarDBVH.OverlapAllFrustum(ref far,(MyCullResultsBase)lightQuery);
+                if(Next.RenderSettings.DrawGroups){
                     ManualCullTree.OverlapAllFrustum(ref view,lightQueryGroups,lightGroupContained);
                     for(int i=0;i<lightQueryGroups.Count;i++){
                         var group=lightQueryGroups[i];int start=lightQuery.Points.Count;
@@ -78,9 +77,9 @@ public sealed partial class VulkanScene
                     }
                 }
             }
-            if(RenderSettings.DrawMergeInstanced){var view=frustum;MergeGroupsDBVH.OverlapAllFrustum(ref view,(MyCullResultsBase)lightQuery);}
+            if(Next.RenderSettings.DrawMergeInstanced){var view=Next.Frustum;MergeGroupsDBVH.OverlapAllFrustum(ref view,(MyCullResultsBase)lightQuery);}
         }
-        return (StockLightSelection.Points(lightQuery.Points,lightPointGroups,(int)WorldConstants.PointLightCapacity(RenderSettings.User.LightsQuality),light=>light.Owner.CalculateCameraDistanceSquaredFast()),
+        return (StockLightSelection.Points(lightQuery.Points,lightPointGroups,(int)WorldConstants.PointLightCapacity(Next.RenderSettings.User.LightsQuality),light=>light.Owner.CalculateCameraDistanceSquaredFast()),
             StockLightSelection.Spots(lightQuery.Spots,light=>light.Owner.CalculateCameraDistanceSquaredFast()));
     }
 }

@@ -86,7 +86,7 @@ public static class GuestBridge
             d.DarkColor.X,d.DarkColor.Y,d.DarkColor.Z,s.EnableTonemapping?1f:0f,p.Fxaa?1f:0f};
     }
     /// <summary>Render draw time in seconds, the timebase DX11 exposes as MyCommon.FrameTime.</summary>
-    public static double FrameSeconds()=>scene==null?0:scene.Environment.FrameTime.Seconds;
+    public static double FrameSeconds()=>scene==null?0:scene.FrameView.FrameTime.Seconds;
     /// <summary>Renderer image ids of avgLuminance, bloom and dirt; valid after the frame's tone stage.</summary>
     public static ulong[] TonemapInputImages()=>current==null?null:new[]{0xFFFF000000000018UL,0xFFFF000000000019UL,0xFFFF00000000001AUL};
     internal static void BeginScene(NativeBackend backend,Scene.VulkanScene currentScene)

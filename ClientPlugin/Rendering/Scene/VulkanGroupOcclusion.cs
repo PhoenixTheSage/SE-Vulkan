@@ -101,8 +101,8 @@ public sealed partial class VulkanScene
     {
         if(RenderSettings.DisableOcclusionQueries || RenderSettings.IgnoreOcclusionQueries || !actors.TryGetValue(id,out var data) || data.OcclusionGroup==null)return false;
         var group=data.OcclusionGroup;if(group.Seen!=FrameCounter){group.Seen=FrameCounter;group.Hidden=false;if(!group.Bounds.Min.IsValid()||!group.Bounds.Max.IsValid()||group.Members.Count==0)return false;
-            bool entered=group.State.LastInView!=FrameCounter-1;group.Hidden=group.State.Observe(FrameCounter,group.Bounds,Environment.CameraPosition,groupNear);if(entered)groupReentries++;
-            var inflated=group.Bounds.GetInflated(group.Bounds.Size*.5);var eye=Environment.CameraPosition;bool close=inflated.DistanceSquared(ref eye)<groupNear;
+            bool entered=group.State.LastInView!=FrameCounter-1;group.Hidden=group.State.Observe(FrameCounter,group.Bounds,FrameView.CameraPosition,groupNear);if(entered)groupReentries++;
+            var inflated=group.Bounds.GetInflated(group.Bounds.Size*.5);var eye=FrameView.CameraPosition;bool close=inflated.DistanceSquared(ref eye)<groupNear;
             if(!entered && !close && packedOcclusionCount<8192){var min=inflated.Min-eye;var size=inflated.Size;packedOcclusion[packedOcclusionCount++]=new NativePackedOcclusionDraw{Id=group.QueryId,MinimumX=(float)min.X,MinimumY=(float)min.Y,MinimumZ=(float)min.Z,ExtentX=(float)size.X,ExtentY=(float)size.Y,ExtentZ=(float)size.Z};groupOwners[group.QueryId]=new GroupQueryOwner{Group=group,Epoch=group.State.Epoch,Frame=FrameCounter,Bounds=inflated};groupQueries++;}
         }
         if(group.Hidden)OcclusionCulls++;return group.Hidden;

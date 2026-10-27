@@ -91,7 +91,7 @@ public sealed partial class VulkanScene
     /// </summary>
     internal object[] CaptureRayScene()
     {
-        var center = Environment.CameraPosition;
+        var center = FrameView.CameraPosition;
         var meshes = new List<object[]>(); var meshIndices = new Dictionary<VulkanModel, int>(); var instances = new List<object[]>();
         foreach (var actor in actors.Values)
         {

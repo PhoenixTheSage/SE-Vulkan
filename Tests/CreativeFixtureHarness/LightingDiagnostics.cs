@@ -54,13 +54,13 @@ D[p.xy]=float4(Depth.Load(int3(p.xy,0)),0,0,1);E[p.xy]=Hdr.Load(int3(p.xy,0));}"
         if(expectedBackend.ToString()=="Vulkan") {
             lightingHarmony.Patch(AccessTools.Method(typeof(NativeBackend),"InitializeHbaoJitter"),prefix:new HarmonyMethod(typeof(Plugin),nameof(PinLightingHbaoJitter)));
             lightingHarmony.Patch(AccessTools.Method(typeof(NativeBackend),"SetHbao"),prefix:new HarmonyMethod(typeof(Plugin),nameof(EnsureVulkanLightingHbaoJitter)));
-            if(meshDecalMode){lightingHarmony.Patch(AccessTools.Method(typeof(ClientPlugin.Rendering.Scene.VulkanScene),"Draw"),postfix:new HarmonyMethod(typeof(Plugin),nameof(ObserveMeshDecalScene)));lightingHarmony.Patch(AccessTools.Method(typeof(NativeBackend),"EndFrame"),postfix:new HarmonyMethod(typeof(Plugin),nameof(ObserveMeshDecalVulkan)));lightingHarmony.Patch(AccessTools.Method(typeof(ClientPlugin.Rendering.Shaders.WorldConstants),"Frame"),postfix:new HarmonyMethod(typeof(Plugin),nameof(CaptureLightingFrame)));return;}
+            if(meshDecalMode){lightingHarmony.Patch(AccessTools.Method(typeof(ClientPlugin.Rendering.Scene.VulkanScene),"BuildScene"),postfix:new HarmonyMethod(typeof(Plugin),nameof(ObserveMeshDecalScene)));lightingHarmony.Patch(AccessTools.Method(typeof(NativeBackend),"EndFrame"),postfix:new HarmonyMethod(typeof(Plugin),nameof(ObserveMeshDecalVulkan)));lightingHarmony.Patch(AccessTools.Method(typeof(ClientPlugin.Rendering.Shaders.WorldConstants),"Frame"),postfix:new HarmonyMethod(typeof(Plugin),nameof(CaptureLightingFrame)));return;}
             if(glassOverlapMode){
-                lightingHarmony.Patch(AccessTools.Method(typeof(ClientPlugin.Rendering.Scene.VulkanScene),"Draw"),postfix:new HarmonyMethod(typeof(Plugin),nameof(ObserveGlassOverlapScene)));
+                lightingHarmony.Patch(AccessTools.Method(typeof(ClientPlugin.Rendering.Scene.VulkanScene),"BuildScene"),postfix:new HarmonyMethod(typeof(Plugin),nameof(ObserveGlassOverlapScene)));
                 lightingHarmony.Patch(AccessTools.Method(typeof(ClientPlugin.Rendering.Shaders.WorldConstants),"Frame"),postfix:new HarmonyMethod(typeof(Plugin),nameof(CaptureLightingFrame)));
                 lightingHarmony.Patch(AccessTools.Method(typeof(NativeBackend),"EndFrame"),postfix:new HarmonyMethod(typeof(Plugin),nameof(ObserveGlassOverlapVulkan)));return;
             }
-            lightingHarmony.Patch(AccessTools.Method(typeof(ClientPlugin.Rendering.Scene.VulkanScene),"Draw"),postfix:new HarmonyMethod(typeof(Plugin),nameof(CaptureLightingLods)));
+            lightingHarmony.Patch(AccessTools.Method(typeof(ClientPlugin.Rendering.Scene.VulkanScene),"BuildScene"),postfix:new HarmonyMethod(typeof(Plugin),nameof(CaptureLightingLods)));
             lightingHarmony.Patch(AccessTools.Method(typeof(BackendRuntime),"RaiseFrame"),postfix:new HarmonyMethod(typeof(Plugin),nameof(QueueLightingReadback)));
             lightingHarmony.Patch(AccessTools.Method(typeof(NativeBackend),"EndFrame"),postfix:new HarmonyMethod(typeof(Plugin),nameof(CompleteLightingReadback)));
             lightingHarmony.Patch(AccessTools.Method(typeof(ClientPlugin.Rendering.Shaders.WorldConstants),"Frame"),postfix:new HarmonyMethod(typeof(Plugin),nameof(CaptureLightingFrame)));

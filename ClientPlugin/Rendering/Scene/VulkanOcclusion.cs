@@ -52,8 +52,8 @@ public sealed partial class VulkanScene
         if(RenderSettings.DisableOcclusionQueries || RenderSettings.IgnoreOcclusionQueries)return false;
         if((backend.RetainedSubmissionEnabled?packedOcclusionCount:occlusionPackets.Count)<8192)
         {
-            Vector3D min=bounds.Min-Environment.CameraPosition,size=bounds.Size;
-            bool near= bounds.Contains(Environment.CameraPosition)==ContainmentType.Contains || frustum!=null && bounds.Intersects(frustum.Near)==PlaneIntersectionType.Intersecting;
+            Vector3D min=bounds.Min-FrameView.CameraPosition,size=bounds.Size;
+            bool near= bounds.Contains(FrameView.CameraPosition)==ContainmentType.Contains || frustum!=null && bounds.Intersects(frustum.Near)==PlaneIntersectionType.Intersecting;
             if(backend.RetainedSubmissionEnabled)packedOcclusion[packedOcclusionCount++]=new NativePackedOcclusionDraw{Id=id,MinimumX=(float)min.X,MinimumY=(float)min.Y,MinimumZ=(float)min.Z,ExtentX=(float)size.X,ExtentY=(float)size.Y,ExtentZ=(float)size.Z,Flags=near?1u:0u};
             else occlusionPackets.Add(new NativeOcclusionDraw{Id=id,Minimum=new[]{(float)min.X,(float)min.Y,(float)min.Z},Extents=new[]{(float)size.X,(float)size.Y,(float)size.Z},Flags=near?1u:0u});currentVisibility.Bounds[id]=bounds;
             if(near)return false;

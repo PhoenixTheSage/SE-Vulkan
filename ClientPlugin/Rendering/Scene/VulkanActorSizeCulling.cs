@@ -28,7 +28,7 @@ public sealed partial class VulkanScene
             bool parented=actor.Actor.Parent!=null;
             if(!parented||actor.Actor.HasLocalAabb){
                 sizeCullStats.TestedActors++;
-                float distance=parented?actor.Actor.CalculateCameraDistanceSquared():(float)bounds.DistanceSquared(Environment.CameraPosition);
+                float distance=parented?actor.Actor.CalculateCameraDistanceSquared():(float)bounds.DistanceSquared(FrameView.CameraPosition);
                 Vector3D extent=parented?(Vector3D)actor.Actor.LocalAabb.Extents:bounds.Extents;
                 float volume=(float)Math.Max(Math.Max(extent.X,extent.Y),extent.Z),last=0;
                 foreach(float threshold in actor.Model.LodDistances)last=Math.Max(last,threshold*threshold);

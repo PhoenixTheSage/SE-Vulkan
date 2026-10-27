@@ -45,7 +45,7 @@ public sealed partial class VulkanScene
         if(highlights.TryGetValue(id,out var list))foreach(var h in list)
         {
             int selected=h.Instance<0?0:h.Instance-(actor.InstanceBuffer!=uint.MaxValue?actor.InstanceStart:0);if(selected<0 || selected>=instances)continue;uint instance=(uint)selected;
-            var color=h.Color*(1-MathHelper.Clamp(HighlightSepia,0,1));if(h.Pulse>0)color.W*=(float)Math.Pow(Math.Cos(2*Math.PI*Environment.FrameTime.Seconds/h.Pulse),2);
+            var color=h.Color*(1-MathHelper.Clamp(HighlightSepia,0,1));if(h.Pulse>0)color.W*=(float)Math.Pow(Math.Cos(2*Math.PI*FrameView.FrameTime.Seconds/h.Pulse),2);
             void Add(uint start,uint length){if(length>0)backend.AddHighlightPacket(draw,start,length,instance,h.Instance<0?instances:1,color,h.Thickness);}
             if(string.IsNullOrEmpty(h.Section))Add(0,count);
             else if((actor.RenderModel??actor.Model).Sections.TryGetValue(h.Section,out var ranges))foreach(var range in ranges)

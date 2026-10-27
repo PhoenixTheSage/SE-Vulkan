@@ -60,7 +60,7 @@ partial class Program
             foreach(var pair in new[]{(MyRenderQualityEnum.LOW,256),(MyRenderQualityEnum.NORMAL,512),(MyRenderQualityEnum.HIGH,2048),(MyRenderQualityEnum.EXTREME,4096)}){
                 var capacitySettings=scene.RenderSettings;capacitySettings.User.LightsQuality=pair.Item1;scene.RenderSettings=capacitySettings;
                 Render(false);Render(false);Render(false);
-                var stats=backend.GetLightTileStats();var spotOwners=(System.Collections.IDictionary)typeof(VulkanScene).GetField("frameSpotActors",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;
+                var stats=backend.GetLightTileStats();var buildLights=typeof(VulkanScene).GetField("buildLights",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;var spotOwners=(System.Collections.IDictionary)buildLights.GetType().GetField("SpotActors")!.GetValue(buildLights)!;
                 Check(stats.Points==pair.Item2&&spotOwners.Count==32,"actual managed scene honors independent "+pair.Item2+" point and 32 spot budgets at "+pair.Item1);
                 var hdr=backend.ReadbackLightingStage(3,64,64);double signal=hdr.Where((v,i)=>i%4<3).Zip(onlySpots.Where((v,i)=>i%4<3),(a,b)=>(double)(a-b)).Sum();
                 Check(signal>previous,"increasing stock point quality retains additional visible radiance at "+pair.Item1);previous=signal;
@@ -125,7 +125,7 @@ partial class Program
         var flareOcclusion=(Dictionary<ulong,float>)typeof(VulkanScene).GetField("flareOcclusion",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;flareOcclusion[flareId]=0;
         object flareHelper=typeof(VulkanScene).GetField("billboards",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;
         var generatedFlares=(List<MyBillboard>)flareHelper.GetType().GetField("generated",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(flareHelper)!;generatedFlares.Clear();
-        scene.SetCamera(Vector3D.Zero,MyTimeSpan.Zero,1f/60);scene.DrawFlares(MatrixD.CreateRotationX(.2)*MatrixD.CreateRotationZ(.6),projection,64,64,1);
+        scene.SetCamera(Vector3D.Zero,MyTimeSpan.Zero,1f/60);scene.LatchFrame();scene.DrawFlares(MatrixD.CreateRotationX(.2)*MatrixD.CreateRotationZ(.6),projection,64,64,1);
         Check(generatedFlares.Count==1,"production flare path emits the isolated rotated descriptor");
         VRage.Utils.MyUtils.GetBillboardQuadAdvancedRotated(out var stockFlareQuad,flareOrigin,1,2,0,Vector3D.Zero);var actualFlare=generatedFlares[0];
         Check(Vector3D.Distance(actualFlare.Position0,stockFlareQuad.Point0)<1e-11 && Vector3D.Distance(actualFlare.Position1,stockFlareQuad.Point1)<1e-11 && Vector3D.Distance(actualFlare.Position2,stockFlareQuad.Point2)<1e-11 && Vector3D.Distance(actualFlare.Position3,stockFlareQuad.Point3)<1e-11,"rotated flare corners match stock world-up orientation under a rolled camera");
@@ -134,9 +134,10 @@ partial class Program
         Check(firstFlareRequest!=0,"production flare query has a distinct pending identity");
         Render(false);for(int f=0;f<3;f++){scene.DrawFlares(MatrixD.Identity,projection,64,64,1);Render(false);}
         Check(queryState.PendingId==0&&queryState.QueryTime>0&&scene.FlareQueries==flareRequests,"completed native flare query observes the stock retry interval without reissuing");
-        scene.SetCamera(Vector3D.Zero,MyTimeSpan.FromMilliseconds(1000),1f/60);scene.DrawFlares(MatrixD.Identity,projection,64,64,1);ulong nextFlareRequest=queryState.PendingId;
+        // Flares are Build work: they read the latched frame view, so a direct call latches the camera first.
+        scene.SetCamera(Vector3D.Zero,MyTimeSpan.FromMilliseconds(1000),1f/60);scene.LatchFrame();scene.DrawFlares(MatrixD.Identity,projection,64,64,1);ulong nextFlareRequest=queryState.PendingId;
         Check(nextFlareRequest!=0&&nextFlareRequest!=firstFlareRequest&&scene.FlareQueries==flareRequests+1,"elapsed flare interval submits a fresh native request identity");
-        Render(false);scene.SetCamera(Vector3D.Zero,MyTimeSpan.FromMilliseconds(1000),1f/60);scene.DrawFlares(MatrixD.Identity,projection,64,64,1);
+        Render(false);scene.SetCamera(Vector3D.Zero,MyTimeSpan.FromMilliseconds(1000),1f/60);scene.LatchFrame();scene.DrawFlares(MatrixD.Identity,projection,64,64,1);
         Check(queryState.PendingId==nextFlareRequest,"repeated completed-slot data cannot resolve the newer in-flight flare request");
         flareLight.Owner.Destruct();scene.DrawFlares(MatrixD.Identity,projection,64,64,1);
         Check(!flareStates.ContainsKey(flareId)&&!flareOcclusion.ContainsKey(flareId),"deleted flare owner releases its temporal and completed visibility state");

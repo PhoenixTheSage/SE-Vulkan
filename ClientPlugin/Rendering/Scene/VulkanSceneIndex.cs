@@ -110,8 +110,8 @@ public sealed partial class VulkanScene
         if(!native || frustum==null)return actors.Values;
         double reach=Math.Max(0,Math.Max(ProbeDrawDistance,ShadowDrawDistance));
         BoundingBoxD query=BoundingBoxD.CreateFromPoints(frustum.GetCorners());
-        query.Min=Vector3D.Min(query.Min,Environment.CameraPosition-new Vector3D(reach));
-        query.Max=Vector3D.Max(query.Max,Environment.CameraPosition+new Vector3D(reach));
+        query.Min=Vector3D.Min(query.Min,FrameView.CameraPosition-new Vector3D(reach));
+        query.Max=Vector3D.Max(query.Max,FrameView.CameraPosition+new Vector3D(reach));
         if(!query.Min.IsValid() || !query.Max.IsValid())return actors.Values;
         actorIndex.OverlapAllBoundingBox(ref query,candidates);
         // Static groups historically bypass actor-level main frustum rejection.

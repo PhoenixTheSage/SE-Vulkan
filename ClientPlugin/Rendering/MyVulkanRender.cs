@@ -239,6 +239,11 @@ public sealed class MyVulkanRender : IMyRender
         if(RenderPriorityHigh&&!MyRenderProxy.Settings.RenderThreadHighPriority)MyRenderProxy.Settings.RenderThreadHighPriority=true;
         if(GcSustained&&!gcApplied){gcApplied=true;System.Runtime.GCSettings.LatencyMode=System.Runtime.GCLatencyMode.SustainedLowLatency;}
     }
+    // Phase 4 frame split, milestone 1: Draw is Apply (message intake, camera and settings, particles and decals,
+    // the scene update, billboard collection) and Build (shadow fit, traversal, voxels and flares, lighting setup,
+    // publication, QueueWorld, frame slot and sprites). Build reads the FramePacket and the scene's latched inputs,
+    // never what message processing rewrites. Both run here, back to back, on the render thread.
+    bool uploadsOpen,particleCameraReset;
     public void Draw(bool draw = true)
     {
         FrameProfiler.BeginDraw();
@@ -247,35 +252,69 @@ public sealed class MyVulkanRender : IMyRender
         using var drawProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Draw);
         try
         {
-            backend.BeginUploads();bool uploadsOpen=true;
+            backend.BeginUploads();uploadsOpen=true;
+            FramePacket frame;
+            try{frame=ApplyFrame(draw);}
+            catch{EndOpenUploads();throw;}
+            if(frame==null){EndOpenUploads();return;}
+            if(frame.DrawScene&&frame.ApplyBuildOrder)scene.LatchFrame();
+            BuildFrame(frame);
+        }
+        catch (Exception error) { Fatal(error); throw; }
+    }
+    void EndOpenUploads(){if(!uploadsOpen)return;uploadsOpen=false;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads();}
+    // Apply: everything that consumes the game's update frame. Returns the frame for Build, or null when nothing is drawn.
+    FramePacket ApplyFrame(bool draw)
+    {
+        sprites.BeginFrame(); sprites.DrawTimeSeconds = CurrentDrawTime.Seconds; drawScene = false;
+        scene.TextureCache.BindOwnerThread(); scene.TextureCache.DrainPendingLoads(); media?.Poll();
+        environment.Time=CurrentDrawTime.Seconds; environment.GameplayFrame=gameplayFrame;
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Messages))ProcessMessages(draw);
+        FrameProfiler.Lap(FrameProfiler.Section.Messages);
+        // Loading transitions may normalize the not-yet-populated sun vector.
+        // Keep GPU constants finite until the next environment update arrives.
+        if(!light.SunLightDirection.IsValid() || light.SunLightDirection.LengthSquared()<1e-8f)light.SunLightDirection=Vector3.Forward;
+        float animationDelta = animationClock.Sample();if(particles.Paused)animationDelta=0;
+        // The loading screen stays at 100% until each clipmap raises Loaded.
+        // That counter only advances inside Clipmap.Update, and stock runs it
+        // even while DrawScene is deferred. Gating it on a scene draw never
+        // lets the world leave the loading screen.
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Clipmaps))if(haveCamera)voxels.Update(cameraWorld,voxelFrustum,voxelFar,cameraSmooth);
+        FrameProfiler.Lap(FrameProfiler.Section.Clipmaps);
+        if (!draw || !host.CanPresent) return null;
+        backend.CameraPosition = camera;
+        backend.BeginPacketCollection();
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Particles)){
+        if (drawScene)
+        {
+            var next=scene.Next;next.ExternalDepthRevision=voxels.MeshUpdates+voxels.LodChanges;next.HighlightSepia=postprocess.Settings.Data.SepiaStrength;next.ProbeDrawDistance=probes.Settings.DrawDistance;next.RenderSettings=renderConfiguration;next.ShadowSettings=shadows.Settings.Data;next.ShadowDrawDistance=shadows.DrawDistance;scene.SetCamera(camera, CurrentDrawTime, animationDelta);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ParticleDraw))particles.Draw(camera,animationDelta,renderConfiguration);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.DecalDraw))decals.Draw(camera,CurrentDrawTime.Seconds,gameplayFrame,(int)renderConfiguration.User.ParticleQuality);
+        }
+        FrameProfiler.Lap(FrameProfiler.Section.Particles);
+        }
+        bool applyBuildOrder=VulkanScene.ApplyBuildOrderEnabled;
+        if (drawScene&&applyBuildOrder)
+        {
+            scene.UpdateScene();
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Billboards))scene.CollectBillboards(SharedData);
+        }
+        var frame=new FramePacket{DrawScene=drawScene,ApplyBuildOrder=applyBuildOrder,Camera=camera,CameraView=cameraView,CameraProjection=cameraProjection,ViewProjection=viewProjection,VoxelDrawFrustum=voxelDrawFrustum,
+            Light=light,TextureMultipliers=textureMultipliers,RenderConfiguration=renderConfiguration,DeviceSettings=settings,BackBuffer=BackBufferResolution,
+            GameplayFrame=gameplayFrame,DrawTime=CurrentDrawTime,AnimationDelta=animationDelta,ResetParticleCamera=particleCameraReset};
+        particleCameraReset=false;
+        return frame;
+    }
+    // Build: the frame from its packet and the scene's latched inputs, through the native frame slot and sprites.
+    void BuildFrame(FramePacket frame)
+    {
+        bool drawScene=frame.DrawScene;var camera=frame.Camera;var cameraView=frame.CameraView;var cameraProjection=frame.CameraProjection;var viewProjection=frame.ViewProjection;
+        var light=frame.Light;var renderConfiguration=frame.RenderConfiguration;float animationDelta=frame.AnimationDelta;var drawTime=frame.DrawTime;var backBuffer=frame.BackBuffer;
+        if(frame.ResetParticleCamera)haveParticleCamera=false;
+        if(drawScene)scene.BeginBuild();
+        try
+        {
             try
             {
-            sprites.BeginFrame(); sprites.DrawTimeSeconds = CurrentDrawTime.Seconds; drawScene = false;
-            scene.TextureCache.BindOwnerThread(); scene.TextureCache.DrainPendingLoads(); media?.Poll();
-            environment.Time=CurrentDrawTime.Seconds; environment.GameplayFrame=gameplayFrame;
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Messages))ProcessMessages(draw);
-            FrameProfiler.Lap(FrameProfiler.Section.Messages);
-            // Loading transitions may normalize the not-yet-populated sun vector.
-            // Keep GPU constants finite until the next environment update arrives.
-            if(!light.SunLightDirection.IsValid() || light.SunLightDirection.LengthSquared()<1e-8f)light.SunLightDirection=Vector3.Forward;
-            float animationDelta = animationClock.Sample();if(particles.Paused)animationDelta=0;
-            // The loading screen stays at 100% until each clipmap raises Loaded.
-            // That counter only advances inside Clipmap.Update, and stock runs it
-            // even while DrawScene is deferred. Gating it on a scene draw never
-            // lets the world leave the loading screen.
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Clipmaps))if(haveCamera)voxels.Update(cameraWorld,voxelFrustum,voxelFar,cameraSmooth);
-            FrameProfiler.Lap(FrameProfiler.Section.Clipmaps);
-            if (!draw || !host.CanPresent) return;
-            var worldResolution=resolution.Update(backend,settings,renderConfiguration,drawScene,animationDelta*1000);
-            backend.CameraPosition = camera;
-            backend.BeginPacketCollection();
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Particles)){
-            if (drawScene)
-            {
-                scene.ExternalDepthRevision=voxels.MeshUpdates+voxels.LodChanges;scene.HighlightSepia=postprocess.Settings.Data.SepiaStrength;scene.ProbeDrawDistance=probes.Settings.DrawDistance;scene.RenderSettings=renderConfiguration;scene.ShadowSettings=shadows.Settings.Data;scene.ShadowDrawDistance=shadows.DrawDistance;scene.SetCamera(camera, CurrentDrawTime, animationDelta);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ParticleDraw))particles.Draw(camera,animationDelta,renderConfiguration);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.DecalDraw))decals.Draw(camera,CurrentDrawTime.Seconds,gameplayFrame,(int)renderConfiguration.User.ParticleQuality);
-            }
-            FrameProfiler.Lap(FrameProfiler.Section.Particles);
-            }
+            var worldResolution=resolution.Update(backend,frame.DeviceSettings,renderConfiguration,drawScene,animationDelta*1000);
             GuestBridge.BeginScene(backend,scene);GuestBridge.SetPostprocess(postprocess);
             if(drawScene)BackendRuntime.RaiseScene(new[]{camera.X,camera.Y,camera.Z},
                 new[]{-light.SunLightDirection.X,-light.SunLightDirection.Y,-light.SunLightDirection.Z});
@@ -284,20 +323,21 @@ public sealed class MyVulkanRender : IMyRender
             else backend.SetShadowCascades(Array.Empty<float>(), Array.Empty<float>());
             }
             // Voxel plan-ahead overlaps the actor traversal; its inputs are final once the shadows are fitted.
-            if (drawScene) { voxels.Foliage.Distance=renderConfiguration.User.GrassDrawDistance; voxels.Foliage.Density=renderConfiguration.User.GrassDensityFactor; voxels.ProbeDrawDistance=probes.Settings.DrawDistance; voxels.ShadowDrawDistance=shadows.DrawDistance; if(VoxelObjectConstants.Enabled)voxels.BeginPlan(camera,voxelDrawFrustum); }
+            if (drawScene) { voxels.Foliage.Distance=renderConfiguration.User.GrassDrawDistance; voxels.Foliage.Density=renderConfiguration.User.GrassDensityFactor; voxels.ProbeDrawDistance=probes.Settings.DrawDistance; voxels.ShadowDrawDistance=shadows.DrawDistance; if(VoxelObjectConstants.Enabled)voxels.BeginPlan(camera,frame.VoxelDrawFrustum); }
             FrameProfiler.Lap(FrameProfiler.Section.Shadows);
             if (drawScene) {scene.ShadowDrawDistance=shadows.DrawDistance;
-                scene.PrepareInputs??=()=>{var plan=probes.Plan(backend,camera,light.SkipIBLevels,(float)CurrentDrawTime.Seconds);return (plan.Projections,backend.ProbeFaceMask(plan.Flags));};
-                scene.Draw(backend);
+                scene.PrepareInputs??=()=>{var plan=probes.Plan(backend,buildCamera,buildLight.SkipIBLevels,(float)buildDrawTime.Seconds);return (plan.Projections,backend.ProbeFaceMask(plan.Flags));};
+                buildCamera=camera;buildLight=light;buildDrawTime=drawTime;
+                if(frame.ApplyBuildOrder)scene.BuildScene(backend);else scene.UpdateAndBuild(backend);
                 if(VulkanScene.OverlapPublicationEnabled){if(backend.WorldReady)using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene))scene.BeginNativePassPublication();}
                 // Start the native pass preparation now, from the probe plan; publication checks it.
-                else if(backend.WorldReady&&scene.EarlyPassPrepareEnabled){var probePlan=probes.Plan(backend,camera,light.SkipIBLevels,(float)CurrentDrawTime.Seconds);scene.BeginNativePassPrepare(probePlan.Projections,backend.ProbeFaceMask(probePlan.Flags));}}
+                else if(backend.WorldReady&&scene.EarlyPassPrepareEnabled){var probePlan=probes.Plan(backend,camera,light.SkipIBLevels,(float)drawTime.Seconds);scene.BeginNativePassPrepare(probePlan.Projections,backend.ProbeFaceMask(probePlan.Flags));}}
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.VoxelsAndBillboards)){
             if (drawScene)
             {
                 voxels.Foliage.Distance=renderConfiguration.User.GrassDrawDistance; voxels.Foliage.Density=renderConfiguration.User.GrassDensityFactor;
-                voxels.ProbeDrawDistance=probes.Settings.DrawDistance;voxels.ShadowDrawDistance=shadows.DrawDistance;voxels.Draw(camera,voxelDrawFrustum,SharedData.VisibleObjects.Write);MatrixD flareProjection=cameraProjection;flareProjection.M33=flareProjection.M34-flareProjection.M33;flareProjection.M43=flareProjection.M44-flareProjection.M43;if(VulkanScene.EffectsAheadEnabled){scene.CollectBillboards(SharedData);var flareView=cameraView;int flareWidth=BackBufferResolution.X,flareHeight=BackBufferResolution.Y;float flareIntensity=renderConfiguration.FlaresIntensity;effectsJob=RenderJobs.Start(()=>scene.DrawFlaresAndBillboardsAhead(flareView,flareProjection,flareWidth,flareHeight,flareIntensity));}
-                else{using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Flares))scene.DrawFlares(cameraView,flareProjection,BackBufferResolution.X,BackBufferResolution.Y,renderConfiguration.FlaresIntensity); using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Billboards))scene.DrawBillboards(SharedData);} if(!scene.NativePassSceneEnabled)scene.AddVisible(SharedData.VisibleObjects.Write);
+                voxels.ProbeDrawDistance=probes.Settings.DrawDistance;voxels.ShadowDrawDistance=shadows.DrawDistance;voxels.Draw(camera,frame.VoxelDrawFrustum,SharedData.VisibleObjects.Write);MatrixD flareProjection=cameraProjection;flareProjection.M33=flareProjection.M34-flareProjection.M33;flareProjection.M43=flareProjection.M44-flareProjection.M43;if(VulkanScene.EffectsAheadEnabled){if(!frame.ApplyBuildOrder)scene.CollectBillboards(SharedData);var flareView=cameraView;int flareWidth=backBuffer.X,flareHeight=backBuffer.Y;float flareIntensity=renderConfiguration.FlaresIntensity;effectsJob=RenderJobs.Start(()=>scene.DrawFlaresAndBillboardsAhead(flareView,flareProjection,flareWidth,flareHeight,flareIntensity));}
+                else{using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Flares))scene.DrawFlares(cameraView,flareProjection,backBuffer.X,backBuffer.Y,renderConfiguration.FlaresIntensity); using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Billboards))if(frame.ApplyBuildOrder)scene.DrawCollectedBillboards();else scene.DrawBillboards(SharedData);} if(!scene.NativePassSceneEnabled)scene.AddVisible(SharedData.VisibleObjects.Write);
             }
             FrameProfiler.Lap(FrameProfiler.Section.Voxels);
             }
@@ -314,10 +354,10 @@ public sealed class MyVulkanRender : IMyRender
                 MatrixD projection=cameraProjection;projection.M13=projection.M14-projection.M13;projection.M23=projection.M24-projection.M23;projection.M33=projection.M34-projection.M33;projection.M43=projection.M44-projection.M43;
                 var frameLight=light;
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightingSetup)){
-                environment.GameplayFrame=gameplayFrame; using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EnvironmentDraw))environment.Draw(camera,cameraView*projection,light.SunLightDirection);
+                environment.GameplayFrame=frame.GameplayFrame; using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EnvironmentDraw))environment.Draw(camera,cameraView*projection,light.SunLightDirection);
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GuestPreparation))BackendRuntime.RaisePreparation();
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PostprocessConfigure))postprocess.Configure(backend,worldResolution.X,worldResolution.Y,renderConfiguration.User.AntialiasingMode==MyAntialiasingMode.FXAA,string.IsNullOrEmpty(postprocess.Settings.DirtTexture)?0:scene.TextureCache.GetTexture(postprocess.Settings.DirtTexture,false),cameraView,projection,renderConfiguration.User.AmbientOcclusionEnabled);
-                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ProbesConfigure))probes.Configure(backend,camera,light,postprocess.Settings,scene.BackgroundOrientation,scene.TextureCache.GetTexture("Textures/Miscellaneous/ambient_brdf.dds",false),animationDelta,(float)CurrentDrawTime.Seconds,()=>scene.GatherProbeAmbient(light.AmbientLightsGatherRadius,probes.Settings),renderSettings:renderConfiguration);
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ProbesConfigure))probes.Configure(backend,camera,light,postprocess.Settings,scene.BackgroundOrientation,scene.TextureCache.GetTexture("Textures/Miscellaneous/ambient_brdf.dds",false),animationDelta,(float)drawTime.Seconds,()=>scene.GatherProbeAmbient(light.AmbientLightsGatherRadius,probes.Settings),renderSettings:renderConfiguration);
                 frameLight.AmbientForwardPass+=probes.LastAmbient;
                 FrameProfiler.Lap(FrameProfiler.Section.Setup);
                 }
@@ -327,14 +367,14 @@ public sealed class MyVulkanRender : IMyRender
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene)){if(VulkanScene.OverlapPublicationEnabled)scene.FinishNativePassPublication();else scene.PublishNativePassScene();}if(scene.NativePassSceneEnabled||backend.GpuSceneEnabled)scene.AddVisible(SharedData.VisibleObjects.Write);
                 JoinEffects();
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.QueueWorld)){
-                backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,cameraView,projection,worldResolution.X,worldResolution.Y,frameLight,scene.BloomEmissiveness,scene.BackgroundOrientation,environment.Fog,(float)CurrentDrawTime.Seconds,animationDelta,renderConfiguration,haveParticleCamera?(Vector3)(camera-previousParticleCamera):Vector3.Zero,postprocess.Settings,backend.ProbesAvailableForFrame,resolution.Fraction,textureMultipliers),
+                backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,cameraView,projection,worldResolution.X,worldResolution.Y,frameLight,scene.BloomEmissiveness,scene.BackgroundOrientation,environment.Fog,(float)drawTime.Seconds,animationDelta,renderConfiguration,haveParticleCamera?(Vector3)(camera-previousParticleCamera):Vector3.Zero,postprocess.Settings,backend.ProbesAvailableForFrame,resolution.Fraction,frame.TextureMultipliers),
                     NativeBackend.MatrixValues(reversedProjection),NativeBackend.MatrixValues(MatrixD.Invert(reversedProjection)));previousParticleCamera=camera;haveParticleCamera=true;
                 }
                 FrameProfiler.Lap(FrameProfiler.Section.Queue);
             }
             JoinEffects();
             }
-            finally { if(effectsJob!=null){effectsJob.Value.Join();effectsJob=null;} if(uploadsOpen)using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads(); }
+            finally { if(effectsJob!=null){effectsJob.Value.Join();effectsJob=null;} EndOpenUploads(); }
             backend.SetHdrQuality(renderConfiguration.User.HqTarget);
             FrameProfiler.Lap(FrameProfiler.Section.Queue);
             MatrixD reversedFrame=viewProjection;reversedFrame.M13=reversedFrame.M14-reversedFrame.M13;reversedFrame.M23=reversedFrame.M24-reversedFrame.M23;reversedFrame.M33=reversedFrame.M34-reversedFrame.M33;reversedFrame.M43=reversedFrame.M44-reversedFrame.M43;
@@ -343,14 +383,16 @@ public sealed class MyVulkanRender : IMyRender
                 new Vector3(0.06f * Math.Max(0.1f, light.AmbientDiffuseFactor)), new Color(3, 5, 12));
             FrameProfiler.Lap(FrameProfiler.Section.FrameSlot);
             if (!frameOpen) { shadows.CancelPreparedFrame();FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); return; }
-            renderStats.Draw(sprites, BackBufferResolution.X);
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Sprites)){int spriteCount=sprites.MainPacketsInto(ref mainSprites,BackBufferResolution.X,BackBufferResolution.Y);backend.DrawSprites(mainSprites,spriteCount);}
+            renderStats.Draw(sprites, backBuffer.X);
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Sprites)){int spriteCount=sprites.MainPacketsInto(ref mainSprites,backBuffer.X,backBuffer.Y);backend.DrawSprites(mainSprites,spriteCount);}
             debugLines.Submit(backend, camera);
             FrameProfiler.Lap(FrameProfiler.Section.Sprites);
-            previousDraw = CurrentDrawTime;
+            previousDraw = drawTime;
         }
-        catch (Exception error) { Fatal(error); throw; }
+        finally{if(drawScene)scene.EndBuild();}
     }
+    // The probe plan inputs of the frame being built (the plan provider is created once and reads these).
+    Vector3D buildCamera;MyEnvironmentLightData buildLight;MyTimeSpan buildDrawTime;
     public void Present()
     {
         if (!frameOpen) { RendererCpuProfiler.EndFrame();FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); return; }
@@ -529,7 +571,7 @@ public sealed class MyVulkanRender : IMyRender
                 foreach (string file in ((MyRenderMessageUnloadTextures)message).Files) scene.TextureCache.Unload(file); break;
             case MyRenderMessageEnum.UnloadData:
                 sessionLog?.UnloadSession();textureMultipliers=MyTextureDebugMultipliers.Defaults;
-                decals?.Clear();haveParticleCamera=false;haveCamera=false;particles?.Clear();environment?.Clear(); voxels?.Clear(); scene.Clear(); sprites.Clear(); generated.Clear(); break;
+                decals?.Clear();particleCameraReset=true;haveCamera=false;particles?.Clear();environment?.Clear(); voxels?.Clear(); scene.Clear(); sprites.Clear(); generated.Clear(); break;
             case MyRenderMessageEnum.DebugDrawLine3D: debugLines.Add((MyRenderMessageDebugDrawLine3D)message); break;
             case MyRenderMessageEnum.DebugClearPersistentMessages: debugLines.ClearPersistent(); break;
             case MyRenderMessageEnum.SetFrameTimeStep: animationClock.StepOverride = ((MyRenderMessageSetFrameTimeStep)message).TimeStepInSeconds; break;

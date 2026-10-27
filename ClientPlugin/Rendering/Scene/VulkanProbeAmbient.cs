@@ -9,7 +9,7 @@ public sealed partial class VulkanScene
     // MyEnvironmentProbe.GatherLightAmbient, with guards for degenerate distances.
     public float GatherProbeAmbient(float radius,MyEnvironmentProbeData settings)
     {
-        if(radius<=0)return 0;float sum=0;Vector3D camera=Environment.CameraPosition;
+        if(radius<=0)return 0;float sum=0;Vector3D camera=FrameView.CameraPosition;
         // MyLightsRendering.GatherLights uses root bounds and whole intersecting
         // groups, independently of the view frustum and visible-light budget.
         ambientLightQuery.Clear();var sphere=new BoundingSphereD(camera,radius);

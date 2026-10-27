@@ -34,7 +34,7 @@ public sealed partial class VulkanScene
                 matrices[at+12],matrices[at+13],matrices[at+14],matrices[at+15]);
             if(!m.IsValid())throw new ArgumentException("Nonfinite scene-depth matrix");
             frusta[i]=new BoundingFrustumD(m);
-            local.AddRange(NativeBackend.MatrixValues(MatrixD.CreateTranslation(Environment.CameraPosition)*m));
+            local.AddRange(NativeBackend.MatrixValues(MatrixD.CreateTranslation(FrameView.CameraPosition)*m));
         }
         if(!backend.ConfigureGuestDepthViews(images,local.ToArray()))return false;
         GuestDepthFrusta=frusta;guestDepthStatus="Scene-depth views requested";return true;
@@ -68,7 +68,7 @@ public sealed partial class VulkanScene
                     if(count==0)continue;
                     if(type==0 && actor.StaticInstances==null && actor.InstanceBuffer==uint.MaxValue && model.BlendWeights?.Length>0 && actor.SkinMatrices==null)
                         throw new InvalidOperationException("Guest depth character pose unavailable");
-                    var world=actor.Actor.WorldMatrix;world.Translation-=Environment.CameraPosition;
+                    var world=actor.Actor.WorldMatrix;world.Translation-=FrameView.CameraPosition;
                     foreach(var part in model.Parts) {
                         if(!DepthGeometrySegments.DrawsDepth(part.Technique) || (part.Flags&4)!=0)continue;
                         actor.Materials.TryGetValue(part.MaterialName??string.Empty,out var material);
@@ -104,7 +104,7 @@ public sealed partial class VulkanScene
                     guestDepthActors++;
                 } finally { actor.RenderModel=previous; }
             }
-            guestDepthVoxels=voxels.CollectGuestDepth(Environment.CameraPosition,GuestDepthFrusta);
+            guestDepthVoxels=voxels.CollectGuestDepth(FrameView.CameraPosition,GuestDepthFrusta);
             guestDepthComplete=true;guestDepthStatus="Current actor/voxel depth sources collected";
         } catch(Exception error) {
             guestDepthComplete=false;guestDepthStatus="Scene-depth collection unavailable: "+error.Message;
@@ -112,5 +112,5 @@ public sealed partial class VulkanScene
         }
     }
     internal object[] CaptureGuestSceneDepth()=>new object[]{guestDepthComplete,guestDepthGeneration,guestDepthActors,guestDepthDraws,guestDepthVoxels,guestDepthStatus};
-    internal object[] CaptureGuestVolumeScene()=>new object[]{guestDepthGeneration,new[]{Environment.CameraPosition.X,Environment.CameraPosition.Y,Environment.CameraPosition.Z},Environment.FrameTime.Seconds,Environment.LastFrameDelta};
+    internal object[] CaptureGuestVolumeScene()=>new object[]{guestDepthGeneration,new[]{FrameView.CameraPosition.X,FrameView.CameraPosition.Y,FrameView.CameraPosition.Z},FrameView.FrameTime.Seconds,FrameView.LastFrameDelta};
 }

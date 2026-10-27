@@ -19,7 +19,7 @@ partial class Program
         T Field<T>(object o,string n)=>(T)o.GetType().GetField(n)!.GetValue(o)!;
         var capture=typeof(VulkanScene).GetMethod("CaptureRayScene",BindingFlags.Instance|BindingFlags.NonPublic)!;
         // A distant camera proves the double-precision camera-relative transforms SE-RT expects.
-        var camera=new Vector3D(1e6,-2e5,3e5);scene.SetCamera(camera,MyTimeSpan.Zero,1f/60);
+        var camera=new Vector3D(1e6,-2e5,3e5);scene.SetCamera(camera,MyTimeSpan.Zero,1f/60);scene.LatchFrame(); // the capture reads the latched (Build) view
         string armor=Path.Combine(content,"Models/Cubes/large/ArmorCenter.mwm"),shelf=Path.Combine(content,"Models/Cubes/Large/Shelf_1.mwm");
         scene.Process(new MyRenderMessageCreateRenderEntity{ID=9001,Model=armor,DebugName="ray armor",WorldMatrix=MatrixD.CreateTranslation(camera+new Vector3D(0,0,-5)),Flags=RenderFlags.Visible|RenderFlags.CastShadows});
         scene.Process(new MyRenderMessageCreateRenderEntity{ID=9002,Model=shelf,DebugName="ray shelf",WorldMatrix=MatrixD.CreateTranslation(camera+new Vector3D(3,0,-6)),Flags=RenderFlags.Visible|RenderFlags.CastShadows});

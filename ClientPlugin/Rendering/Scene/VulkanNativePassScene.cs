@@ -76,7 +76,7 @@ public sealed partial class VulkanScene
         foreach(var p in model.Parts)if(!(p.Technique==MyMeshDrawTechnique.MESH||p.Technique==MyMeshDrawTechnique.ALPHA_MASKED||p.Technique==MyMeshDrawTechnique.ALPHA_MASKED_SINGLE_SIDED||p.Technique==MyMeshDrawTechnique.DECAL_CUTOUT||(mixed&&p.Technique==MyMeshDrawTechnique.GLASS)))return false;
         return true;
     }
-    private bool PassActorSupported(ActorData actor)=>actor.Model!=null&&!KnownStockOldPipeline(actor)&&actor.InstanceBuffer==uint.MaxValue&&actor.StaticInstances==null&&actor.SkinMatrices==null&&actor.Dithering==0&&!HasHighlight(actor.Actor.ID)&&!frameExcludedActors.Contains(actor.Actor.ID)&&PassModelSupported(actor.Model,NativeMixedOpaqueEnabled)&&models.IsStockNewModel(actor.Model);
+    private bool PassActorSupported(ActorData actor)=>actor.Model!=null&&!KnownStockOldPipeline(actor)&&actor.InstanceBuffer==uint.MaxValue&&actor.StaticInstances==null&&actor.SkinMatrices==null&&actor.Dithering==0&&!HasHighlight(actor.Actor.ID)&&!buildLights.Excluded.Contains(actor.Actor.ID)&&PassModelSupported(actor.Model,NativeMixedOpaqueEnabled)&&models.IsStockNewModel(actor.Model);
 
     private PassFamily GetPassFamily(ActorData actor)
     {
@@ -159,9 +159,9 @@ public sealed partial class VulkanScene
         if(enabled!=nativePassActive){nativePassActive=enabled;if(enabled){RefreshGroupBounds();nativePassDirty.UnionWith(actors.Values);}else{foreach(var data in actors.Values)RemoveNativePassActor(data,gpu:false);backend.ClearPassFrame();}}
         if(!enabled)return;
         if(nativePassMixedActive!=NativeMixedOpaqueEnabled){nativePassMixedActive=NativeMixedOpaqueEnabled;foreach(var actor in actors.Values){actor.PassBindingDirty=true;DirtyNativePass(actor);}}
-        foreach(uint id in previousNativeExclusions)if(!frameExcludedActors.Contains(id)&&actors.TryGetValue(id,out var old))DirtyNativePass(old,appearance:false);
-        foreach(uint id in frameExcludedActors)if(!previousNativeExclusions.Contains(id)&&actors.TryGetValue(id,out var current))DirtyNativePass(current,appearance:false);
-        previousNativeExclusions.Clear();previousNativeExclusions.UnionWith(frameExcludedActors);
+        foreach(uint id in previousNativeExclusions)if(!buildLights.Excluded.Contains(id)&&actors.TryGetValue(id,out var old))DirtyNativePass(old,appearance:false);
+        foreach(uint id in buildLights.Excluded)if(!previousNativeExclusions.Contains(id)&&actors.TryGetValue(id,out var current))DirtyNativePass(current,appearance:false);
+        previousNativeExclusions.Clear();previousNativeExclusions.UnionWith(buildLights.Excluded);
         var updates=passUpdates;var appearance=passAppearance;updates.Clear();appearance.Clear();
         foreach(var data in nativePassDirty){
             if(data.Actor.IsDestroyed||!actors.ContainsKey(data.Actor.ID))continue;
@@ -313,7 +313,7 @@ public sealed partial class VulkanScene
     {
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassEndVisibility)){
         foreach(ulong model in nativePassRetiredModels)backend.RemovePassResource(0,model);nativePassRetiredModels.Clear();
-        EndOcclusion();EndShadowGroupOcclusion();backend.ShadowExclusions=frameShadowExclusions.ToArray();backend.SetSpotRedraw(frameSpotStatic,frameSpotDynamic);
+        EndOcclusion();EndShadowGroupOcclusion();backend.ShadowExclusions=frameShadowExclusions.ToArray();backend.SetSpotRedraw(buildLights.SpotStatic,buildLights.SpotDynamic);
         }
     }
     // Reused each frame; the native prepare copies the views it is given.
@@ -326,21 +326,21 @@ public sealed partial class VulkanScene
     {
         var views=passViews;views.Clear();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassFrameInputs)){
-        var global=actorLodSettings.Global;frame=new NativePassFrame{Coefficient=lodFov>0?(float)(Math.Tan(lodFov*.5)/Math.Tan(70*Math.PI/360))*1080/Math.Max(1,backend.PresentationHeight):1,Delta=Environment.LastFrameDelta,GlobalFlags=(global.EnableLodSelection?1u:0u)|(global.IsUpdateEnabled?2u:0u),Selection=global.LodSelection,SmoothDistance=global.MaxDistanceForSmoothCameraMovement};
-        frame.Camera[0]=Environment.CameraPosition.X;frame.Camera[1]=Environment.CameraPosition.Y;frame.Camera[2]=Environment.CameraPosition.Z;
+        var global=actorLodSettings.Global;frame=new NativePassFrame{Coefficient=lodFov>0?(float)(Math.Tan(lodFov*.5)/Math.Tan(70*Math.PI/360))*1080/Math.Max(1,backend.PresentationHeight):1,Delta=FrameView.LastFrameDelta,GlobalFlags=(global.EnableLodSelection?1u:0u)|(global.IsUpdateEnabled?2u:0u),Selection=global.LodSelection,SmoothDistance=global.MaxDistanceForSmoothCameraMovement};
+        frame.Camera[0]=FrameView.CameraPosition.X;frame.Camera[1]=FrameView.CameraPosition.Y;frame.Camera[2]=FrameView.CameraPosition.Z;
         frame.Global[0]=global.HisteresisRatio;frame.Global[1]=global.TransitionDeadZoneConst;frame.Global[2]=global.TransitionDeadZoneDistanceMult;frame.Global[3]=global.MaxTransitionInSeconds;frame.Global[4]=global.MinTransitionInSeconds;frame.Global[5]=global.ObjectDistanceAdd;frame.Global[6]=global.ObjectDistanceMult;
         views.Add(PassView(0,0,frustum,actorLodSettings.GBuffer));
         for(int c=0;c<8;c++)if((ShadowSystem.UpdateMask&(1u<<c))!=0){var lod=c<actorLodSettings.CascadeDepths.Length?actorLodSettings.CascadeDepths[c]:actorLodSettings.SingleDepth;float threshold=ShadowSystem.Settings.Cascades[c].SkippingSmallObjectThreshold,factor=ShadowSystem.ProjectionFactors[c];views.Add(PassView((uint)c+1,1,ShadowSystem.CasterFrustum(c),lod,minimum:threshold*threshold/(factor*factor)));}
         uint faces=probeFaces;
-        if(ProbeDrawDistance>0)for(int face=0;face<6;face++)if((faces&(1u<<face))!=0){var p=probeProjections;int at=face*16;var relative=new MatrixD(p[at],p[at+1],p[at+2],p[at+3],p[at+4],p[at+5],p[at+6],p[at+7],p[at+8],p[at+9],p[at+10],p[at+11],p[at+12],p[at+13],p[at+14],p[at+15]);var world=MatrixD.CreateTranslation(-Environment.CameraPosition)*relative;views.Add(PassView((uint)face+9,2,PooledFrustum(face,world),actorLodSettings.Forward,maximum:ProbeDrawDistance));}
-        for(int slot=0;slot<liveSpots.Count;slot++){var spot=liveSpots[slot];var spotFrustum=PooledFrustum(6+slot,spot.WorldProjection);views.Add(PassView((uint)(15+slot*2),1,spotFrustum,actorLodSettings.SingleDepth,1|8,(uint)spot.Index));views.Add(PassView((uint)(16+slot*2),1,spotFrustum,actorLodSettings.SingleDepth,1|4,(uint)spot.Index));}
+        if(ProbeDrawDistance>0)for(int face=0;face<6;face++)if((faces&(1u<<face))!=0){var p=probeProjections;int at=face*16;var relative=new MatrixD(p[at],p[at+1],p[at+2],p[at+3],p[at+4],p[at+5],p[at+6],p[at+7],p[at+8],p[at+9],p[at+10],p[at+11],p[at+12],p[at+13],p[at+14],p[at+15]);var world=MatrixD.CreateTranslation(-FrameView.CameraPosition)*relative;views.Add(PassView((uint)face+9,2,PooledFrustum(face,world),actorLodSettings.Forward,maximum:ProbeDrawDistance));}
+        for(int slot=0;slot<buildLights.Spots.Count;slot++){var spot=buildLights.Spots[slot];var spotFrustum=PooledFrustum(6+slot,spot.WorldProjection);views.Add(PassView((uint)(15+slot*2),1,spotFrustum,actorLodSettings.SingleDepth,1|8,(uint)spot.Index));views.Add(PassView((uint)(16+slot*2),1,spotFrustum,actorLodSettings.SingleDepth,1|4,(uint)spot.Index));}
         }
         return views;
     }
     private void DrawNativePassFallback(ActorData data)
     {
         if(data.Model==null||!IsVisible(data.Actor))return;var bounds=data.Bounds;bool probeOnly=(data.Flags&RenderFlags.SkipInMainView)!=0||frustum!=null&&frustum.Contains(bounds)==ContainmentType.Disjoint;
-        double distance=Vector3D.Distance(bounds.Center,Environment.CameraPosition);bool outside=ProbeDrawDistance<=0||distance>ProbeDrawDistance+bounds.HalfExtents.Length();
+        double distance=Vector3D.Distance(bounds.Center,FrameView.CameraPosition);bool outside=ProbeDrawDistance<=0||distance>ProbeDrawDistance+bounds.HalfExtents.Length();
         bool hidden=!probeOnly&&QueryActorVisibility(data.Actor.ID,bounds);if(!probeOnly)visible.Add(data.Actor.ID);
         DrawActorLods(backend,data,data.Actor.WorldMatrix,probeOnly,hidden,outside,bounds);
     }
@@ -348,7 +348,7 @@ public sealed partial class VulkanScene
     {
         if(!RenderSettings.DrawTransparentModelsInstanced)return;
         if(!actors.TryGetValue(ticket.Owner,out var actor)||!actor.PassOwned||actor.PassHandle!=ticket.Actor)return;
-        var model=models.GetLod(actor.Model,(int)ticket.Lod);var world=actor.Actor.WorldMatrix;world.Translation-=Environment.CameraPosition;
+        var model=models.GetLod(actor.Model,(int)ticket.Lod);var world=actor.Actor.WorldMatrix;world.Translation-=FrameView.CameraPosition;
         using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GlassParts,false);
         foreach(var part in model.Parts){
             if(part.Technique!=MyMeshDrawTechnique.GLASS)continue;

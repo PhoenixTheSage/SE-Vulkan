@@ -17,14 +17,14 @@ public sealed partial class VulkanScene
         newViewStats.Actors++;actorViewSliceCount=0;
         float coefficient=lodFov>0?(float)(Math.Tan(lodFov*.5)/Math.Tan(70*Math.PI/360))*1080/Math.Max(1,target.PresentationHeight):1;
         float scale=(float)actor.Actor.WorldMatrixForwardScale;if(!(scale>0))scale=1;
-        Vector3 translation=(Vector3)(world.Translation-Environment.CameraPosition);float distance=(translation.Length()/scale*coefficient+actorLodSettings.Global.ObjectDistanceAdd)*actorLodSettings.Global.ObjectDistanceMult;
-        bool immediate=!actor.HaveNewViewCamera || Vector3D.Distance(actor.NewViewCamera,Environment.CameraPosition)>actorLodSettings.Global.MaxDistanceForSmoothCameraMovement;
-        actor.NewLod.Update(distance,actor.Model.LodDistances,actorLodSettings.Global,Environment.LastFrameDelta,immediate);actor.NewViewCamera=Environment.CameraPosition;actor.HaveNewViewCamera=true;
+        Vector3 translation=(Vector3)(world.Translation-FrameView.CameraPosition);float distance=(translation.Length()/scale*coefficient+actorLodSettings.Global.ObjectDistanceAdd)*actorLodSettings.Global.ObjectDistanceMult;
+        bool immediate=!actor.HaveNewViewCamera || Vector3D.Distance(actor.NewViewCamera,FrameView.CameraPosition)>actorLodSettings.Global.MaxDistanceForSmoothCameraMovement;
+        actor.NewLod.Update(distance,actor.Model.LodDistances,actorLodSettings.Global,FrameView.LastFrameDelta,immediate);actor.NewViewCamera=FrameView.CameraPosition;actor.HaveNewViewCamera=true;
         bool main=!probeOnly&&!occluded&&(actor.Flags&RenderFlags.SkipInMainView)==0;
         bool probe=!outsideProbe&&(actor.Flags&RenderFlags.SkipInForward)==0;
         bool casts=(actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))==RenderFlags.CastShadows;
-        bool spots=false;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NewViewSpots,false))if(casts){Vector3 origin=(Vector3)(bounds.Center-Environment.CameraPosition);float radius=(float)bounds.HalfExtents.Length();foreach(var light in liveSpots)if(SpotSphereVisible(origin-(Vector3)(light.Position-Environment.CameraPosition),light.Direction,light.Range,light.Cone,radius)){spots=true;break;}}
-        uint masks=selectedCascades??(casts?(CascadeMaskFor?.Invoke(bounds,Environment.CameraPosition)??255u):0u);
+        bool spots=false;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NewViewSpots,false))if(casts){Vector3 origin=(Vector3)(bounds.Center-FrameView.CameraPosition);float radius=(float)bounds.HalfExtents.Length();foreach(var light in buildLights.Spots)if(SpotSphereVisible(origin-(Vector3)(light.Position-FrameView.CameraPosition),light.Direction,light.Range,light.Cone,radius)){spots=true;break;}}
+        uint masks=selectedCascades??(casts?(CascadeMaskFor?.Invoke(bounds,FrameView.CameraPosition)??255u):0u);
         if(casts)masks=FilterShadowGroupCascades(actor,masks);
         int LodFor(MyPassLoddingSetting pass,int lod)=>Math.Min(actor.Model.LodDistances.Length,Math.Max(pass.MinLod,lod+(main?pass.LodShiftVisible:pass.LodShift)));
         void Add(int lod,float alpha,bool isMain,bool isProbe,bool spots,uint cascades){

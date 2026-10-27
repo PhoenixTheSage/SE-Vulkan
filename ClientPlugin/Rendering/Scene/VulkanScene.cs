@@ -105,10 +105,8 @@ namespace ClientPlugin.Rendering.Scene
         }
         private struct LiveSpot { public Vector3D Position; public float Range, Cone; public Vector3 Direction; public int Index;public MatrixD WorldProjection; }
         private struct SpotMemory { public Vector3D Position,Up; public Vector3 Direction; public float Range, Aperture; public bool Valid; }
-        private readonly List<LiveSpot> liveSpots = new List<LiveSpot>();
         private readonly Dictionary<uint, SpotMemory> spotByOwner = new Dictionary<uint, SpotMemory>();
         private readonly ulong[] spotOwnerAt=new ulong[64];
-        private ulong frameSpotStatic, frameSpotDynamic;
 
         private sealed class MaterialOverride
         {
@@ -465,11 +463,11 @@ namespace ClientPlugin.Rendering.Scene
                     actorLodSettings.CopyFrom(((MyRenderMessageUpdateNewLoddingSettings)message).Settings);return false;
                 case MyRenderMessageEnum.SetCameraViewMatrix:
                     var camera = (MyRenderMessageSetCameraViewMatrix)message;
-                    frustum = new BoundingFrustumD(camera.ViewMatrix * camera.ProjectionMatrix);lightFarFrustum=new BoundingFrustumD(camera.ViewMatrix*camera.ProjectionFarMatrix);
+                    Next.Frustum = new BoundingFrustumD(camera.ViewMatrix * camera.ProjectionMatrix);Next.LightFarFrustum=new BoundingFrustumD(camera.ViewMatrix*camera.ProjectionFarMatrix);
                     Environment.CameraPosition = camera.CameraPosition;
-                    lodFov=camera.FOV;
-                    sizeFallbackProjection=camera.ProjectionMatrix;sizeFov=camera.FOV;sizeNear=camera.NearPlane;sizeOffsetX=camera.ProjectionOffsetX;sizeOffsetY=camera.ProjectionOffsetY;haveSizeProjection=true;
-                    groupNear=camera.NearPlane;
+                    Next.LodFov=camera.FOV;
+                    Next.SizeFallbackProjection=camera.ProjectionMatrix;Next.SizeFov=camera.FOV;Next.SizeNear=camera.NearPlane;Next.SizeOffsetX=camera.ProjectionOffsetX;Next.SizeOffsetY=camera.ProjectionOffsetY;Next.HaveSizeProjection=true;
+                    Next.GroupNear=camera.NearPlane;
                     return true;
                 case MyRenderMessageEnum.UpdateRenderEnvironment:
                     var environment = (MyRenderMessageUpdateRenderEnvironment)message;
@@ -537,7 +535,32 @@ namespace ClientPlugin.Rendering.Scene
 
         long profileCullTicks, profilePackTicks, profileMaterialTicks;
         [ThreadStatic] static float[] boneScratch,boneRowScratch;
+        // One frame on one thread (tests and callers without the Apply/Build split). Settings written straight into the
+        // Build fields carry into Next first, so the latch keeps them.
         public void Draw(NativeBackend target)
+        {
+            Next.RenderSettings=RenderSettings;Next.ShadowSettings=ShadowSettings;Next.ProbeDrawDistance=ProbeDrawDistance;Next.ShadowDrawDistance=ShadowDrawDistance;Next.HighlightSepia=HighlightSepia;Next.ExternalDepthRevision=ExternalDepthRevision;
+            UpdateAndBuild(target);
+        }
+        public void UpdateAndBuild(NativeBackend target){UpdateScene();LatchFrame();BeginBuild();BuildScene(target);}
+        // Apply: the scene update. Writes actor state and the Apply light frame; no native scene calls.
+        public void UpdateScene()
+        {
+            building=false;
+            using var sceneProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene);
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.TextureLoads))TextureCache.DrainPendingLoads();
+            FrameCounter++;
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.TransformsBefore))UpdateWorldTransforms();
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorUpdater))Updater.Update();
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.TransformsAfter))UpdateWorldTransforms();
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.SpatialIndex))RefreshSpatialIndex();
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightsAndExclusions)){SelectFrameLights();PrepareExcludedActors();}
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ShadowPoses))RefreshShadowPoses();
+            FrameProfiler.Lap(FrameProfiler.Section.SceneUpdate);
+        }
+        public void BeginBuild()=>building=true;
+        // Build: native light submission, skybox, occlusion, native commits and the actor traversal of the latched frame.
+        public void BuildScene(NativeBackend target)
         {
             using var sceneProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene);
             sizeCullStats=new ActorSizeCullStats{Enabled=ActorSizeCullingEnabled?1u:0u};
@@ -546,16 +569,8 @@ namespace ClientPlugin.Rendering.Scene
             farCascadeStats=new FarCascadePolicyStats{Enabled=StockFarCascadesEnabled?1u:0u};
             if(ActorSizeCullingEnabled)PrepareSizeProjection(target);
             actorLodStats=new ActorLodStats{Enabled=ActorLodsEnabled?1u:0u};
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.TextureLoads))TextureCache.DrainPendingLoads();
-            FrameCounter++;
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.TransformsBefore))UpdateWorldTransforms();
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorUpdater))Updater.Update();
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.TransformsAfter))UpdateWorldTransforms();
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.SpatialIndex))RefreshSpatialIndex();
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightsAndExclusions)){frameShadowExclusions.Clear();SubmitLights(target);PrepareExcludedActors();}
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ShadowPoses))RefreshShadowPoses();
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Skybox))skybox.Draw(Environment.CameraPosition);
-            FrameProfiler.Lap(FrameProfiler.Section.SceneUpdate);
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightsAndExclusions)){frameShadowExclusions.Clear();CommitLights(target);}
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Skybox))skybox.Draw(FrameView.CameraPosition);
             profileCullTicks = profilePackTicks = profileMaterialTicks = 0;
             long cullStarted = Stopwatch.GetTimestamp();
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Occlusion)){visible.Clear();if(target.WorldReady)BeginOcclusion();}
@@ -585,7 +600,7 @@ namespace ClientPlugin.Rendering.Scene
                 MatrixD world = data.Actor.WorldMatrix;
                 BoundingBoxD bounds = data.Bounds;
                 bool probeOnly=(data.Flags&RenderFlags.SkipInMainView)!=0 || frustum != null && data.StaticInstances == null && frustum.Contains(bounds) == ContainmentType.Disjoint;
-                double objectDistance=System.Math.Sqrt(Vector3D.DistanceSquared(bounds.Center,Environment.CameraPosition));
+                double objectDistance=System.Math.Sqrt(Vector3D.DistanceSquared(bounds.Center,FrameView.CameraPosition));
                 bool outsideProbe=ProbeDrawDistance<=0 || objectDistance>ProbeDrawDistance+bounds.HalfExtents.Length();
                 viewProfile.Dispose();
                 if(probeOnly && (!target.WorldReady || outsideProbe && ((data.Flags&RenderFlags.CastShadows)==0 || objectDistance>ShadowDrawDistance+bounds.HalfExtents.Length()))){ profileCullTicks += Stopwatch.GetTimestamp() - actorStarted; continue; }
@@ -641,7 +656,7 @@ namespace ClientPlugin.Rendering.Scene
             cullStarted = Stopwatch.GetTimestamp();
             if(target.WorldReady&&!nativePassActive&&!gpuActive){EndOcclusion();EndShadowGroupOcclusion();target.ShadowExclusions=frameShadowExclusions.ToArray();}
             profileCullTicks += Stopwatch.GetTimestamp() - cullStarted;
-            if (target.WorldReady&&!nativePassActive&&!gpuActive) target.SetSpotRedraw(frameSpotStatic, frameSpotDynamic);
+            if (target.WorldReady&&!nativePassActive&&!gpuActive) target.SetSpotRedraw(buildLights.SpotStatic, buildLights.SpotDynamic);
             }
             FrameProfiler.Deposit(FrameProfiler.Section.ActorCull, profileCullTicks);
             FrameProfiler.Deposit(FrameProfiler.Section.InstancePack, profilePackTicks);
@@ -656,8 +671,8 @@ namespace ClientPlugin.Rendering.Scene
             using var mainGroup=target.WithMainGroup(MainGroupKey(actor));
             long packedAt = Stopwatch.GetTimestamp();
             bool casts=(actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))==RenderFlags.CastShadows;
-            Vector3 origin=(Vector3)(bounds.Center-Environment.CameraPosition);float radius=(float)bounds.HalfExtents.Length();
-            uint cascades;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CascadeMembership,false))cascades=selectedCascades??(casts?(CascadeMaskFor?.Invoke(bounds,Environment.CameraPosition)??0xFFu):0u);
+            Vector3 origin=(Vector3)(bounds.Center-FrameView.CameraPosition);float radius=(float)bounds.HalfExtents.Length();
+            uint cascades;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CascadeMembership,false))cascades=selectedCascades??(casts?(CascadeMaskFor?.Invoke(bounds,FrameView.CameraPosition)??0xFFu):0u);
             if(casts && !selectedCascades.HasValue)cascades=FilterFarActorCascades(cascades,actor);
             if(casts)cascades=FilterShadowGroupCascades(actor,cascades);
             PrepareInstances(actor,out uint type,out uint count,out byte[] stream,out bool instanceDither);
@@ -666,9 +681,9 @@ namespace ClientPlugin.Rendering.Scene
             setupProfile.Dispose();
             if(count==0)return;
             long materialsAt = Stopwatch.GetTimestamp();
-            world.Translation-=Environment.CameraPosition;
+            world.Translation-=FrameView.CameraPosition;
             float? oldDecalDistance=null;bool glassDepthPolicyReady=false,oldGlassSource=false;
-            if(target.RetainedSubmissionEnabled && type!=1 && actor.SubmissionOpaque && !HasHighlight(actor.Actor.ID) && !frameExcludedActors.Contains(actor.Actor.ID))
+            if(target.RetainedSubmissionEnabled && type!=1 && actor.SubmissionOpaque && !HasHighlight(actor.Actor.ID) && !buildLights.Excluded.Contains(actor.Actor.ID))
             {
                 using var actorProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PreparedActors,false);
                 SubmitPreparedActor(target,actor,world,type,stream,count,casts,probeOnly,occluded,outsideProbe,cascades,origin,radius,dithered);
@@ -790,7 +805,7 @@ namespace ClientPlugin.Rendering.Scene
             Vector3 tint = MaterialTint(WorldShaderVariants.BasePipeline(pipeline)%5,material?.Color ?? actor.Color);
             Vector3 hsv = actor.Hsv + colorizeHsv;
             float emissive = material?.Emissivity ?? 1;
-            bool identityDraw=HasHighlight(actor.Actor.ID) || frameExcludedActors.Contains(actor.Actor.ID);
+            bool identityDraw=HasHighlight(actor.Actor.ID) || buildLights.Excluded.Contains(actor.Actor.ID);
             bool batchRigid=target.RigidBatchingEnabled && pipeline<20 && pipeline%5==0 && stream==null && count==1 && !identityDraw;
             if(batchRigid && frame.BatchHint==null)frame.BatchHint=new NativeBackend.RigidBatchHint();
             if (frame.Live && frame.Constants != null && frame.MaterialRevision == actor.MaterialRevision && frame.Pipeline == pipeline && frame.Tint == tint && frame.Hsv == hsv && frame.Emissive == emissive && frame.Dither == actor.Dithering)
@@ -856,13 +871,14 @@ namespace ClientPlugin.Rendering.Scene
         }
         void MarkSpots(Vector3D center, float radius, bool dynamic)
         {
-            for (int i = 0; i < liveSpots.Count; i++)
+            var frame = SideLights;
+            for (int i = 0; i < frame.Spots.Count; i++)
             {
-                LiveSpot spot = liveSpots[i];
+                LiveSpot spot = frame.Spots[i];
                 double reach = spot.Range + radius;
                 if (spot.Index >= 64 || Vector3D.DistanceSquared(center, spot.Position) > reach * reach) continue;
-                if (dynamic) frameSpotDynamic |= 1UL << spot.Index;
-                else frameSpotStatic |= 1UL << spot.Index;
+                if (dynamic) frame.SpotDynamic |= 1UL << spot.Index;
+                else frame.SpotStatic |= 1UL << spot.Index;
             }
         }
         bool SpotChanged(uint ownerId,int index,Vector3D position, Vector3 direction,Vector3D up,float range, float aperture)
@@ -1054,8 +1070,8 @@ namespace ClientPlugin.Rendering.Scene
             actorIndex.Clear();dirtyTransforms.Clear();spatialDirty.Clear();shadowDirty.Clear();skinnedActors.Clear();staticGroups.Clear();removedShadowRegions.Clear();candidates.Clear();shadowWork.Clear();
             while(transformNotifications.TryDequeue(out _)){}
             while(actorStateNotifications.TryDequeue(out _)){}
-            frustum = null;lightFarFrustum=null;lightQuery.Clear();ambientLightQuery.Clear();lightPointGroups.Clear();lightQueryGroups.Clear();lightGroupContained.Clear();
-            haveSizeProjection=false;
+            Next.Frustum=Next.LightFarFrustum=null;frustum=null;lightQuery.Clear();ambientLightQuery.Clear();lightPointGroups.Clear();lightQueryGroups.Clear();lightGroupContained.Clear();
+            Next.HaveSizeProjection=haveSizeProjection=false;
             colorizeHsv = new Vector3(MyTextureDebugMultipliers.Defaults.ColorizeHSV);
             CalculateGravityInPoint = position => Vector3.Zero;
         }
@@ -1077,6 +1093,7 @@ namespace ClientPlugin.Rendering.Scene
         }
 
         public void DrawBillboards(MySharedData shared) => billboards.Draw(shared);
+        public void DrawCollectedBillboards() => billboards.DrawCollected();
         // Flares and billboards forked over lighting setup and pass publication (plan 2.2,
         // SE_VULKAN_EFFECTS_AHEAD=0 turns it off): collect on the render thread at the serial point,
         // run flares and billboard emission on a worker, finish on the render thread before QueueWorld.
@@ -1126,11 +1143,12 @@ namespace ClientPlugin.Rendering.Scene
             return component;
         }
 
-        private void SubmitLights(NativeBackend target)
+        private void SelectFrameLights()
         {
-            frameSpotActors.Clear();
-            liveSpots.Clear();
-            frameSpotStatic = frameSpotDynamic = 0;
+            var frame = applyLights;
+            frame.SpotActors.Clear();
+            frame.Spots.Clear();
+            frame.SpotStatic = frame.SpotDynamic = 0;
             var selected=SelectLights();
             Vector3D camera = Environment.CameraPosition;
             var packets = new List<NativeLight>();var spotPackets=new List<NativeSpot>();int shadowed=0;
@@ -1145,11 +1163,11 @@ namespace ClientPlugin.Rendering.Scene
                     if (direction.LengthSquared() > .00001f) direction.Normalize();
                     var packet = new NativeLight { PositionRange = new[] { (float)position.X, (float)position.Y, (float)position.Z, data.SpotLight.Light.Range }, ColorIntensity = new[] { color.X, color.Y, color.Z, 1f }, DirectionCone = new[] { direction.X, direction.Y, direction.Z, data.SpotLight.ApertureCos }, Flags = 1 };
                     SetLightMaterial(ref packet, data.SpotLight.Light);
-                    float shadowScale=RenderSettings.User.ShadowQuality switch{
-                        MyShadowsQuality.LOW=>ShadowSettings.ReflectorShadowDistanceLow,
-                        MyShadowsQuality.MEDIUM=>ShadowSettings.ReflectorShadowDistanceMedium,
-                        MyShadowsQuality.HIGH=>ShadowSettings.ReflectorShadowDistanceHigh,
-                        MyShadowsQuality.EXTREME=>ShadowSettings.ReflectorShadowDistanceExtreme,
+                    float shadowScale=Next.RenderSettings.User.ShadowQuality switch{
+                        MyShadowsQuality.LOW=>Next.ShadowSettings.ReflectorShadowDistanceLow,
+                        MyShadowsQuality.MEDIUM=>Next.ShadowSettings.ReflectorShadowDistanceMedium,
+                        MyShadowsQuality.HIGH=>Next.ShadowSettings.ReflectorShadowDistanceHigh,
+                        MyShadowsQuality.EXTREME=>Next.ShadowSettings.ReflectorShadowDistanceExtreme,
                         _=>0};
                     float shadowRange=shadowScale*data.SpotLight.Light.Range;
                     float far=Math.Max(shadowRange,1.5f);float angle=(float)(2*Math.Acos(MathHelper.Clamp(data.SpotLight.ApertureCos,.001f,.99999f)));
@@ -1157,8 +1175,8 @@ namespace ClientPlugin.Rendering.Scene
                     MatrixD projection=MatrixD.CreateLookAt(position,position+direction,up)*(MatrixD)Matrix.CreatePerspectiveFieldOfView(angle,1,.5f,far);
                     bool casts=data.CastShadows && shadowRange>0 && shadowed<16;if(casts)shadowed++;
                     int lightIndex=packets.Count;
-                    if(casts){liveSpots.Add(new LiveSpot{Position=light.Position,Range=far,Cone=data.SpotLight.ApertureCos,Direction=direction,Index=lightIndex,WorldProjection=MatrixD.CreateTranslation(-camera)*projection});if(SpotChanged(light.Owner.ID,lightIndex,light.Position,direction,up,far,data.SpotLight.ApertureCos))frameSpotStatic|=1UL<<(lightIndex);}
-                    frameSpotActors[(uint)packets.Count]=light.Owner.ID;
+                    if(casts){frame.Spots.Add(new LiveSpot{Position=light.Position,Range=far,Cone=data.SpotLight.ApertureCos,Direction=direction,Index=lightIndex,WorldProjection=MatrixD.CreateTranslation(-camera)*projection});if(SpotChanged(light.Owner.ID,lightIndex,light.Position,direction,up,far,data.SpotLight.ApertureCos))frame.SpotStatic|=1UL<<(lightIndex);}
+                    frame.SpotActors[(uint)packets.Count]=light.Owner.ID;
                     spotPackets.Add(new NativeSpot{Light=(uint)packets.Count,Flags=casts?1u:0u,Cookie=TextureCache.GetTexture(data.ReflectorTexture,true),Projection=NativeBackend.MatrixValues(projection)});
                     packets.Add(packet);
                 }
@@ -1166,7 +1184,7 @@ namespace ClientPlugin.Rendering.Scene
             }
             // Independent stock budgets. Spots precede points so their identities
             // remain in the existing 64-slot shadow redraw/exclusion mask.
-            uint pointBudget=WorldConstants.PointLightCapacity(RenderSettings.User.LightsQuality);int pointCount=0;
+            uint pointBudget=WorldConstants.PointLightCapacity(Next.RenderSettings.User.LightsQuality);int pointCount=0;
             foreach(var light in selected.Points){
                 var data=light.Data;Vector3D position=light.Position-camera;
                 if (data.PointLightOn && pointCount < pointBudget && data.PointLight.Range > 0)
@@ -1180,9 +1198,9 @@ namespace ClientPlugin.Rendering.Scene
                 }
                 if(pointCount>=pointBudget)break;
             }
-            ulong activeShadowSlots=0;foreach(var spot in liveSpots)activeShadowSlots|=1UL<<spot.Index;
+            ulong activeShadowSlots=0;foreach(var spot in frame.Spots)activeShadowSlots|=1UL<<spot.Index;
             for(int i=0;i<spotOwnerAt.Length;i++)if((activeShadowSlots&(1UL<<i))==0)spotOwnerAt[i]=0;
-            target.SetLights(packets.ToArray());if(target.WorldReady){int resolution=RenderSettings.User.ShadowMemoryQuality.ShadowSpotResolution();target.SetSpots((uint)Math.Max(256,resolution),spotPackets.ToArray());}
+            frame.Lights=packets.ToArray();frame.SpotPackets=spotPackets.ToArray();
         }
 
         [StructLayout(LayoutKind.Explicit)]

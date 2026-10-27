@@ -1893,3 +1893,116 @@ Making it pay would need:
 Even then, the ceiling is about 0.4 ms. That confirms the plan: only the
 cross-frame Apply/Build split, with a frame-packet snapshot, is sized to the
 1.2 ms gap.
+
+## Phase 4 frame split, milestone 1: the Apply/Build boundary on one thread (2026-10-27)
+
+The plan's item 0 splits the render thread's `Draw` into Apply(N+1) and
+Build(N). Milestone 1 draws that boundary on one thread with no behaviour
+change; nothing runs concurrently yet.
+
+### What changed
+
+- **`MyVulkanRender.Draw`** is now `ApplyFrame` then `BuildFrame`, run back to
+  back.
+  - **Apply:** message intake, clipmaps, packet collection start, particles
+    and decals, then the scene update and billboard collection.
+  - **Build:** world resolution, guest scene callback, shadow fit, voxel plan,
+    the scene's Build part, voxels and flares, lighting setup, publication,
+    `QueueWorld`, frame slot, sprites.
+- **`FramePacket`** (new) carries the renderer inputs Build reads: camera,
+  view and projections, voxel draw frustum, light, texture multipliers,
+  render and device settings, back-buffer size, gameplay frame, draw time,
+  animation delta and the particle-camera reset. Build never reads the
+  renderer fields that messages rewrite.
+- **`VulkanScene.Draw`** is now `UpdateScene` (Apply), `LatchFrame` (the
+  hand-off) and `BuildScene` (Build).
+  - Apply writes `Next`: render and shadow settings, probe and shadow
+    distances, highlight sepia, external depth revision, frustum, LOD field
+    of view, size projection, group near plane.
+  - `LatchFrame` copies `Next` into the fields Build already reads, so the
+    Build code keeps its names.
+  - Light selection, which runs in Apply, now reads `Next`.
+- **`Environment` stays Apply-side.** The game's RenderDirect components (for
+  example `MyThrustFlameAnimator`) read `Owner.Scene.Environment` during the
+  actor update. Build reads a latched copy, `FrameView`, at about 45 sites in
+  18 files.
+- **Light frames are double-buffered** (`LightFrame`: spots, spot owners,
+  excluded actors, spot redraw masks, light and spot packets).
+  - Apply fills one in `SelectFrameLights` (the old `SubmitLights` without
+    its native calls) and in `PrepareExcludedActors`.
+  - `LatchFrame` swaps the two.
+  - Build submits the latched frame (`CommitLights`, the `set_lights` and
+    `set_spots` calls, now in Build's prologue) and adds its own spot marks.
+  - Code that runs on both sides picks its frame with a thread-static
+    `building` flag: `MarkSpots`, and billboard misting through `SideCamera`.
+- **The skybox moves to Build.**
+- **Billboards are collected at the end of Apply.**
+  - The collection copies the billboards, the persistent billboards and the
+    view-projection matrices, so Build never reads the game's read buffer.
+  - Build first appends what was generated since the collection (flare
+    glare), so the billboard order is unchanged.
+- **One visible ordering change:** guest `RaiseScene` callbacks now see this
+  frame's updated transforms; before, they ran before the scene update. No
+  guest runs in the gates below.
+- **Gate toggle:** `SE_VULKAN_APPLY_BUILD_ORDER=0`, or the scene property
+  `ApplyBuildOrder`, runs the scene update and billboard collection at their
+  old place inside Build.
+
+### Gates
+
+- **Same-process frozen-light lane** (`-Property ApplyBuildOrder`, old,
+  new, old), run `Vulkan-9b489010…`:
+  - `packets.sig` is `BEE2C5EBCCAC7D61` (2,126 packets) in all three phases;
+  - every cascade, spot, probe, main-frame and probe-frame artifact is
+    byte-identical;
+  - view noise is 303 pixels against a 370-pixel return floor;
+  - the billboard signature differs between control and control-return as
+    well, so it varies over time and is not evidence.
+- **Cross-process comparison against a pinned `main` build is not a usable
+  gate.** Two runs of the same `main` plugin (`Vulkan-f5c4bd8a…`,
+  `Vulkan-73c64c9e…`) differed in packet count (8,419 vs 8,400) and in 96 of
+  150 probe, spot and cascade maps. Same-process lanes stay the only parity
+  evidence.
+- **GPU suites under validation:**
+  - NativePass 126 PASS;
+  - SceneSubmission 267 PASS, zero core and synchronization errors;
+  - ShadowOcclusion 36;
+  - Probe 427;
+  - WorldPass 542/542;
+  - Interop 16;
+  - HudBillboard with 0 validation errors;
+  - BillboardPacket 43.
+- **Validation gameplay run** `Vulkan-5032f157…`: 0 errors.
+- **Test updates:**
+  - SceneSubmission's flare and ray-scene checks call `SetCamera` and then a
+    Build method directly, so they now latch first;
+  - the light-selection checks read `buildLights` by reflection;
+  - the CreativeFixture lighting diagnostics patch `BuildScene` instead of
+    `Draw`;
+  - BillboardPacketTests' scene stub gains `FrameView` and `SideCamera`.
+
+### Left for later milestones
+
+These are found but not yet split. Each is still shared between the two sides,
+which is harmless on one thread:
+- **Milestone 2 (message-owned scene state Build reads):**
+  - actor fields and the game's `MyActor` objects;
+  - `colorizeHsv`, bloom emissiveness, skybox path and orientation,
+    highlights, `actorLodSettings`;
+  - `FrameCounter` (static on `MyScene`);
+  - Build's calls to `MyActor.CalculateCameraDistanceSquared`
+    (`VulkanActorLods.cs`, `VulkanActorSizeCulling.cs`), which read the
+    Apply-side `Environment`;
+  - message-time `RemoveNativePassActor` and `Clear()`, which touch Build
+    state.
+- **Milestone 3 (emission):** `BeginPacketCollection`, `backend.CameraPosition`
+  and particle and decal emission into the shared packet lists; the sprite
+  `main` list.
+- **Milestone 4 (subsystems):**
+  - postprocess, probe and shadow settings objects;
+  - voxels (`voxels.Update` still runs in Apply);
+  - environment;
+  - texture cache owner (the skybox and Build-side texture reads).
+- **Timing:** not measured. The order change moves the voxel plan-ahead
+  start after the scene update. It is measured with the thread split, not
+  per milestone.

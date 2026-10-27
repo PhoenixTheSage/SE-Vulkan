@@ -36,14 +36,14 @@ public sealed partial class VulkanScene
         if(!probeOnly && !occluded){viewEligibilityStats.MainActors++;return true;}
         if(!outsideProbe){viewEligibilityStats.ProbeActors++;return true;}
         bool casts=(actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))==RenderFlags.CastShadows;
-        uint mask=casts?(CascadeMaskFor?.Invoke(bounds,Environment.CameraPosition)??0xFFu):0u;
+        uint mask=casts?(CascadeMaskFor?.Invoke(bounds,FrameView.CameraPosition)??0xFFu):0u;
         if(casts)mask=FilterFarActorCascades(mask,actor);
         selectedCascades=mask;
         if(mask!=0){viewEligibilityStats.CascadeActors++;return true;}
         if(casts){
-            Vector3 origin=(Vector3)(bounds.Center-Environment.CameraPosition);float radius=(float)bounds.HalfExtents.Length();
-            foreach(var spot in liveSpots){
-                Vector3 delta=origin-(Vector3)(spot.Position-Environment.CameraPosition);
+            Vector3 origin=(Vector3)(bounds.Center-FrameView.CameraPosition);float radius=(float)bounds.HalfExtents.Length();
+            foreach(var spot in buildLights.Spots){
+                Vector3 delta=origin-(Vector3)(spot.Position-FrameView.CameraPosition);
                 if(SpotSphereVisible(delta,spot.Direction,spot.Range,spot.Cone,radius)){viewEligibilityStats.SpotActors++;return true;}
             }
         }

@@ -31,7 +31,7 @@ public sealed partial class VulkanScene
     {
         if(data.Model==null||data.InstanceBuffer==uint.MaxValue||!instances.TryGetValue(data.InstanceBuffer,out var buffer)||buffer.Cubes==null)return false;
         if(data.StaticInstances!=null||data.SkinMatrices!=null||data.Dithering!=0||data.GpuOwned||data.PassOwned||!KnownStockOldPipeline(data))return false;
-        uint id=data.Actor.ID;return !HasHighlight(id)&&!frameExcludedActors.Contains(id);
+        uint id=data.Actor.ID;return !HasHighlight(id)&&!buildLights.Excluded.Contains(id);
     }
     void ReleaseCell(ActorData data,bool handoff)
     {
@@ -137,10 +137,10 @@ public sealed partial class VulkanScene
         if(!cellsActive||ownedCells==0)return;
         using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CellPublish);
         var frame=new NativeCellFrame{Flags=(NewActorViewsEnabled?1u:0u)|(StockFarCascadesEnabled?2u:0u)|(actorLodSettings.Global.EnableLodSelection?4u:0u)|(actorLodSettings.Global.IsUpdateEnabled?8u:0u)};
-        var camera=Environment.CameraPosition;frame.Camera[0]=camera.X;frame.Camera[1]=camera.Y;frame.Camera[2]=camera.Z;
+        var camera=FrameView.CameraPosition;frame.Camera[0]=camera.X;frame.Camera[1]=camera.Y;frame.Camera[2]=camera.Z;
         for(int i=0;i<6;i++){var plane=frustum[i];frame.MainPlanes[i*4]=plane.Normal.X;frame.MainPlanes[i*4+1]=plane.Normal.Y;frame.MainPlanes[i*4+2]=plane.Normal.Z;frame.MainPlanes[i*4+3]=plane.D;}
         frame.ProbeDistance=ProbeDrawDistance;frame.ShadowDistance=ShadowDrawDistance;ShadowSystem.WriteCellCascades(&frame.C0);
-        var global=actorLodSettings.Global;frame.Coefficient=lodFov>0?(float)(Math.Tan(lodFov*.5)/Math.Tan(70*Math.PI/360))*1080/Math.Max(1,backend.PresentationHeight):1;frame.Delta=Environment.LastFrameDelta;
+        var global=actorLodSettings.Global;frame.Coefficient=lodFov>0?(float)(Math.Tan(lodFov*.5)/Math.Tan(70*Math.PI/360))*1080/Math.Max(1,backend.PresentationHeight):1;frame.Delta=FrameView.LastFrameDelta;
         frame.MaximumSeconds=global.MaxTransitionInSeconds;frame.DistanceAdd=global.ObjectDistanceAdd;frame.DistanceMult=global.ObjectDistanceMult;frame.Selection=global.LodSelection;frame.MinimumLod=actorLodSettings.GBuffer.MinLod;frame.Shift=actorLodSettings.GBuffer.LodShift;
         backend.PrepareCells(ref frame);bool pending=true;
         try{

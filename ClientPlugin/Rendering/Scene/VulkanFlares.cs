@@ -23,7 +23,7 @@ public sealed partial class VulkanScene
     private readonly NativeFlareResult[] flareResults=new NativeFlareResult[4096];private NativeFlareRasterQuery[] flareQueryArray=new NativeFlareRasterQuery[64];
     public void DrawFlares(MatrixD view,MatrixD projection,int width,int height,float multiplier)
     {
-        float now=(float)Environment.FrameTime.Milliseconds;
+        float now=(float)FrameView.FrameTime.Milliseconds;
         var current=currentFlares;current.Clear();foreach(var l in lights)current[l.FlareId]=l;
         int resultCount=backend.ReadFlareResults(flareResults);
         for(int i=0;i<resultCount;i++){var r=flareResults[i];if(pendingFlareOwners.TryGetValue(r.Id,out ulong owner) && current.TryGetValue(owner,out var light) && flareStates.TryGetValue(owner,out var state)){
@@ -34,7 +34,7 @@ public sealed partial class VulkanScene
         staleFlareKeys.Clear();foreach(var entry in pendingFlareOwners)if(!current.ContainsKey(entry.Value))staleFlareKeys.Add(entry.Key);foreach(var key in staleFlareKeys)pendingFlareOwners.Remove(key);
         foreach(var entry in flareStates)flareOcclusion[entry.Key]=entry.Value.Sample(now);
         var queries=flareQueries;queries.Clear();MatrixD vp=view*projection,inv=MatrixD.Invert(vp),cameraRotation=MatrixD.Invert(view);
-        Vector3D camera=Environment.CameraPosition;
+        Vector3D camera=FrameView.CameraPosition;
         foreach(var l in lights)
         {
             var data=l.EffectiveData;var desc=data.Glare;if(!desc.Enabled||desc.Glares==null||desc.Glares.Length==0||!IsVisible(l.Owner))continue;

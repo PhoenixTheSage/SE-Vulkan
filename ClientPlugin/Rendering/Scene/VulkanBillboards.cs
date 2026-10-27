@@ -25,6 +25,8 @@ namespace ClientPlugin.Rendering.Scene
         public VulkanBillboards(VulkanScene scene, NativeBackend backend) { this.scene = scene; this.backend = backend; }
 
         public void Draw(MySharedData shared){Collect(shared);Prepare();EmitPackets(backend.BillboardPackets);}
+        // Frame split (milestone 1): Apply collects at its end; Build appends what was generated since (flares) and emits.
+        public void DrawCollected(){DrainGenerated();Prepare();EmitPackets(backend.BillboardPackets);}
         // Fork (job graph, plan 2.2): the render thread collects at the serial point; a worker then runs
         // the flares, whose glare billboards go to a private capture list and follow the collected
         // generated billboards exactly as they would through the queue, then prepares and emits into a
@@ -34,7 +36,9 @@ namespace ClientPlugin.Rendering.Scene
         private readonly List<MyBillboard> flareCapture = new List<MyBillboard>();
         private readonly List<NativeBillboardDraw> pending = new List<NativeBillboardDraw>();
         private bool pendingReady;
-        private MySharedData collected;
+        // The collected frame's view-projections, copied so Build never reads the game's read buffer.
+        private readonly Dictionary<int, MyBillboardViewProjection> matrices = new Dictionary<int, MyBillboardViewProjection>();
+        private bool haveShared;
         public long AheadFrames { get; private set; }
         public long AheadFallbacks { get; private set; }
         public static bool Verify = System.Environment.GetEnvironmentVariable("SE_VULKAN_EFFECTS_VERIFY") == "1";
@@ -43,7 +47,7 @@ namespace ClientPlugin.Rendering.Scene
         public long VerifyMismatches { get; private set; }
         public void EmitAhead(Action flares)
         {
-            pendingReady = false; pending.Clear(); flareCapture.Clear();
+            pendingReady = false; pending.Clear(); flareCapture.Clear(); DrainGenerated();
             capture = flareCapture; try { flares(); } finally { capture = null; }
             frame.AddRange(flareCapture); flareCapture.Clear();
             Prepare();
@@ -64,20 +68,21 @@ namespace ClientPlugin.Rendering.Scene
         }
         public void Collect(MySharedData shared)
         {
-            frame.Clear(); collected = shared;
+            frame.Clear(); matrices.Clear(); haveShared = shared != null;
             if (shared != null)
             {
                 foreach (MyBillboard billboard in shared.Billboards.Read.Billboards) frame.Add(Copy(billboard));
                 shared.ApplyActionOnPersistentBillboards(billboard => frame.Add(Copy(billboard)));
+                foreach (var entry in shared.Billboards.Read.Matrices) matrices[entry.Key] = entry.Value;
             }
-            lock (generated) { frame.AddRange(generated); generated.Clear(); }
+            DrainGenerated();
         }
+        private void DrainGenerated() { lock (generated) { frame.AddRange(generated); generated.Clear(); } }
         private void Prepare()
         {
-            var shared = collected;
             var projections=new float[512];for(int j=0;j<32;j++)Array.Copy(NativeBackend.MatrixValues(MatrixD.Identity),0,projections,j*16,16);
-            if(shared!=null)foreach(var entry in shared.Billboards.Read.Matrices){if(entry.Key<0 || entry.Key>=32)continue;var data=entry.Value;float width=backend.PresentationWidth,height=backend.PresentationHeight;MatrixD viewport=MatrixD.Identity;viewport.M11=data.Viewport.Width/width;viewport.M22=data.Viewport.Height/height;viewport.M41=data.Viewport.OffsetX/width;viewport.M42=(height-data.Viewport.OffsetY-data.Viewport.Height)/height;MatrixD matrix=data.ViewAtZero*data.Projection*viewport;Array.Copy(NativeBackend.MatrixValues(matrix),0,projections,entry.Key*16,16);}backend.SetBillboardProjections(projections);
-            Vector3D camera = scene.Environment.CameraPosition;
+            if(haveShared)foreach(var entry in matrices){if(entry.Key<0 || entry.Key>=32)continue;var data=entry.Value;float width=backend.PresentationWidth,height=backend.PresentationHeight;MatrixD viewport=MatrixD.Identity;viewport.M11=data.Viewport.Width/width;viewport.M22=data.Viewport.Height/height;viewport.M41=data.Viewport.OffsetX/width;viewport.M42=(height-data.Viewport.OffsetY-data.Viewport.Height)/height;MatrixD matrix=data.ViewAtZero*data.Projection*viewport;Array.Copy(NativeBackend.MatrixValues(matrix),0,projections,entry.Key*16,16);}backend.SetBillboardProjections(projections);
+            Vector3D camera = scene.FrameView.CameraPosition;
             // Keen deliberately leaves LDR/PostPP in submission order. HUD
             // backgrounds, labels and cursor share a plane and alpha-compose
             // in that order; sorting their corners by distance hides controls.
@@ -101,7 +106,7 @@ namespace ClientPlugin.Rendering.Scene
         }
         private void EmitPackets(List<NativeBillboardDraw> target)
         {
-            var shared = collected; Vector3D camera = scene.Environment.CameraPosition;
+            Vector3D camera = scene.FrameView.CameraPosition;
             for (int i = 0; i < frame.Count; ++i)
             {
                 MyBillboard billboard = frame[i];
@@ -109,7 +114,7 @@ namespace ClientPlugin.Rendering.Scene
                 bool enabled=settings.DrawBillboards && (billboard.BlendType==MyBillboard.BlendTypeEnum.Standard?settings.DrawBillboardsStandard:billboard.BlendType==MyBillboard.BlendTypeEnum.AdditiveBottom?settings.DrawBillboardsBottom:billboard.BlendType==MyBillboard.BlendTypeEnum.AdditiveTop?settings.DrawBillboardsTop:billboard.BlendType==MyBillboard.BlendTypeEnum.LDR?settings.DrawBillboardsLDR:settings.DrawBillboardsPostPP);
                 if(!enabled)continue;
                 Vector3D billboardCamera=camera;
-                if(billboard.CustomViewProjection!=-1){if(billboard.CustomViewProjection<0 || billboard.CustomViewProjection>=32 || shared==null || !shared.Billboards.Read.Matrices.TryGetValue(billboard.CustomViewProjection,out var custom)){Unsupported++;continue;}billboardCamera=custom.CameraPosition;}
+                if(billboard.CustomViewProjection!=-1){if(billboard.CustomViewProjection<0 || billboard.CustomViewProjection>=32 || !haveShared || !matrices.TryGetValue(billboard.CustomViewProjection,out var custom)){Unsupported++;continue;}billboardCamera=custom.CameraPosition;}
                 MyTransparentMaterial material = MyTransparentMaterials.GetMaterial(billboard.Material);
                 Vector3D a = billboard.Position0, b = billboard.Position1, c = billboard.Position2, d = billboard.Position3;
                 if (billboard.ParentID != uint.MaxValue)
@@ -237,7 +242,7 @@ namespace ClientPlugin.Rendering.Scene
             color *= material.Color;
             if (material.AlphaMistingEnable)
             {
-                double distance = Vector3D.Distance(origin, scene.Environment.CameraPosition);
+                double distance = Vector3D.Distance(origin, scene.SideCamera);
                 float span = material.AlphaMistingEnd - material.AlphaMistingStart;
                 color *= span > .00001f ? MathHelper.Clamp(((float)distance - material.AlphaMistingStart) / span, 0, 1) : 1;
             }

@@ -73,7 +73,7 @@ public sealed partial class VulkanScene
                 var inflated=group.Bounds.GetInflated(group.Bounds.Size*.5);bool close=inflated.DistanceSquared(ref origin)<groupNear;
                 bool pending=view.Pending.TryGetValue(group,out var previous) && previous.Epoch==state.Epoch && FrameCounter-previous.Frame<=100;
                 if(!entered && !close && !pending && view.Count<view.Rows.Length){
-                    var min=inflated.Min-Environment.CameraPosition;var size=inflated.Size;
+                    var min=inflated.Min-FrameView.CameraPosition;var size=inflated.Size;
                     view.Rows[view.Count++]=new NativePackedOcclusionDraw{Id=group.QueryId,MinimumX=(float)min.X,MinimumY=(float)min.Y,MinimumZ=(float)min.Z,ExtentX=(float)size.X,ExtentY=(float)size.Y,ExtentZ=(float)size.Z};
                     var owner=new GroupQueryOwner{Group=group,Epoch=state.Epoch,Frame=FrameCounter,Bounds=inflated};view.Current[group.QueryId]=owner;view.Pending[group]=owner;shadowQueries++;
                 }

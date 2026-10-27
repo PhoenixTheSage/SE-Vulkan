@@ -35,6 +35,9 @@ namespace ClientPlugin.Rendering.Scene
     {
         public sealed class EnvironmentData { public Vector3D CameraPosition = new(100,200,300); }
         public EnvironmentData Environment = new();
+        // Build-side view and the side-picked camera of the production scene (frame split, milestone 1).
+        public EnvironmentData FrameView => Environment;
+        public Vector3D SideCamera => Environment.CameraPosition;
         public MyRenderSettings RenderSettings = new() { DrawBillboards=true, DrawBillboardsStandard=true, DrawBillboardsBottom=true, DrawBillboardsTop=true, DrawBillboardsLDR=true, DrawBillboardsPostPP=true };
         public ClientPlugin.Rendering.Content.VulkanTextureCache TextureCache = new();
         public static bool IsVisible(MyActor actor) => true;

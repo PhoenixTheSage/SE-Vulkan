@@ -88,12 +88,12 @@ partial class Program
             var expected=MatrixD.CreateLookAt(new Vector3D(0,0,-2),new Vector3D(0,0,-3),Vector3D.Up)*(MatrixD)Matrix.CreatePerspectiveFieldOfView(2*(float)Math.Acos(.99f),1,.5f,4);
             var expectedValues=NativeBackend.MatrixValues(expected);
             check(spotCapture.Packets.Length==1&&spotCapture.Packets[0].Projection.Zip(expectedValues,(a,b)=>Math.Abs(a-b)).Max()<1e-6,"spot cookie and shadow packet uses stock fixed near plane and quality-scaled far plane");
-            ulong Redraw()=>(ulong)typeof(VulkanScene).GetField("frameSpotStatic",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(scene);
+            object BuildLights()=>typeof(VulkanScene).GetField("buildLights",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(scene);ulong Redraw(){var lights=BuildLights();return (ulong)lights.GetType().GetField("SpotStatic").GetValue(lights);}
             check(Redraw()==0&&spotCapture.Packets[0].Flags==1,"steady shadowed spotlight retains its cached map");
             var shadowSettings=scene.ShadowSettings;shadowSettings.ReflectorShadowDistanceLow=.125f;scene.ShadowSettings=shadowSettings;render();
             expected=MatrixD.CreateLookAt(new Vector3D(0,0,-2),new Vector3D(0,0,-3),Vector3D.Up)*(MatrixD)Matrix.CreatePerspectiveFieldOfView(2*(float)Math.Acos(.99f),1,.5f,2.5f);
             check(spotCapture.Packets[0].Projection.Zip(NativeBackend.MatrixValues(expected),(a,b)=>Math.Abs(a-b)).Max()<1e-6&&Redraw()==1,"current reflector settings change projection and invalidate the cached shadow map");
-            var live=(System.Collections.IList)typeof(VulkanScene).GetField("liveSpots",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(scene);
+            var buildLights=BuildLights();var live=(System.Collections.IList)buildLights.GetType().GetField("Spots").GetValue(buildLights);
             check(live.Count==1&&(float)live[0].GetType().GetField("Range").GetValue(live[0])==2.5f,"spot caster eligibility uses the same clipped reach as depth replay");
             render();check(Redraw()==0,"new spotlight projection becomes reusable after redraw");
             shadowSettings.ReflectorShadowDistanceLow=.12501f;scene.ShadowSettings=shadowSettings;render();check(Redraw()==1,"sub-centimeter far-plane changes still invalidate cached spotlight depth");
