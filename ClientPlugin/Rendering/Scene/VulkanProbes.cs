@@ -16,7 +16,11 @@ public sealed class VulkanProbes
     private byte[] heldFrames; private float[] heldMatrices;private int captureSkip=-1;
     private Vector3D origin;private float nextCapture,captureStarted;private ulong completedCycle;private int captureResolution;
     public float LastAmbient {get;private set;}
-    public void Process(MyRenderMessageBase message){if(message is MyRenderMessageUpdateRenderEnvironment env){textureMultipliers=env.Data.TextureMultipliers;if(!Settings.Equals(env.Data.EnvironmentProbe) || Resolution!=env.Data.EnvMapResolution)reset=true;Settings=env.Data.EnvironmentProbe;Resolution=env.Data.EnvMapResolution;}if(message.MessageType==MyRenderMessageEnum.UnloadData){reset=true;haveOrigin=false;textureMultipliers=MyTextureDebugMultipliers.Defaults;}}
+    // Frame split (milestone 4): messages write the Applied copies during Apply; Latch moves them into the fields Plan and
+    // Configure (Build) read, which tests and the lane harness set directly. Build clears reset itself, so the request is OR-ed in.
+    public MyEnvironmentProbeData AppliedSettings=MyEnvironmentProbeData.Default;int appliedResolution=256;MyTextureDebugMultipliers appliedTextureMultipliers=MyTextureDebugMultipliers.Defaults;bool applyChanged,applyReset,applyUnload;
+    public void Latch(){if(applyChanged){Settings=AppliedSettings;Resolution=appliedResolution;textureMultipliers=appliedTextureMultipliers;applyChanged=false;}if(applyReset){reset=true;applyReset=false;}if(applyUnload){haveOrigin=false;applyUnload=false;}}
+    public void Process(MyRenderMessageBase message){if(message is MyRenderMessageUpdateRenderEnvironment env){appliedTextureMultipliers=env.Data.TextureMultipliers;if(!AppliedSettings.Equals(env.Data.EnvironmentProbe) || appliedResolution!=env.Data.EnvMapResolution)applyReset=true;AppliedSettings=env.Data.EnvironmentProbe;appliedResolution=env.Data.EnvMapResolution;applyChanged=true;}if(message.MessageType==MyRenderMessageEnum.UnloadData){applyReset=applyUnload=applyChanged=true;appliedTextureMultipliers=MyTextureDebugMultipliers.Defaults;}}
     public static MatrixD FaceView(int face){Vector3D[] directions={Vector3D.Left,Vector3D.Right,Vector3D.Up,Vector3D.Down,Vector3D.Backward,Vector3D.Forward};return MatrixD.CreateLookAt(Vector3D.Zero,directions[face],face==2?-Vector3D.Backward:face==3?-Vector3D.Forward:Vector3D.Up);}
     // Side-effect-free copy of Configure's hold/reset/origin decision: the flags and face projections it
     // will publish this frame, for preparing the native pass scene before LightingSetup.

@@ -141,11 +141,11 @@ class Program
         Check(resolvedSun.Length==width*height && resolvedSun.SequenceEqual(backend.ReadbackLightingInput(1,width,height)) && disabledAo.SequenceEqual(backend.ReadbackLightingInput(0,width,height)),"completed sun/AO readback restores image layouts for repeated reads");
         Render();var preferredAo=backend.GetPostprocessStats();
         Check(preferredAo.SsaoPasses==afterAo.SsaoPasses+3 && preferredAo.HbaoPasses==afterAo.HbaoPasses,"stock SSAO priority wins when both environment algorithms are enabled");
-        post.Process(new MyRenderMessageUpdateDebugOverrides{Overrides=new(){Postprocessing=true,SSAO=false}});Render();afterAo=backend.GetPostprocessStats();
+        post.Process(new MyRenderMessageUpdateDebugOverrides{Overrides=new(){Postprocessing=true,SSAO=false}});post.Latch();Render();afterAo=backend.GetPostprocessStats();
         Check(afterAo.SsaoPasses==preferredAo.SsaoPasses && afterAo.HbaoPasses==preferredAo.HbaoPasses,"stock SSAO debug override gates both algorithms");
-        post.Process(new MyRenderMessageUpdateDebugOverrides{Overrides=new(){Postprocessing=false,SSAO=true}});Render();preferredAo=backend.GetPostprocessStats();
+        post.Process(new MyRenderMessageUpdateDebugOverrides{Overrides=new(){Postprocessing=false,SSAO=true}});post.Latch();Render();preferredAo=backend.GetPostprocessStats();
         Check(preferredAo.SsaoPasses==afterAo.SsaoPasses && preferredAo.HbaoPasses==afterAo.HbaoPasses,"stock postprocessing debug override gates both AO algorithms");
-        post.Process(new MyRenderMessageUpdateDebugOverrides{Overrides=new(){Postprocessing=true,SSAO=true}});post.Ssao.Enabled=false;Render();afterAo=backend.GetPostprocessStats();
+        post.Process(new MyRenderMessageUpdateDebugOverrides{Overrides=new(){Postprocessing=true,SSAO=true}});post.Latch();post.Ssao.Enabled=false;Render();afterAo=backend.GetPostprocessStats();
         Check(afterAo.SsaoPasses==preferredAo.SsaoPasses && afterAo.HbaoPasses>preferredAo.HbaoPasses,"HBAO resumes when the shared gate opens and SSAO is disabled");
         // With zero depth sharpness and exponent one, stock HBAO blur reduces
         // to its documented separable Gaussian. Compare the actual AO image

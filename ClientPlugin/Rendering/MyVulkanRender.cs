@@ -258,7 +258,7 @@ public sealed class MyVulkanRender : IMyRender
             catch{EndOpenUploads();throw;}
             if(frame==null){EndOpenUploads();return;}
             if(frame.DrawScene&&frame.ApplyBuildOrder)scene.LatchFrame();
-            sprites.LatchMain();particles.LatchQueue();decals.LatchPackets();
+            sprites.LatchMain();particles.LatchQueue();decals.LatchPackets();postprocess.Latch();probes.Latch();shadows.Latch();
             BuildFrame(frame);
             PublishVisible();
         }
@@ -290,7 +290,7 @@ public sealed class MyVulkanRender : IMyRender
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Particles)){
         if (drawScene)
         {
-            var next=scene.Next;next.ExternalDepthRevision=voxels.MeshUpdates+voxels.LodChanges;next.HighlightSepia=postprocess.Settings.Data.SepiaStrength;next.ProbeDrawDistance=probes.Settings.DrawDistance;next.RenderSettings=renderConfiguration;next.ShadowSettings=shadows.Settings.Data;next.ShadowDrawDistance=shadows.DrawDistance;scene.SetCamera(camera, CurrentDrawTime, animationDelta);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ParticleDraw))particles.Draw(camera,animationDelta,renderConfiguration);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.DecalDraw))decals.Draw(camera,CurrentDrawTime.Seconds,gameplayFrame,(int)renderConfiguration.User.ParticleQuality);
+            var next=scene.Next;next.ExternalDepthRevision=voxels.MeshUpdates+voxels.LodChanges;next.HighlightSepia=postprocess.AppliedSettings.Data.SepiaStrength;next.ProbeDrawDistance=probes.AppliedSettings.DrawDistance;next.RenderSettings=renderConfiguration;next.ShadowSettings=shadows.AppliedSettings.Data;next.ShadowDrawDistance=shadows.DrawDistance;scene.SetCamera(camera, CurrentDrawTime, animationDelta);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ParticleDraw))particles.Draw(camera,animationDelta,renderConfiguration);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.DecalDraw))decals.Draw(camera,CurrentDrawTime.Seconds,gameplayFrame,(int)renderConfiguration.User.ParticleQuality);
         }
         FrameProfiler.Lap(FrameProfiler.Section.Particles);
         }
@@ -299,7 +299,7 @@ public sealed class MyVulkanRender : IMyRender
         {
             scene.UpdateScene();
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Billboards))scene.CollectBillboards(SharedData);
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ProbeAmbient))probeAmbient=scene.GatherProbeAmbient(light.AmbientLightsGatherRadius,probes.Settings);
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ProbeAmbient))probeAmbient=scene.GatherProbeAmbient(light.AmbientLightsGatherRadius,probes.AppliedSettings);
         }
         var frame=new FramePacket{DrawScene=drawScene,ApplyBuildOrder=applyBuildOrder,Camera=camera,CameraView=cameraView,CameraProjection=cameraProjection,ViewProjection=viewProjection,VoxelDrawFrustum=voxelDrawFrustum,
             Light=light,TextureMultipliers=textureMultipliers,RenderConfiguration=renderConfiguration,DeviceSettings=settings,BackBuffer=BackBufferResolution,

@@ -11,7 +11,11 @@ internal sealed class VulkanShadows
     private float[] splits = new float[6];
     public readonly MyShadowsSettings Settings=new();
     private bool debugShadows=true;
-    public void Process(MyRenderMessageBase message){if(message is MyRenderMessageUpdateShadowSettings s)Settings.CopyFrom(s.Settings);if(message is MyRenderMessageUpdateDebugOverrides d)debugShadows=d.Overrides.Shadows;if(message.MessageType==MyRenderMessageEnum.UnloadData){System.Array.Clear(fitted,0,8);schedule.Reset();frozenCameraInitialized=false;pending=false;retryUpdates=0;}}
+    // Frame split (milestone 4): messages write AppliedSettings during Apply; Latch copies a change into Settings, which
+    // the fit and cascade policy (Build) read and the lane harness and tests set directly.
+    public readonly MyShadowsSettings AppliedSettings=new();private bool appliedDebugShadows=true,applyChanged;
+    public void Latch(){if(!applyChanged)return;Settings.CopyFrom(AppliedSettings);debugShadows=appliedDebugShadows;applyChanged=false;}
+    public void Process(MyRenderMessageBase message){if(message is MyRenderMessageUpdateShadowSettings s){AppliedSettings.CopyFrom(s.Settings);applyChanged=true;}if(message is MyRenderMessageUpdateDebugOverrides d){appliedDebugShadows=d.Overrides.Shadows;applyChanged=true;}if(message.MessageType==MyRenderMessageEnum.UnloadData){System.Array.Clear(fitted,0,8);schedule.Reset();frozenCameraInitialized=false;pending=false;retryUpdates=0;}}
     public float DrawDistance{get;private set;}=1500;
     private float[] matrices = new float[96];
     private readonly MatrixD[] worldMatrices=new MatrixD[8];private readonly bool[] fitted=new bool[8];

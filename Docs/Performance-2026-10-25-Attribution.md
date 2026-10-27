@@ -2485,3 +2485,63 @@ backend's packet lists, scopes and batches are now touched only by Build.
     uploads, LCD offscreen renders, resource removal);
   - the deferred-queue assert;
   - the error string.
+
+## Phase 4 frame split, milestone 4, slice 1: probe, shadow and postprocess settings (2026-10-27)
+
+Milestone 4 gives each subsystem a single owner. It runs in slices:
+1. settings (this slice);
+2. environment;
+3. voxels;
+4. texture cache and media;
+5. profilers.
+
+### What changed
+
+The public settings fields stay as Build's view. Build reads them, and tests
+and the lane harness set them directly. Messages now write `Applied` copies
+during Apply, and the latch at the hand-off copies a changed one in:
+- **`VulkanProbes`:** settings, resolution and texture multipliers. Reset and
+  unload requests are OR-ed in, because Build clears `reset` itself.
+- **`VulkanShadows`:** the settings object (copied only when a message changed
+  it, so the harness's direct `Settings.Data` write still holds) and the debug
+  shadows override.
+- **`VulkanPostprocess`:** postprocess, SSAO and HBAO settings, the AO debug
+  override, and the unload reset.
+- **Apply's own readers** now read the `Applied` copies: the scene's probe
+  and shadow draw distances, the shadow settings, the highlight sepia, and
+  the probe ambient gather.
+
+A first attempt renamed Build's reads to new latched fields instead. That
+would have meant editing about 35 test sites, which build these objects and
+call `Configure` directly, so it was reverted for this layout. The only test
+change kept is a latch after PostprocessGpuTests' debug-override messages.
+
+### Gates
+
+- **Verify mode, 0 mismatches:** orbit `Vulkan-6e6dec11…` (56.95 million
+  checks) and interior `Vulkan-7f0f31c6…` (56.73 million).
+- **Same-process lane** (`ApplyBuildOrder` old/new/old, `Vulkan-95edf0b1…`):
+  - `packets.sig` is `6C98419263F8FCF1` (2,126 packets) in all three phases;
+  - every other artifact is byte-identical;
+  - view noise is 403 pixels against a 488-pixel return floor.
+- **GPU suites under validation:** NativePass 126, SceneSubmission 267,
+  ShadowOcclusion 36, Probe 427, WorldPass 542/542, Interop 16, HudBillboard
+  with 0 validation errors, BillboardPacket 43, DepthGeometry 41, GuestDepth
+  1,900. PostprocessGpuTests (run separately): 239 with zero validation
+  errors.
+- **Validation gameplay run** `Vulkan-29f2d4cf…`: validation enabled, 0 errors.
+
+### Remaining in milestone 4
+
+2. **Environment:** atmospheres, clouds and fog are written by messages and
+   drawn in lighting setup.
+3. **Voxels:**
+   - clipmap update and voxel messages run in Apply, while Build plans and
+     draws;
+   - `RequireOwner` pins the first thread that calls it.
+4. **Texture cache and media:**
+   - owner-thread loads;
+   - removals and unloads while a frame references them;
+   - video texture removal.
+5. **Profilers:** `FrameProfiler` statics, and a Build lane for
+   `RendererCpuProfiler`.

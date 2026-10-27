@@ -14,14 +14,23 @@ public sealed class VulkanPostprocess
     public MySSAOSettings Ssao=MySSAOSettings.Default;
     public MyHBAOData Hbao=MyHBAOData.Default;
     private bool reset=true,aoDebugEnabled=true;
+    // Frame split (milestone 4): messages write the Applied copies during Apply; Latch moves what changed into the fields
+    // above, which Build (Configure, the frame constants, the guest tonemap inputs) reads and tests set directly.
+    public MyPostprocessSettings AppliedSettings=MyPostprocessSettings.Default;
+    MySSAOSettings appliedSsao=MySSAOSettings.Default;MyHBAOData appliedHbao=MyHBAOData.Default;bool appliedAoDebug=true,applyReset;byte applyChanged;
     public bool Process(MyRenderMessageBase message)
     {
-        if(message is MyRenderMessageUpdateDebugOverrides debug)aoDebugEnabled=debug.Overrides.Postprocessing && debug.Overrides.SSAO;
-        if(message is MyRenderMessageUpdatePostprocessSettings p){Settings=p.Settings;return true;}
-        if(message is MyRenderMessageUpdateSSAOSettings s){Ssao=s.Settings;return true;}
-        if(message is MyRenderMessageUpdateHBAO pHbao){Hbao=pHbao.Settings;return true;}
-        if(message.MessageType==MyRenderMessageEnum.UnloadData)reset=true;
+        if(message is MyRenderMessageUpdateDebugOverrides debug){appliedAoDebug=debug.Overrides.Postprocessing && debug.Overrides.SSAO;applyChanged|=8;}
+        if(message is MyRenderMessageUpdatePostprocessSettings p){AppliedSettings=p.Settings;applyChanged|=1;return true;}
+        if(message is MyRenderMessageUpdateSSAOSettings s){appliedSsao=s.Settings;applyChanged|=2;return true;}
+        if(message is MyRenderMessageUpdateHBAO pHbao){appliedHbao=pHbao.Settings;applyChanged|=4;return true;}
+        if(message.MessageType==MyRenderMessageEnum.UnloadData)applyReset=true;
         return false;
+    }
+    public void Latch()
+    {
+        if((applyChanged&1)!=0)Settings=AppliedSettings;if((applyChanged&2)!=0)Ssao=appliedSsao;if((applyChanged&4)!=0)Hbao=appliedHbao;if((applyChanged&8)!=0)aoDebugEnabled=appliedAoDebug;
+        applyChanged=0;if(applyReset){reset=true;applyReset=false;}
     }
     public NativePostprocessConfig Configure(NativeBackend backend,int width,int height,bool fxaa,ulong dirt=0,MatrixD? view=null,MatrixD? projection=null,bool ambientOcclusion=true)
     {
