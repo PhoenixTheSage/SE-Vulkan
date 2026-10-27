@@ -23,7 +23,9 @@ public sealed class VulkanProbes
     public (uint Flags,float[] Projections) Plan(NativeBackend backend,Vector3D camera,int skipIBLevels,float time)
     {
         int resolution=Resolution;bool r=reset||captureSkip!=Math.Max(0,skipIBLevels)||captureResolution!=resolution;
-        var stats=backend.GetProbeStats();var schedule=backend.GetProbeScheduleStats();bool idle=schedule.Busy==0||r||Settings.TimeOut<=0;
+        // The same reads Configure makes (the launch snapshot when snapshots are on), so the plan matches its decision;
+        // GetProbeStats waited for the in-flight recording mid-Draw (about 1.5 ms a frame with early preparation).
+        var stats=backend.GetProbeScheduleStatsForConfigure(out var schedule);bool idle=schedule.Busy==0||r||Settings.TimeOut<=0;
         float next=stats.Cycles!=completedCycle?captureStarted+Math.Max(0,Settings.TimeOut):nextCapture;
         bool hold=Settings.TimeOut>0 && !r && haveOrigin && stats.Ready!=0 && idle && time<next;
         float[] matrices;

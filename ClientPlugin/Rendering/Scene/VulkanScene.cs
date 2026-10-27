@@ -28,6 +28,8 @@ namespace ClientPlugin.Rendering.Scene
         public Func<uint,bool> HasEntityDecals {get;set;}
         private sealed class ActorData
         {
+            // The box this actor last contributed to its occlusion group (incremental group bounds).
+            public BoundingBoxD GroupContribution;public bool GroupContributes;
             public MyActor Actor;
             public uint CandidateStamp;
             public VulkanModel Model;

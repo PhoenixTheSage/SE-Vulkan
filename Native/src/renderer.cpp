@@ -530,10 +530,10 @@ struct Renderer {uint32_t recipe_generation=1;
     // releases api_mutex, and scene calls (call_scene) for the next frame proceed while it records.
     static inline thread_local bool tl_recording_thread=false;
     bool early_release=env_flag("SE_VULKAN_EARLY_RELEASE",true);
-    // Spot caster grid (spots.inc); off until benchmarked.
-    bool spot_grid=env_flag("SE_VULKAN_SPOT_GRID",false);
+    // Spot caster grid (spots.inc); SE_VULKAN_SPOT_GRID=0 turns it off.
+    bool spot_grid=env_flag("SE_VULKAN_SPOT_GRID",true);
     bool pass_material_reuse=env_flag("SE_VULKAN_PASS_MATERIAL_REUSE",false);uint64_t world_mesh_revision{};
-    bool parallel_main=env_flag("SE_VULKAN_PARALLEL_MAIN",false);
+    bool parallel_main=env_flag("SE_VULKAN_PARALLEL_MAIN",true);
     std::atomic<bool> record_released{false};std::unique_lock<std::mutex>* record_lock{};std::unique_lock<std::mutex>* scene_lock{};
     uint64_t early_releases{};
     struct RecordingView {bool valid{};std::vector<native_pass::Group> groups;std::vector<std::shared_ptr<native_pass::InstanceStream>> streams;bool pass_ready{};std::array<uint32_t,64> spot_views{};uint64_t static_dirty{};} rec_view;
@@ -897,6 +897,7 @@ struct Renderer {uint32_t recipe_generation=1;
         const char* cell_emit_env=std::getenv("SE_VULKAN_DEFERRED_CELL_EMISSION");deferred_cell_emission=!cell_emit_env||std::strcmp(cell_emit_env,"0")!=0;
         const char* selection_env=std::getenv("SE_VULKAN_PARALLEL_SELECTION");pass_scene.scene.parallel_selection=!selection_env||std::strcmp(selection_env,"0")!=0;
         pass_scene.scene.lod_dedupe=env_flag("SE_VULKAN_PASS_LOD_DEDUPE",false);
+        pass_scene.scene.view_cache=env_flag("SE_VULKAN_PASS_VIEW_CACHE",true);
         const char* packing_env=std::getenv("SE_VULKAN_ASYNC_PASS_PACKING");pass_scene.scene.set_async_packing(packing_env?std::strcmp(packing_env,"0")!=0:std::thread::hardware_concurrency()>=4);
         // The worker holds api_mutex while recording, so record_running identifies its joins.
         if(pipeline_census)pass_scene.scene.on_blocked=[this](double us){int lane=record_running?1:0;++packing_blocked[lane];packing_blocked_us[lane]+=uint64_t(us);

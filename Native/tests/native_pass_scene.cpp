@@ -120,8 +120,8 @@ static void run(){
     }
 }
 int main(){
-    // Every check runs with and without per-actor LOD readiness dedupe; the outputs must not differ.
-    try{for(bool dedupe:{false,true}){native_pass::Scene::default_lod_dedupe=dedupe;run();}
+    // Every check runs with LOD readiness dedupe and the view cache each off and on; the outputs must not differ.
+    try{for(int mode=0;mode<4;++mode){native_pass::Scene::default_lod_dedupe=(mode&1)!=0;native_pass::Scene::default_view_cache=(mode&2)!=0;run();}
         std::cout<<"Native resident per-view producer checks passed\n";}
     catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';return 1;}
 }

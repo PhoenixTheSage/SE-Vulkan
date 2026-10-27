@@ -228,10 +228,22 @@ public sealed class MyVulkanRender : IMyRender
     }
     public void EnqueueOutputMessage(MyRenderMessageBase message) => OutputQueue.Enqueue(message);
     public MyRenderProfiler GetRenderProfiler() => profiler;
+    // Opt-in scheduling policies (P95 tails were broad slowdowns of every phase, not GC; see the attribution doc):
+    // SE_VULKAN_RENDER_PRIORITY=high sets the game's own RenderThreadHighPriority, which MyRenderThread applies
+    // (Highest) at the start of each frame; SE_VULKAN_GC_LATENCY=sustained selects SustainedLowLatency once.
+    static readonly bool RenderPriorityHigh=Environment.GetEnvironmentVariable("SE_VULKAN_RENDER_PRIORITY")=="high";
+    static readonly bool GcSustained=Environment.GetEnvironmentVariable("SE_VULKAN_GC_LATENCY")=="sustained";
+    static bool gcApplied;
+    static void ApplyThreadPolicies()
+    {
+        if(RenderPriorityHigh&&!MyRenderProxy.Settings.RenderThreadHighPriority)MyRenderProxy.Settings.RenderThreadHighPriority=true;
+        if(GcSustained&&!gcApplied){gcApplied=true;System.Runtime.GCSettings.LatencyMode=System.Runtime.GCLatencyMode.SustainedLowLatency;}
+    }
     public void Draw(bool draw = true)
     {
         FrameProfiler.BeginDraw();
         RendererCpuProfiler.BeginFrame();
+        ApplyThreadPolicies();
         using var drawProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Draw);
         try
         {

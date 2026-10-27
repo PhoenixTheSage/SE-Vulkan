@@ -1685,3 +1685,141 @@ Conclusions:
 - **The allocation fixes are real:** about 88 KB less per frame, sprite
   marshaling is gone, and fewer frames are tagged with a GC. P95 still
   trails DX11 by about 2.3 ms.
+
+## Quick checks and steps 2–3 (2026-10-26)
+
+### P95 tail attribution
+
+From the NP8C tails, `Vulkan-49d73068…`.
+
+- **The slowest 5% of frames average 9.08 ms against a 5.93 ms mean.** Draw
+  accounts for 2.82 ms of the 3.15 ms difference.
+- **Garbage collection is not the cause.** Of the 16 recorded slowest frames,
+  only four had a gen0 collection and none had gen1 or gen2.
+- **Two shapes:**
+  - **Broad inflation.** Nearly every phase runs 0.3–0.9 ms long on the same
+    frame (transforms, traversal, occlusion, messages, publish, commits): the
+    render thread losing CPU, not one phase growing.
+  - **Single stalls of about 3 ms that move between phases:** Messages +3.3,
+    probe configuration +3.3, glass parts +3.5, prepared-actor rebuild +3.0.
+- **Total excess over those 16 frames:** Messages 10.6 ms, TransformsBefore
+  7.6, ActorTraversal 6.0, Occlusion 5.4, GlassParts 4.8, probe configuration
+  4.8, publish 4.8, commits 4.5.
+- During gameplay the game runs its render thread at Normal priority (Highest
+  only during the intro video; `MyRenderThread.RenderFrame` applies
+  `MyRenderProxy.Settings.RenderThreadHighPriority` every frame). That is the
+  same priority as our job workers, the recording thread and the game's
+  parallel tasks.
+
+### Lanes
+
+New opt-ins:
+- `SE_VULKAN_RENDER_PRIORITY=high` sets the game's own
+  `RenderThreadHighPriority`;
+- `SE_VULKAN_GC_LATENCY=sustained` selects `SustainedLowLatency`;
+- `SE_VULKAN_PASS_VIEW_CACHE=1` reuses an unchanged actor's frustum results
+  for views whose parameters are unchanged (exact; the native unit test runs
+  all four combinations with LOD dedupe).
+
+Existing opt-ins re-tested now that recording has headroom:
+- `SE_VULKAN_DEFERRED_WORLD_QUEUE`;
+- `SE_VULKAN_DEFERRED_CELL_PUBLISH`.
+
+Results:
+
+- **Early prepare (`SE_VULKAN_EARLY_PASS_PREPARE=1`) is worse:** 6.60 and
+  6.49 against NP 5.57–6.17 (`QuickChecks-Paired-2026-10-26.json`; the first
+  runs of that set were contaminated by a native build, but the last
+  early-prepare run was not).
+- **Clean set** (`Steps2to3-Paired-2026-10-26.json`), interval mean, ms:
+
+  | Lane | Runs |
+  |---|---|
+  | NP | 5.54, 6.01 (P95 10.1) |
+  | Render priority high | 5.52, 5.48 |
+  | GC sustained | 5.67, 5.66 |
+  | View cache | 5.52, 5.53 |
+  | Deferred world queue | 5.52, 5.61 |
+  | Deferred world queue + cell publish | 5.69, 5.52 |
+
+  None moves the cadence beyond about 0.1 ms. GC sustained is slightly
+  worse. Render priority is consistently at or below NP, with marginally
+  better P95 (7.61 and 7.69 against 7.87).
+- **The view cache cuts native preparation 478 → 423 µs** (CpuDetail
+  `Vulkan-cc209ef5…` against `Vulkan-4266a266…`). "Requests" (about 185 µs)
+  is summed worker time and includes per-actor profiling clocks, so it
+  overstates the real cost.
+- **QueueWorld split (0.63 ms):**
+
+  | Part | ms |
+  |---|---|
+  | Native intake | 0.23 |
+  | Managed blob packing | 0.16 |
+  | Transparency | 0.07 |
+  | Frame constants, orders, models, decals, highlights | about 0.16 |
+
+  Each world draw's constants are copied twice (managed arena, then native
+  submission); removing one copy needs a pointer-based queue ABI.
+- **Occlusion split (0.32 ms):** `OcclusionBounds` 0.28 (`RefreshGroupBounds`
+  recomputes every dirty group over all members) and `OcclusionResults` 0.03.
+
+### Steps 4 and 6a, and new defaults (2026-10-26)
+
+- **Incremental group bounds** (`SE_VULKAN_INCREMENTAL_GROUP_BOUNDS`):
+  - group boxes now update from the dirty members only;
+  - an old box that touched an extreme falls back to the full recompute;
+  - a verify mode compares every incremental result with the full one:
+    82,688 incremental updates, 0 mismatches (`Vulkan-036669a6…`);
+  - `OcclusionBounds` was 0.28 ms per frame.
+- **Stacked lane** (view cache, incremental bounds, render priority, spot
+  grid, parallel main; `Step4-Stacked-*`): ahead of NP in all four pairs,
+  by 0.05–0.52 ms (about 0.1 orbit, 0.3 interior). The box was noisy (DX11 ran
+  4.45; Codex was active).
+- **New defaults:** view cache, incremental bounds, spot grid and parallel
+  main.
+  - Validation: suites all pass, the gameplay run has 0 errors, and the
+    frozen-light lane is clean.
+  - Against everything off (`Defaults9-*`) they are flat: orbit 6.09 / 6.10
+    against 6.04; interior 5.89 / 5.67 against 5.81 / 5.78. One NPOFF run was
+    invalid (it never rendered the world).
+  - So the stacked lane's gain came mostly from render priority. It stays
+    opt-in, because a Highest render thread could starve the game's update
+    thread on CPUs with few cores.
+- **Early pass prepare, fixed (6a).** Two hidden waits made it 0.6–0.9 ms
+  slower:
+  - `sevk_pass_prepare_async` was still an ordinary call;
+  - `VulkanProbes.Plan` read `GetProbeStats`, about 1.5 ms per frame of
+    waiting found by the census.
+
+  Now the prepare is a scene call, and `Plan` reads the same launch snapshot
+  as `Configure`. Waits are back to streaming only. Kept 11,911 frames,
+  re-prepared 12.
+  - Pairs (`EarlyPrepareFix2-*`): orbit 5.50 / 5.60 against 5.60 / 5.65;
+    interior 5.96 / 5.68 against 6.36 / 5.73. Ahead in every pair, by about
+    0.05–0.1 ms.
+  - On by default after validation.
+- **QueueWorld deferral** (deferred world queue and cell publish): no gain;
+  stays off.
+- **Allocation round two:** not pursued.
+  - The tails show P95 is not GC-driven.
+  - Lights would need blittable `NativeLight` and `NativeSpot`, but the
+    frozen-light lane hooks `SetLights(NativeLight[])` and `SetSpots`, and
+    pinned-baseline runs depend on those signatures.
+
+### Where this leaves the goal
+
+Today's sets ran 5.5–5.65 ms (NP) against DX11 4.33–4.47. Every
+render-thread lever measured since step 8 is worth about 0.1 ms or less on
+its own:
+- LOD dedupe;
+- material reuse;
+- view cache;
+- incremental bounds;
+- QueueWorld deferral;
+- early prepare;
+- GC mode.
+
+The render thread does about 5.4 ms of serial managed and native work per
+frame. Getting under 4.17 ms needs that work to overlap the next frame
+(Phase 4, frame-build stage) or a deep incremental rewrite of publication
+(the full 1b design). Small cuts will not close a 1.2 ms gap.

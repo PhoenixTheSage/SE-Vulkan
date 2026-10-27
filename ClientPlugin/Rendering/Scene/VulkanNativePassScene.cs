@@ -199,8 +199,9 @@ public sealed partial class VulkanScene
     // worker before voxel emission and LightingSetup. Publication rebuilds the views from the published
     // probe state and keeps the early preparation only if both are byte-identical; otherwise it cancels
     // and prepares again, so the output never depends on the prediction.
-    // Opt-in (SE_VULKAN_EARLY_PASS_PREPARE=1): it predicts every frame here, but paired runs were slower with it.
-    public bool EarlyPassPrepareEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_EARLY_PASS_PREPARE")=="1";
+    // Default (SE_VULKAN_EARLY_PASS_PREPARE=0 turns it off). It was slower until its native call became a scene call
+    // and the probe plan stopped reading GetProbeStats, both of which waited for the in-flight recording.
+    public bool EarlyPassPrepareEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_EARLY_PASS_PREPARE")!="0";
     public long EarlyPrepareHits {get;private set;}public long EarlyPrepareMisses {get;private set;}
     bool earlyPrepared;NativePassFrame earlyFrame;NativePassView[] earlyViews=new NativePassView[32];int earlyViewCount;
     public void BeginNativePassPrepare(float[] probeProjections,uint probeFaces)

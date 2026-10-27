@@ -38,6 +38,9 @@ struct Actor {
     // This is an input operation; stored actors always own complete appearance.
     bool replace_appearance=true;
     uint64_t depth_epoch=1;
+    // View cache (Scene::view_cache): last preparation's view mask, valid for the commit epoch and preparation it
+    // was computed in. A commit replaces the actor, which resets these.
+    uint64_t cache_views{},cache_epoch{},cache_prepare{};
 };
 struct View {
     uint32_t id{};Kind kind{};scene_actor::Frustum frustum;scene_actor::PassLod lod;
@@ -168,6 +171,19 @@ public:
     // Per-actor LOD readiness dedupe in preparation and publication (output identical).
     static inline bool default_lod_dedupe=false; // tests run both settings
     bool lod_dedupe=default_lod_dedupe;
+    // Per-actor view-test reuse: an actor with an unchanged commit epoch keeps last preparation's result for every
+    // view whose parameters are unchanged (output identical; spot views are static, so they hit with a moving camera).
+    static inline bool default_view_cache=false;
+    bool view_cache=default_view_cache;
+    std::array<uint64_t,64> view_signature{};uint64_t signature_valid{},prepare_serial{};
+    uint64_t signature_of(const View& view)const{
+        uint64_t h=0xcbf29ce484222325ull;auto mix=[&](const void* data,size_t bytes){auto* b=static_cast<const uint8_t*>(data);for(size_t i=0;i<bytes;++i){h^=b[i];h*=0x100000001b3ull;}};
+        uint32_t flags=uint32_t(view.kind)|(view.enabled?16u:0)|(view.only_dynamic?32u:0)|(view.only_static?64u:0)|(view.frustum.enabled?128u:0);
+        mix(&view.id,sizeof(view.id));mix(&flags,sizeof(flags));mix(view.frustum.planes.data(),sizeof(view.frustum.planes));
+        mix(&view.minimum_size_squared,sizeof(double));mix(&view.maximum_distance,sizeof(double));
+        if(view.maximum_distance>0)mix(&frame.selection.camera,sizeof(frame.selection.camera)); // the distance test is camera-relative
+        return h;
+    }
     void prepare(Frame current){idle();prepare_body(std::move(current));}
     // Early preparation: the same selection on the background worker. Its readers (query, missing and
     // fallback accessors, publish, cancel and every resident mutation) join it first.
@@ -177,6 +193,9 @@ public:
         CpuScope total(profiling,profile.prepare_us);if(profiling)++profile.prepares;
         if(current.views.size()>64)throw std::runtime_error("pass view budget");uint64_t ids=0;for(auto& view:current.views){if(view.id>=64||(ids&(uint64_t(1)<<view.id)))throw std::runtime_error("duplicate pass view");ids|=uint64_t(1)<<view.id;}
         frame=std::move(current);selected.clear();queries.clear();missing.clear();fallbacks.clear();groups.clear();streams.clear();transparent.clear();
+        // Views whose test parameters match the previous preparation; their per-actor results can be reused.
+        uint64_t stable_views=0,next_valid=0;std::array<uint64_t,64> next_signature{};uint64_t serial=++prepare_serial;
+        if(view_cache)for(auto& view:frame.views){uint64_t sig=signature_of(view);next_signature[view.id]=sig;next_valid|=uint64_t(1)<<view.id;if((signature_valid&(uint64_t(1)<<view.id))&&view_signature[view.id]==sig)stable_views|=uint64_t(1)<<view.id;}
         // Actor ranges select views and LODs into range-local outputs; merging
         // them in range order reproduces the serial selection, query, request
         // and fallback order exactly.
@@ -188,12 +207,16 @@ public:
             bool immediate=!actor.have_camera||std::sqrt(dx*dx+dy*dy+dz*dz)>frame.selection.global.smooth_camera_distance;
             float x=float(actor.selection.translation.x-frame.selection.camera.x),y=float(actor.selection.translation.y-frame.selection.camera.y),z=float(actor.selection.translation.z-frame.selection.camera.z),scale=actor.selection.forward_scale>0?actor.selection.forward_scale:1;
             float distance=(std::sqrt(x*x+y*y+z*z)/scale*frame.selection.coefficient+frame.selection.global.distance_add)*frame.selection.global.distance_mult;
-            for(auto& view:frame.views){if(!view.enabled||(view.kind==Kind::Colour&&actor.selection.skip_main)||(view.kind==Kind::Forward&&actor.selection.skip_forward)||(view.kind==Kind::Depth&&(!actor.selection.cast_flag||!actor.selection.casts))||(view.only_dynamic&&!actor.dynamic)||(view.only_static&&actor.dynamic)||scene_actor::disjoint(actor.selection.bounds,view.frustum))continue;
+            bool reuse=view_cache&&actor.cache_epoch==actor.depth_epoch&&actor.cache_prepare+1==serial;
+            for(auto& view:frame.views){uint64_t bit=uint64_t(1)<<view.id;
+                if(reuse&&(stable_views&bit)){if(actor.cache_views&bit){selection.views|=bit;if(view.kind==Kind::Colour)selection.main_candidate=true;}continue;}
+                if(!view.enabled||(view.kind==Kind::Colour&&actor.selection.skip_main)||(view.kind==Kind::Forward&&actor.selection.skip_forward)||(view.kind==Kind::Depth&&(!actor.selection.cast_flag||!actor.selection.casts))||(view.only_dynamic&&!actor.dynamic)||(view.only_static&&actor.dynamic)||scene_actor::disjoint(actor.selection.bounds,view.frustum))continue;
                 double sx=actor.selection.bounds.maximum.x-actor.selection.bounds.minimum.x,sy=actor.selection.bounds.maximum.y-actor.selection.bounds.minimum.y,sz=actor.selection.bounds.maximum.z-actor.selection.bounds.minimum.z;
                 if(view.maximum_distance>0){double radius=std::sqrt(sx*sx+sy*sy+sz*sz)*.5,dx=(actor.selection.bounds.minimum.x+actor.selection.bounds.maximum.x)*.5-frame.selection.camera.x,dy=(actor.selection.bounds.minimum.y+actor.selection.bounds.maximum.y)*.5-frame.selection.camera.y,dz=(actor.selection.bounds.minimum.z+actor.selection.bounds.maximum.z)*.5-frame.selection.camera.z;if(std::sqrt(dx*dx+dy*dy+dz*dz)>view.maximum_distance+radius)continue;}
                 if(view.kind==Kind::Depth && sx*sx+sy*sy+sz*sz<=view.minimum_size_squared)continue;
                 selection.views|=uint64_t(1)<<view.id;if(view.kind==Kind::Colour)selection.main_candidate=true;
             }
+            if(view_cache){actor.cache_views=selection.views;actor.cache_epoch=actor.depth_epoch;actor.cache_prepare=serial;}
             if(!selection.views)return;selection.next.update(distance,family.distances,frame.selection.global,frame.selection.delta,immediate);
             out.selected.push_back(selection);++out.selected_count;
             if(actor.group)out.queries.push_back({actor.group,selection.views,actor.owner});
@@ -211,6 +234,7 @@ public:
         uint32_t slots=actors.slots(),count=jobs&&slots>=2?std::min(16u,std::max(2u,(slots+255)/256)):1u;std::vector<Chunk> chunks(count);
         auto run_chunk=[&](uint32_t c){actors.each_range(uint32_t(uint64_t(slots)*c/count),uint32_t(uint64_t(slots)*(c+1)/count),[&](uint64_t handle,Actor& actor){prepare_actor(chunks[c],handle,actor);});};
         if(count>1)jobs->run(count,run_chunk);else run_chunk(0);
+        if(view_cache){view_signature=next_signature;signature_valid=next_valid;}
         std::map<uint64_t,uint32_t> query_indices;
         for(auto& chunk:chunks){
             selected.insert(selected.end(),chunk.selected.begin(),chunk.selected.end());fallbacks.insert(fallbacks.end(),chunk.fallbacks.begin(),chunk.fallbacks.end());
