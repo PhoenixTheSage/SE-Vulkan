@@ -19,6 +19,8 @@ public sealed partial class VulkanScene
         public MatrixD World;public int WorldIndex=-1;public float ForwardScale;
         public BoundingBox LocalAabb;public bool HasLocalAabb,HasParent,Visible,Destroyed;
         public BoundingBoxD Bounds;
+        // The nearest root ancestor (occlusion group key), or null.
+        public MyActor GroupRoot;
         MatrixD inverse;int inverseIndex=-1;
         // Build-only cache of the inverse world matrix (the game's MyActor.WorldMatrixInv).
         public MatrixD WorldInv{get{if(inverseIndex!=WorldIndex){MatrixD.Invert(ref World,out inverse);inverseIndex=WorldIndex;}return inverse;}}
@@ -52,8 +54,10 @@ public sealed partial class VulkanScene
             frame.HasParent=actor.Parent!=null;
         }
         frame.Visible=IsVisible(actor);
+        frame.GroupRoot=GroupRootOf(actor);
         frame.Bounds=data.Bounds;
     }
+    static MyActor GroupRootOf(MyActor actor){if(actor.IsDestroyed)return null;for(IMyActor node=actor.Parent;node!=null;node=node.Parent)if(node is MyActor root&&root.IsRoot())return root;return null;}
     void LatchActorFrames(){buildParity=applyParity;applyParity^=1;}
     public static bool FramePacketVerifyEnabled=System.Environment.GetEnvironmentVariable("SE_VULKAN_FRAME_PACKET_VERIFY")=="1";
     public long FramePacketChecks{get;private set;}
@@ -75,6 +79,7 @@ public sealed partial class VulkanScene
             }
             if(field==null&&frame.Visible!=IsVisible(actor))field="Visible";
             if(field==null&&frame.Bounds!=data.Bounds)field="Bounds";
+            if(field==null&&!actor.IsDestroyed&&!ReferenceEquals(frame.GroupRoot,GroupRootOf(actor)))field="GroupRoot";
             if(field!=null){FramePacketMismatches++;FramePacketFirstMismatch??=field+" of actor "+data.Id+" at frame "+FrameCounter;}
         }
     }

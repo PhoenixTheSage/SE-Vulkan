@@ -47,12 +47,12 @@ public sealed partial class VulkanScene
     {
         using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CellCommits);
         bool allowed=CellsAllowed()&&frustum!=null;int policy=allowed?CellPolicy():0;
-        if(policy!=cellPolicy){cellPolicy=policy;foreach(var data in actors.Values)if(data.CellOwned||data.InstanceBuffer!=uint.MaxValue)cellDirty.Add(data);}
+        if(policy!=cellPolicy){cellPolicy=policy;foreach(var data in buildActors.Values)if(data.CellOwned||data.InstanceBuffer!=uint.MaxValue)cellDirty.Add(data);}
         // Retired recipes (mesh removal) only recommit the cells that used them.
-        if(backend.WorldRecipeRevision!=cellRecipeRevision){cellRecipeRevision=backend.WorldRecipeRevision;foreach(var data in actors.Values)if(data.CellOwned&&data.CellRecipes!=null)foreach(var recipe in data.CellRecipes)if(!recipe.Alive){cellDirty.Add(data);break;}}
+        if(backend.WorldRecipeRevision!=cellRecipeRevision){cellRecipeRevision=backend.WorldRecipeRevision;foreach(var data in buildActors.Values)if(data.CellOwned&&data.CellRecipes!=null)foreach(var recipe in data.CellRecipes)if(!recipe.Alive){cellDirty.Add(data);break;}}
         cellsActive=allowed;
         foreach(var data in cellPoseDirty){
-            if(cellDirty.Contains(data)||BuildFrameOf(data).Destroyed||!actors.ContainsKey(data.Id))continue;
+            if(cellDirty.Contains(data)||BuildFrameOf(data).Destroyed||!buildActors.ContainsKey(data.Id))continue;
             if(data.CellOwned&&allowed&&CellSupported(data))AppendPose(data);else cellDirty.Add(data);
         }
         cellPoseDirty.Clear();
@@ -64,7 +64,7 @@ public sealed partial class VulkanScene
         if(cellDirty.Count==0)return;
         cellInputs.Clear();cellHandles.Clear();cellOwners.Clear();cellLevels.Clear();cellParts.Clear();cellThresholds.Clear();cellBytes.Clear();
         foreach(var data in cellDirty){
-            if(BuildFrameOf(data).Destroyed||!actors.ContainsKey(data.Id))continue;
+            if(BuildFrameOf(data).Destroyed||!buildActors.ContainsKey(data.Id))continue;
             if(!allowed||!CellSupported(data)||!AppendCell(data)){ReleaseCell(data,true);continue;}
             cellOwners.Add(data);
         }
@@ -149,7 +149,7 @@ public sealed partial class VulkanScene
             for(int i=0;i<prepared.ChangeCount;i++){var change=prepared.Changes[i];var centre=new Vector3D(change.X,change.Y,change.Z);InvalidateOcclusion("ActorLOD");MarkSpots(centre,(float)change.Radius,false);MarkSpots(centre,(float)change.Radius,true);}
             if(cellResults.Length<prepared.QueryCount)cellResults=new NativeCellResult[prepared.QueryCount];
             for(int i=0;i<prepared.QueryCount;i++){var query=prepared.Queries[i];uint hidden=0,cascades=0;
-                if(actors.TryGetValue(query.Representative,out var actor)){if(query.Main!=0&&QueryGroupVisibility(query.Representative))hidden=1;cascades=query.Cascades&~FilterShadowGroupCascades(actor,query.Cascades);}
+                if(buildActors.TryGetValue(query.Representative,out var actor)){if(query.Main!=0&&QueryGroupVisibility(query.Representative))hidden=1;cascades=query.Cascades&~FilterShadowGroupCascades(actor,query.Cascades);}
                 cellResults[i]=new NativeCellResult{Group=query.Group,MainHidden=hidden,CascadesHidden=cascades};}
             backend.PublishCells(cellResults,prepared.QueryCount);pending=false;
         }finally{if(pending)backend.CancelCells();}

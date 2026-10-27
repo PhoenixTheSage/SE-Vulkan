@@ -35,6 +35,8 @@ namespace ClientPlugin.Rendering.Scene
             public uint Id;
             public readonly ActorFrame[] Frames={new ActorFrame(),new ActorFrame()};
             public uint CandidateStamp;
+            // Dirty marks made during Apply, folded into the Build flags at the latch (VulkanSceneHandoff).
+            public byte ApplyDirtyBits;
             public VulkanModel Model;
             public StockOldModelIdentity OldModel;
             public bool TrackOldIdentity=true;
@@ -251,7 +253,7 @@ namespace ClientPlugin.Rendering.Scene
                 case MyRenderMessageEnum.CreateManualCullObject:
                     var manual = (MyRenderMessageCreateManualCullObject)message;
                     Create(manual.ID, manual.DebugName, manual.WorldMatrix, RenderFlags.Visible).Actor.SetRoot(true);
-                    groupMembershipDirty=true;
+                    MarkMembershipDirty();
                     return true;
                 case MyRenderMessageEnum.CreateStaticGroup:
                     var group = (MyRenderMessageCreateStaticGroup)message;
@@ -495,20 +497,21 @@ namespace ClientPlugin.Rendering.Scene
             actor.OnRotationChanged += angle => Interlocked.Increment(ref renderDirectRotationUpdates);
             actor.SetVisibility((flags & RenderFlags.Visible) != 0);
             var data = new ActorData { Actor = actor, Id = id, Flags = flags };NoteActorFrame(data);
-            actors.Add(id, data);
+            actors.Add(id, data);LogActor(id,data);
             var observer=new ResidentActorObserver(this);observer.Construct();actor.AddComponent<ResidentActorObserver>(observer);
-            groupMembershipDirty=true;
+            MarkMembershipDirty();
             TrackTransforms(actor);
             return data;
         }
 
         private void SetModel(ActorData actor, VulkanModel model,bool trackOldIdentity=true)
         {
-            RemoveNativePassActor(actor,false);ReleaseCell(actor,false);
+            // Native ownership is Build state: queued for Build's prologue (VulkanSceneHandoff).
+            if(building){RemoveNativePassActor(actor,false,markSpots:false);ReleaseCell(actor,false);}else buildOps.Add(new BuildOp{Kind=BuildOpKind.ReleaseOwnership,Data=actor});
             ReleaseDynamicMeshes(actor);
             actor.Model = model;
             actor.TrackOldIdentity=trackOldIdentity;actor.OldModel=null;if(trackOldIdentity)EnsureOldModelIdentity(actor);
-            groupMembershipDirty=true;
+            MarkMembershipDirty();
             actor.RenderModel=model;actor.RenderLod=0;actor.Lod=new StockActorLodState();actor.NewLod.Reset();actor.HaveNewViewCamera=false;actor.LastNewSpotLod=-1;actor.Representations.Clear();
             actor.LodShadowModel=actor.LodShadowNext=null;actor.LodShadowAlpha=0;
             actor.PartFrames = null;
@@ -567,13 +570,14 @@ namespace ClientPlugin.Rendering.Scene
         public void BuildScene(NativeBackend target)
         {
             using var sceneProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene);
+            FlushBuildOps();
             sizeCullStats=new ActorSizeCullStats{Enabled=ActorSizeCullingEnabled?1u:0u};
             newViewStats=new NewActorViewStats{Enabled=NewActorViewsEnabled?1u:0u};
             viewEligibilityStats=new ViewEligibilityStats{Enabled=ViewEligibilityEnabled?1u:0u};
             farCascadeStats=new FarCascadePolicyStats{Enabled=StockFarCascadesEnabled?1u:0u};
             if(ActorSizeCullingEnabled)PrepareSizeProjection(target);
             actorLodStats=new ActorLodStats{Enabled=ActorLodsEnabled?1u:0u};
-            if(FramePacketVerifyEnabled)VerifyActorFrames();
+            if(FramePacketVerifyEnabled){VerifyActorFrames();VerifyBuildActors();}
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightsAndExclusions)){frameShadowExclusions.Clear();CommitLights(target);}
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Skybox))skybox.Draw(FrameView.CameraPosition);
             profileCullTicks = profilePackTicks = profileMaterialTicks = 0;
@@ -1047,14 +1051,14 @@ namespace ClientPlugin.Rendering.Scene
             if (actors.TryGetValue(id, out actor))
             {
                 NoteActorFrame(actor);
-                RemoveNativePassActor(actor,false);nativePassDirty.Remove(actor);ReleaseCell(actor,false);cellDirty.Remove(actor);cellPoseDirty.Remove(actor);
+                // Native ownership, dirty entries, occlusion group and candidate proxy are Build state.
+                if(building)RemoveBuildState(actor);else buildOps.Add(new BuildOp{Kind=BuildOpKind.RemoveActor,Data=actor});
                 InvalidateOcclusion("Removal");
-                groupMembershipDirty=true;occlusionGroups.Remove(actor.Actor);
+                MarkMembershipDirty();
                 if(actor.HaveShadowPose)removedShadowRegions.Add((actor.ShadowCenter,actor.ShadowRadius));
-                if(actor.Proxy>=0)actorIndex.RemoveProxy(actor.Proxy);
-                spatialDirty.Remove(actor);shadowDirty.Remove(actor);skinnedActors.Remove(actor);staticGroups.Remove(actor);dirtyTransforms.Remove(actor.Actor);
+                spatialDirty.Remove(actor);shadowDirty.Remove(actor);skinnedActors.Remove(actor);dirtyTransforms.Remove(actor.Actor);
                 foreach(var child in actor.Actor.Children)MarkTransforms(child);
-                ReleaseDynamicMeshes(actor); actors.Remove(id); actor.Actor.Destruct();
+                ReleaseDynamicMeshes(actor); actors.Remove(id); LogActor(id,null); actor.Actor.Destruct();
             }
             shadowIgnores.Remove(id);dirtyShadowOwners.Remove(id);spotByOwner.Remove(id);foreach(var values in shadowIgnores.Values)values.Remove(id);
             highlights.Remove(id);overlappingHighlights.Remove(id);instances.Remove(id); visible.Remove(id);
@@ -1062,7 +1066,12 @@ namespace ClientPlugin.Rendering.Scene
 
         public override void Clear()
         {
+            // Unload runs with Build joined: flush the queued Build work and act on Build state directly.
+            FlushBuildOps();bool wasBuilding=building;building=true;
+            try{
             foreach (uint id in new List<uint>(actors.Keys)) Remove(id);
+            SyncBuildActors();
+            applyPassDirty.Clear();applyCellDirty.Clear();applyCellPoseDirty.Clear();applyGpuDirty.Clear();applyGroupDirty.Clear();applyMembershipDirty=false;
             foreach (var light in new List<VulkanLightComponent>(lights)) light.Owner?.Destruct();
             instances.Clear(); lights.Clear(); visible.Clear();
             billboards.Dispose();
@@ -1080,6 +1089,7 @@ namespace ClientPlugin.Rendering.Scene
             Next.HaveSizeProjection=haveSizeProjection=false;
             colorizeHsv = new Vector3(MyTextureDebugMultipliers.Defaults.ColorizeHSV);
             CalculateGravityInPoint = position => Vector3.Zero;
+            }finally{building=wasBuilding;}
         }
 
         public void Dispose() => Clear();
@@ -1087,7 +1097,7 @@ namespace ClientPlugin.Rendering.Scene
         {
             for (IMyActor ancestor = parent; ancestor != null; ancestor = ancestor.Parent)
                 if (ReferenceEquals(ancestor, child)) throw new InvalidOperationException("Render actor parenting would create a cycle.");
-            if(!ReferenceEquals(child.Parent,parent))groupMembershipDirty=true;
+            if(!ReferenceEquals(child.Parent,parent))MarkMembershipDirty();
             child.SetParent(parent);
             MarkTransforms(child);
             if (childToParent.HasValue)

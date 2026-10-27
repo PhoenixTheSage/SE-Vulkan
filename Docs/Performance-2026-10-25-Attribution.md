@@ -2103,3 +2103,94 @@ It is done in slices, each gated by a verify mode and the same-process lane.
    - light owners in the guest scene API;
    - manual-cull group actors in probe ambient;
    - the once-a-second `CharacterStatus` diagnostic.
+
+## Phase 4 frame split, milestone 2, slice 2: scene containers (2026-10-27)
+
+Build now owns the scene's container state. Apply (messages and the scene
+update) no longer writes any of it:
+- the candidate tree (`actorIndex`) and static groups;
+- the occlusion groups;
+- native pass, cell and GPU ownership, with their dirty sets.
+
+New partial `VulkanSceneHandoff.cs`.
+
+### What changed
+
+- **Queued Build work.** The work Apply used to do on that state is queued as
+  `BuildOp`s in issue order. `BuildScene` replays it first, because it
+  preceded everything else in the frame before the split. The queued work:
+  - the ownership release in `SetModel` (native pass, GPU and cell);
+  - `Remove`'s native release, dirty-entry removal, group removal and
+    candidate proxy removal;
+  - every candidate-tree update from `RefreshSpatialIndex`. Apply still
+    computes the bounds and sphere; Build decides managed-index membership
+    from its own ownership state and adds, moves or removes the proxy.
+- **Dirty marks collect on the Apply side and fold in at `LatchFrame`:**
+  - `DirtyNativePass` (pass, cell, cell-pose and GPU sets, plus the four
+    binding and appearance flags, as a per-actor bit mask);
+  - `DirtyGroup`;
+  - group-membership dirtiness;
+  - the occlusion revision counter.
+- **`buildActors`:** Build's copy of the `actors` dictionary, kept by replaying
+  Apply's adds and removes at the latch. It replays the same operations in
+  the same order, so it enumerates in the same order. All Build reads of
+  `actors` now use it: commits, queries, fallbacks, glass, candidates, guest
+  depth, guest scene, ray scene, group rebuild. The once-a-second statistics
+  getters still read `actors`.
+- **Occlusion-group membership** is rebuilt from `ActorFrame.GroupRoot` (the
+  nearest root ancestor, refreshed with the other actor-frame fields) instead
+  of walking live parent chains.
+- **`SyncIndexMembership`** reads the actor frame's destroyed flag and bounds.
+- **Releases queued from messages skip their spot marks.** Before the split,
+  a message-time release marked the light frame that `SubmitLights` reset
+  right after, so those marks never had an effect.
+- **`Clear()` (unload) flushes the queue and works on Build state directly.**
+  The thread milestone must join Build before unload, which the plan already
+  requires.
+- **Verify mode** also checks that `buildActors` equals `actors` at Build start,
+  and each actor's group root.
+
+### Gates
+
+- **GPU suites under validation, all passing:** NativePass 126,
+  SceneSubmission 267, ShadowOcclusion 36, Probe 427, WorldPass 542/542,
+  Interop 16, HudBillboard with 0 validation errors, BillboardPacket 43.
+- **Validation gameplay run** `Vulkan-7d9b7764…`: validation enabled, 0 errors.
+- **Verify mode, full length, 0 mismatches:** the actor frames, `buildActors`
+  and group roots, checked every frame at Build start:
+  - orbit `Vulkan-a76a2f3e…`: 53.49 million checks;
+  - interior `Vulkan-ce938338…`: 57.31 million checks.
+
+  These were rerun on an idle GPU (GPU time 2.9–3.0 ms). The first batch
+  overlapped another game holding the GPU (97%, 242 W), so its verify runs
+  (`Vulkan-2cbcfb69…`, `Vulkan-4656d4c2…`) covered only about 130 frames and
+  1.5 million checks each. They also showed 0 mismatches, and that batch's
+  timings are invalid.
+- **Same-process lane** (`ApplyBuildOrder` old/new/old, `Vulkan-2a212887…`):
+  - `packets.sig` is `4C1EF0BB63CF6507` (2,126 packets) in all three phases;
+  - every other artifact is byte-identical;
+  - view noise is 279 pixels against a 187-pixel return floor, with max delta
+    24 against 46.
+
+### Known differences from the old order (edge cases, not semantic)
+
+- **Candidate-tree history after a removal or model change.** Before the
+  split, releasing a pass-owned actor could add its proxy and then remove it
+  in the same message. The queued replay uses the latched bounds, so the
+  tree's internal shape can differ after such an event, which can change
+  candidate enumeration order.
+- **Dirty-set order.** The dirty sets lose the slot reuse that message-time
+  removals caused, so commit order can differ after removals.
+- Neither changes what is drawn. The steady-state lane shows the output is
+  identical.
+
+### Remaining slices of milestone 2
+
+- Per-actor fields Build reads (slice 3).
+- Message-owned scene state (slice 4).
+- Leftover live reads (slice 5).
+- **New for slice 3:** `ReleaseDynamicMeshes` in `Remove` and `SetModel` still
+  removes skinned-mesh resources during Apply, while Build may draw them.
+- **Toggle-only paths:** the `IndexExcludesOwnedActors` and
+  `StockLodBoundsEnabled` setters still touch Build state when the lane flips
+  them. They run between frames, so this is harmless.

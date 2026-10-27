@@ -93,7 +93,7 @@ public sealed partial class VulkanScene
     {
         var center = FrameView.CameraPosition;
         var meshes = new List<object[]>(); var meshIndices = new Dictionary<VulkanModel, int>(); var instances = new List<object[]>();
-        foreach (var actor in actors.Values)
+        foreach (var actor in buildActors.Values)
         {
             if (actor.Actor == null || BuildFrameOf(actor).Destroyed || !BuildFrameOf(actor).Visible) continue;
             var model = actor.RenderModel ?? actor.Model;

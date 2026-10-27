@@ -48,7 +48,7 @@ public sealed partial class VulkanScene
     {
         if(GuestDepthFrusta.Length==0)return;
         try {
-            foreach(var actor in actors.Values) {
+            foreach(var actor in buildActors.Values) {
                 if(BuildFrameOf(actor).Destroyed || !BuildFrameOf(actor).Visible ||
                    (actor.Flags&(RenderFlags.CastShadows|RenderFlags.SkipInDepth))!=RenderFlags.CastShadows)continue;
                 if(actor.Model==null)throw new InvalidOperationException("Guest depth caster model unavailable: "+actor.Id);

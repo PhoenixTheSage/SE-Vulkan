@@ -37,13 +37,14 @@ public sealed partial class VulkanScene
     private bool groupQueriesDisabled;
     private long groupAccepted,groupRejected,groupQueries,groupReentries;
     public object GetGroupOcclusionStats()=>new{Enabled=GroupOcclusionEnabled,Groups=occlusionGroups.Count,Accepted=groupAccepted,Rejected=groupRejected,Queries=groupQueries,Reentries=groupReentries,SceneCulls=OcclusionCulls};
-    private void DirtyGroup(ActorData data){if(data.OcclusionGroup!=null){dirtyOcclusionGroups.Add(data.OcclusionGroup);if(IncrementalGroupBounds)data.OcclusionGroup.DirtyMembers.Add(data);}}
+    private void DirtyGroup(ActorData data){if(!building){applyGroupDirty.Add(data);return;}DirtyGroupNow(data);}
+    private void DirtyGroupNow(ActorData data){if(data.OcclusionGroup!=null){dirtyOcclusionGroups.Add(data.OcclusionGroup);if(IncrementalGroupBounds)data.OcclusionGroup.DirtyMembers.Add(data);}}
     internal static readonly bool IncrementalGroupBounds=System.Environment.GetEnvironmentVariable("SE_VULKAN_INCREMENTAL_GROUP_BOUNDS")!="0";
     private void RefreshGroupBounds()
     {
         if(groupMembershipDirty){
             foreach(var group in occlusionGroups.Values){group.Members.Clear();group.State.Reset();foreach(var state in group.ShadowStates)state.Reset();}
-            foreach(var data in actors.Values){DirtyNativePass(data,appearance:false);data.OcclusionGroup=null;if(data.Model==null)continue;for(IMyActor node=data.Actor.Parent;node!=null;node=node.Parent)if(node is MyActor root && root.IsRoot()){
+            foreach(var data in buildActors.Values){DirtyNativePass(data,appearance:false);data.OcclusionGroup=null;if(data.Model==null)continue;var root=BuildFrameOf(data).GroupRoot;if(root!=null){
                 if(!occlusionGroups.TryGetValue(root,out var group)){group=new GroupVisibility{Root=root,QueryId=++nextGroupQueryId};occlusionGroups.Add(root,group);}group.Members.Add(data);data.OcclusionGroup=group;break;}}
             foreach(var group in occlusionGroups.Values){dirtyOcclusionGroups.Add(group);group.FullDirty=true;}groupMembershipDirty=false;
         }
@@ -99,7 +100,7 @@ public sealed partial class VulkanScene
     }
     private bool QueryGroupVisibility(uint id)
     {
-        if(RenderSettings.DisableOcclusionQueries || RenderSettings.IgnoreOcclusionQueries || !actors.TryGetValue(id,out var data) || data.OcclusionGroup==null)return false;
+        if(RenderSettings.DisableOcclusionQueries || RenderSettings.IgnoreOcclusionQueries || !buildActors.TryGetValue(id,out var data) || data.OcclusionGroup==null)return false;
         var group=data.OcclusionGroup;if(group.Seen!=FrameCounter){group.Seen=FrameCounter;group.Hidden=false;if(!group.Bounds.Min.IsValid()||!group.Bounds.Max.IsValid()||group.Members.Count==0)return false;
             bool entered=group.State.LastInView!=FrameCounter-1;group.Hidden=group.State.Observe(FrameCounter,group.Bounds,FrameView.CameraPosition,groupNear);if(entered)groupReentries++;
             var inflated=group.Bounds.GetInflated(group.Bounds.Size*.5);var eye=FrameView.CameraPosition;bool close=inflated.DistanceSquared(ref eye)<groupNear;

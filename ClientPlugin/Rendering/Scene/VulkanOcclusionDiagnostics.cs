@@ -17,12 +17,12 @@ public sealed partial class VulkanScene
     public void ResetOcclusionDiagnostics(){occlusionRevisionReasons.Clear();occlusionFrames=acceptedSnapshots=rejectedSnapshots=cameraRejectedSnapshots=revisionRejectedSnapshots=extentRejectedSnapshots=missingSnapshots=completedHiddenResults=0;maximumEyeStep=maximumViewDelta=0;haveDiagnosticEye=false;diagnosticCullBaseline=OcclusionCulls;}
     private void InvalidateOcclusion(string reason)
     {
-        visibilityRevision++;
+        if(building)visibilityRevision++;else applyVisibilityRevision++;
         if(OcclusionDiagnosticsEnabled){occlusionRevisionReasons.TryGetValue(reason,out long count);occlusionRevisionReasons[reason]=count+1;}
     }
     private void InvalidateOcclusionMessage(MyRenderMessageBase message)
     {
-        visibilityRevision++;
+        if(building)visibilityRevision++;else applyVisibilityRevision++;
         if(OcclusionDiagnosticsEnabled){string reason="Message."+message.MessageType;occlusionRevisionReasons.TryGetValue(reason,out long count);occlusionRevisionReasons[reason]=count+1;}
     }
     public object CaptureOcclusionDiagnostics()=>new{Frames=occlusionFrames,AcceptedSnapshots=acceptedSnapshots,RejectedSnapshots=rejectedSnapshots,CameraRejectedSnapshots=cameraRejectedSnapshots,RevisionRejectedSnapshots=revisionRejectedSnapshots,ExtentRejectedSnapshots=extentRejectedSnapshots,MissingSnapshots=missingSnapshots,CompletedHiddenResults=completedHiddenResults,SceneCulls=OcclusionCulls-diagnosticCullBaseline,MaximumEyeStepMetres=maximumEyeStep,MaximumViewMatrixDelta=maximumViewDelta,RevisionReasons=new Dictionary<string,long>(occlusionRevisionReasons),Scope="Opt-in counters since reset for unchanged production occlusion policy; rejection reasons overlap; camera matrix delta is unitless, eye step is world metres. GPU hidden results do not imply applied scene culls."};

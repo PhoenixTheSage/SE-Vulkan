@@ -23,7 +23,7 @@ public sealed partial class VulkanScene
         public override void OnParentSet(){if(Owner is MyActor actor)scene.actorStateNotifications.Enqueue((actor,true));}
         public override void OnParentRemoved(){if(Owner is MyActor actor)scene.actorStateNotifications.Enqueue((actor,true));}
     }
-    private void AcceptActorStateNotifications(){while(actorStateNotifications.TryDequeue(out var change)){if(change.Actor.IsDestroyed)continue;if(change.Hierarchy){groupMembershipDirty=true;MarkTransforms(change.Actor);}MarkVisibility(change.Actor);}}
+    private void AcceptActorStateNotifications(){while(actorStateNotifications.TryDequeue(out var change)){if(change.Actor.IsDestroyed)continue;if(change.Hierarchy){MarkMembershipDirty();MarkTransforms(change.Actor);}MarkVisibility(change.Actor);}}
     private readonly HashSet<ActorData> spatialDirty=new HashSet<ActorData>(),shadowDirty=new HashSet<ActorData>(),skinnedActors=new HashSet<ActorData>(),staticGroups=new HashSet<ActorData>();
     private readonly MyDynamicAABBTreeD actorIndex=new MyDynamicAABBTreeD(Vector3D.Zero);
     private readonly List<ActorData> candidates=new List<ActorData>(),shadowWork=new List<ActorData>();
@@ -76,7 +76,7 @@ public sealed partial class VulkanScene
         foreach(var data in spatialDirty)
         {
             NoteActorFrame(data);
-            if(data.Actor.IsDestroyed || data.Model==null){if(data.Proxy>=0){actorIndex.RemoveProxy(data.Proxy);data.Proxy=-1;}continue;}
+            if(data.Actor.IsDestroyed || data.Model==null){buildOps.Add(new BuildOp{Kind=BuildOpKind.SpatialRefresh,Data=data,Removed=true});continue;}
             // Message-authored and RenderDirect-authored local bounds take
             // ownership from model bounds. A quality toggle must preserve them.
             if(data.ModelBoundsOwned&&data.Actor.LocalAabb!=data.InstalledModelBounds)data.ModelBoundsOwned=false;
@@ -86,10 +86,8 @@ public sealed partial class VulkanScene
             // Enclose the same conservative bounding sphere used by the old
             // shadow/probe distance test, including long/thin models.
             BoundingBoxD sphereBox=new BoundingBoxD(data.Bounds.Center-new Vector3D(radius),data.Bounds.Center+new Vector3D(radius));
-            if(!InManagedIndex(data)){if(data.Proxy>=0){actorIndex.RemoveProxy(data.Proxy);data.Proxy=-1;}}
-            else if(data.Proxy<0)data.Proxy=actorIndex.AddProxy(ref sphereBox,data,0);
-            else actorIndex.MoveProxy(data.Proxy,ref sphereBox,Vector3D.Zero);
-            if(data.StaticInstances!=null)staticGroups.Add(data);else staticGroups.Remove(data);
+            // The candidate tree is Build's: the proxy update replays at the start of BuildScene.
+            buildOps.Add(new BuildOp{Kind=BuildOpKind.SpatialRefresh,Data=data,Sphere=sphereBox,Static=data.StaticInstances!=null});
         }
         spatialDirty.Clear();
     }
@@ -100,20 +98,20 @@ public sealed partial class VulkanScene
     // Ownership changed after this frame's index refresh: bring the actor in or out of the index now.
     void SyncIndexMembership(ActorData data)
     {
-        if(data.Actor.IsDestroyed||data.Model==null)return;
+        var frame=BuildFrameOf(data);if(frame.Destroyed||data.Model==null)return;
         if(!InManagedIndex(data)){if(data.Proxy>=0){actorIndex.RemoveProxy(data.Proxy);data.Proxy=-1;}return;}
         if(data.Proxy>=0)return;
-        double radius=data.Bounds.HalfExtents.Length();var sphereBox=new BoundingBoxD(data.Bounds.Center-new Vector3D(radius),data.Bounds.Center+new Vector3D(radius));
+        double radius=frame.Bounds.HalfExtents.Length();var sphereBox=new BoundingBoxD(frame.Bounds.Center-new Vector3D(radius),frame.Bounds.Center+new Vector3D(radius));
         data.Proxy=actorIndex.AddProxy(ref sphereBox,data,0);
     }
     private IEnumerable<ActorData> DrawCandidates(bool native)
     {
-        if(!native || frustum==null)return actors.Values;
+        if(!native || frustum==null)return buildActors.Values;
         double reach=Math.Max(0,Math.Max(ProbeDrawDistance,ShadowDrawDistance));
         BoundingBoxD query=BoundingBoxD.CreateFromPoints(frustum.GetCorners());
         query.Min=Vector3D.Min(query.Min,FrameView.CameraPosition-new Vector3D(reach));
         query.Max=Vector3D.Max(query.Max,FrameView.CameraPosition+new Vector3D(reach));
-        if(!query.Min.IsValid() || !query.Max.IsValid())return actors.Values;
+        if(!query.Min.IsValid() || !query.Max.IsValid())return buildActors.Values;
         actorIndex.OverlapAllBoundingBox(ref query,candidates);
         // Static groups historically bypass actor-level main frustum rejection.
         // Preserve that contract even when their imported model bound is small.

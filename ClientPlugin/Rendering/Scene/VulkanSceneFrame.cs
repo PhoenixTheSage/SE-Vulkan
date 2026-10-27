@@ -59,6 +59,7 @@ public sealed partial class VulkanScene
         FrameView=Environment;
         (applyLights,buildLights)=(buildLights,applyLights);
         LatchActorFrames();
+        FoldApplyState();
     }
     public void EndBuild()=>building=false;
     // Build prologue: the native light and spot submission of the latched frame.

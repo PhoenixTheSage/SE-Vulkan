@@ -68,7 +68,10 @@ public sealed partial class VulkanScene
     private long nativePassCommits,nativePassRegistrations,nativePassFallbacks;
     public object GetNativePassSceneStats()=>new{Enabled=NativePassSceneEnabled,Active=nativePassActive,Actors=actors.Values.Count(x=>x.PassOwned),Families=nativePassFamilies.Count,Commits=nativePassCommits,Registrations=nativePassRegistrations,Fallbacks=nativePassFallbacks};
 
-    private void DirtyNativePass(ActorData actor,bool bindings=false,bool appearance=true){nativePassDirty.Add(actor);if(bindings||appearance)cellDirty.Add(actor);else cellPoseDirty.Add(actor);gpuDirty.Add(actor);actor.GpuBindingDirty|=bindings;actor.GpuAppearanceDirty|=appearance||bindings;actor.PassBindingDirty|=bindings;actor.PassAppearanceDirty|=appearance;}
+    private void DirtyNativePass(ActorData actor,bool bindings=false,bool appearance=true){
+        if(!building){applyPassDirty.Add(actor);if(bindings||appearance)applyCellDirty.Add(actor);else applyCellPoseDirty.Add(actor);applyGpuDirty.Add(actor);
+            actor.ApplyDirtyBits|=(byte)((bindings?DirtyGpuBinding|DirtyPassBinding:0)|(appearance||bindings?DirtyGpuAppearance:0)|(appearance?DirtyPassAppearance:0));return;}
+        nativePassDirty.Add(actor);if(bindings||appearance)cellDirty.Add(actor);else cellPoseDirty.Add(actor);gpuDirty.Add(actor);actor.GpuBindingDirty|=bindings;actor.GpuAppearanceDirty|=appearance||bindings;actor.PassBindingDirty|=bindings;actor.PassAppearanceDirty|=appearance;}
     private uint PassMaterialId(string name){name??=string.Empty;if(!nativePassMaterials.TryGetValue(name,out uint id)){id=checked((uint)nativePassMaterials.Count+1);nativePassMaterials.Add(name,id);}return id;}
     // A plain loop: the capturing All() lambda allocated on every dirty actor commit.
     private static bool PassModelSupported(VulkanModel model,bool mixed=false){
@@ -139,12 +142,13 @@ public sealed partial class VulkanScene
         }else actor.Flags|=128; // Transform/ownership input preserves native resident materials.
         actor.AppearanceCount=(uint)appearance.Count-actor.AppearanceOffset;return actor;
     }
-    private void RemoveNativePassActor(ActorData actor,bool handoff=true,bool gpu=true)
+    private void RemoveNativePassActor(ActorData actor,bool handoff=true,bool gpu=true,bool markSpots=true)
     {
         if(gpu)RemoveGpuActor(actor,handoff);if(actor.PassHandle==0)return;
         if(handoff){var state=actor.NewLod.Export();var camera=actor.NewViewCamera;bool have=actor.HaveNewViewCamera;backend.PassActorSelector(actor.PassHandle,false,ref state,ref camera,ref have);actor.NewLod.Import(state);actor.NewViewCamera=camera;actor.HaveNewViewCamera=have;}
         backend.RemovePassResource(2,actor.PassHandle);actor.PassHandle=0;actor.PassOwned=false;SyncIndexMembership(actor);if(backend.StableMainOrderEnabled)backend.RemoveResidentMainOwner(actor.Id);actor.PassFamily?.Members.Remove(actor);actor.PassFamily=null;actor.PassBindingDirty=true;actor.PassAppearanceDirty=true;
-        if(actor.HaveShadowPose){MarkSpots(actor.ShadowCenter,actor.ShadowRadius,false);MarkSpots(actor.ShadowCenter,actor.ShadowRadius,true);}
+        // Releases queued from messages pass markSpots:false: their marks went to a light frame that was then reset.
+        if(markSpots&&actor.HaveShadowPose){MarkSpots(actor.ShadowCenter,actor.ShadowRadius,false);MarkSpots(actor.ShadowCenter,actor.ShadowRadius,true);}
     }
     readonly List<NativePassActor> passUpdates=new();readonly List<NativePassAppearance> passAppearance=new();
     NativePassActor[] passUpdateArray=Array.Empty<NativePassActor>();NativePassAppearance[] passAppearanceArray=Array.Empty<NativePassAppearance>();
@@ -156,15 +160,15 @@ public sealed partial class VulkanScene
         // Default ownership yields to the managed path whenever a prerequisite
         // policy is off; only an explicitly requested native scene is strict.
         if(enabled&&!prerequisites){if(NativePassPolicy.Explicit)throw new InvalidOperationException("Native pass scene requires stock new views, group occlusion, shared depth geometry and stock shadow fitting/scheduling.");enabled=false;}
-        if(enabled!=nativePassActive){nativePassActive=enabled;if(enabled){RefreshGroupBounds();nativePassDirty.UnionWith(actors.Values);}else{foreach(var data in actors.Values)RemoveNativePassActor(data,gpu:false);backend.ClearPassFrame();}}
+        if(enabled!=nativePassActive){nativePassActive=enabled;if(enabled){RefreshGroupBounds();nativePassDirty.UnionWith(buildActors.Values);}else{foreach(var data in buildActors.Values)RemoveNativePassActor(data,gpu:false);backend.ClearPassFrame();}}
         if(!enabled)return;
-        if(nativePassMixedActive!=NativeMixedOpaqueEnabled){nativePassMixedActive=NativeMixedOpaqueEnabled;foreach(var actor in actors.Values){actor.PassBindingDirty=true;DirtyNativePass(actor);}}
-        foreach(uint id in previousNativeExclusions)if(!buildLights.Excluded.Contains(id)&&actors.TryGetValue(id,out var old))DirtyNativePass(old,appearance:false);
-        foreach(uint id in buildLights.Excluded)if(!previousNativeExclusions.Contains(id)&&actors.TryGetValue(id,out var current))DirtyNativePass(current,appearance:false);
+        if(nativePassMixedActive!=NativeMixedOpaqueEnabled){nativePassMixedActive=NativeMixedOpaqueEnabled;foreach(var actor in buildActors.Values){actor.PassBindingDirty=true;DirtyNativePass(actor);}}
+        foreach(uint id in previousNativeExclusions)if(!buildLights.Excluded.Contains(id)&&buildActors.TryGetValue(id,out var old))DirtyNativePass(old,appearance:false);
+        foreach(uint id in buildLights.Excluded)if(!previousNativeExclusions.Contains(id)&&buildActors.TryGetValue(id,out var current))DirtyNativePass(current,appearance:false);
         previousNativeExclusions.Clear();previousNativeExclusions.UnionWith(buildLights.Excluded);
         var updates=passUpdates;var appearance=passAppearance;updates.Clear();appearance.Clear();
         foreach(var data in nativePassDirty){
-            if(BuildFrameOf(data).Destroyed||!actors.ContainsKey(data.Id))continue;
+            if(BuildFrameOf(data).Destroyed||!buildActors.ContainsKey(data.Id))continue;
             // The GPU and native CPU selectors own disjoint actor sets.
             if(data.GpuOwned||!PassActorSupported(data)){RemoveNativePassActor(data,gpu:false);continue;}
             var family=GetPassFamily(data);if(family.Unsupported){RemoveNativePassActor(data,gpu:false);continue;}
@@ -272,7 +276,7 @@ public sealed partial class VulkanScene
         int resultCount=preparation.QueryCount;
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassQueries)){
         if(passResults.Length<resultCount)passResults=new NativePassQueryResult[Math.Max(resultCount,passResults.Length*2)];var results=passResults;
-        for(int i=0;i<resultCount;i++){var query=preparation.Queries[i];ulong hidden=0;if(actors.TryGetValue(query.Representative,out var actor)){if((query.Views&1)!=0&&QueryGroupVisibility(query.Representative))hidden|=1;uint cascades=(uint)(query.Views>>1)&255u;hidden|=(ulong)(cascades&~FilterShadowGroupCascades(actor,cascades))<<1;}results[i]=new NativePassQueryResult{Group=query.Group,HiddenViews=hidden};}
+        for(int i=0;i<resultCount;i++){var query=preparation.Queries[i];ulong hidden=0;if(buildActors.TryGetValue(query.Representative,out var actor)){if((query.Views&1)!=0&&QueryGroupVisibility(query.Representative))hidden|=1;uint cascades=(uint)(query.Views>>1)&255u;hidden|=(ulong)(cascades&~FilterShadowGroupCascades(actor,cascades))<<1;}results[i]=new NativePassQueryResult{Group=query.Group,HiddenViews=hidden};}
         }
         publishCount=resultCount;
     }
@@ -302,7 +306,7 @@ public sealed partial class VulkanScene
         if(NativeMixedOpaqueEnabled){int tickets=backend.GetPassTransparentRequests(ref passTransparent);for(int i=0;i<tickets;i++)DrawNativePassGlass(passTransparent[i]);}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativePassFallbacks)){
         backend.GetPassPreparation(preparation);
-        for(int f=0;f<preparation.FallbackCount;f++){var fallback=preparation.Fallbacks[f];if(actors.TryGetValue(fallback.Owner,out var data)){
+        for(int f=0;f<preparation.FallbackCount;f++){var fallback=preparation.Fallbacks[f];if(buildActors.TryGetValue(fallback.Owner,out var data)){
             nativePassFallbacks++;RemoveNativePassActor(data,gpu:false);data.NewLod.Import(fallback.Lod);DirtyNativePass(data);DrawNativePassFallback(data);
         }}
         }
@@ -347,7 +351,7 @@ public sealed partial class VulkanScene
     private void DrawNativePassGlass(NativePassTransparent ticket)
     {
         if(!RenderSettings.DrawTransparentModelsInstanced)return;
-        if(!actors.TryGetValue(ticket.Owner,out var actor)||!actor.PassOwned||actor.PassHandle!=ticket.Actor)return;
+        if(!buildActors.TryGetValue(ticket.Owner,out var actor)||!actor.PassOwned||actor.PassHandle!=ticket.Actor)return;
         var model=models.GetLod(actor.Model,(int)ticket.Lod);var world=BuildFrameOf(actor).World;world.Translation-=FrameView.CameraPosition;
         using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GlassParts,false);
         foreach(var part in model.Parts){

@@ -10,7 +10,7 @@ public sealed partial class VulkanScene
 {
     internal object[] CaptureGuestCharacter(uint actorId)
     {
-        if (actorId == 0 || !actors.TryGetValue(actorId, out var actor) || BuildFrameOf(actor).Destroyed || actor.Model == null)
+        if (actorId == 0 || !buildActors.TryGetValue(actorId, out var actor) || BuildFrameOf(actor).Destroyed || actor.Model == null)
             return new object[] { Array.Empty<float>(), Array.Empty<float>(), Array.Empty<double>(), Array.Empty<double>(), "no controlled render character" };
         float[] Copy(VulkanModel model)
         {
