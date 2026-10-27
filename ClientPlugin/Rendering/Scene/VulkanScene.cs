@@ -37,6 +37,8 @@ namespace ClientPlugin.Rendering.Scene
             public uint CandidateStamp;
             // Dirty marks made during Apply, folded into the Build flags at the latch (VulkanSceneHandoff).
             public byte ApplyDirtyBits;
+            // Apply's copy of the fields messages and the scene update write; latched into the fields below (VulkanActorFields).
+            public readonly ApplyFields A=new();
             public VulkanModel Model;
             public StockOldModelIdentity OldModel;
             public bool TrackOldIdentity=true;
@@ -68,7 +70,7 @@ namespace ClientPlugin.Rendering.Scene
             public ulong[] SkinnedMeshes;
             public bool SkinDirty;
             public BoundingBox? SkinnedBounds;
-            public readonly Dictionary<string, MaterialOverride> Materials = new Dictionary<string, MaterialOverride>(StringComparer.Ordinal);
+            public Dictionary<string, MaterialOverride> Materials = new Dictionary<string, MaterialOverride>(StringComparer.Ordinal);
             public readonly Dictionary<int, ulong[]> DeformedMeshes = new Dictionary<int, ulong[]>();
             public PartFrame[] PartFrames;
             internal MainGroupKeyCache MainGroupKeys;
@@ -244,11 +246,11 @@ namespace ClientPlugin.Rendering.Scene
                     return true;
                 case MyRenderMessageEnum.CreateRenderCharacter:
                     var character = (MyRenderMessageCreateRenderCharacter)message;
-                    var ch = Create(character.ID, character.DebugName, character.WorldMatrix, character.Flags);ch.Character=true;
+                    var ch = Create(character.ID, character.DebugName, character.WorldMatrix, character.Flags);W(ch).Character=true;
                     SetModel(ch, models.Get(character.Model));
                     // Stock MyRender11 consumes character HSV, but ignores
                     // the legacy entity DiffuseColor field.
-                    ch.Hsv = character.ColorMaskHSV ?? Vector3.Zero;
+                    W(ch).Hsv = character.ColorMaskHSV ?? Vector3.Zero;
                     return true;
                 case MyRenderMessageEnum.CreateManualCullObject:
                     var manual = (MyRenderMessageCreateManualCullObject)message;
@@ -259,7 +261,7 @@ namespace ClientPlugin.Rendering.Scene
                     var group = (MyRenderMessageCreateStaticGroup)message;
                     var stat = Create(group.ID, group.Model, MatrixD.CreateTranslation(group.Translation), RenderFlags.Visible | RenderFlags.CastShadows);
                     SetModel(stat, models.Get(group.Model),false);
-                    stat.StaticInstances = group.LocalMatrices == null ? new Matrix[0] : (Matrix[])group.LocalMatrices.Clone();
+                    W(stat).StaticInstances = group.LocalMatrices == null ? new Matrix[0] : (Matrix[])group.LocalMatrices.Clone();
                     return true;
                 case MyRenderMessageEnum.UpdateRenderObject:
                     var update = (MyRenderMessageUpdateRenderObject)message;
@@ -284,8 +286,8 @@ namespace ClientPlugin.Rendering.Scene
                         // MyRenderProxy also sends this message during entity
                         // creation. Stock ignores DiffuseColor here; actual
                         // material tint comes from the material update messages.
-                        if (appearance.ColorMaskHSV.HasValue) colored.Hsv = appearance.ColorMaskHSV.Value;
-                        if (appearance.Dithering.HasValue) colored.Dithering = appearance.Dithering.Value;
+                        if (appearance.ColorMaskHSV.HasValue) W(colored).Hsv = appearance.ColorMaskHSV.Value;
+                        if (appearance.Dithering.HasValue) W(colored).Dithering = appearance.Dithering.Value;
                         if (appearance.Dithering.HasValue) MarkGeometry(colored);
                     }
                     return true;
@@ -360,10 +362,10 @@ namespace ClientPlugin.Rendering.Scene
                     ActorData instanceActor;
                     if (actors.TryGetValue(set.ID, out instanceActor))
                     {
-                        instanceActor.InstanceBuffer = set.InstanceBufferId;
-                        EnsureOldModelIdentity(instanceActor);
-                        instanceActor.InstanceStart = set.InstanceStart;
-                        instanceActor.InstanceCount = set.InstanceCount;
+                        var instanceFields=W(instanceActor);instanceFields.InstanceBuffer = set.InstanceBufferId;
+                        instanceFields.Events|=EventEnsureOld;
+                        instanceFields.InstanceStart = set.InstanceStart;
+                        instanceFields.InstanceCount = set.InstanceCount;
                         instanceActor.ModelBoundsOwned=false;
                         instanceActor.Actor.SetLocalAabb(set.LocalAabb);
                         MarkGeometry(instanceActor);
@@ -381,33 +383,37 @@ namespace ClientPlugin.Rendering.Scene
                     ActorData skeletonActor;
                     if (actors.TryGetValue(skeleton.CharacterID, out skeletonActor))
                     {
-                        skeletonActor.Skeleton = skeleton.SkeletonBones == null ? null : (MySkeletonBoneDescription[])skeleton.SkeletonBones.Clone();
-                        skeletonActor.SkeletonIndices = skeleton.SkeletonIndices == null ? null : (int[])skeleton.SkeletonIndices.Clone();
+                        var skeletonFields=W(skeletonActor);
+                        skeletonFields.Skeleton = skeleton.SkeletonBones == null ? null : (MySkeletonBoneDescription[])skeleton.SkeletonBones.Clone();
+                        skeletonFields.SkeletonIndices = skeleton.SkeletonIndices == null ? null : (int[])skeleton.SkeletonIndices.Clone();
                     }
                     return true;
                 case MyRenderMessageEnum.SetCharacterTransforms:
                     var transforms = (MyRenderMessageSetCharacterTransforms)message;
                     ActorData skin;
-                    if (actors.TryGetValue(transforms.CharacterID, out skin) && skin.Skeleton != null && transforms.BoneAbsoluteTransforms != null)
+                    if (actors.TryGetValue(transforms.CharacterID, out skin) && skin.A.Skeleton != null && transforms.BoneAbsoluteTransforms != null)
                     {
-                        bool wasSkinned=skin.SkinMatrices!=null;
-                        int[] map = skin.SkeletonIndices;
-                        int count = map?.Length ?? skin.Skeleton.Length;
-                        skin.SkinMatrices = new Matrix[count];
+                        var skinFields=W(skin);
+                        bool wasSkinned=skinFields.SkinMatrices!=null;
+                        int[] map = skinFields.SkeletonIndices;
+                        int count = map?.Length ?? skinFields.Skeleton.Length;
+                        // A fresh array each update: Build keeps reading the one it latched.
+                        var matrices = new Matrix[count];
                         for (int i = 0; i < count; ++i)
                         {
                             int index = map == null ? i : map[i];
-                            skin.SkinMatrices[i] = index >= 0 && index < skin.Skeleton.Length && index < transforms.BoneAbsoluteTransforms.Length
-                                ? skin.Skeleton[index].SkinTransform * transforms.BoneAbsoluteTransforms[index] : Matrix.Identity;
+                            matrices[i] = index >= 0 && index < skinFields.Skeleton.Length && index < transforms.BoneAbsoluteTransforms.Length
+                                ? skinFields.Skeleton[index].SkinTransform * transforms.BoneAbsoluteTransforms[index] : Matrix.Identity;
                         }
-                        skin.SkinDirty = true;
+                        skinFields.SkinMatrices = matrices;
+                        skinFields.SkinDirty = true;
                         skinnedActors.Add(skin);if(!wasSkinned)MarkGeometry(skin);
                     }
                     return true;
                 case MyRenderMessageEnum.UpdateColorEmissivity:
                     var color = (MyRenderMessageUpdateColorEmissivity)message;
                     ActorData colorActor;
-                    if (actors.TryGetValue(color.ID, out colorActor)) { var material = Material(colorActor, color.MaterialName.String); if(material.Color!=color.DiffuseColor || material.Emissivity!=color.Emissivity){DirtyNativePass(colorActor);colorActor.MaterialRevision++;material.Color = color.DiffuseColor; material.Emissivity = color.Emissivity;} }
+                    if (actors.TryGetValue(color.ID, out colorActor)) { var material = Material(colorActor, color.MaterialName.String); if(material.Color!=color.DiffuseColor || material.Emissivity!=color.Emissivity){DirtyNativePass(colorActor);colorActor.A.MaterialRevision++;material.Color = color.DiffuseColor; material.Emissivity = color.Emissivity;} }
                     return true;
                 case MyRenderMessageEnum.UpdateModelProperties:
                     var properties = (MyRenderMessageUpdateModelProperties)message;
@@ -417,22 +423,22 @@ namespace ClientPlugin.Rendering.Scene
                         // Installed DX11 converts a used-material flags consumer
                         // permanently to its old pipeline, even for an empty flag
                         // value. Keep that ownership independent of later resets.
-                        if(properties.FlagsChange.HasValue&&!KnownStockOldPipeline(propertiesActor)&&models.IsStockMaterialUsed(propertiesActor.Model,properties.MaterialName.String)){
-                            propertiesActor.ConvertedOldMaterial=properties.MaterialName.String??string.Empty;
-                            EnsureOldModelIdentity(propertiesActor);
-                            propertiesActor.Lod=new StockActorLodState();MarkGeometry(propertiesActor);
+                        if(properties.FlagsChange.HasValue&&!KnownStockOldPipelineApply(propertiesActor)&&models.IsStockMaterialUsed(propertiesActor.A.Model,properties.MaterialName.String)){
+                            var propertiesFields=W(propertiesActor);
+                            propertiesFields.ConvertedOldMaterial=properties.MaterialName.String??string.Empty;
+                            propertiesFields.Events|=EventEnsureOld|EventResetLod;MarkGeometry(propertiesActor);
                         }
                         var material = Material(propertiesActor, properties.MaterialName.String);
-                        if (properties.DiffuseColor.HasValue && material.Color!=properties.DiffuseColor){DirtyNativePass(propertiesActor);propertiesActor.MaterialRevision++;material.Color = properties.DiffuseColor;}
-                        if (properties.Emissivity.HasValue && material.Emissivity!=properties.Emissivity.Value){DirtyNativePass(propertiesActor);propertiesActor.MaterialRevision++;material.Emissivity = properties.Emissivity.Value;}
-                        if (properties.FlagsChange.HasValue && (material.Flags.Add!=properties.FlagsChange.Value.Add || material.Flags.Remove!=properties.FlagsChange.Value.Remove)){DirtyNativePass(propertiesActor);propertiesActor.MaterialRevision++;material.Flags = properties.FlagsChange.Value;MarkGeometry(propertiesActor);}
+                        if (properties.DiffuseColor.HasValue && material.Color!=properties.DiffuseColor){DirtyNativePass(propertiesActor);propertiesActor.A.MaterialRevision++;material.Color = properties.DiffuseColor;}
+                        if (properties.Emissivity.HasValue && material.Emissivity!=properties.Emissivity.Value){DirtyNativePass(propertiesActor);propertiesActor.A.MaterialRevision++;material.Emissivity = properties.Emissivity.Value;}
+                        if (properties.FlagsChange.HasValue && (material.Flags.Add!=properties.FlagsChange.Value.Add || material.Flags.Remove!=properties.FlagsChange.Value.Remove)){DirtyNativePass(propertiesActor);propertiesActor.A.MaterialRevision++;material.Flags = properties.FlagsChange.Value;MarkGeometry(propertiesActor);}
                     }
                     return true;
                 case MyRenderMessageEnum.ChangeMaterialTexture:
                     var replacement = (MyRenderMessageChangeMaterialTexture)message;
                     ActorData replacementActor;
                     if (actors.TryGetValue(replacement.RenderObjectID, out replacementActor) && replacement.Changes != null)
-                        foreach (var item in replacement.Changes){var material=Material(replacementActor,item.Key.String);var old=material.Textures;var value=item.Value;if(old.ColorMetalFileName==value.ColorMetalFileName && old.NormalGlossFileName==value.NormalGlossFileName && old.ExtensionsFileName==value.ExtensionsFileName && old.AlphamaskFileName==value.AlphamaskFileName)continue;DirtyNativePass(replacementActor,true);replacementActor.MaterialRevision++;material.Textures=value;Updater.AddToNextUpdate(replacementActor.Actor);if(old.AlphamaskFileName!=value.AlphamaskFileName)MarkGeometry(replacementActor);}
+                        foreach (var item in replacement.Changes){var material=Material(replacementActor,item.Key.String);var old=material.Textures;var value=item.Value;if(old.ColorMetalFileName==value.ColorMetalFileName && old.NormalGlossFileName==value.NormalGlossFileName && old.ExtensionsFileName==value.ExtensionsFileName && old.AlphamaskFileName==value.AlphamaskFileName)continue;DirtyNativePass(replacementActor,true);replacementActor.A.MaterialRevision++;material.Textures=value;Updater.AddToNextUpdate(replacementActor.Actor);if(old.AlphamaskFileName!=value.AlphamaskFileName)MarkGeometry(replacementActor);}
                     return true;
                 case MyRenderMessageEnum.CreateRenderLight:
                     var light = (MyRenderMessageCreateRenderLight)message;
@@ -507,20 +513,14 @@ namespace ClientPlugin.Rendering.Scene
         private void SetModel(ActorData actor, VulkanModel model,bool trackOldIdentity=true)
         {
             // Native ownership is Build state: queued for Build's prologue (VulkanSceneHandoff).
-            if(building){RemoveNativePassActor(actor,false,markSpots:false);ReleaseCell(actor,false);}else buildOps.Add(new BuildOp{Kind=BuildOpKind.ReleaseOwnership,Data=actor});
-            ReleaseDynamicMeshes(actor);
-            actor.Model = model;
-            actor.TrackOldIdentity=trackOldIdentity;actor.OldModel=null;if(trackOldIdentity)EnsureOldModelIdentity(actor);
+            if(building){RemoveNativePassActor(actor,false,markSpots:false);ReleaseCell(actor,false);ReleaseDynamicMeshes(actor);}else buildOps.Add(new BuildOp{Kind=BuildOpKind.ReleaseOwnership,Data=actor});
+            var fields=W(actor);
+            fields.Model = model;
+            // The LOD, submission and old-identity state is Build's: reset (and the identity resolved) at the latch.
+            fields.TrackOldIdentity=trackOldIdentity;fields.Events|=EventResetModel;if(trackOldIdentity)fields.Events|=EventEnsureOld;
             MarkMembershipDirty();
-            actor.RenderModel=model;actor.RenderLod=0;actor.Lod=new StockActorLodState();actor.NewLod.Reset();actor.HaveNewViewCamera=false;actor.LastNewSpotLod=-1;actor.Representations.Clear();
-            actor.LodShadowModel=actor.LodShadowNext=null;actor.LodShadowAlpha=0;
-            actor.PartFrames = null;
-            actor.Submission = null;
-            actor.SubmissionOpaque=model!=null;
-            if(model!=null)foreach(var part in model.Parts)if((part.Flags&4)!=0){actor.SubmissionOpaque=false;break;}
-            actor.Packed = null;
-            if (model != null){actor.ModelBoundsOwned=true;actor.InstalledModelBounds=StockLodBoundsEnabled&&!KnownStockOldPipeline(actor)&&actor.StaticInstances==null&&actor.SkinMatrices==null?models.StockNewCullingBounds(model):model.Bounds;actor.Actor.SetLocalAabb(actor.InstalledModelBounds);}
-            actor.SkinDirty = true;
+            if (model != null){actor.ModelBoundsOwned=true;actor.InstalledModelBounds=StockLodBoundsEnabled&&!KnownStockOldPipelineApply(actor)&&fields.StaticInstances==null&&fields.SkinMatrices==null?models.StockNewCullingBounds(model):model.Bounds;actor.Actor.SetLocalAabb(actor.InstalledModelBounds);}
+            fields.SkinDirty = true;
             MarkGeometry(actor);
         }
 
@@ -535,7 +535,8 @@ namespace ClientPlugin.Rendering.Scene
             // Color/emission do not change caster geometry or its spatial bound.
             name = name ?? string.Empty;
             MaterialOverride value;
-            if (!actor.Materials.TryGetValue(name, out value)) actor.Materials.Add(name, value = new MaterialOverride());
+            var materials=W(actor).Materials;
+            if (!materials.TryGetValue(name, out value)) materials.Add(name, value = new MaterialOverride());
             return value;
         }
 
@@ -578,6 +579,7 @@ namespace ClientPlugin.Rendering.Scene
             if(ActorSizeCullingEnabled)PrepareSizeProjection(target);
             actorLodStats=new ActorLodStats{Enabled=ActorLodsEnabled?1u:0u};
             if(FramePacketVerifyEnabled){VerifyActorFrames();VerifyBuildActors();}
+            RunOldDecalRequests();
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightsAndExclusions)){frameShadowExclusions.Clear();CommitLights(target);}
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Skybox))skybox.Draw(FrameView.CameraPosition);
             profileCullTicks = profilePackTicks = profileMaterialTicks = 0;
@@ -857,26 +859,28 @@ namespace ClientPlugin.Rendering.Scene
         void NoteShadowPose(ActorData data)
         {
             MatrixD pose = data.Actor.WorldMatrix;
-            bool skinned = data.SkinMatrices != null;
-            bool rootMoved = !data.HaveShadowPose || !NearlySame(data.ShadowPose, pose);
-            bool wasDynamic=data.DynamicShadow,geometryDirty=data.GeometryDirty;
-            data.GeometryDirty=false;data.DynamicShadow = skinned || rootMoved || geometryDirty;
-            if(wasDynamic!=data.DynamicShadow)DirtyNativePass(data,appearance:false);
+            var a = data.A;
+            bool skinned = a.SkinMatrices != null;
+            bool rootMoved = !a.HaveShadowPose || !NearlySame(data.ShadowPose, pose);
+            bool wasDynamic=a.DynamicShadow,geometryDirty=data.GeometryDirty;
+            bool dynamic=skinned || rootMoved || geometryDirty;
+            data.GeometryDirty=false;if(dynamic!=wasDynamic)W(data).DynamicShadow=dynamic;
+            if(wasDynamic!=dynamic)DirtyNativePass(data,appearance:false);
             if (!skinned && !rootMoved && !geometryDirty && !wasDynamic) return;
-            if (data.HaveShadowPose && (rootMoved || geometryDirty))
+            if (a.HaveShadowPose && (rootMoved || geometryDirty))
             {
                 // Remove a former static pose from the frozen map. A moving or
                 // animated caster already in the dynamic overlay cannot dirty it.
-                if(!wasDynamic)MarkSpots(data.ShadowCenter,data.ShadowRadius,false);
-                MarkSpots(data.ShadowCenter,data.ShadowRadius,true);
+                if(!wasDynamic)MarkSpots(a.ShadowCenter,a.ShadowRadius,false);
+                MarkSpots(a.ShadowCenter,a.ShadowRadius,true);
             }
-            if (!data.HaveShadowPose || rootMoved || geometryDirty)
+            if (!a.HaveShadowPose || rootMoved || geometryDirty)
             {
                 BoundingBoxD bounds = data.Actor.CalculateAabb();
-                data.ShadowPose = pose; data.ShadowCenter = bounds.Center; data.ShadowRadius = (float)bounds.HalfExtents.Length(); data.HaveShadowPose = true;
+                data.ShadowPose = pose; W(data); a.ShadowCenter = bounds.Center; a.ShadowRadius = (float)bounds.HalfExtents.Length(); a.HaveShadowPose = true;
             }
-            if(!data.DynamicShadow && (rootMoved || geometryDirty || wasDynamic))MarkSpots(data.ShadowCenter, data.ShadowRadius, false);
-            if(data.DynamicShadow)MarkSpots(data.ShadowCenter, data.ShadowRadius, true);
+            if(!dynamic && (rootMoved || geometryDirty || wasDynamic))MarkSpots(a.ShadowCenter, a.ShadowRadius, false);
+            if(dynamic)MarkSpots(a.ShadowCenter, a.ShadowRadius, true);
         }
         void MarkSpots(Vector3D center, float radius, bool dynamic)
         {
@@ -1027,7 +1031,7 @@ namespace ClientPlugin.Rendering.Scene
 
         private void InvalidateDeformations(uint buffer)
         {
-            foreach (var actor in actors.Values) if (actor.InstanceBuffer == buffer) ReleaseDeformations(actor);
+            foreach (var actor in actors.Values) if (actor.A.InstanceBuffer == buffer){if(building)ReleaseDeformations(actor);else buildOps.Add(new BuildOp{Kind=BuildOpKind.ReleaseDeformations,Data=actor});}
         }
 
         private void ReleaseDeformations(ActorData actor)
@@ -1055,10 +1059,10 @@ namespace ClientPlugin.Rendering.Scene
                 if(building)RemoveBuildState(actor);else buildOps.Add(new BuildOp{Kind=BuildOpKind.RemoveActor,Data=actor});
                 InvalidateOcclusion("Removal");
                 MarkMembershipDirty();
-                if(actor.HaveShadowPose)removedShadowRegions.Add((actor.ShadowCenter,actor.ShadowRadius));
+                if(actor.A.HaveShadowPose)removedShadowRegions.Add((actor.A.ShadowCenter,actor.A.ShadowRadius));
                 spatialDirty.Remove(actor);shadowDirty.Remove(actor);skinnedActors.Remove(actor);dirtyTransforms.Remove(actor.Actor);
                 foreach(var child in actor.Actor.Children)MarkTransforms(child);
-                ReleaseDynamicMeshes(actor); actors.Remove(id); LogActor(id,null); actor.Actor.Destruct();
+                actors.Remove(id); LogActor(id,null); actor.Actor.Destruct();
             }
             shadowIgnores.Remove(id);dirtyShadowOwners.Remove(id);spotByOwner.Remove(id);foreach(var values in shadowIgnores.Values)values.Remove(id);
             highlights.Remove(id);overlappingHighlights.Remove(id);instances.Remove(id); visible.Remove(id);
@@ -1150,7 +1154,7 @@ namespace ClientPlugin.Rendering.Scene
             return true;
         }
 
-        internal Matrix GetDecalBone(uint id,int index,Matrix[] transforms){if(actors.TryGetValue(id,out var actor)&&actor.Skeleton!=null&&index>=0&&index<actor.Skeleton.Length&&transforms!=null&&index<transforms.Length)return actor.Skeleton[index].SkinTransform*transforms[index];return Matrix.Identity;}
+        internal Matrix GetDecalBone(uint id,int index,Matrix[] transforms){if(actors.TryGetValue(id,out var actor)&&actor.A.Skeleton!=null&&index>=0&&index<actor.A.Skeleton.Length&&transforms!=null&&index<transforms.Length)return actor.A.Skeleton[index].SkinTransform*transforms[index];return Matrix.Identity;}
         internal MyActor CreateParticleLight(string name){var actor=new MyActor(this);actor.Construct(name);TrackTransforms(actor);AttachLight(actor);return actor;}
         private VulkanLightComponent AttachLight(MyActor actor)
         {

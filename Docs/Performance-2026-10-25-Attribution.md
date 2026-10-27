@@ -2194,3 +2194,81 @@ New partial `VulkanSceneHandoff.cs`.
 - **Toggle-only paths:** the `IndexExcludesOwnedActors` and
   `StockLodBoundsEnabled` setters still touch Build state when the lane flips
   them. They run between frames, so this is harmless.
+
+## Phase 4 frame split, milestone 2, slice 3: per-actor fields (2026-10-27)
+
+### What changed
+
+New partial `VulkanActorFields.cs`.
+- **Two copies of the per-actor fields.** `ActorData`'s own fields are now
+  Build's view of the fields that messages and the scene update write.
+  Apply writes a second copy, `ActorData.A`, through `W()`, which marks the
+  actor. `LatchFrame` copies `A` into the Build fields (`FoldActorFields`).
+  - The fields: model, instance buffer, start and count, static instances,
+    skin matrices, skeleton and indices, HSV, dithering, character,
+    converted old material, track-old-identity, material revision, and the
+    shadow pose (dynamic flag, centre, radius).
+  - Actor `Flags` and colour are set only at creation, so they stay single.
+  - `ShadowPose` and `GeometryDirty` are Apply-only.
+- **Materials** are mutated in place by messages, so Build gets a clone
+  (dictionary and override objects) whenever the revision or entry count
+  changes.
+- **Skin matrices:** each message fills a fresh array, so Build keeps the one
+  it latched.
+- **Resets become events applied at the latch:**
+  - a model change resets the LOD, submission and old-identity state;
+  - a material-flag conversion resets the stock LOD state;
+  - old-identity resolution happens at the latch. `OldModel` is now
+    Build-owned; Apply only requests the resolve.
+- **Old-pipeline decal registration** is triggered by the game updater during
+  Apply. It wrote Build caches, temporarily swapped `RenderModel` and
+  resolved `OldModel`, so it now runs in Build's prologue for the actors that
+  asked.
+- **Skinned and deformed mesh releases** from model changes, removals and
+  instance-buffer updates join the queued Build ops, because Build may still
+  draw those meshes.
+- **Apply-side readers use `A`:**
+  - `RefreshSpatialIndex`, `NoteShadowPose`, `RefreshShadowPoses` and
+    `MarkInstanceGeometry`;
+  - decal bones and the removal shadow regions;
+  - `KnownStockOldPipelineApply`.
+- **Verify mode** also compares every actor's Build fields with `A` after the
+  latch.
+
+### Gates
+
+- **Verify mode, 0 mismatches:** orbit `Vulkan-985b9684…` (50.53 million
+  checks) and interior `Vulkan-7122bd24…` (56.42 million).
+- **Same-process lane** (`ApplyBuildOrder` old/new/old, `Vulkan-1cf11fbe…`):
+  - `packets.sig` is `2C172F3DEE2C3FEC` (2,126 packets) in all three phases;
+  - every other artifact is byte-identical;
+  - view noise is 479 pixels against a 425-pixel return floor, with max delta
+    23 against 37.
+- **GPU suites under validation:** NativePass 126, SceneSubmission 267,
+  ShadowOcclusion 36, Probe 427, WorldPass 542/542, Interop 16, HudBillboard
+  with 0 validation errors, BillboardPacket 43, and now DepthGeometry 41 and
+  GuestDepth 1,900.
+- **Validation gameplay run** `Vulkan-b3685cb3…`: validation enabled, 0 errors.
+
+### Test coverage found missing
+
+- **GuestDepthGpuTests** was not in the batch. It had failed since slice 1
+  ("hidden actor excluded from complete current depth sources"): it changes
+  visibility by message and then calls Build methods without a frame. It now
+  runs the scene update and latch first (`Latch()`), and passes 1,900
+  checks. It and DepthGeometryGpuTests now join every gate batch.
+- **GpuSceneLiveTests** fails at its first check, `backend.GpuSceneReady`
+  ("GPU scene stock shader admission completes"), before any scene object
+  exists. This is the opt-in GPU-scene path. No native code changed in these
+  milestones, so it is recorded as a pre-existing failure, not investigated
+  here. A pre-split baseline worktree could not compile shaders (untracked
+  shader includes), so it was not confirmed there.
+
+### Remaining slices of milestone 2
+
+- **Slice 4, message-owned scene state:** `colorizeHsv`, bloom emissiveness,
+  skybox, highlights, `actorLodSettings`, the `instances` dictionary (its
+  arrays are resized and copied in place), `FrameCounter`.
+- **Slice 5, leftover live reads:** billboard owner actors, light owners in the
+  guest scene API, manual-cull group actors in probe ambient, the
+  `CharacterStatus` diagnostic.

@@ -115,6 +115,8 @@ partial class Program
             DebugName="Independent depth source",WorldMatrix=MatrixD.CreateTranslation(10,0,-3),Flags=RenderFlags.Visible|RenderFlags.CastShadows|RenderFlags.SkipInMainView});
         Check(scene.ModelCount==1,"production actor imports installed armor geometry: "+string.Join("; ",failures));
         object SceneCall(string name,params object[] values)=>typeof(VulkanScene).GetMethod(name,BindingFlags.Instance|BindingFlags.NonPublic).Invoke(scene,values);
+        // Guest depth collection is Build work and reads the latched actor frames: after a message, run the scene update and latch first.
+        void Latch(){scene.UpdateScene();scene.LatchFrame();scene.BeginBuild();}
         double[] worldViews=Enumerable.Range(0,3).SelectMany(_=>new[]{shadow.M11,shadow.M12,shadow.M13,shadow.M14,shadow.M21,shadow.M22,shadow.M23,shadow.M24,shadow.M31,shadow.M32,shadow.M33,shadow.M34,shadow.M41,shadow.M42,shadow.M43,shadow.M44}).ToArray();
         backend.BeginPacketCollection();scene.SetCamera(Vector3D.Zero,MyTimeSpan.Zero,1f/60);scene.Draw(backend);
         var actors=(System.Collections.IDictionary)typeof(VulkanScene).GetField("actors",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(scene);
@@ -134,14 +136,14 @@ partial class Program
         }
         SceneCall("BeginGuestDepthFrame");sources=(object[])SceneCall("CaptureGuestSceneDepth");
         Check(!(bool)sources[0] && (int)sources[3]==0,"scene collection provenance resets before next request");
-        scene.Process(new MyRenderMessageUpdateRenderObjectVisibility {ID=10,Visible=false});
+        scene.Process(new MyRenderMessageUpdateRenderObjectVisibility {ID=10,Visible=false});Latch();
         backend.BeginPacketCollection();SceneCall("ConfigureGuestSceneDepth",images,worldViews);SceneCall("CollectGuestSceneDepth",voxels);
         sources=(object[])SceneCall("CaptureGuestSceneDepth");
         Check((bool)sources[0] && (int)sources[2]==0 && (int)sources[3]==0,"hidden actor excluded from complete current depth sources");
         backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,MatrixD.Identity,projection,64,64,light),NativeBackend.MatrixValues(projection),NativeBackend.MatrixValues(MatrixD.Invert(projection)));
         Check(backend.BeginFrame(projection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black),"empty managed scene source frame begins");backend.EndFrame();
         Check(backend.GuestDepthReady==7 && Center(0)==1 && Center(1)==1 && Center(2)==1,"empty scene clears prior directional geometry instead of retaining it");
-        scene.Process(new MyRenderMessageUpdateRenderObjectVisibility {ID=10,Visible=true});
+        scene.Process(new MyRenderMessageUpdateRenderObjectVisibility {ID=10,Visible=true});Latch();
         object model=actorType.GetField("Model").GetValue(actor);actorType.GetField("Model").SetValue(actor,null);
         backend.BeginPacketCollection();SceneCall("BeginGuestDepthFrame");SceneCall("ConfigureGuestSceneDepth",images,worldViews);SceneCall("CollectGuestSceneDepth",voxels);
         sources=(object[])SceneCall("CaptureGuestSceneDepth");

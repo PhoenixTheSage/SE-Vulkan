@@ -18,7 +18,7 @@ public sealed partial class VulkanScene
     {
         private readonly VulkanScene scene;
         public ResidentActorObserver(VulkanScene scene){this.scene=scene;}
-        public override void OnUpdateBeforeDraw(){if(Owner is MyActor actor && scene.actors.TryGetValue(actor.ID,out var data))scene.RegisterOldDecalShaders(data);}
+        public override void OnUpdateBeforeDraw(){if(Owner is MyActor actor && scene.actors.TryGetValue(actor.ID,out var data))scene.RequestOldDecalShaders(data);}
         public override void OnVisibilityChange(){if(Owner is MyActor actor)scene.actorStateNotifications.Enqueue((actor,false));}
         public override void OnParentSet(){if(Owner is MyActor actor)scene.actorStateNotifications.Enqueue((actor,true));}
         public override void OnParentRemoved(){if(Owner is MyActor actor)scene.actorStateNotifications.Enqueue((actor,true));}
@@ -69,25 +69,25 @@ public sealed partial class VulkanScene
     }
     private void MarkInstanceGeometry(uint id)
     {
-        foreach(var data in actors.Values)if(data.InstanceBuffer==id)MarkGeometry(data);
+        foreach(var data in actors.Values)if(data.A.InstanceBuffer==id)MarkGeometry(data);
     }
     private void RefreshSpatialIndex()
     {
         foreach(var data in spatialDirty)
         {
             NoteActorFrame(data);
-            if(data.Actor.IsDestroyed || data.Model==null){buildOps.Add(new BuildOp{Kind=BuildOpKind.SpatialRefresh,Data=data,Removed=true});continue;}
+            if(data.Actor.IsDestroyed || data.A.Model==null){buildOps.Add(new BuildOp{Kind=BuildOpKind.SpatialRefresh,Data=data,Removed=true});continue;}
             // Message-authored and RenderDirect-authored local bounds take
             // ownership from model bounds. A quality toggle must preserve them.
             if(data.ModelBoundsOwned&&data.Actor.LocalAabb!=data.InstalledModelBounds)data.ModelBoundsOwned=false;
-            if(data.ModelBoundsOwned){var bounds=stockLodBounds&&!KnownStockOldPipeline(data)&&data.InstanceBuffer==uint.MaxValue&&data.StaticInstances==null&&data.SkinMatrices==null?models.StockNewCullingBounds(data.Model):data.Model.Bounds;if(data.Actor.LocalAabb!=bounds)data.Actor.SetLocalAabb(bounds);data.InstalledModelBounds=bounds;}
+            if(data.ModelBoundsOwned){var a=data.A;var bounds=stockLodBounds&&!KnownStockOldPipelineApply(data)&&a.InstanceBuffer==uint.MaxValue&&a.StaticInstances==null&&a.SkinMatrices==null?models.StockNewCullingBounds(a.Model):a.Model.Bounds;if(data.Actor.LocalAabb!=bounds)data.Actor.SetLocalAabb(bounds);data.InstalledModelBounds=bounds;}
             data.Bounds=data.Actor.CalculateAabb();
             double radius=data.Bounds.HalfExtents.Length();
             // Enclose the same conservative bounding sphere used by the old
             // shadow/probe distance test, including long/thin models.
             BoundingBoxD sphereBox=new BoundingBoxD(data.Bounds.Center-new Vector3D(radius),data.Bounds.Center+new Vector3D(radius));
             // The candidate tree is Build's: the proxy update replays at the start of BuildScene.
-            buildOps.Add(new BuildOp{Kind=BuildOpKind.SpatialRefresh,Data=data,Sphere=sphereBox,Static=data.StaticInstances!=null});
+            buildOps.Add(new BuildOp{Kind=BuildOpKind.SpatialRefresh,Data=data,Sphere=sphereBox,Static=data.A.StaticInstances!=null});
         }
         spatialDirty.Clear();
     }
@@ -126,9 +126,9 @@ public sealed partial class VulkanScene
         shadowDirty.Clear();
         foreach(var data in shadowWork)
         {
-            if(data.Actor.IsDestroyed || data.Model==null)continue;
+            if(data.Actor.IsDestroyed || data.A.Model==null)continue;
             NoteShadowPose(data);
-            if(data.DynamicShadow && data.SkinMatrices==null)shadowDirty.Add(data); // settle moving rigid casters back into the static map next frame
+            if(data.A.DynamicShadow && data.A.SkinMatrices==null)shadowDirty.Add(data); // settle moving rigid casters back into the static map next frame
         }
     }
 }

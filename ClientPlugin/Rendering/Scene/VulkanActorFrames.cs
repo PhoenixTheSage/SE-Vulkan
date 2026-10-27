@@ -79,6 +79,7 @@ public sealed partial class VulkanScene
             }
             if(field==null&&frame.Visible!=IsVisible(actor))field="Visible";
             if(field==null&&frame.Bounds!=data.Bounds)field="Bounds";
+            field??=FieldMismatch(data);
             if(field==null&&!actor.IsDestroyed&&!ReferenceEquals(frame.GroupRoot,GroupRootOf(actor)))field="GroupRoot";
             if(field!=null){FramePacketMismatches++;FramePacketFirstMismatch??=field+" of actor "+data.Id+" at frame "+FrameCounter;}
         }

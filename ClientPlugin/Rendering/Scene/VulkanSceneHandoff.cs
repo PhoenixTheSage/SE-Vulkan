@@ -15,7 +15,7 @@ namespace ClientPlugin.Rendering.Scene;
 // Clear() runs with Build joined (unload), so it flushes the queue and works on Build state directly.
 public sealed partial class VulkanScene
 {
-    enum BuildOpKind:byte{ReleaseOwnership,RemoveActor,SpatialRefresh}
+    enum BuildOpKind:byte{ReleaseOwnership,RemoveActor,SpatialRefresh,ReleaseDeformations}
     struct BuildOp{public BuildOpKind Kind;public ActorData Data;public BoundingBoxD Sphere;public bool Removed,Static;}
     readonly List<BuildOp> buildOps=new();
     readonly Dictionary<uint,ActorData> buildActors=new();
@@ -34,6 +34,7 @@ public sealed partial class VulkanScene
     void FoldApplyState()
     {
         SyncBuildActors();
+        FoldActorFields();
         nativePassDirty.UnionWith(applyPassDirty);cellDirty.UnionWith(applyCellDirty);cellPoseDirty.UnionWith(applyCellPoseDirty);
         foreach(var actor in applyGpuDirty)
         {
@@ -53,7 +54,8 @@ public sealed partial class VulkanScene
             var data=op.Data;
             switch(op.Kind)
             {
-                case BuildOpKind.ReleaseOwnership:RemoveNativePassActor(data,false,markSpots:false);ReleaseCell(data,false);break;
+                case BuildOpKind.ReleaseOwnership:RemoveNativePassActor(data,false,markSpots:false);ReleaseCell(data,false);ReleaseDynamicMeshes(data);break;
+                case BuildOpKind.ReleaseDeformations:ReleaseDeformations(data);break;
                 case BuildOpKind.RemoveActor:RemoveBuildState(data);break;
                 case BuildOpKind.SpatialRefresh:
                     if(op.Removed){if(data.Proxy>=0){actorIndex.RemoveProxy(data.Proxy);data.Proxy=-1;}break;}
@@ -74,6 +76,7 @@ public sealed partial class VulkanScene
         occlusionGroups.Remove(actor.Actor);
         if(actor.Proxy>=0)actorIndex.RemoveProxy(actor.Proxy);
         staticGroups.Remove(actor);
+        ReleaseDynamicMeshes(actor);
     }
     long BuildActorChecks,BuildActorMismatches;
     void VerifyBuildActors()
