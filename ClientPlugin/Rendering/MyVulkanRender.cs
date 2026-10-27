@@ -258,7 +258,7 @@ public sealed class MyVulkanRender : IMyRender
             catch{EndOpenUploads();throw;}
             if(frame==null){EndOpenUploads();return;}
             if(frame.DrawScene&&frame.ApplyBuildOrder)scene.LatchFrame();
-            sprites.LatchMain();particles.LatchQueue();decals.LatchPackets();postprocess.Latch();probes.Latch();shadows.Latch();
+            sprites.LatchMain();particles.LatchQueue();decals.LatchPackets();postprocess.Latch();probes.Latch();shadows.Latch();environment.Latch();
             BuildFrame(frame);
             PublishVisible();
         }
@@ -273,7 +273,7 @@ public sealed class MyVulkanRender : IMyRender
     {
         sprites.BeginFrame(); sprites.DrawTimeSeconds = CurrentDrawTime.Seconds; drawScene = false;
         scene.TextureCache.BindOwnerThread(); scene.TextureCache.DrainPendingLoads(); media?.Poll();
-        environment.Time=CurrentDrawTime.Seconds; environment.GameplayFrame=gameplayFrame;
+        environment.ApplyTime=CurrentDrawTime.Seconds; environment.ApplyGameplayFrame=gameplayFrame;
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Messages))ProcessMessages(draw);
         FrameProfiler.Lap(FrameProfiler.Section.Messages);
         // Loading transitions may normalize the not-yet-populated sun vector.
@@ -364,7 +364,7 @@ public sealed class MyVulkanRender : IMyRender
                 MatrixD projection=cameraProjection;projection.M13=projection.M14-projection.M13;projection.M23=projection.M24-projection.M23;projection.M33=projection.M34-projection.M33;projection.M43=projection.M44-projection.M43;
                 var frameLight=light;
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightingSetup)){
-                environment.GameplayFrame=frame.GameplayFrame; using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EnvironmentDraw))environment.Draw(camera,cameraView*projection,light.SunLightDirection);
+                environment.Time=drawTime.Seconds; environment.GameplayFrame=frame.GameplayFrame; using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EnvironmentDraw))environment.Draw(camera,cameraView*projection,light.SunLightDirection);
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GuestPreparation))BackendRuntime.RaisePreparation();
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PostprocessConfigure))postprocess.Configure(backend,worldResolution.X,worldResolution.Y,renderConfiguration.User.AntialiasingMode==MyAntialiasingMode.FXAA,string.IsNullOrEmpty(postprocess.Settings.DirtTexture)?0:scene.TextureCache.GetTexture(postprocess.Settings.DirtTexture,false),cameraView,projection,renderConfiguration.User.AmbientOcclusionEnabled);
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ProbesConfigure))probes.Configure(backend,camera,light,postprocess.Settings,scene.BackgroundOrientation,scene.TextureCache.GetTexture("Textures/Miscellaneous/ambient_brdf.dds",false),animationDelta,(float)drawTime.Seconds,()=>frame.ApplyBuildOrder?frame.ProbeAmbient:scene.GatherProbeAmbient(light.AmbientLightsGatherRadius,probes.Settings),renderSettings:renderConfiguration);

@@ -20,6 +20,7 @@ public sealed class VulkanEnvironment : IDisposable
     private readonly Dictionary<uint,Cloud> clouds=new Dictionary<uint,Cloud>();
     public MyRenderFogSettings Fog;
     public MyRenderPlanetSettings Planet=new MyRenderPlanetSettings{AtmosphereIntensityMultiplier=35,AtmosphereIntensityAmbientMultiplier=35,AtmosphereDesaturationFactorForward=.5f,CloudsIntensityMultiplier=40};
+    static MyRenderPlanetSettings DefaultPlanet=>new MyRenderPlanetSettings{AtmosphereIntensityMultiplier=35,AtmosphereIntensityAmbientMultiplier=35,AtmosphereDesaturationFactorForward=.5f,CloudsIntensityMultiplier=40};
     public double Time;
     public long GameplayFrame;
     public float TransitionSeconds;
@@ -28,6 +29,17 @@ public sealed class VulkanEnvironment : IDisposable
     public int CloudCount=>clouds.Count;
     public long FogUpdates {get;private set;}
     public VulkanEnvironment(NativeBackend backend,VulkanScene scene){this.backend=backend;this.scene=scene;}
+    // Frame split (milestone 4, slice 2): messages run in Apply and Draw in Build. Apply validates against its own ID sets
+    // and queues each change in issue order (with the Apply time and gameplay frame it was received at); Latch replays the
+    // queue onto the dictionaries Draw reads and copies the fog, planet and transition settings. Build owns Time and
+    // GameplayFrame (set from the frame before Draw) and the faded-out removals.
+    private enum OpKind:byte{CreateAtmosphere,UpdateAtmosphere,Enable,CreateCloud,RemoveAtmosphere,RemoveCloud}
+    private struct Op{public OpKind Kind;public uint Id;public Atmosphere Atmosphere;public MyAtmosphereSettings Settings;public Cloud Cloud;public bool Flag;public double Time;}
+    private readonly List<Op> ops=new List<Op>();
+    private readonly HashSet<uint> applyAtmospheres=new HashSet<uint>(),applyClouds=new HashSet<uint>();
+    private MyRenderFogSettings appliedFog;private MyRenderPlanetSettings appliedPlanet=DefaultPlanet;private float appliedTransition;private bool settingsChanged;
+    // The Apply time and gameplay frame new atmospheres and clouds record (the renderer sets them before messages).
+    public double ApplyTime;public long ApplyGameplayFrame;
     public bool Process(MyRenderMessageBase message)
     {
         switch(message.MessageType)
@@ -35,25 +47,43 @@ public sealed class VulkanEnvironment : IDisposable
             case MyRenderMessageEnum.CreateRenderEntityAtmosphere:
                 var a=(MyRenderMessageCreateRenderEntityAtmosphere)message;
                 if(!a.WorldMatrix.Translation.IsValid() || !(a.AtmosphereRadius>a.PlanetRadius && a.PlanetRadius>0))throw new ArgumentException("Invalid planet atmosphere geometry.");
-                if(atmospheres.ContainsKey(a.ID))throw new InvalidOperationException("Duplicate atmosphere ID.");
-                atmospheres.Add(a.ID,new Atmosphere{Id=a.ID,Center=a.WorldMatrix.Translation,PlanetRadius=a.PlanetRadius,AtmosphereRadius=a.AtmosphereRadius,Settings=MyAtmosphereSettings.Defaults(),Created=Time,FadeIn=a.FadeIn});return true;
+                if(!applyAtmospheres.Add(a.ID))throw new InvalidOperationException("Duplicate atmosphere ID.");
+                ops.Add(new Op{Kind=OpKind.CreateAtmosphere,Id=a.ID,Atmosphere=new Atmosphere{Id=a.ID,Center=a.WorldMatrix.Translation,PlanetRadius=a.PlanetRadius,AtmosphereRadius=a.AtmosphereRadius,Settings=MyAtmosphereSettings.Defaults(),Created=ApplyTime,FadeIn=a.FadeIn}});return true;
             case MyRenderMessageEnum.UpdateAtmosphereSettings:
-                var update=(MyRenderMessageUpdateAtmosphereSettings)message;if(atmospheres.TryGetValue(update.ID,out var existing))existing.Settings=Normalize(update.Settings);return true;
-            case MyRenderMessageEnum.EnableAtmosphere:enabled=((MyRenderMessageEnableAtmosphere)message).Enabled;return true;
+                var update=(MyRenderMessageUpdateAtmosphereSettings)message;if(applyAtmospheres.Contains(update.ID))ops.Add(new Op{Kind=OpKind.UpdateAtmosphere,Id=update.ID,Settings=Normalize(update.Settings)});return true;
+            case MyRenderMessageEnum.EnableAtmosphere:ops.Add(new Op{Kind=OpKind.Enable,Flag=((MyRenderMessageEnableAtmosphere)message).Enabled});return true;
             case MyRenderMessageEnum.CreateRenderEntityClouds:
                 var c=((MyRenderMessageCreateRenderEntityClouds)message).Settings;
                 c.Textures=c.Textures==null?null:new List<string>(c.Textures);
                 if(!c.CenterPoint.IsValid() || !c.RotationAxis.IsValid() || c.RotationAxis.LengthSquared()<1e-12 || !(c.Altitude>0 && c.MinScaledAltitude>0))throw new ArgumentException("Invalid cloud shell geometry.");
-                if(clouds.ContainsKey(c.ID))throw new InvalidOperationException("Duplicate cloud ID.");
-                clouds.Add(c.ID,new Cloud{Settings=c,Created=Time,Rotation=c.InitialRotation,GameplayFrame=GameplayFrame});return true;
-            case MyRenderMessageEnum.UpdateNewLoddingSettings:TransitionSeconds=((MyRenderMessageUpdateNewLoddingSettings)message).Settings.Global.MaxTransitionInSeconds;return false;
-            case MyRenderMessageEnum.UpdateFogSettings:Fog=((MyRenderMessageUpdateFogSettings)message).Settings;FogUpdates++;return true;
-            case MyRenderMessageEnum.UpdatePlanetSettings:Planet=((MyRenderMessageUpdatePlanetSettings)message).Settings;return false;
+                if(!applyClouds.Add(c.ID))throw new InvalidOperationException("Duplicate cloud ID.");
+                ops.Add(new Op{Kind=OpKind.CreateCloud,Id=c.ID,Cloud=new Cloud{Settings=c,Created=ApplyTime,Rotation=c.InitialRotation,GameplayFrame=ApplyGameplayFrame}});return true;
+            case MyRenderMessageEnum.UpdateNewLoddingSettings:appliedTransition=((MyRenderMessageUpdateNewLoddingSettings)message).Settings.Global.MaxTransitionInSeconds;settingsChanged=true;return false;
+            case MyRenderMessageEnum.UpdateFogSettings:appliedFog=((MyRenderMessageUpdateFogSettings)message).Settings;FogUpdates++;settingsChanged=true;return true;
+            case MyRenderMessageEnum.UpdatePlanetSettings:appliedPlanet=((MyRenderMessageUpdatePlanetSettings)message).Settings;settingsChanged=true;return false;
             case MyRenderMessageEnum.RemoveRenderObject:
                 var remove=(MyRenderMessageRemoveRenderObject)message;
-                if(atmospheres.TryGetValue(remove.ID,out var atmo)){if(remove.FadeOut)atmo.Removed=Time;else RemoveAtmosphere(remove.ID);return true;}
-                if(clouds.TryGetValue(remove.ID,out var cloud)){if(remove.FadeOut)cloud.Removed=Time;else clouds.Remove(remove.ID);return true;}return false;
+                if(applyAtmospheres.Remove(remove.ID)){ops.Add(new Op{Kind=OpKind.RemoveAtmosphere,Id=remove.ID,Flag=remove.FadeOut,Time=ApplyTime});return true;}
+                if(applyClouds.Remove(remove.ID)){ops.Add(new Op{Kind=OpKind.RemoveCloud,Id=remove.ID,Flag=remove.FadeOut,Time=ApplyTime});return true;}return false;
         }return false;
+    }
+    public void Latch()
+    {
+        if(settingsChanged){Fog=appliedFog;Planet=appliedPlanet;TransitionSeconds=appliedTransition;settingsChanged=false;}
+        foreach(var op in ops)
+        {
+            switch(op.Kind)
+            {
+                // An ID reused while its predecessor still fades out replaces it (the Apply set no longer holds it).
+                case OpKind.CreateAtmosphere:if(atmospheres.ContainsKey(op.Id))RemoveAtmosphere(op.Id);atmospheres.Add(op.Id,op.Atmosphere);break;
+                case OpKind.UpdateAtmosphere:if(atmospheres.TryGetValue(op.Id,out var existing))existing.Settings=op.Settings;break;
+                case OpKind.Enable:enabled=op.Flag;break;
+                case OpKind.CreateCloud:clouds[op.Id]=op.Cloud;break;
+                case OpKind.RemoveAtmosphere:if(atmospheres.TryGetValue(op.Id,out var atmo)){if(op.Flag)atmo.Removed=op.Time;else RemoveAtmosphere(op.Id);}break;
+                case OpKind.RemoveCloud:if(clouds.TryGetValue(op.Id,out var cloud)){if(op.Flag)cloud.Removed=op.Time;else clouds.Remove(op.Id);}break;
+            }
+        }
+        ops.Clear();
     }
     private static MyAtmosphereSettings Normalize(MyAtmosphereSettings s)
     {
@@ -102,6 +132,6 @@ public sealed class VulkanEnvironment : IDisposable
         }
     }
     private void RemoveAtmosphere(uint id){backend.RemoveResource(7,id);atmospheres.Remove(id);}
-    public void Clear(){foreach(var id in atmospheres.Keys.ToArray())RemoveAtmosphere(id);clouds.Clear();Fog=default;}
+    public void Clear(){ops.Clear();applyAtmospheres.Clear();applyClouds.Clear();foreach(var id in atmospheres.Keys.ToArray())RemoveAtmosphere(id);clouds.Clear();Fog=appliedFog=default;}
     public void Dispose()=>Clear();
 }

@@ -2545,3 +2545,50 @@ change kept is a latch after PostprocessGpuTests' debug-override messages.
    - video texture removal.
 5. **Profilers:** `FrameProfiler` statics, and a Build lane for
    `RendererCpuProfiler`.
+
+## Phase 4 frame split, milestone 4, slice 2: the environment (2026-10-27)
+
+### What changed
+
+`VulkanEnvironment` (atmospheres, clouds, fog, planet settings) processes
+messages in Apply and draws in Build's lighting setup.
+
+- **Apply validates and queues.** It checks geometry and duplicate IDs
+  against its own ID sets. It then queues each change in issue order, with
+  the Apply time and gameplay frame it arrived at: create, update and remove
+  atmosphere; enable; create and remove cloud.
+- **The latch replays the queue** onto the dictionaries `Draw` reads, and
+  copies the fog, planet settings and transition time if a message changed
+  them. Immediate atmosphere removals, which free a native resource, happen
+  at the latch.
+- **Build owns `Time`, `GameplayFrame` and the faded-out removals.** The
+  renderer sets `Time` and `GameplayFrame` from the frame packet before
+  `Draw`. Apply's timestamps use `ApplyTime` and `ApplyGameplayFrame`.
+- **Edge-case differences:**
+  - an ID reused while its predecessor is still fading out now replaces it,
+    where before it threw a duplicate-ID error;
+  - an update or a second removal for an atmosphere that is already fading
+    is ignored.
+- **Test update:** EnvironmentGpuTests latches in its `ManagedFrame` helper,
+  since it sends messages and then draws directly. It passes 50 checks with
+  zero validation errors.
+
+### Gates
+
+- **Verify mode, 0 mismatches:** orbit `Vulkan-3ec4b928…` (52.85 million
+  checks) and interior `Vulkan-e4dd8a7c…` (49.70 million).
+- **Same-process lane** (`ApplyBuildOrder` old/new/old, `Vulkan-24c0ab04…`):
+  - `packets.sig` is `4B95981B5B9FF584` (2,126 packets) in all three phases;
+  - every other artifact is byte-identical;
+  - view noise is 524 pixels against a 548-pixel return floor.
+- **GPU suites under validation:** NativePass 126, SceneSubmission 267,
+  ShadowOcclusion 36, Probe 427, WorldPass 542/542, Interop 16, HudBillboard
+  with 0 validation errors, BillboardPacket 43, DepthGeometry 41, GuestDepth
+  1,900, Environment 50.
+- **Validation gameplay run** `Vulkan-43e1c543…`: validation enabled, 0 errors.
+
+### Remaining in milestone 4
+
+3. Voxels.
+4. Texture cache and media.
+5. Profilers.
