@@ -167,7 +167,7 @@ namespace ClientPlugin.Rendering.Scene
         public int ActorCount => actors.Count;
         public int InstanceCount
         {
-            get { int count = 0; foreach (var buffer in instances.Values) count += buffer.Cubes?.Length ?? buffer.Generic?.Length ?? 0; return count; }
+            get { int count = 0; foreach (var buffer in applyInstances.Values) count += buffer.Cubes?.Length ?? buffer.Generic?.Length ?? 0; return count; }
         }
         public int ModelCount => models.Count;
         public GeometryStorageStats GeometryStorage=>models.StorageStats;
@@ -236,7 +236,7 @@ namespace ClientPlugin.Rendering.Scene
                     // tone mapping. Copy the scalar; never retain the pooled message.
                     float emission = ((MyRenderMessageUpdatePostprocessSettings)message).Settings.Data.BloomEmissiveness;
                     if (float.IsNaN(emission) || float.IsInfinity(emission)) throw new ArgumentException("Nonfinite material emission multiplier.");
-                    bloomEmissiveness = Math.Max(0, emission);
+                    applyBloomEmissiveness = Math.Max(0, emission);
                     return false; // The renderer consumes the complete postprocess settings next.
                 case MyRenderMessageEnum.CreateRenderEntity:
                     var create = (MyRenderMessageCreateRenderEntity)message;
@@ -333,12 +333,13 @@ namespace ClientPlugin.Rendering.Scene
                     return true;
                 case MyRenderMessageEnum.CreateRenderInstanceBuffer:
                     var createBuffer = (MyRenderMessageCreateRenderInstanceBuffer)message;
-                    instances[createBuffer.ID] = new InstanceBuffer { Parent = createBuffer.ParentID,OldCube=createBuffer.Type==MyRenderInstanceBufferType.Cube,OldLayout=OldResources.Initialized?OldResources.InstanceLayout(createBuffer.Type==MyRenderInstanceBufferType.Cube):0 };
+                    MarkInstances(createBuffer.ID);applyInstances[createBuffer.ID] = new InstanceBuffer { Parent = createBuffer.ParentID,OldCube=createBuffer.Type==MyRenderInstanceBufferType.Cube,OldLayout=OldResources.Initialized?OldResources.InstanceLayout(createBuffer.Type==MyRenderInstanceBufferType.Cube):0 };
                     return true;
                 case MyRenderMessageEnum.UpdateRenderCubeInstanceBuffer:
                     var cubeUpdate = (MyRenderMessageUpdateRenderCubeInstanceBuffer)message;
                     InstanceBuffer cubeBuffer;
-                    if (!instances.TryGetValue(cubeUpdate.ID, out cubeBuffer)) instances.Add(cubeUpdate.ID, cubeBuffer = new InstanceBuffer());
+                    if (!applyInstances.TryGetValue(cubeUpdate.ID, out cubeBuffer)) applyInstances.Add(cubeUpdate.ID, cubeBuffer = new InstanceBuffer());
+                    MarkInstances(cubeUpdate.ID);
                     cubeBuffer.Cubes = cubeUpdate.InstanceData.ToArray(); cubeBuffer.Generic = null;cubeBuffer.EnabledSkinning=false;foreach(var cube in cubeBuffer.Cubes)cubeBuffer.EnabledSkinning|=cube.EnableSkinning;
                     cubeBuffer.Revision++;
                     MarkInstanceGeometry(cubeUpdate.ID);
@@ -347,7 +348,8 @@ namespace ClientPlugin.Rendering.Scene
                 case MyRenderMessageEnum.UpdateRenderInstanceBufferRange:
                     var range = (MyRenderMessageUpdateRenderInstanceBufferRange)message;
                     InstanceBuffer genericBuffer;
-                    if (!instances.TryGetValue(range.ID, out genericBuffer)) instances.Add(range.ID, genericBuffer = new InstanceBuffer());
+                    if (!applyInstances.TryGetValue(range.ID, out genericBuffer)) applyInstances.Add(range.ID, genericBuffer = new InstanceBuffer());
+                    MarkInstances(range.ID);
                     int length = checked(range.StartOffset + (range.InstanceData?.Length ?? 0));
                     if (range.StartOffset < 0) throw new ArgumentOutOfRangeException(nameof(range.StartOffset));
                     if (genericBuffer.Generic == null || genericBuffer.Generic.Length < length || range.Trim)
@@ -372,7 +374,8 @@ namespace ClientPlugin.Rendering.Scene
                         if (set.InstanceData != null)
                         {
                             InstanceBuffer b;
-                            if (!instances.TryGetValue(set.InstanceBufferId, out b)) instances.Add(set.InstanceBufferId, b = new InstanceBuffer());
+                            if (!applyInstances.TryGetValue(set.InstanceBufferId, out b)) applyInstances.Add(set.InstanceBufferId, b = new InstanceBuffer());
+                            MarkInstances(set.InstanceBufferId);
                             b.Generic = (MyInstanceData[])set.InstanceData.Clone();
                             b.Cubes = null; b.Revision++;
                         }
@@ -471,7 +474,7 @@ namespace ClientPlugin.Rendering.Scene
                 case MyRenderMessageEnum.UnloadTexture:
                     TextureCache.Unload(((MyRenderMessageUnloadTexture)message).Texture); return true;
                 case MyRenderMessageEnum.UpdateNewLoddingSettings:
-                    actorLodSettings.CopyFrom(((MyRenderMessageUpdateNewLoddingSettings)message).Settings);return false;
+                    applyLodSettings.CopyFrom(((MyRenderMessageUpdateNewLoddingSettings)message).Settings);lodSettingsChanged=true;return false;
                 case MyRenderMessageEnum.SetCameraViewMatrix:
                     var camera = (MyRenderMessageSetCameraViewMatrix)message;
                     Next.Frustum = new BoundingFrustumD(camera.ViewMatrix * camera.ProjectionMatrix);Next.LightFarFrustum=new BoundingFrustumD(camera.ViewMatrix*camera.ProjectionFarMatrix);
@@ -482,8 +485,8 @@ namespace ClientPlugin.Rendering.Scene
                     return true;
                 case MyRenderMessageEnum.UpdateRenderEnvironment:
                     var environment = (MyRenderMessageUpdateRenderEnvironment)message;
-                    skybox.Set(environment.Data.Skybox, environment.Data.SkyboxOrientation);
-                    var updatedHsv=new Vector3(environment.Data.TextureMultipliers.ColorizeHSV);if(updatedHsv!=colorizeHsv){colorizeHsv=updatedHsv;foreach(var actor in actors.Values)DirtyNativePass(actor);}
+                    pendingSkybox = (environment.Data.Skybox, environment.Data.SkyboxOrientation);
+                    var updatedHsv=new Vector3(environment.Data.TextureMultipliers.ColorizeHSV);if(updatedHsv!=applyColorizeHsv){applyColorizeHsv=updatedHsv;foreach(var actor in actors.Values)DirtyNativePass(actor);}
                     return true;
                 case MyRenderMessageEnum.InitSubsystemConsume:
                     SceneSystemsReady = true; // Resources are created directly; no DX11 background manager batch exists.
@@ -1065,7 +1068,7 @@ namespace ClientPlugin.Rendering.Scene
                 actors.Remove(id); LogActor(id,null); actor.Actor.Destruct();
             }
             shadowIgnores.Remove(id);dirtyShadowOwners.Remove(id);spotByOwner.Remove(id);foreach(var values in shadowIgnores.Values)values.Remove(id);
-            highlights.Remove(id);overlappingHighlights.Remove(id);instances.Remove(id); visible.Remove(id);
+            if(applyHighlights.Remove(id)|applyOverlappingHighlights.Remove(id))highlightsChanged=true;if(applyInstances.Remove(id))MarkInstances(id); visible.Remove(id);
         }
 
         public override void Clear()
@@ -1077,7 +1080,8 @@ namespace ClientPlugin.Rendering.Scene
             SyncBuildActors();
             applyPassDirty.Clear();applyCellDirty.Clear();applyCellPoseDirty.Clear();applyGpuDirty.Clear();applyGroupDirty.Clear();applyMembershipDirty=false;
             foreach (var light in new List<VulkanLightComponent>(lights)) light.Owner?.Destruct();
-            instances.Clear(); lights.Clear(); visible.Clear();
+            instances.Clear();applyInstances.Clear();instancesChanged.Clear(); lights.Clear(); visible.Clear();
+            highlights.Clear();overlappingHighlights.Clear();applyHighlights.Clear();applyOverlappingHighlights.Clear();highlightsChanged=false;pendingSkybox=null;
             billboards.Dispose();
             skybox.Dispose();
             ClearNativePassScene();
@@ -1091,7 +1095,7 @@ namespace ClientPlugin.Rendering.Scene
             while(actorStateNotifications.TryDequeue(out _)){}
             Next.Frustum=Next.LightFarFrustum=null;frustum=null;lightQuery.Clear();ambientLightQuery.Clear();lightPointGroups.Clear();lightQueryGroups.Clear();lightGroupContained.Clear();
             Next.HaveSizeProjection=haveSizeProjection=false;
-            colorizeHsv = new Vector3(MyTextureDebugMultipliers.Defaults.ColorizeHSV);
+            colorizeHsv = applyColorizeHsv = new Vector3(MyTextureDebugMultipliers.Defaults.ColorizeHSV);
             CalculateGravityInPoint = position => Vector3.Zero;
             }finally{building=wasBuilding;}
         }

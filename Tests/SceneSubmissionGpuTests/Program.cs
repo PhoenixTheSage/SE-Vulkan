@@ -223,7 +223,7 @@ partial class Program
         scene.Process(new MyRenderMessageUpdateRenderObjectVisibility{ID=20,Visible=false});
         var identityCube=new VRage.MyCubeInstanceData{LocalMatrix=Matrix.Identity};
         scene.Process(new MyRenderMessageCreateRenderInstanceBuffer{ID=2900});scene.Process(new MyRenderMessageUpdateRenderCubeInstanceBuffer{ID=2900,InstanceData=new List<VRage.MyCubeInstanceData>{identityCube},Capacity=1});
-        var instanceRegistry=(System.Collections.IDictionary)typeof(VulkanScene).GetField("instances",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;object instanceRecord=instanceRegistry[2900u]!;
+        var instanceRegistry=(System.Collections.IDictionary)typeof(VulkanScene).GetField("applyInstances",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;object instanceRecord=instanceRegistry[2900u]!;
         bool HasSkinning()=>(bool)instanceRecord.GetType().GetField("EnabledSkinning")!.GetValue(instanceRecord)!;
         Check(!HasSkinning(),"ordinary cube update retains stock non-skinning LOD policy");
         var skinnedCube=identityCube;skinnedCube.EnableSkinning=true;scene.Process(new MyRenderMessageUpdateRenderCubeInstanceBuffer{ID=2900,InstanceData=new List<VRage.MyCubeInstanceData>{identityCube,skinnedCube},Capacity=2});

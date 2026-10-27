@@ -35,6 +35,7 @@ public sealed partial class VulkanScene
     {
         SyncBuildActors();
         FoldActorFields();
+        FoldSceneState();
         nativePassDirty.UnionWith(applyPassDirty);cellDirty.UnionWith(applyCellDirty);cellPoseDirty.UnionWith(applyCellPoseDirty);
         foreach(var actor in applyGpuDirty)
         {
@@ -84,6 +85,7 @@ public sealed partial class VulkanScene
         BuildActorChecks++;
         bool same=buildActors.Count==actors.Count;
         if(same)foreach(var pair in actors)if(!buildActors.TryGetValue(pair.Key,out var data)||!ReferenceEquals(data,pair.Value)){same=false;break;}
+        if(same&&SceneStateMismatch() is string state){same=false;FramePacketFirstMismatch??=state+" at frame "+FrameCounter;}
         if(!same){BuildActorMismatches++;FramePacketMismatches++;FramePacketFirstMismatch??="buildActors at frame "+FrameCounter;}
     }
 }

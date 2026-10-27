@@ -52,7 +52,7 @@ public sealed partial class VulkanScene
                     for(int i=0;i<count;i++)if(owners.TryGetValue(rows[i].Id,out var owner)){
                         var group=owner.Group;var state=group.ShadowStates[c];
                         if(view.Pending.TryGetValue(group,out var pending) && pending.Frame==owner.Frame)view.Pending.Remove(group);
-                        if(group.Root.IsDestroyed || !occlusionGroups.TryGetValue(group.Root,out var active) || !ReferenceEquals(active,group) || !state.Accept(owner.Epoch,owner.Frame,FrameCounter,owner.Bounds,group.Bounds,rows[i].Visible!=0))shadowRejected++;else shadowAccepted++;
+                        if(group.Root.IsDestroyed || !occlusionGroups.TryGetValue(group.Root,out var active) || !ReferenceEquals(active,group) || !state.Accept(owner.Epoch,owner.Frame,BuildFrameCounter,owner.Bounds,group.Bounds,rows[i].Visible!=0))shadowRejected++;else shadowAccepted++;
                     }
                 }
             }
@@ -64,18 +64,18 @@ public sealed partial class VulkanScene
         if(shadowOcclusionMask==0 || actor.OcclusionGroup==null)return mask;
         var group=actor.OcclusionGroup;
         for(int c=0;c<8;c++)if((mask&shadowOcclusionMask&(1u<<c))!=0){
-            if(group.ShadowSeen[c]!=FrameCounter){
-                group.ShadowSeen[c]=FrameCounter;group.ShadowHiddenMask&=~(1u<<c);
+            if(group.ShadowSeen[c]!=BuildFrameCounter){
+                group.ShadowSeen[c]=BuildFrameCounter;group.ShadowHiddenMask&=~(1u<<c);
                 if(group.Members.Count==0 || !group.Bounds.Min.IsValid() || !group.Bounds.Max.IsValid())continue;
                 var state=group.ShadowStates[c];var view=shadowGroupViews[c];var origin=ShadowSystem.ViewOrigins[c];
-                bool entered=state.LastInView!=FrameCounter-1;bool hidden=state.Observe(FrameCounter,group.Bounds,origin,groupNear);
+                bool entered=state.LastInView!=BuildFrameCounter-1;bool hidden=state.Observe(BuildFrameCounter,group.Bounds,origin,groupNear);
                 if(hidden)group.ShadowHiddenMask|=1u<<c;
                 var inflated=group.Bounds.GetInflated(group.Bounds.Size*.5);bool close=inflated.DistanceSquared(ref origin)<groupNear;
-                bool pending=view.Pending.TryGetValue(group,out var previous) && previous.Epoch==state.Epoch && FrameCounter-previous.Frame<=100;
+                bool pending=view.Pending.TryGetValue(group,out var previous) && previous.Epoch==state.Epoch && BuildFrameCounter-previous.Frame<=100;
                 if(!entered && !close && !pending && view.Count<view.Rows.Length){
                     var min=inflated.Min-FrameView.CameraPosition;var size=inflated.Size;
                     view.Rows[view.Count++]=new NativePackedOcclusionDraw{Id=group.QueryId,MinimumX=(float)min.X,MinimumY=(float)min.Y,MinimumZ=(float)min.Z,ExtentX=(float)size.X,ExtentY=(float)size.Y,ExtentZ=(float)size.Z};
-                    var owner=new GroupQueryOwner{Group=group,Epoch=state.Epoch,Frame=FrameCounter,Bounds=inflated};view.Current[group.QueryId]=owner;view.Pending[group]=owner;shadowQueries++;
+                    var owner=new GroupQueryOwner{Group=group,Epoch=state.Epoch,Frame=BuildFrameCounter,Bounds=inflated};view.Current[group.QueryId]=owner;view.Pending[group]=owner;shadowQueries++;
                 }
             }
             if((group.ShadowHiddenMask&(1u<<c))!=0){mask&=~(1u<<c);shadowHidden++;}

@@ -7,6 +7,7 @@ namespace ClientPlugin.Rendering.Scene;
 public sealed partial class VulkanScene
 {
     private sealed class Highlight {public string Section;public Vector4 Color;public float Thickness,Pulse;public int Instance;}
+    // Build's view; messages write applyHighlights and the latch copies it (VulkanSceneState).
     private readonly Dictionary<uint,List<Highlight>> highlights=new();
     private readonly HashSet<uint> overlappingHighlights=new();
     public float HighlightSepia;
@@ -19,23 +20,23 @@ public sealed partial class VulkanScene
             {
                 if(!(h.Thickness>0))
                 {
-                    if(sections==null)highlights.Remove(id);
-                    else if(highlights.TryGetValue(id,out var old)){old.RemoveAll(x=>Array.IndexOf(sections,x.Section)>=0);if(old.Count==0)highlights.Remove(id);}
+                    if(sections==null)applyHighlights.Remove(id);
+                    else if(applyHighlights.TryGetValue(id,out var old)){old.RemoveAll(x=>Array.IndexOf(sections,x.Section)>=0);if(old.Count==0)applyHighlights.Remove(id);}
                     return;
                 }
                 if(!h.OutlineColor.HasValue || float.IsNaN(h.Thickness) || float.IsInfinity(h.Thickness) || float.IsNaN(h.PulseTimeInSeconds) || float.IsInfinity(h.PulseTimeInSeconds))throw new ArgumentException("Invalid highlight color/thickness/pulse.");
-                if(!highlights.TryGetValue(id,out var list))highlights[id]=list=new();
+                if(!applyHighlights.TryGetValue(id,out var list))applyHighlights[id]=list=new();
                 foreach(string section in sections??new string[]{null})
                 {
                     var color=h.OutlineColor.Value.ToVector4();if(list.Exists(x=>x.Section==section && x.Instance==instance && x.Color==color && x.Thickness==h.Thickness && x.Pulse==h.PulseTimeInSeconds))continue;
                     list.Add(new Highlight{Section=section,Color=color,Thickness=h.Thickness,Pulse=h.PulseTimeInSeconds,Instance=instance});
                 }
             }
-            DirtyNativePass(actors[h.ID]);Update(h.ID,h.SectionNames,h.InstanceIndex);
+            highlightsChanged=true;DirtyNativePass(actors[h.ID]);Update(h.ID,h.SectionNames,h.InstanceIndex);
             if(h.SubpartIndices!=null)foreach(uint id in h.SubpartIndices)if(actors.ContainsKey(id)){DirtyNativePass(actors[id]);Update(id,null,-1);}
             return true;
         }
-        if(message is MyRenderMessageUpdateOverlappingModelsForHighlight o){if(actors.TryGetValue(o.OverlappingModelID,out var changed))DirtyNativePass(changed);if(o.Enable)overlappingHighlights.Add(o.OverlappingModelID);else overlappingHighlights.Remove(o.OverlappingModelID);return true;}
+        if(message is MyRenderMessageUpdateOverlappingModelsForHighlight o){if(actors.TryGetValue(o.OverlappingModelID,out var changed))DirtyNativePass(changed);highlightsChanged=true;if(o.Enable)applyOverlappingHighlights.Add(o.OverlappingModelID);else applyOverlappingHighlights.Remove(o.OverlappingModelID);return true;}
         return false;
     }
     private bool HasHighlight(uint id)=>highlights.ContainsKey(id)||overlappingHighlights.Contains(id);

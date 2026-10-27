@@ -2272,3 +2272,53 @@ New partial `VulkanActorFields.cs`.
 - **Slice 5, leftover live reads:** billboard owner actors, light owners in the
   guest scene API, manual-cull group actors in probe ambient, the
   `CharacterStatus` diagnostic.
+
+## Phase 4 frame split, milestone 2, slice 4: message-owned scene state (2026-10-27)
+
+### What changed
+
+New partial `VulkanSceneState.cs`. Messages now write Apply copies, which
+`LatchFrame` folds into the fields Build already reads (`FoldSceneState`):
+- **Colour-mask HSV and bloom emissiveness** (from `UpdateRenderEnvironment`
+  and `UpdatePostprocessSettings`).
+- **The skybox:** `Set` is deferred to the latch, so Build's `Draw` and the
+  background orientation read the latched sky.
+- **The new-LOD settings:** the message copies into an Apply settings object,
+  and the latch copies that into Build's.
+- **Highlights and overlapping highlights:** when they change, Build gets
+  fresh lists. The highlight entries never change once added, so they are
+  shared.
+- **Instance buffers:** messages write `applyInstances`. The latch gives Build
+  a snapshot of each changed buffer. Generic arrays are copied, because range
+  updates write into them in place; cube arrays are shared, because each
+  update builds a new one.
+- **The frame counter:** `MyScene.FrameCounter` is static and the scene update
+  increments it, so the occlusion and shadow-group code reads
+  `BuildFrameCounter`, latched with the frame.
+- **Verify mode** also compares Build's copies with the Apply state: HSV,
+  bloom, highlight counts, each instance buffer's revision and arrays, and
+  the frame counter.
+- **Test update:** SceneSubmission's cube skinning-policy check inspects how
+  messages build the buffer, so it now reads `applyInstances`.
+
+### Gates
+
+- **Verify mode, 0 mismatches:** orbit `Vulkan-9ce2ca41…` (53.52 million
+  checks) and interior `Vulkan-4e26c538…` (55.17 million).
+- **Same-process lane** (`ApplyBuildOrder` old/new/old, `Vulkan-b3530666…`):
+  - `packets.sig` is `4A4CDE387EF84D0D` (2,126 packets) in all three phases;
+  - every other artifact is byte-identical;
+  - view noise is 231 pixels against a 429-pixel return floor.
+- **GPU suites under validation:** NativePass 126, SceneSubmission 267,
+  ShadowOcclusion 36, Probe 427, WorldPass 542/542, Interop 16, HudBillboard
+  with 0 validation errors, BillboardPacket 43, DepthGeometry 41, GuestDepth
+  1,900.
+- **Validation gameplay run** `Vulkan-9568b593…`: validation enabled, 0 errors.
+
+### Remaining in milestone 2
+
+**Slice 5, leftover live reads:**
+- billboard owner actors (`VulkanBillboards.cs:123`);
+- light owners in the guest scene API;
+- manual-cull group actors in probe ambient;
+- the once-a-second `CharacterStatus` diagnostic.
