@@ -6,10 +6,11 @@ namespace ClientPlugin.Rendering.Scene;
 public sealed partial class VulkanScene
 {
     readonly CullResults ambientLightQuery=new CullResults();
-    // MyEnvironmentProbe.GatherLightAmbient, with guards for degenerate distances.
+    // MyEnvironmentProbe.GatherLightAmbient, with guards for degenerate distances. Runs in Apply (it queries the game's
+    // cull trees and live light owners); Build's probe capture uses the frame packet's value.
     public float GatherProbeAmbient(float radius,MyEnvironmentProbeData settings)
     {
-        if(radius<=0)return 0;float sum=0;Vector3D camera=FrameView.CameraPosition;
+        if(radius<=0)return 0;float sum=0;Vector3D camera=SideCamera;
         // MyLightsRendering.GatherLights uses root bounds and whole intersecting
         // groups, independently of the view frustum and visible-light budget.
         ambientLightQuery.Clear();var sphere=new BoundingSphereD(camera,radius);

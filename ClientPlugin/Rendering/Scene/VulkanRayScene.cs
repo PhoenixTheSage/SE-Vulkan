@@ -137,24 +137,25 @@ public sealed partial class VulkanScene
                     (float)(bounds.Max.X - center.X), (float)(bounds.Max.Y - center.Y), (float)(bounds.Max.Z - center.Z) } });
         }
         var lightValues = new List<float>(); var origins = new List<float>(); var cookies = new List<object[]>();
-        foreach (var light in lights)
+        var lightFrame = buildLights;
+        for (int i = 0; i < lightFrame.Count; i++)
         {
-            var owner = light.Owner;
-            if (owner == null || owner.IsDestroyed) continue;
-            var data = light.EffectiveData; var m = owner.WorldMatrix;
+            var light = lightFrame.All[i];
+            if (!light.HasOwner || light.Destroyed) continue;
+            var data = light.Effective; var m = light.World;
             if (Vector3D.DistanceSquared(m.Translation, center) > Math.Pow(RayRange + Math.Max(data.PointLight.Range, data.SpotLight.Light.Range), 2)) continue;
             var up = new[] { (float)m.Up.X, (float)m.Up.Y, (float)m.Up.Z }; var physical = m.Translation - center;
             if (data.PointLightOn && data.PointIntensity > .001f)
             {
                 origins.Add((float)physical.X); origins.Add((float)physical.Y); origins.Add((float)physical.Z);
-                RayLight(lightValues, m.Translation + m.Forward * data.PointOffset - center, data.PointLight.Color, data.PointLight.Range, m.Forward, -1, 0, owner.ID,
+                RayLight(lightValues, m.Translation + m.Forward * data.PointOffset - center, data.PointLight.Color, data.PointLight.Range, m.Forward, -1, 0, light.OwnerId,
                     data.PointLight.Falloff, data.PointLight.DiffuseFactor, data.PointLight.GlossFactor);
                 cookies.Add(new object[] { null, up });
             }
             if (data.SpotLightOn && data.SpotIntensity > .001f)
             {
                 origins.Add((float)physical.X); origins.Add((float)physical.Y); origins.Add((float)physical.Z);
-                RayLight(lightValues, physical, data.SpotLight.Light.Color, data.SpotLight.Light.Range, m.Forward, data.SpotLight.ApertureCos, 1, owner.ID,
+                RayLight(lightValues, physical, data.SpotLight.Light.Color, data.SpotLight.Light.Range, m.Forward, data.SpotLight.ApertureCos, 1, light.OwnerId,
                     data.SpotLight.Light.Falloff, data.SpotLight.Light.DiffuseFactor, data.SpotLight.Light.GlossFactor);
                 cookies.Add(new object[] { string.IsNullOrEmpty(data.ReflectorTexture) ? null : RayTexture(TextureCache.GetTexture(data.ReflectorTexture, true)), up });
             }

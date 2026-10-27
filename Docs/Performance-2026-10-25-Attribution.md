@@ -2322,3 +2322,83 @@ New partial `VulkanSceneState.cs`. Messages now write Apply copies, which
 - light owners in the guest scene API;
 - manual-cull group actors in probe ambient;
 - the once-a-second `CharacterStatus` diagnostic.
+
+## Phase 4 frame split, milestone 2, slice 5: leftover live reads; milestone 2 done (2026-10-27)
+
+### What changed
+
+- **Lights.** Each frame, the end of Apply copies every scene light into the
+  light frame (`LightSnapshot`): owner id, destroyed, ancestor visibility,
+  world matrix, light data and effective data. The flares, the guest shadow
+  inputs (`CaptureGuestShadowInputs`) and the ray-scene capture now read that
+  copy, latched with the frame, instead of the live light components and
+  owners. Until now, Apply's message processing and particle lights mutated
+  those while Build read them.
+- **Probe ambient.** `GatherProbeAmbient` queries the game's cull trees and live
+  light owners, so it now runs in Apply every drawn frame (0.0065 ms per
+  frame, CpuDetail run `Vulkan-b54a6dce…`). Build's probe capture takes the
+  value from the frame packet. It used to gather only on capture frames,
+  from the same frame's state.
+- **Billboard parents.** Parented billboards are resolved into world space when
+  Apply collects them, the same way emission and the sort key did before.
+  A billboard whose parent is missing or hidden keeps its place in the
+  (unstable) sort and is skipped at emission. Billboards generated during
+  Build (flare glare) have no parent.
+- **`CharacterStatus`,** the once-a-second diagnostic on the render thread, now
+  reads Apply's fields and frustum. Its skinned-bounds read is a Build field,
+  which is acceptable for a diagnostic.
+- **Test update.** SceneSubmission's flare checks create and destroy flare
+  lights and expect the change at once, so each direct flare call now runs
+  the scene update and latch first (`DrawFlaresNow`).
+
+### Gates
+
+- **Verify mode, 0 mismatches:** orbit `Vulkan-ed42b3e8…` (63.76 million
+  checks) and interior `Vulkan-a1430e52…` (64.36 million).
+- **Same-process lane** (`ApplyBuildOrder` old/new/old, `Vulkan-33385296…`):
+  - `packets.sig` is `5E5DB5B6802AA664` (2,126 packets) in all three phases;
+  - every other artifact is byte-identical;
+  - view noise is 400 pixels against a 381-pixel return floor, with max delta
+    30 against 31.
+- **GPU suites under validation:** NativePass 126, SceneSubmission 267,
+  ShadowOcclusion 36, Probe 427, WorldPass 542/542, Interop 16, HudBillboard
+  with 0 validation errors, BillboardPacket 43, DepthGeometry 41, GuestDepth
+  1,900.
+- **Validation gameplay run** `Vulkan-597e8b36…`: validation enabled, 0 errors.
+
+### Milestone 2 summary
+
+Build now reads only state it owns or state latched from Apply:
+- **Actor frames:** transform, visibility, bounds, parent, group root
+  (slice 1).
+- **Scene containers:** the candidate tree, groups, native ownership and dirty
+  sets, plus a replayed actors view (slice 2).
+- **Per-actor fields:** with materials copy-on-write and LOD resets as latch
+  events (slice 3).
+- **Message-owned scene state:** HSV, bloom, skybox, LOD settings,
+  highlights, instance buffers, frame counter (slice 4).
+- **Lights, probe ambient and billboard parents** (slice 5).
+
+Work Apply used to do on Build state is queued and replayed at the start of
+Build. Verify mode checks all of this every frame.
+
+### Still shared, assigned to later milestones
+
+- **Milestone 3 (emission):**
+  - `NativeBackend` packet lists, scopes and batches, written by particles and
+    decals in Apply and by Build;
+  - `backend.CameraPosition`;
+  - the sprite `main` list;
+  - the visible-objects set.
+- **Milestone 4 (subsystems):**
+  - postprocess, probe and shadow settings objects;
+  - voxels, whose clipmap update still runs in Apply;
+  - the environment;
+  - the texture cache owner thread (Build's texture reads);
+  - profilers.
+- **Milestone 5 (native):**
+  - the frame gate;
+  - the deferred-queue ordering assert;
+  - the error string.
+- **Toggle-only paths:** the lane property setters still touch Build state
+  between frames.

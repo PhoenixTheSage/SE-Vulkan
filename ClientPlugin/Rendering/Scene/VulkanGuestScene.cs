@@ -61,13 +61,14 @@ public sealed partial class VulkanScene
         var actorIds = new List<uint>();
         var camera = FrameView.CameraPosition;
         var anchor = camera;
-        foreach (var light in lights)
+        var lightFrame = buildLights;
+        for (int i = 0; i < lightFrame.Count; i++)
         {
-            var owner = light.Owner;
+            var light = lightFrame.All[i];
             var data = light.Data;
-            if (owner == null || !IsVisible(owner) || !data.PointLightOn || data.PointLight.Range < 0.05f) continue;
-            var position = owner.WorldMatrix.Translation + data.PointOffset * owner.WorldMatrix.Forward;
-            lightIds.Add(owner.ID);
+            if (!light.HasOwner || !light.Visible || !data.PointLightOn || data.PointLight.Range < 0.05f) continue;
+            var position = light.World.Translation + data.PointOffset * light.World.Forward;
+            lightIds.Add(light.OwnerId);
             positions.Add(position.X); positions.Add(position.Y); positions.Add(position.Z); positions.Add(data.PointLight.Range);
         }
         foreach (var pair in actors)

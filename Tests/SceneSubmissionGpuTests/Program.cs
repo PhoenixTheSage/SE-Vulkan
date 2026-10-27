@@ -125,21 +125,22 @@ partial class Program
         var flareOcclusion=(Dictionary<ulong,float>)typeof(VulkanScene).GetField("flareOcclusion",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;flareOcclusion[flareId]=0;
         object flareHelper=typeof(VulkanScene).GetField("billboards",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;
         var generatedFlares=(List<MyBillboard>)flareHelper.GetType().GetField("generated",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(flareHelper)!;generatedFlares.Clear();
-        scene.SetCamera(Vector3D.Zero,MyTimeSpan.Zero,1f/60);scene.LatchFrame();scene.DrawFlares(MatrixD.CreateRotationX(.2)*MatrixD.CreateRotationZ(.6),projection,64,64,1);
+        // Flares are Build work: they read the latched frame view and light frame, so each direct call runs the scene update and latch first.
+        void DrawFlaresNow(MatrixD view,MatrixD flareProjection,int width,int height,float multiplier){scene.UpdateScene();scene.LatchFrame();scene.BeginBuild();scene.DrawFlares(view,flareProjection,width,height,multiplier);}
+        scene.SetCamera(Vector3D.Zero,MyTimeSpan.Zero,1f/60);DrawFlaresNow(MatrixD.CreateRotationX(.2)*MatrixD.CreateRotationZ(.6),projection,64,64,1);
         Check(generatedFlares.Count==1,"production flare path emits the isolated rotated descriptor");
         VRage.Utils.MyUtils.GetBillboardQuadAdvancedRotated(out var stockFlareQuad,flareOrigin,1,2,0,Vector3D.Zero);var actualFlare=generatedFlares[0];
         Check(Vector3D.Distance(actualFlare.Position0,stockFlareQuad.Point0)<1e-11 && Vector3D.Distance(actualFlare.Position1,stockFlareQuad.Point1)<1e-11 && Vector3D.Distance(actualFlare.Position2,stockFlareQuad.Point2)<1e-11 && Vector3D.Distance(actualFlare.Position3,stockFlareQuad.Point3)<1e-11,"rotated flare corners match stock world-up orientation under a rolled camera");
         var flareStates=(Dictionary<ulong,StockFlareOcclusionState>)typeof(VulkanScene).GetField("flareStates",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;
         var queryState=flareStates[flareId];ulong firstFlareRequest=queryState.PendingId;long flareRequests=scene.FlareQueries;
         Check(firstFlareRequest!=0,"production flare query has a distinct pending identity");
-        Render(false);for(int f=0;f<3;f++){scene.DrawFlares(MatrixD.Identity,projection,64,64,1);Render(false);}
+        Render(false);for(int f=0;f<3;f++){DrawFlaresNow(MatrixD.Identity,projection,64,64,1);Render(false);}
         Check(queryState.PendingId==0&&queryState.QueryTime>0&&scene.FlareQueries==flareRequests,"completed native flare query observes the stock retry interval without reissuing");
-        // Flares are Build work: they read the latched frame view, so a direct call latches the camera first.
-        scene.SetCamera(Vector3D.Zero,MyTimeSpan.FromMilliseconds(1000),1f/60);scene.LatchFrame();scene.DrawFlares(MatrixD.Identity,projection,64,64,1);ulong nextFlareRequest=queryState.PendingId;
+        scene.SetCamera(Vector3D.Zero,MyTimeSpan.FromMilliseconds(1000),1f/60);DrawFlaresNow(MatrixD.Identity,projection,64,64,1);ulong nextFlareRequest=queryState.PendingId;
         Check(nextFlareRequest!=0&&nextFlareRequest!=firstFlareRequest&&scene.FlareQueries==flareRequests+1,"elapsed flare interval submits a fresh native request identity");
-        Render(false);scene.SetCamera(Vector3D.Zero,MyTimeSpan.FromMilliseconds(1000),1f/60);scene.LatchFrame();scene.DrawFlares(MatrixD.Identity,projection,64,64,1);
+        Render(false);scene.SetCamera(Vector3D.Zero,MyTimeSpan.FromMilliseconds(1000),1f/60);DrawFlaresNow(MatrixD.Identity,projection,64,64,1);
         Check(queryState.PendingId==nextFlareRequest,"repeated completed-slot data cannot resolve the newer in-flight flare request");
-        flareLight.Owner.Destruct();scene.DrawFlares(MatrixD.Identity,projection,64,64,1);
+        flareLight.Owner.Destruct();DrawFlaresNow(MatrixD.Identity,projection,64,64,1);
         Check(!flareStates.ContainsKey(flareId)&&!flareOcclusion.ContainsKey(flareId),"deleted flare owner releases its temporal and completed visibility state");
         generatedFlares.Clear();backend.QueueFlareRaster(null);
         var sunIdSetter=typeof(ClientPlugin.Rendering.GuestBridge).GetMethod("SetSunLightRenderId",BindingFlags.NonPublic|BindingFlags.Static)!;
@@ -148,15 +149,15 @@ partial class Program
         var solarGlare=MakeGlare(60000,new Vector3D(1,.5,-5),VRageRender.Lights.MyGlareTypeEnum.Distant);
         var directionalGlare=MakeGlare(60001,new Vector3D(-1,.5,-5),VRageRender.Lights.MyGlareTypeEnum.Directional);
         var otherDistantGlare=MakeGlare(60002,new Vector3D(0,-.5,-5),VRageRender.Lights.MyGlareTypeEnum.Distant);
-        generatedFlares.Clear();scene.DrawFlares(MatrixD.Identity,projection,64,64,1);
+        generatedFlares.Clear();DrawFlaresNow(MatrixD.Identity,projection,64,64,1);
         bool HasFlare(Vector3D origin)=>generatedFlares.Any(b=>Vector3D.Distance((b.Position0+b.Position1+b.Position2+b.Position3)/4,origin)<1e-11);
         Check(!HasFlare(new Vector3D(1,.5,-5)),"celestial glare ownership suppresses the exact solar actor");
         Check(HasFlare(new Vector3D(-1,.5,-5)),"celestial solar ownership preserves directional local-light glare");
         Check(HasFlare(new Vector3D(0,-.5,-5)),"celestial solar ownership preserves unrelated distant glare");
         solarGlare.Owner.Destruct();directionalGlare.Owner.Destruct();otherDistantGlare.Owner.Destruct();ClientPlugin.Rendering.GuestBridge.SetNativeSunGlare(true);sunIdSetter.Invoke(null,new object[]{uint.MaxValue});
-        var edgeOrigin=new Vector3D(5.2,0,-5);var edgeGlare=MakeGlare(60003,edgeOrigin,VRageRender.Lights.MyGlareTypeEnum.Normal);generatedFlares.Clear();scene.DrawFlares(MatrixD.Identity,projection,64,64,1);
+        var edgeOrigin=new Vector3D(5.2,0,-5);var edgeGlare=MakeGlare(60003,edgeOrigin,VRageRender.Lights.MyGlareTypeEnum.Normal);generatedFlares.Clear();DrawFlaresNow(MatrixD.Identity,projection,64,64,1);
         Check(HasFlare(edgeOrigin),"stock flare producer retains a partially visible quad whose center is outside the viewport");
-        edgeGlare.Owner.Destruct();scene.DrawFlares(MatrixD.Identity,projection,64,64,1);
+        edgeGlare.Owner.Destruct();DrawFlaresNow(MatrixD.Identity,projection,64,64,1);
 
         generatedFlares.Clear();backend.QueueFlareRaster(null);
         string cookiePath=Path.Combine(output,"spot-cookie-role.dds");File.Copy(Path.Combine(content,"Textures/Lights/reflector_large.dds"),cookiePath,true);

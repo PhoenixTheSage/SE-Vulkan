@@ -24,6 +24,8 @@ internal sealed class FramePacket
     public long GameplayFrame;
     public MyTimeSpan DrawTime;
     public float AnimationDelta;
+    // The probe ambient light sum gathered in Apply (VulkanScene.GatherProbeAmbient).
+    public float ProbeAmbient;
     // An UnloadData during Apply: Build forgets the previous particle camera.
     public bool ResetParticleCamera;
 }

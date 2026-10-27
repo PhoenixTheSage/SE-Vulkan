@@ -43,6 +43,28 @@ public sealed partial class VulkanScene
         public readonly HashSet<uint> Excluded=new();
         public ulong SpotStatic,SpotDynamic;
         public NativeLight[] Lights=Array.Empty<NativeLight>();public NativeSpot[] SpotPackets=Array.Empty<NativeSpot>();
+        // Every scene light as of the end of Apply (milestone 2, slice 5): flares, guest shadow inputs and the ray
+        // scene read these, never the live light components and owners. Entries are reused; Count is the length.
+        public readonly List<LightSnapshot> All=new();public int Count;
+    }
+    sealed class LightSnapshot
+    {
+        public VulkanLightComponent Light;public uint OwnerId;public bool HasOwner,Destroyed,Visible;public MatrixD World;
+        public VRageRender.Messages.UpdateRenderLightData Data,Effective;
+    }
+    // End of Apply: copy every light's owner state and data into the Apply light frame.
+    void SnapshotLights()
+    {
+        var frame=applyLights;frame.Count=0;
+        foreach(var light in lights)
+        {
+            if(frame.Count==frame.All.Count)frame.All.Add(new LightSnapshot());
+            var snapshot=frame.All[frame.Count++];var owner=light.Owner;
+            snapshot.Light=light;snapshot.HasOwner=owner!=null;snapshot.Destroyed=owner?.IsDestroyed??true;snapshot.Visible=owner!=null&&IsVisible(owner);
+            snapshot.OwnerId=owner!=null&&!owner.IsDestroyed?owner.ID:0;snapshot.World=owner!=null&&!owner.IsDestroyed?owner.WorldMatrix:MatrixD.Identity;
+            snapshot.Data=light.Data;snapshot.Effective=light.EffectiveData;
+        }
+        for(int i=frame.Count;i<frame.All.Count;i++)frame.All[i].Light=null;
     }
     LightFrame applyLights=new(),buildLights=new();
     // True on the thread running Build (BeginBuild to EndBuild, or to the next UpdateScene); code shared by both

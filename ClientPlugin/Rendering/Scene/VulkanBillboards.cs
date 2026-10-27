@@ -76,6 +76,28 @@ namespace ClientPlugin.Rendering.Scene
                 foreach (var entry in shared.Billboards.Read.Matrices) matrices[entry.Key] = entry.Value;
             }
             DrainGenerated();
+            ResolveParents();
+        }
+        // Parented billboards follow a game actor that Apply moves and destroys: resolve them while collecting, into
+        // world space, exactly as emission and the sort key did. A missing or hidden parent keeps its place in the
+        // (unstable) sort and is skipped at emission.
+        private readonly HashSet<MyBillboard> hiddenParent = new HashSet<MyBillboard>();
+        private void ResolveParents()
+        {
+            hiddenParent.Clear();
+            foreach (MyBillboard billboard in frame)
+            {
+                if (billboard.ParentID == uint.MaxValue) continue;
+                MyActor actor = MyIDTracker<MyActor>.FindByID(billboard.ParentID);
+                billboard.ParentID = uint.MaxValue;
+                if (actor == null) { hiddenParent.Add(billboard); continue; }
+                if (!VulkanScene.IsVisible(actor)) hiddenParent.Add(billboard);
+                MatrixD parent = actor.WorldMatrix;
+                billboard.Position0 = Vector3D.Transform(billboard.Position0, parent);
+                if (billboard.LocalType == MyBillboard.LocalTypeEnum.Line) billboard.Position1 = Vector3D.TransformNormal(billboard.Position1, parent);
+                else if (billboard.LocalType == MyBillboard.LocalTypeEnum.Custom)
+                { billboard.Position1 = Vector3D.Transform(billboard.Position1, parent); billboard.Position2 = Vector3D.Transform(billboard.Position2, parent); billboard.Position3 = Vector3D.Transform(billboard.Position3, parent); }
+            }
         }
         private void DrainGenerated() { lock (generated) { frame.AddRange(generated); generated.Clear(); } }
         private void Prepare()
@@ -110,6 +132,7 @@ namespace ClientPlugin.Rendering.Scene
             for (int i = 0; i < frame.Count; ++i)
             {
                 MyBillboard billboard = frame[i];
+                if (hiddenParent.Contains(billboard)) continue;
                 var settings=scene.RenderSettings;
                 bool enabled=settings.DrawBillboards && (billboard.BlendType==MyBillboard.BlendTypeEnum.Standard?settings.DrawBillboardsStandard:billboard.BlendType==MyBillboard.BlendTypeEnum.AdditiveBottom?settings.DrawBillboardsBottom:billboard.BlendType==MyBillboard.BlendTypeEnum.AdditiveTop?settings.DrawBillboardsTop:billboard.BlendType==MyBillboard.BlendTypeEnum.LDR?settings.DrawBillboardsLDR:settings.DrawBillboardsPostPP);
                 if(!enabled)continue;

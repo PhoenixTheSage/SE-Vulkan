@@ -177,18 +177,19 @@ namespace ClientPlugin.Rendering.Scene
         public long DrawnMeshes { get; private set; }
         public long DitheredDraws { get; private set; }
         public long SkinnedUploads { get; private set; }
-        // Called only for the once-per-second CPU status snapshot on the render thread.
+        // Called only for the once-per-second CPU status snapshot on the render thread: Apply-side state (the
+        // Build-owned skinned bounds are a diagnostic read).
         public string CharacterStatus()
         {
             var text = new StringBuilder();
             foreach (var data in actors.Values)
             {
-                if (data.Skeleton == null || data.Model == null) continue;
+                if (data.A.Skeleton == null || data.A.Model == null) continue;
                 var bounds = data.Actor.CalculateAabb();
                 text.Append(" id=").Append(data.Id).Append(" visible=").Append(IsVisible(data.Actor))
-                    .Append(" frustum=").Append(frustum == null ? "none" : frustum.Contains(bounds).ToString())
+                    .Append(" frustum=").Append(Next.Frustum == null ? "none" : Next.Frustum.Contains(bounds).ToString())
                     .Append(" world=").Append(data.Actor.WorldMatrix.Translation).Append(" skin=").Append(data.SkinnedBounds)
-                    .Append(" palette=").Append(data.SkinMatrices?.Length ?? 0).Append(" flags=").Append(data.Flags).Append(';');
+                    .Append(" palette=").Append(data.A.SkinMatrices?.Length ?? 0).Append(" flags=").Append(data.Flags).Append(';');
             }
             return text.ToString();
         }
@@ -566,7 +567,7 @@ namespace ClientPlugin.Rendering.Scene
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.SpatialIndex))RefreshSpatialIndex();
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightsAndExclusions)){SelectFrameLights();PrepareExcludedActors();}
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ShadowPoses))RefreshShadowPoses();
-            SnapshotActors();
+            SnapshotActors();SnapshotLights();
             FrameProfiler.Lap(FrameProfiler.Section.SceneUpdate);
         }
         public void BeginBuild()=>building=true;
