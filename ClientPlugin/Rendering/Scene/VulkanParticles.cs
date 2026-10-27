@@ -43,14 +43,28 @@ internal sealed partial class VulkanParticles : IDisposable
         if(message is MyRenderMessageAddToParticleTextureArray a){StockParticles.StaticCall(StockParticles.Emitters,"AddToParticleTextureArray",new HashSet<string>(a.Files));return true;}
         if(message is MyRenderMessagePauseTimer p){StockParticles.StaticSet(StockParticles.Common,"IsPaused",p.pause);return true;}return false;
     }
+    // Frame split (milestone 3): Draw runs in Apply; its native submission (atlas rebuild and emitter queue) is held,
+    // handed to Build by LatchQueue and issued by SubmitQueued in Build's prologue.
+    private sealed class Submission{public ulong[] AtlasSources;public MyGPUEmitterLayoutData[] Emitters=Array.Empty<MyGPUEmitterLayoutData>();public int Count=-1;public ulong Atlas;}
+    private Submission applySubmission=new(),buildSubmission=new();
+    public void LatchQueue(){(applySubmission,buildSubmission)=(buildSubmission,applySubmission);applySubmission.AtlasSources=null;applySubmission.Count=-1;}
+    public void SubmitQueued()
+    {
+        var s=buildSubmission;
+        if(s.AtlasSources!=null){backend.BuildVoxelArray(Atlas,1024,true,s.AtlasSources);s.AtlasSources=null;}
+        if(s.Count>=0){backend.QueueParticles(s.Emitters,s.Count,s.Atlas);s.Count=-1;}
+    }
     public void Draw(Vector3D camera,float delta,MyRenderSettings settings)
     {
         StockParticles.StaticSet(StockParticles.Render,"Settings",settings);StockParticles.StaticCall(StockParticles.Emitters,"UpdateParticleSettings");var matrices=StockParticles.Get(StockParticles.StaticGet(StockParticles.Render,"Environment"),"Matrices");StockParticles.Set(matrices,"CameraPosition",camera);
         StockParticles.StaticCall(StockParticles.Common,"SetConstFrameTimeDelta",delta>0?Math.Min(delta,.066f):-1);StockParticles.StaticCall(StockParticles.Common,"UpdateTimers");StockParticles.Call(StockParticles.Manager,"Update");StockParticles.Call(StockParticles.Manager,"Draw");
         var gather=new object[]{emitters,null,null};int count=(int)StockParticles.StaticCall(StockParticles.Emitters,"Gather",gather);string[] next=(string[])StockParticles.StaticCall(StockParticles.Emitters,"GetTextureArrayFileList");
         if(next.Length>256)throw new InvalidOperationException("Stock particle atlas exceeds its 8-bit texture index.");
-        if(next.Length>0&&!files.SequenceEqual(next)){backend.BuildVoxelArray(Atlas,1024,true,next.Select(f=>scene.TextureCache.GetTexture(f)).ToArray());files=next;}
-        backend.QueueParticles(emitters,count,next.Length>0?Atlas:0);Updates++;
+        var submission=applySubmission;
+        if(next.Length>0&&!files.SequenceEqual(next)){submission.AtlasSources=next.Select(f=>scene.TextureCache.GetTexture(f)).ToArray();files=next;}
+        if(count<0||count>1024||emitters.Length<count)throw new ArgumentException("Invalid emitter count.");
+        if(submission.Emitters.Length<count)submission.Emitters=new MyGPUEmitterLayoutData[Math.Max(count,64)];Array.Copy(emitters,submission.Emitters,count);
+        submission.Count=count;submission.Atlas=next.Length>0?Atlas:0;Updates++;
     }
     private void UpdateState(MyParticleEffectState state){var effect=StockParticles.Call(StockParticles.Manager,"Get",state.ID);if(effect!=null)StockParticles.Call(effect,"UpdateState",state);}
     public void Clear(){StockParticles.Call(StockParticles.Manager,"UnloadData");StockParticles.StaticCall(StockParticles.Emitters,"OnSessionEnd");StockParticles.Call(StockParticles.StaticGet(StockParticles.Emitters,"m_textureArrayIndices"),"Clear");Array.Clear(emitters,0,emitters.Length);backend.QueueParticles(null,0,0,true);if(files.Length>0)backend.RemoveResource(5,Atlas);files=Array.Empty<string>();}

@@ -6,15 +6,15 @@ namespace ClientPlugin.Rendering;
 // Plugin-only half of VulkanSprites (the sprite test projects compile VulkanSprites.cs alone).
 internal sealed partial class VulkanSprites
 {
-    // The frame's main batch written into a reused blittable buffer: no per-sprite array copies and no
+    // The latched frame's main batch (Build) written into a reused blittable buffer: no per-sprite array copies and no
     // element-wise marshaling at the native call. Same placement as MainPackets. Returns the sprite count.
     public unsafe int MainPacketsInto(ref NativeSpriteBlit[] buffer, int width, int height)
     {
         if (width <= 0 || height <= 0) return 0;
-        if (buffer.Length < main.Sprites.Count) buffer = new NativeSpriteBlit[Math.Max(main.Sprites.Count, buffer.Length * 2)];
-        var viewport = BeginMain(width, height);
+        if (buffer.Length < buildMain.Sprites.Count) buffer = new NativeSpriteBlit[Math.Max(buildMain.Sprites.Count, buffer.Length * 2)];
+        var viewport = BeginMain(width, height, buildViewportScale);
         int count = 0;
-        foreach (var packet in main.Sprites)
+        foreach (var packet in buildMain.Sprites)
         {
             var source = packet.Sprite;
             if (!PlaceMain(viewport, packet.IgnoreBounds, source, width, height, out var placed)) continue;

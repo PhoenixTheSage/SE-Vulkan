@@ -17,6 +17,11 @@ internal sealed class VulkanDecals
     private readonly HashSet<uint> owners=new HashSet<uint>();private bool ownersDirty=true;
     public bool HasEntityDecals(uint owner){if(ownersDirty){owners.Clear();foreach(var d in decals.Values)foreach(uint parent in d.Parents)owners.Add(parent);ownersDirty=false;}return owners.Contains(owner);}
     public VulkanDecals(NativeBackend backend,VulkanScene scene){this.backend=backend;this.scene=scene;}
+    // Frame split (milestone 3): Draw runs in Apply into its own list; LatchPackets hands it to Build, whose prologue
+    // adds it to the backend after packet collection starts.
+    private List<NativeDecalDraw> packets=new(),latchedPackets=new();
+    public void LatchPackets(){(packets,latchedPackets)=(latchedPackets,packets);packets.Clear();}
+    public void SubmitPackets()=>backend.DecalPackets.AddRange(latchedPackets);
     public bool Process(MyRenderMessageBase message)
     {
         ownersDirty=true;
@@ -43,14 +48,14 @@ internal sealed class VulkanDecals
             if(d.Flags.HasFlag(MyDecalFlags.Closed))continue;
             MatrixD world=d.Topo.MatrixCurrent;if(d.Flags.HasFlag(MyDecalFlags.World))world.Translation=d.Topo.WorldPosition;else{var parent=MyIDTracker<MyActor>.FindByID(d.Parents[0]);if(parent==null){decals.Remove(d.Id);continue;}if(!VulkanScene.IsVisible(parent)){if(!d.Flags.HasFlag(MyDecalFlags.IgnoreOffScreenDeletion)&&time-d.LastSeen>40)decals.Remove(d.Id);continue;}world*=parent.WorldMatrix;}
             double distance=Vector3D.DistanceSquared(world.Translation,camera);float factor=q==0?.11111f:q==1?.44444f:1;
-            if(distance>d.Distance*factor||backend.DecalPackets.Count>=16384){if(!d.Flags.HasFlag(MyDecalFlags.IgnoreOffScreenDeletion)&&time-d.LastSeen>40)decals.Remove(d.Id);continue;}d.LastSeen=time;
+            if(distance>d.Distance*factor||packets.Count>=16384){if(!d.Flags.HasFlag(MyDecalFlags.IgnoreOffScreenDeletion)&&time-d.LastSeen>40)decals.Remove(d.Id);continue;}d.LastSeen=time;
             if(!materials.TryGetValue(d.Material??string.Empty,out var list)||d.Index<0||d.Index>=list.Length)continue;var material=list[d.Index];uint role=!string.IsNullOrEmpty(material.ColorMetalTexture)?1u:0u;if(!string.IsNullOrEmpty(material.NormalmapTexture))role|=2;if(!string.IsNullOrEmpty(material.ExtensionsTexture)&&role==3)role|=4;if(d.Flags.HasFlag(MyDecalFlags.Transparent))role=8;if(role==0)continue;
             world.Translation-=camera;var data=new byte[128];void F(int offset,float[] values)=>Buffer.BlockCopy(values,0,data,offset,values.Length*4);
             F(0,new[]{(float)world.M11,(float)world.M21,(float)world.M31,(float)world.M41,(float)world.M12,(float)world.M22,(float)world.M32,(float)world.M42,(float)world.M13,(float)world.M23,(float)world.M33,(float)world.M43});
             float fade=(float)Math.Min(1,(d.Fade-time)/6)*(1-MathHelper.Clamp((float)(distance/(d.Distance*factor*.9)),0,1));F(48,new[]{fade});F(64,NativeBackend.MatrixValues(MatrixD.Invert(world)));
-            backend.DecalPackets.Add(new NativeDecalDraw{Size=176,Role=role,Constants=data,Alpha=scene.TextureCache.GetTexture(material.AlphamaskTexture,false),Color=scene.TextureCache.GetTexture(material.ColorMetalTexture),Normal=scene.TextureCache.GetTexture(material.NormalmapTexture,false),Extensions=scene.TextureCache.GetTexture(material.ExtensionsTexture,true)});Submitted++;
+            packets.Add(new NativeDecalDraw{Size=176,Role=role,Constants=data,Alpha=scene.TextureCache.GetTexture(material.AlphamaskTexture,false),Color=scene.TextureCache.GetTexture(material.ColorMetalTexture),Normal=scene.TextureCache.GetTexture(material.NormalmapTexture,false),Extensions=scene.TextureCache.GetTexture(material.ExtensionsTexture,true)});Submitted++;
         }
         ownersDirty=true;
     }
-    public void Clear(){decals.Clear();owners.Clear();ownersDirty=false;backend.DecalPackets.Clear();}
+    public void Clear(){decals.Clear();owners.Clear();ownersDirty=false;packets.Clear();latchedPackets.Clear();backend.DecalPackets.Clear();}
 }

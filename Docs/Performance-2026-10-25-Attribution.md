@@ -2402,3 +2402,86 @@ Build. Verify mode checks all of this every frame.
   - the error string.
 - **Toggle-only paths:** the lane property setters still touch Build state
   between frames.
+
+## Phase 4 frame split, milestone 3: per-frame emission and outputs (2026-10-27)
+
+The plan expected a double-buffered `FrameEmission` object in `NativeBackend`.
+Mapping the writers showed Apply touched the backend's per-frame emission
+state in only three ways:
+- the packet-collection start (`BeginPacketCollection`, `CameraPosition`) at
+  the end of Apply;
+- particles, through native `QueueParticles` and the atlas build;
+- decals, appending to `backend.DecalPackets`.
+
+Everything else that emits runs in Build. So instead of a backend-wide
+double buffer, the packet-collection start moved into Build, and particles
+and decals produce their output on the Apply side for Build to submit. The
+backend's packet lists, scopes and batches are now touched only by Build.
+
+### What changed
+
+- **Packet collection:** `BeginPacketCollection` and `backend.CameraPosition`
+  run at the start of `BuildFrame`.
+- **Particles:** `VulkanParticles.Draw` still simulates and gathers in Apply,
+  because it drives the game's static particle manager. Its native
+  submission is held and handed to Build by `LatchQueue`, and `SubmitQueued`
+  issues it right after packet collection starts. The submission is the
+  atlas rebuild and a copy of the emitter array, which the stock manager
+  reuses.
+- **Decals:** `VulkanDecals.Draw` writes its own list. `LatchPackets` hands it
+  to Build, and `SubmitPackets` adds it to `backend.DecalPackets` after the
+  clear. The 16,384-packet cap counts the same list.
+- **Sprites:** the main batch and the viewport scale are double-buffered.
+  Messages and the renderer's stats overlay fill the Apply batch, which
+  `LatchMain` hands over, and `MainPacketsInto` blits the latched batch with
+  the latched scale.
+  - The stats overlay moved to the end of Apply; it reads only the profiler
+    and the game's stats.
+  - `MainPackets`, used by tests and direct callers, reads the Apply batch.
+- **Visible objects:** Build writes into a plugin set, `frameVisible`, and
+  `Draw` copies it into the game's `VisibleObjects.Write` after Build, before
+  `AfterRender` commits it. With the thread split, this copy is the hand-off
+  point.
+
+### Gates
+
+- **Verify mode, 0 mismatches:** orbit `Vulkan-7a6962ce…` (48.42 million
+  checks) and interior `Vulkan-3980ef63…` (51.65 million).
+- **Same-process lane** (`ApplyBuildOrder` old/new/old, `Vulkan-1868a81e…`):
+  - `packets.sig` is `41D0F8FA5D831847` (2,126 packets) in all three phases;
+  - every other artifact is byte-identical;
+  - view noise is 555 pixels against a 364-pixel return floor, with max delta
+    40 against 36. That is in the range earlier slices showed.
+- **GPU suites under validation:** NativePass 126, SceneSubmission 267,
+  ShadowOcclusion 36, Probe 427, WorldPass 542/542, Interop 16, HudBillboard
+  with 0 validation errors, BillboardPacket 43, DepthGeometry 41, GuestDepth
+  1,900. Run separately for this milestone: TransparencyGpuTests 216 with zero
+  validation errors, SpriteGpuTests passing (installed-font evidence), and
+  MediaTests 34.
+- **Validation gameplay run** `Vulkan-2ed0b15f…`: validation enabled, 0 errors.
+
+### Pre-existing failures, not caused by the split
+
+- **StaticDecalGpuTests** fails its first check,
+  `backend.WorldLayouts.Count==54`, a fixed pipeline count asserted during
+  native setup before any managed scene code runs.
+- **SpritePacketTests** does not compile (`UploadWorldCubeMips`), as already
+  noted on main.
+- **GpuSceneLiveTests** fails at GPU-scene shader admission (recorded under
+  slice 3).
+
+### Still shared after milestone 3
+
+- **Milestone 4 (subsystems):**
+  - postprocess, probe and shadow settings objects;
+  - voxels (clipmap update in Apply; voxels emit in Build);
+  - the environment;
+  - the texture cache owner thread;
+  - the media `RemoveVideoTexture`, which removes from the Apply batch while
+    a latched batch may still reference the texture;
+  - profilers.
+- **Milestone 5 (native):**
+  - the frame gate for Apply's native calls during a Build frame (texture
+    uploads, LCD offscreen renders, resource removal);
+  - the deferred-queue assert;
+  - the error string.

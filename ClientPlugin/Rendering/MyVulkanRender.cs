@@ -258,10 +258,15 @@ public sealed class MyVulkanRender : IMyRender
             catch{EndOpenUploads();throw;}
             if(frame==null){EndOpenUploads();return;}
             if(frame.DrawScene&&frame.ApplyBuildOrder)scene.LatchFrame();
+            sprites.LatchMain();particles.LatchQueue();decals.LatchPackets();
             BuildFrame(frame);
+            PublishVisible();
         }
         catch (Exception error) { Fatal(error); throw; }
     }
+    // The objects Build saw this frame, published to the game's visible set (committed by AfterRender) at the hand-off.
+    readonly HashSet<uint> frameVisible=new();
+    void PublishVisible(){var write=SharedData.VisibleObjects.Write;foreach(uint id in frameVisible)write.Add(id);frameVisible.Clear();}
     void EndOpenUploads(){if(!uploadsOpen)return;uploadsOpen=false;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads();}
     // Apply: everything that consumes the game's update frame. Returns the frame for Build, or null when nothing is drawn.
     FramePacket ApplyFrame(bool draw)
@@ -282,8 +287,6 @@ public sealed class MyVulkanRender : IMyRender
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Clipmaps))if(haveCamera)voxels.Update(cameraWorld,voxelFrustum,voxelFar,cameraSmooth);
         FrameProfiler.Lap(FrameProfiler.Section.Clipmaps);
         if (!draw || !host.CanPresent) return null;
-        backend.CameraPosition = camera;
-        backend.BeginPacketCollection();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Particles)){
         if (drawScene)
         {
@@ -302,6 +305,8 @@ public sealed class MyVulkanRender : IMyRender
             Light=light,TextureMultipliers=textureMultipliers,RenderConfiguration=renderConfiguration,DeviceSettings=settings,BackBuffer=BackBufferResolution,
             GameplayFrame=gameplayFrame,DrawTime=CurrentDrawTime,AnimationDelta=animationDelta,ProbeAmbient=probeAmbient,ResetParticleCamera=particleCameraReset};
         particleCameraReset=false;
+        // The stats overlay joins this frame's sprite batch (it reads the profiler and game stats only).
+        renderStats.Draw(sprites, BackBufferResolution.X);
         return frame;
     }
     // Build: the frame from its packet and the scene's latched inputs, through the native frame slot and sprites.
@@ -315,6 +320,10 @@ public sealed class MyVulkanRender : IMyRender
         {
             try
             {
+            // Packet collection belongs to Build; the particle and decal output Apply produced joins it here.
+            backend.CameraPosition = camera;
+            backend.BeginPacketCollection();
+            particles.SubmitQueued();decals.SubmitPackets();
             var worldResolution=resolution.Update(backend,frame.DeviceSettings,renderConfiguration,drawScene,animationDelta*1000);
             GuestBridge.BeginScene(backend,scene);GuestBridge.SetPostprocess(postprocess);
             if(drawScene)BackendRuntime.RaiseScene(new[]{camera.X,camera.Y,camera.Z},
@@ -337,8 +346,8 @@ public sealed class MyVulkanRender : IMyRender
             if (drawScene)
             {
                 voxels.Foliage.Distance=renderConfiguration.User.GrassDrawDistance; voxels.Foliage.Density=renderConfiguration.User.GrassDensityFactor;
-                voxels.ProbeDrawDistance=probes.Settings.DrawDistance;voxels.ShadowDrawDistance=shadows.DrawDistance;voxels.Draw(camera,frame.VoxelDrawFrustum,SharedData.VisibleObjects.Write);MatrixD flareProjection=cameraProjection;flareProjection.M33=flareProjection.M34-flareProjection.M33;flareProjection.M43=flareProjection.M44-flareProjection.M43;if(VulkanScene.EffectsAheadEnabled){if(!frame.ApplyBuildOrder)scene.CollectBillboards(SharedData);var flareView=cameraView;int flareWidth=backBuffer.X,flareHeight=backBuffer.Y;float flareIntensity=renderConfiguration.FlaresIntensity;effectsJob=RenderJobs.Start(()=>scene.DrawFlaresAndBillboardsAhead(flareView,flareProjection,flareWidth,flareHeight,flareIntensity));}
-                else{using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Flares))scene.DrawFlares(cameraView,flareProjection,backBuffer.X,backBuffer.Y,renderConfiguration.FlaresIntensity); using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Billboards))if(frame.ApplyBuildOrder)scene.DrawCollectedBillboards();else scene.DrawBillboards(SharedData);} if(!scene.NativePassSceneEnabled)scene.AddVisible(SharedData.VisibleObjects.Write);
+                voxels.ProbeDrawDistance=probes.Settings.DrawDistance;voxels.ShadowDrawDistance=shadows.DrawDistance;voxels.Draw(camera,frame.VoxelDrawFrustum,frameVisible);MatrixD flareProjection=cameraProjection;flareProjection.M33=flareProjection.M34-flareProjection.M33;flareProjection.M43=flareProjection.M44-flareProjection.M43;if(VulkanScene.EffectsAheadEnabled){if(!frame.ApplyBuildOrder)scene.CollectBillboards(SharedData);var flareView=cameraView;int flareWidth=backBuffer.X,flareHeight=backBuffer.Y;float flareIntensity=renderConfiguration.FlaresIntensity;effectsJob=RenderJobs.Start(()=>scene.DrawFlaresAndBillboardsAhead(flareView,flareProjection,flareWidth,flareHeight,flareIntensity));}
+                else{using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Flares))scene.DrawFlares(cameraView,flareProjection,backBuffer.X,backBuffer.Y,renderConfiguration.FlaresIntensity); using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Billboards))if(frame.ApplyBuildOrder)scene.DrawCollectedBillboards();else scene.DrawBillboards(SharedData);} if(!scene.NativePassSceneEnabled)scene.AddVisible(frameVisible);
             }
             FrameProfiler.Lap(FrameProfiler.Section.Voxels);
             }
@@ -365,7 +374,7 @@ public sealed class MyVulkanRender : IMyRender
                 // Resident topology binds uploaded shared allocation generations.
                 // Finish every scene/lighting resource consumer before publishing it.
                 if(backend.GpuSceneEnabled){using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads();uploadsOpen=false;}
-                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene)){if(VulkanScene.OverlapPublicationEnabled)scene.FinishNativePassPublication();else scene.PublishNativePassScene();}if(scene.NativePassSceneEnabled||backend.GpuSceneEnabled)scene.AddVisible(SharedData.VisibleObjects.Write);
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene)){if(VulkanScene.OverlapPublicationEnabled)scene.FinishNativePassPublication();else scene.PublishNativePassScene();}if(scene.NativePassSceneEnabled||backend.GpuSceneEnabled)scene.AddVisible(frameVisible);
                 JoinEffects();
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.QueueWorld)){
                 backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,cameraView,projection,worldResolution.X,worldResolution.Y,frameLight,scene.BloomEmissiveness,scene.BackgroundOrientation,environment.Fog,(float)drawTime.Seconds,animationDelta,renderConfiguration,haveParticleCamera?(Vector3)(camera-previousParticleCamera):Vector3.Zero,postprocess.Settings,backend.ProbesAvailableForFrame,resolution.Fraction,frame.TextureMultipliers),
@@ -384,7 +393,6 @@ public sealed class MyVulkanRender : IMyRender
                 new Vector3(0.06f * Math.Max(0.1f, light.AmbientDiffuseFactor)), new Color(3, 5, 12));
             FrameProfiler.Lap(FrameProfiler.Section.FrameSlot);
             if (!frameOpen) { shadows.CancelPreparedFrame();FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); return; }
-            renderStats.Draw(sprites, backBuffer.X);
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Sprites)){int spriteCount=sprites.MainPacketsInto(ref mainSprites,backBuffer.X,backBuffer.Y);backend.DrawSprites(mainSprites,spriteCount);}
             debugLines.Submit(backend, camera);
             FrameProfiler.Lap(FrameProfiler.Section.Sprites);

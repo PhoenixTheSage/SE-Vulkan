@@ -26,7 +26,11 @@ internal sealed partial class VulkanSprites
     private readonly Dictionary<string, Batch> targets = new(StringComparer.Ordinal);
     private readonly HashSet<string> warnings = new(StringComparer.Ordinal);
     private bool warningLimitReported;
-    private readonly Batch main = new();
+    // Frame split (milestone 3): messages and the renderer's stats overlay fill main during Apply; LatchMain hands it
+    // to Build as buildMain (with the viewport scale), which MainPacketsInto blits. MainPackets reads the Apply batch
+    // (tests and direct callers that run no frame).
+    private Batch main = new(), buildMain = new();
+    private float buildViewportScale = 1;
     private int? debugFont;
     public int FontCount => fonts.Count;
     public int SpriteCount => main.Sprites.Count;
@@ -35,24 +39,25 @@ internal sealed partial class VulkanSprites
     public event Action<string> Warning;
     public VulkanSprites(VulkanTextureCache textures) { this.textures = textures; }
     public void BeginFrame() { main.Sprites.Clear(); main.Clips.Clear(); }
+    public void LatchMain() { (main, buildMain) = (buildMain, main); buildViewportScale = ViewportScale; }
     // Main-batch placement shared by MainPackets and the plugin's blittable MainPacketsInto
     // (VulkanSprites.Blit.cs): transformed destination and origin, and the clip rectangle.
     struct MainPlacement {public float X,Y,Width,Height,OriginX,OriginY;public int ClipX,ClipY,ClipWidth,ClipHeight;}
-    struct MainViewport {public bool ValidScale;public float OffsetX,OffsetY;}
-    MainViewport BeginMain(int width, int height)
+    struct MainViewport {public bool ValidScale;public float Scale,OffsetX,OffsetY;}
+    MainViewport BeginMain(int width, int height, float viewportScale)
     {
-        bool validScale = !float.IsNaN(ViewportScale) && !float.IsInfinity(ViewportScale) && ViewportScale >= 0;
-        if (!validScale) Warn("Invalid main sprite viewport scale: " + ViewportScale);
+        bool validScale = !float.IsNaN(viewportScale) && !float.IsInfinity(viewportScale) && viewportScale >= 0;
+        if (!validScale) Warn("Invalid main sprite viewport scale: " + viewportScale);
         // MyRender11.ScaleMainViewport centers a scaled bounded viewport. Its
         // IgnoreBounds batches use the full viewport; explicit scissors remain
         // active in either viewport (MySpritesManager.Render).
-        return new MainViewport { ValidScale = validScale, OffsetX = (width - width * ViewportScale) * .5f, OffsetY = (height - height * ViewportScale) * .5f };
+        return new MainViewport { ValidScale = validScale, Scale = viewportScale, OffsetX = (width - width * viewportScale) * .5f, OffsetY = (height - height * viewportScale) * .5f };
     }
     bool PlaceMain(in MainViewport viewport, bool ignoreBounds, in NativeSprite sprite, int width, int height, out MainPlacement placed)
     {
         placed = default;
-        if (!ignoreBounds && (!viewport.ValidScale || ViewportScale == 0)) return false;
-        float scale = ignoreBounds ? 1 : ViewportScale;
+        if (!ignoreBounds && (!viewport.ValidScale || viewport.Scale == 0)) return false;
+        float scale = ignoreBounds ? 1 : viewport.Scale;
         float x = ignoreBounds ? 0 : viewport.OffsetX, y = ignoreBounds ? 0 : viewport.OffsetY;
         placed.X = sprite.Destination[0] * scale + x; placed.Y = sprite.Destination[1] * scale + y;
         placed.Width = sprite.Destination[2] * scale; placed.Height = sprite.Destination[3] * scale;
@@ -81,7 +86,7 @@ internal sealed partial class VulkanSprites
     {
         if (width <= 0 || height <= 0) return Array.Empty<NativeSprite>();
         var result = new List<NativeSprite>(main.Sprites.Count);
-        var viewport = BeginMain(width, height);
+        var viewport = BeginMain(width, height, ViewportScale);
         foreach (var packet in main.Sprites)
         {
             if (!PlaceMain(viewport, packet.IgnoreBounds, packet.Sprite, width, height, out var placed)) continue;
@@ -102,7 +107,7 @@ internal sealed partial class VulkanSprites
     }
     // Font definitions belong to the device, not the world. The game does not
     // resend CreateFont on UnloadData; atlas textures reload through the cache.
-    public void Clear() { BeginFrame(); targets.Clear(); }
+    public void Clear() { BeginFrame(); buildMain.Sprites.Clear(); buildMain.Clips.Clear(); targets.Clear(); }
 
     // Renderer-owned overlays use the same font atlas as Keen's debug text,
     // but go directly into the main Vulkan batch instead of DEBUG_TARGET.
