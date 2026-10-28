@@ -57,6 +57,8 @@ internal sealed class VulkanMedia : IDisposable
         }
     }
     private static float Volume(float value) => float.IsNaN(value) || float.IsInfinity(value) ? 0 : Math.Max(0, Math.Min(1, value));
+    // Native removals of closed videos, at the hand-off (VulkanMediaDevice.Remove).
+    internal void FlushRemovals() => device.FlushRemovals();
     internal void Poll()
     {
         foreach (var pair in players) if (pair.Value.Updating) Update(pair.Key, pair.Value);
@@ -93,5 +95,6 @@ internal sealed class VulkanMedia : IDisposable
         // Join conversion/control workers while their runtime and CPU buffers live.
         device.Dispose();
         foreach (var pair in players) Close(pair.Key, true);
+        device.FlushRemovals();
     }
 }

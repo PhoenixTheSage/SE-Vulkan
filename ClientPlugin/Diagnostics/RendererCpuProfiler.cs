@@ -73,7 +73,9 @@ public static class RendererCpuProfiler
         Array.Copy(currentMessageTicks,completedMessageTicks,MessageTypes);Array.Copy(currentMessageCalls,completedMessageCalls,MessageTypes);
         completedGen0=GC.CollectionCount(0)-gen0;completedGen1=GC.CollectionCount(1)-gen1;completedGen2=GC.CollectionCount(2)-gen2;
     }
-    // Scopes belong to the render thread; a forked producer's calls on a worker are not measured.
+    // Scopes belong to the render thread; a forked producer's calls on a worker are not measured. Frame split
+    // (milestone 4, slice 5): Build still runs on this thread, so its phases record as before. Once Build has its own
+    // thread (milestone 6), its scopes need a second lane bound there; until then off-owner scopes stay no-ops.
     public static Scope Measure(Phase phase,bool counters=true)=>Enabled&&active&&Environment.CurrentManagedThreadId==ownerManaged?new Scope(phase,counters):default;
     static int ownerManaged;
     public static Snapshot Capture()

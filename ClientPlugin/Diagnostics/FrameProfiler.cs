@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Threading;
 
 namespace ClientPlugin.Diagnostics;
 
@@ -54,41 +55,67 @@ internal static class FrameProfiler
     static readonly float[] Pending = new float[SectionCount];
     static readonly float[] LatestMilliseconds = new float[SectionCount];
     static int count, next;
-    static long frameStart, mark;
-    static bool drawing, haveLatest, haveDrawBaseline;
+    static long frameStart;
+    static volatile bool drawing;
+    static bool haveLatest, haveDrawBaseline;
+    // Frame split (milestone 4, slice 5): laps may come from Apply (the render thread) and Build (later its own thread).
+    // Each thread keeps its own lap mark; a thread's first lap in a frame starts its mark and adds nothing. Pending is
+    // shared, so its updates take a lock (uncontended on one thread).
+    static readonly object gate = new object();
+    static int frameId;
+    [ThreadStatic] static long threadMark;
+    [ThreadStatic] static int threadFrame;
+    static ref long Mark(long now)
+    {
+        if (threadFrame != Volatile.Read(ref frameId)) { threadFrame = frameId; threadMark = now; }
+        return ref threadMark;
+    }
+    static void Add(Section section, long ticks)
+    {
+        float ms = (float)(ticks * 1000.0 / Stopwatch.Frequency);
+        lock (gate) Pending[(int)section] += ms;
+    }
     static ulong drawBaseline;
     static ulong gpuBaseline;
     static Sample latest;
 
     public static void BeginDraw()
     {
-        frameStart = mark = Stopwatch.GetTimestamp();
-        Array.Clear(Pending, 0, Pending.Length);
+        long now = Stopwatch.GetTimestamp();
+        lock (gate)
+        {
+            frameStart = now;
+            Array.Clear(Pending, 0, Pending.Length);
+            threadFrame = ++frameId;
+            threadMark = now;
+        }
         drawing = true;
     }
     public static void Lap(Section section)
     {
         if (!drawing) return;
         long now = Stopwatch.GetTimestamp();
-        Pending[(int)section] += (float)((now - mark) * 1000.0 / Stopwatch.Frequency);
+        ref long mark = ref Mark(now);
+        Add(section, now - mark);
         mark = now;
     }
     public static void Since(Section section, long started)
     {
         if (!drawing) return;
         long now = Stopwatch.GetTimestamp();
-        Pending[(int)section] += (float)((now - started) * 1000.0 / Stopwatch.Frequency);
-        mark = now;
+        Add(section, now - started);
+        Mark(now) = now;
     }
     public static void Deposit(Section section, long ticks)
     {
         if (!drawing || ticks <= 0) return;
-        Pending[(int)section] += (float)(ticks * 1000.0 / Stopwatch.Frequency);
+        Add(section, ticks);
     }
     public static void Advance()
     {
         if (!drawing) return;
-        mark = Stopwatch.GetTimestamp();
+        long now = Stopwatch.GetTimestamp();
+        Mark(now) = now;
     }
     public static void Commit(bool paused, uint spotUs, uint shadowUs, uint mainUs, uint probeUs, uint prepareUs, uint tailUs, uint waitUs, uint acquireUs, uint resetUs, ulong worldDraws, ulong gpuSample = 0, float gpuMs = -1)
     {
@@ -112,7 +139,7 @@ internal static class FrameProfiler
             GpuMs = haveGpu ? gpuMs : -1, NewGpu = newGpu,
             WorldDraws = frameDraws, Milliseconds = store ? History[next].Milliseconds ?? new float[SectionCount] : LatestMilliseconds
         };
-        Array.Copy(Pending, sample.Milliseconds, SectionCount);
+        lock (gate) Array.Copy(Pending, sample.Milliseconds, SectionCount);
         latest = sample;
         haveLatest = true;
         if (store)

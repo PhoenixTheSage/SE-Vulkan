@@ -28,15 +28,23 @@ namespace ClientPlugin.Rendering.Content
         private readonly ConcurrentDictionary<string, byte> requested = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentQueue<KeyValuePair<string, uint>> pending = new ConcurrentQueue<KeyValuePair<string, uint>>();
         private readonly ConcurrentDictionary<ulong, byte> singleChannelTextures = new ConcurrentDictionary<ulong, byte>();
-        private readonly Dictionary<string, ulong[]> cubes = new Dictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, ulong> worldCubes = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, string> worldProbeCubePaths = new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, ulong[]> cubes = new ConcurrentDictionary<string, ulong[]>(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, ulong> worldCubes = new ConcurrentDictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, string> worldProbeCubePaths = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+        // Frame split (milestone 4, slice 4): Build may run on another thread than the owner. Off the owner, a cube or
+        // neutral-texture miss queues a request (like an ordinary texture miss) that DrainPendingLoads serves on the owner;
+        // the caller gets 0 for that frame. The maps it reads are concurrent.
+        private readonly ConcurrentQueue<KeyValuePair<int, string>> ownerRequests = new ConcurrentQueue<KeyValuePair<int, string>>();
+        private readonly ConcurrentDictionary<string, byte> ownerRequested = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+        private const int RequestWorldCube = 0, RequestProbeCube = 1, RequestCubeFaces = 2, RequestNeutrals = 3;
+        private bool OnOwner => Thread.CurrentThread.ManagedThreadId == Volatile.Read(ref ownerThread);
+        private void RequestOwner(int kind, string path) { if (ownerRequested.TryAdd(kind + ":" + path, 0)) ownerRequests.Enqueue(new KeyValuePair<int, string>(kind, path)); }
         private ulong neutralNormal, neutralExtensions;
         // A handle stays valid for the session once handed out: prepared submissions, old cells and native pass
         // families keep texture ids across frames, and native rejects a draw naming a removed texture. A destroyed
         // generated texture (LCD) keeps its handle as a 1x1 transparent placeholder that re-creation reuses; an
         // unloaded file texture keeps its handle as the placeholder and reloads into it.
-        private readonly Dictionary<string, ulong> destroyedGenerated = new Dictionary<string, ulong>(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, ulong> destroyedGenerated = new ConcurrentDictionary<string, ulong>(StringComparer.Ordinal);
         private readonly Dictionary<string, ulong> unloaded = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
         private long generation;
         /// <summary>Advances when a file texture is unloaded; texture-id caches rebuild so they look it up (and reload) again.</summary>
@@ -64,7 +72,8 @@ namespace ClientPlugin.Rendering.Content
         // ResidentOnly scope a miss throws TextureNotResident instead, before changing any state, so the
         // producer can fall back to the render thread and emit exactly what serial emission would.
         // Resident hits read only the concurrent maps; generated-texture removals happen in message
-        // processing on the owner thread, never while a forked producer runs.
+        // processing on the owner thread; a removal or unload keeps the handle as a placeholder, so a reader never
+        // sees a freed handle.
         public sealed class TextureNotResident : Exception { public TextureNotResident(string path) : base("Texture is not resident: " + path) { } }
         [ThreadStatic] private static bool residentOnly;
         public readonly struct ResidentScope : IDisposable
@@ -80,7 +89,8 @@ namespace ClientPlugin.Rendering.Content
 
         public ulong GetWorldNormal(string path)
         {
-            ulong result=GetTexture(path,false);if(result!=0)return result;RequireOwner();
+            ulong result=GetTexture(path,false);if(result!=0)return result;
+            if(!OnOwner){ulong ready=Volatile.Read(ref neutralNormal);if(ready==0)RequestOwner(RequestNeutrals,"");return ready;}
             // MyGeneratedTextureManager.ReleaseMissingNormalGlossTex uses127,
             // not128. The one-byte tangent-space bias survives GBuffer packing.
             if(neutralNormal==0){neutralNormal=nextHandle++;backend.UploadTexture(neutralNormal,1,1,0,new byte[]{127,127,255,0},false);}return neutralNormal;
@@ -89,23 +99,26 @@ namespace ClientPlugin.Rendering.Content
         {
             // Stock MyGeometryTextureSystem and MyFileTexture use sRGB views
             // for Extension RGB (AO/emissive); alpha/color-mask stays linear.
-            ulong result=GetTexture(path,true);if(result!=0)return result;RequireOwner();
+            ulong result=GetTexture(path,true);if(result!=0)return result;
+            if(!OnOwner){ulong ready=Volatile.Read(ref neutralExtensions);if(ready==0)RequestOwner(RequestNeutrals,"");return ready;}
             if(neutralExtensions==0){neutralExtensions=nextHandle++;backend.UploadTexture(neutralExtensions,1,1,0,new byte[]{255,0,0,0},true);}return neutralExtensions;
         }
         public ulong GetWorldProbeCube(string path)
         {
-            RequireOwner();if(string.IsNullOrWhiteSpace(path))return 0;
+            if(string.IsNullOrWhiteSpace(path))return 0;
+            if(!OnOwner){if(worldProbeCubePaths.TryGetValue(path,out string known)&&worldCubes.TryGetValue(ResolvePath(known),out ulong ready))return ready;RequestOwner(RequestProbeCube,path);return 0;}
             // The skybox asks every frame; probe the file system once per path.
             if(!worldProbeCubePaths.TryGetValue(path,out string source)){
                 string resolved=ResolvePath(path);
                 string indirect=Path.Combine(Path.GetDirectoryName(resolved)??"",Path.GetFileNameWithoutExtension(resolved)+"Indirect"+Path.GetExtension(resolved));
-                worldProbeCubePaths.Add(path,source=MyFileSystem.FileExists(indirect)?indirect:resolved);}
+                worldProbeCubePaths[path]=source=MyFileSystem.FileExists(indirect)?indirect:resolved;}
             return GetWorldCube(source);
         }
         public ulong GetWorldCube(string path)
         {
-            RequireOwner();if(string.IsNullOrWhiteSpace(path))return 0;string resolved=ResolvePath(path);
+            if(string.IsNullOrWhiteSpace(path))return 0;string resolved=ResolvePath(path);
             if(worldCubes.TryGetValue(resolved,out ulong handle))return handle;
+            if(!OnOwner){RequestOwner(RequestWorldCube,path);return 0;}
             try
             {
                 using(var input=MyFileSystem.OpenRead(resolved))
@@ -113,7 +126,7 @@ namespace ClientPlugin.Rendering.Content
                     if(input==null)throw new FileNotFoundException("World cubemap was not found.",resolved);
                     var faces=DdsImage.ReadCube(input,true);
                     handle=nextHandle++;backend.UploadWorldCubeMips(handle,faces[0].Width,faces[0].Height,faces[0].Format,faces.Select(f=>f.Mips).ToArray(),faces[0].Srgb || faces[0].Format!=7);
-                    worldCubes.Add(resolved,handle);return handle;
+                    worldCubes[resolved]=handle;return handle;
                 }
             }
             catch(Exception error){worldCubes[resolved]=0;LoadFailed?.Invoke(resolved,error);return 0;}
@@ -122,6 +135,20 @@ namespace ClientPlugin.Rendering.Content
         public void DrainPendingLoads()
         {
             RequireOwner();
+            while (ownerRequests.TryDequeue(out var owned))
+            {
+                ownerRequested.TryRemove(owned.Key + ":" + owned.Value, out _);
+                switch (owned.Key)
+                {
+                    case RequestWorldCube: GetWorldCube(owned.Value); break;
+                    case RequestProbeCube: GetWorldProbeCube(owned.Value); break;
+                    case RequestCubeFaces: GetCubeTextures(owned.Value); break;
+                    case RequestNeutrals:
+                        if (neutralNormal == 0) { ulong normal = nextHandle++; backend.UploadTexture(normal, 1, 1, 0, new byte[] { 127, 127, 255, 0 }, false); Volatile.Write(ref neutralNormal, normal); }
+                        if (neutralExtensions == 0) { ulong extensions = nextHandle++; backend.UploadTexture(extensions, 1, 1, 0, new byte[] { 255, 0, 0, 0 }, true); Volatile.Write(ref neutralExtensions, extensions); }
+                        break;
+                }
+            }
             KeyValuePair<string, uint> request;
             while (pending.TryDequeue(out request))
             {
@@ -138,7 +165,7 @@ namespace ClientPlugin.Rendering.Content
             ulong handle;
             Entry dynamic;
             if (generated.TryGetValue(path, out dynamic)) return dynamic.Handle;
-            if ((residentOnly || Thread.CurrentThread.ManagedThreadId == Volatile.Read(ref ownerThread)) && destroyedGenerated.TryGetValue(path, out handle)) return handle;
+            if (destroyedGenerated.TryGetValue(path, out handle)) return handle;
             var keys = Keys(path);
             string resolved = keys.Resolved;
             string key = keys.For(srgb, gui);
@@ -268,11 +295,11 @@ namespace ClientPlugin.Rendering.Content
 
         public ulong[] GetCubeTextures(string path)
         {
-            RequireOwner();
             if (string.IsNullOrWhiteSpace(path)) return null;
             string resolved = ResolvePath(path);
             ulong[] handles;
             if (cubes.TryGetValue(resolved, out handles)) return handles;
+            if (!OnOwner) { RequestOwner(RequestCubeFaces, path); return null; }
             try
             {
                 using (var stream = MyFileSystem.OpenRead(resolved))
@@ -285,7 +312,7 @@ namespace ClientPlugin.Rendering.Content
                         handles[i] = nextHandle++;
                         backend.UploadTextureMips(handles[i], faces[i].Width, faces[i].Height, faces[i].Format, faces[i].Mips, faces[i].Srgb || faces[i].Format != 7);
                     }
-                    cubes.Add(resolved, handles);
+                    cubes[resolved] = handles;
                     return handles;
                 }
             }
@@ -307,7 +334,7 @@ namespace ClientPlugin.Rendering.Content
             if (!generated.TryGetValue(name, out entry))
                 entry = new Entry { Handle = destroyedGenerated.TryGetValue(name, out ulong kept) ? kept : nextHandle++ };
             backend.UploadTexture(entry.Handle, width, height, 0, rgba, false);
-            destroyedGenerated.Remove(name);
+            destroyedGenerated.TryRemove(name, out _);
             generated[name] = new Entry { Handle = entry.Handle, Width = width, Height = height };
             return entry.Handle;
         }
@@ -349,6 +376,8 @@ namespace ClientPlugin.Rendering.Content
             KeyValuePair<string, uint> ignored;
             while (pending.TryDequeue(out ignored)) { }
             requested.Clear();
+            while (ownerRequests.TryDequeue(out _)) { }
+            ownerRequested.Clear();
         }
 
         public void Dispose() => Clear();

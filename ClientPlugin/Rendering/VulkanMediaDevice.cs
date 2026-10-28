@@ -17,6 +17,7 @@ internal interface IVulkanMediaDevice : IDisposable
     void Close(uint id);
     void Upload(ulong texture, NativeMediaFrame frame);
     void Remove(ulong texture);
+    void FlushRemovals();
     void ReleaseProxy(uint id);
     void Draw(MyRenderMessageDrawVideo draw, ulong texture, int width, int height);
 }
@@ -40,7 +41,11 @@ internal sealed class VulkanMediaDevice : IVulkanMediaDevice
     public void Volume(uint id, float volume) => backend.SetMediaVolume(native, id, volume);
     public void Close(uint id) => backend.CloseMedia(native, id);
     public void Upload(ulong texture, NativeMediaFrame frame) => backend.UploadMediaTexture(texture, frame);
-    public void Remove(ulong texture) { sprites.RemoveVideoTexture(texture); backend.RemoveResource(0, texture); }
+    // Frame split (milestone 4, slice 4): the closed video leaves the Apply sprite batch now; its native texture is
+    // removed at the hand-off (FlushRemovals), once the batch Build may still draw no longer names it.
+    readonly System.Collections.Generic.List<ulong> pendingRemovals = new();
+    public void Remove(ulong texture) { sprites.RemoveVideoTexture(texture); pendingRemovals.Add(texture); }
+    public void FlushRemovals() { foreach (ulong texture in pendingRemovals) backend.RemoveResource(0, texture); pendingRemovals.Clear(); }
     public void ReleaseProxy(uint id)
     {
         if (MyRenderProxy.GetObjectType(id) == MyRenderProxy.ObjectType.Video) MyRenderProxy.RemoveMessageId(id, MyRenderProxy.ObjectType.Video);

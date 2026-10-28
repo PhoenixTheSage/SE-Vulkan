@@ -258,7 +258,7 @@ public sealed class MyVulkanRender : IMyRender
             catch{EndOpenUploads();throw;}
             if(frame==null){EndOpenUploads();return;}
             if(frame.DrawScene&&frame.ApplyBuildOrder)scene.LatchFrame();
-            sprites.LatchMain();particles.LatchQueue();decals.LatchPackets();postprocess.Latch();probes.Latch();shadows.Latch();environment.Latch();
+            sprites.LatchMain();particles.LatchQueue();decals.LatchPackets();postprocess.Latch();probes.Latch();shadows.Latch();environment.Latch();media?.FlushRemovals();
             BuildFrame(frame);
             PublishVisible();
         }

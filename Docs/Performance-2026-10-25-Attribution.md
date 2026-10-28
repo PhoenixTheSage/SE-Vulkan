@@ -2665,3 +2665,74 @@ settle it; a paired NP run against the pre-split commit would.
 
 4. Texture cache and media.
 5. Profilers.
+
+## Phase 4 frame split, milestone 4, slices 4 and 5: texture cache, media and profilers; milestone 4 done (2026-10-27)
+
+### What changed
+
+- **Texture cache** (`VulkanTextureCache`):
+  - The cube, world-cube and probe-path maps and the removed-generated map
+    are concurrent.
+  - On the owner thread nothing changes.
+  - Off the owner, a cube, world cube, probe cube or neutral normal or
+    extensions miss queues a deduplicated owner request and returns 0 (or
+    null) for that frame, the same contract as an ordinary texture miss.
+    `DrainPendingLoads` serves the requests on the owner and `Clear` drops
+    them.
+  - The removed-generated lookup now runs on every thread. A removal keeps
+    the handle and uploads a 1×1 placeholder, so a reader never sees a freed
+    handle.
+- **Media:** `Close` drops the video from the Apply sprite batch at once, but
+  the native texture is removed at the hand-off (`media.FlushRemovals()`
+  after the latches). By then the latched batch Build draws no longer names
+  it. Shutdown flushes the remaining removals.
+- **`FrameProfiler`:**
+  - Lap marks are per-thread. A thread's first lap in a frame starts its mark
+    and adds nothing.
+  - Updates to the shared `Pending` totals take a lock.
+  - On one thread, attribution is unchanged.
+  - Separating Build(N) laps from Apply(N+1) laps needs a per-frame buffer,
+    which comes with the build thread (milestone 6).
+- **`RendererCpuProfiler`:** no code change. Scopes still record only on the
+  thread that began the frame, and Build runs there. Milestone 6 adds a
+  Build lane.
+- **Tests:** MediaTests' fake device implements `FlushRemovals`.
+  SpriteGpuTests joins the batch for the sprite and texture path.
+
+### Gates
+
+- **Verify mode, 0 mismatches:** orbit `Vulkan-e5b34e32…` (47.69 million
+  checks) and interior `Vulkan-808f796d…` (47.53 million).
+- **Same-process lane** (`ApplyBuildOrder` old/new/old, `Vulkan-57eb32f5…`):
+  `packets.sig` is identical in all three phases.
+- **GPU suites under validation:** NativePass 126, SceneSubmission 267,
+  ShadowOcclusion 36, Probe 427, WorldPass 542/542, Interop 16, HudBillboard
+  with 0 validation errors, BillboardPacket 43, DepthGeometry 41, GuestDepth
+  1,900, Voxel 51, Sprite 29.
+- **CPU tests:** MediaTests 34 checks, FrameProfilerTests pass.
+  RendererCpuProfilerTests does not compile (missing `VRageRender`
+  reference). This slice only touched comments in that profiler.
+- **Validation gameplay run** `Vulkan-b7202a39…`: validation enabled, 0 errors.
+
+### The timing run
+
+The CpuDetail run (`Vulkan-aceb5282…`) drew a 7.13 ms interval.
+
+| Phase (wall ms per frame) | Slice 2 | Slice 3 | Slices 4–5 |
+|---|---|---|---|
+| Draw | 6.28 | 7.76 | 6.37 |
+| Messages | 0.448 | 0.514 | 0.455 |
+| QueueWorld | 0.771 | 1.028 | 0.799 |
+| Clipmaps | 0.113 | 0.086 | 0.071 |
+
+The numbers are back at slice 2's level, and slices 4 and 5 add no work to
+these phases. That supports the earlier reading: slice 3's 8.69 ms was
+machine state, not the voxel change. Single CpuDetail runs remain unpaired;
+the milestone 7 benchmark decides timing.
+
+### Next
+
+Milestone 5, the native frame gate: calls from a thread other than the open
+frame's owner wait instead of throwing, a debug assert that Apply issues no
+scene-mutating native calls, a guarded `error`, and the sort kept on the
+Build thread.
