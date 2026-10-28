@@ -2736,3 +2736,123 @@ Milestone 5, the native frame gate: calls from a thread other than the open
 frame's owner wait instead of throwing, a debug assert that Apply issues no
 scene-mutating native calls, a guarded `error`, and the sort kept on the
 Build thread.
+
+## Phase 4 frame split, milestone 5: the native frame gate, and the single-thread cost of milestones 1-4 (2026-10-28)
+
+### What changed (`Native/src/renderer.cpp`)
+
+- **Frame owner.** `begin_frame` records the calling thread as the frame
+  owner; `end_frame` clears it.
+- **Frame gate** (`SE_VULKAN_FRAME_GATE=1`, also on with
+  `SE_VULKAN_FRAME_SPLIT=1`): in `call` and `call_scene`, a call from another
+  thread while a frame is open waits on `record_cv`. It resumes once no frame
+  is open and no pipelined recording is pending or running, instead of meeting
+  the open frame and throwing on its `recording` checks. Waiters are woken
+  when the owner's call returns.
+  - Off by default: on one thread it cannot change anything.
+  - With `SE_VULKAN_PIPELINE_REPORT` the report carries:
+    - `GateOffOwnerCalls`: off-owner calls that met an open frame, counted
+      even with the gate off;
+    - `GateWaits` and `GateWaitUs`.
+- **Scene-call census and assert.** `call_scene` and `call_deferrable_scene`
+  count calls from a thread other than the last frame owner
+  (`OffOwnerSceneCalls`). They also count those made while a frame or
+  recording was in flight (`OffOwnerScenePending`), where an interleaved call
+  would reorder the deferred queue. `SE_VULKAN_SCENE_CALL_ASSERT=1` prints the
+  first one to stderr.
+- **Per-thread last error.** Wrappers record failures only in the
+  thread-local `global_error`, and `sevk_last_error` returns the calling
+  thread's last failure. The managed side reads it on the failing thread, so
+  its text is unchanged.
+  - The per-renderer string could be rewritten by another thread while a
+    caller copied it; it is no longer written.
+- **Sort.** No change: `QueueWorld` and its `thread_local` sort reuse run in
+  Build, on one thread.
+- **InteropTests** gains an off-owner upload during an open frame:
+  - without the gate it fails with the calling thread's own error
+    (18 checks);
+  - with `SE_VULKAN_FRAME_GATE=1` it waits until the frame closes, then
+    succeeds (19 checks).
+
+### Gates
+
+- **GPU suites under validation:** NativePass 126, SceneSubmission 267,
+  ShadowOcclusion 36, Probe 427, WorldPass 542/542, Interop 18 (19 with the
+  gate), HudBillboard with 0 validation errors, BillboardPacket 43,
+  DepthGeometry 41, GuestDepth 1,900, Voxel 51, Sprite 29.
+- **Validation gameplay run** `Vulkan-3d40dbae…`: validation enabled, 0
+  errors.
+- **Census** (orbit, pipeline report): gate off `Vulkan-b6be1343…` and gate on
+  `Vulkan-5012ca40…`. Both show 0 off-owner calls, 0 gate waits and 0
+  off-owner scene calls.
+- **Not rerun:** the verify runs and the order lane. Milestone 5 changes no
+  managed code, and with one thread the native changes cannot alter packets.
+
+### The end-of-milestone benchmark: milestones 1-5 against pre-split 8588f01
+
+**Setup:**
+- The pre-split plugin is built from 8588f01 and stored in
+  `TestResults/PreSplit-8588f01-binaries` (sets `PS0`, `INPS0`).
+- Both sides load the same, current native DLL. Native code is unchanged
+  between 8588f01 and milestone 4, so the pair measures the managed
+  milestones 1-4 plus milestone 5's thread-id check.
+- Interleaved pairs on a quiet box, plus one DX11 run per world.
+
+| Run | Orbit present ms | Interior present ms |
+|---|---|---|
+| Current (1st) | 7.09 | 8.06 (P95 13.4, a disturbed run) |
+| Pre-split (1st) | 6.54 | 5.86 |
+| Pre-split (2nd) | 6.40 | 5.87 |
+| Current (2nd) | 7.12 | 6.51 |
+| DX11 | 4.41 | 4.68 |
+
+**Findings:**
+- Milestones 1-4 cost about **0.6 ms per frame on one thread**: orbit
+  7.10 against 6.47, interior 6.51 against 5.86.
+- The box ran slow overall this session: pre-split ran 6.4-6.5 ms against the
+  5.3-5.5 ms measured on 2026-10-27, and DX11 4.41 against 4.27-4.47. So
+  compare within the pairs only.
+
+**Where the cost goes.** `FrameProfiler` sections, the mean of the paired
+runs:
+
+| Section (ms) | Orbit pre-split | Orbit current | Interior pre-split | Interior current (2nd) |
+|---|---|---|---|---|
+| Messages | 0.35 | 0.43 | 0.34 | 0.36 |
+| Clipmaps (now: latch and Build prologue up to the clipmap update) | 0.07 | 0.53 | 0.07 | 0.45 |
+| Particles and decals | 0.55 | 0.32 | 0.52 | 0.27 |
+| Scene update | 0.72 | 0.99 | 0.65 | 0.82 |
+| Queue world | 2.78 | 2.61 | 2.45 | 2.58 |
+| Total | 6.42 | 6.99 | 5.81 | 6.41 |
+
+- **Scene update, +0.17 to +0.27 ms.** These are Apply's new copies: the
+  actor snapshots, Applied fields, light snapshots and probe ambient.
+- **Clipmaps plus particles, +0.13 to +0.23 ms.** These are the hand-off:
+  `LatchFrame`, the Build-op and actor-field fold, and the sprite, particle,
+  decal and settings latches. The particle and decal submit moved out of the
+  particles lap into this one.
+- **Messages, about +0.05 ms.** Queued op copies.
+- The rest is within noise.
+
+**What this means for the split:**
+- The copies are what lets Build run on its own thread. They pay back only
+  when Apply and Build overlap (milestone 6).
+- From the current sections, Apply (messages, particles, scene update, the
+  stats overlay) is about 1.8 ms, plus the 0.8 ms game-loop gap. Build (the
+  rest, including the 0.5 ms hand-off) is about 5.2 ms on this slow box.
+- Present cadence would be about max(2.6, 5.2) = 5.2 ms against 7.1 today. On
+  the 2026-10-27 box state, roughly 20% faster, Build would be about 4.2 ms:
+  at the 4.17 target, with no margin. Build-side trims (plan item 1b, parallel
+  traversal) remain necessary after the split.
+- Before milestone 6, two cheap pieces of work would also help single-thread
+  mode:
+  - trim the hand-off (dirty-only folds; skipping latches whose inputs did not
+    change);
+  - trim the actor snapshot.
+- A `CpuDetail` pair (current against pre-split) would split the 0.6 ms by
+  phase before choosing.
+
+### Next
+
+Milestone 6, the build thread behind `SE_VULKAN_FRAME_SPLIT=1`, or first the
+hand-off and snapshot trims above.

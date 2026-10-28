@@ -58,6 +58,27 @@ internal static class Program
         Check(!backend.BeginFrame(MatrixD.Identity, Vector3.Zero, Vector3.Zero, Vector3.One, Color.Black), "minimized presentation suspends");
         backend.Resize(32, 32, 0);
         Check(backend.BeginFrame(MatrixD.Identity, Vector3.Zero, Vector3.Zero, Vector3.One, Color.Black), "presentation restores"); backend.EndFrame();
+        // Frame split, milestone 5: an upload from another thread while this thread's frame is open. With
+        // SE_VULKAN_FRAME_GATE=1 it waits for the frame to close; without, it meets the open frame and fails, and
+        // the failure text is that thread's own (per-thread last error).
+        bool gate = Environment.GetEnvironmentVariable("SE_VULKAN_FRAME_GATE") == "1";
+        Check(backend.BeginFrame(MatrixD.Identity, Vector3.Zero, Vector3.Zero, Vector3.One, Color.Black), "frame opens for the off-owner call");
+        Exception offOwner = null;
+        var other = new Thread(() => { try { backend.UploadTexture(3, 1, 1, 0, new byte[] { 0, 255, 0, 255 }, false); } catch (Exception e) { offOwner = e; } });
+        other.Start();
+        bool returned = other.Join(300);
+        if (gate)
+        {
+            Check(!returned, "frame gate holds an off-owner call while the frame is open");
+            backend.EndFrame(); other.Join();
+            Check(offOwner == null, "gated off-owner upload completes after the frame closes");
+            backend.RemoveResource(0, 3);
+        }
+        else
+        {
+            Check(returned && offOwner != null && offOwner.Message.Contains("precede begin_frame"), "ungated off-owner upload fails with its own thread's error");
+            backend.EndFrame();
+        }
         Console.WriteLine(checks + " managed/native checks passed on " + probe.DeviceName);
         return 0;
     }

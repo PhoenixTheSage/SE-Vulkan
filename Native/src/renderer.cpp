@@ -494,6 +494,33 @@ struct Renderer {uint32_t recipe_generation=1;
     struct DeferredCall {std::function<int32_t(Renderer&)> fn;bool scene{};};
     std::mutex deferred_mutex;bool record_in_flight{};std::vector<DeferredCall> deferred;
     struct ReadSnapshot {SevkWorkStats work{};SevkResolutionStats resolution{};SevkShadowFeedback shadow{};uint32_t cache_mask{},cache_count{};bool cache_valid{};std::vector<SevkOcclusionResult> occlusion;uint64_t occlusion_token{};std::vector<SevkFlareResult> flares;float render_fraction=1;SevkProbeStats probe_stats{sizeof(SevkProbeStats),SEVK_ABI_VERSION};SevkProbeScheduleStats probe_schedule{sizeof(SevkProbeScheduleStats),SEVK_ABI_VERSION};};
+    // Phase 4 frame split, milestone 5: the thread whose begin_frame opened the current frame. With the frame gate
+    // (SE_VULKAN_FRAME_GATE=1; SE_VULKAN_FRAME_SPLIT=1 turns it on), a call from another thread waits on record_cv
+    // until that frame closes instead of meeting an open frame (and throwing on its recording checks). Off by default:
+    // one thread already keeps the order, and the census counts calls that would have waited.
+    bool frame_gate=env_flag("SE_VULKAN_FRAME_GATE",env_flag("SE_VULKAN_FRAME_SPLIT",false));
+    std::thread::id frame_owner{};uint32_t gate_waiters{};uint64_t gate_offowner_calls{},gate_waits{},gate_wait_us{};
+    bool frame_gated()const{return recording&&frame_owner!=std::thread::id{}&&frame_owner!=std::this_thread::get_id()&&!tl_recording_thread;}
+    // Holds api_mutex. Census: an off-owner call meeting an open frame. Gate: wait until no frame is open or recording.
+    void pass_frame_gate(std::unique_lock<std::mutex>& lock){
+        if(!frame_gated())return;++gate_offowner_calls;if(!frame_gate)return;
+        auto at=std::chrono::steady_clock::now();++gate_waiters;struct Leave{uint32_t& n;~Leave(){--n;}} leave{gate_waiters};
+        record_cv.wait(lock,[&]{return !frame_gated()&&!record_pending&&!record_running;});
+        ++gate_waits;gate_wait_us+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-at).count());
+    }
+    // Scene-mutating calls (call_scene, call_deferrable_scene) belong to the thread that builds frames; under the frame
+    // split, Apply issues none (its native scene work moved to Build's prologue). Counted always; with
+    // SE_VULKAN_SCENE_CALL_ASSERT=1 the first offender per export is printed to stderr. Pending: a pass frame or
+    // recording was in flight, where an interleaved call would reorder the deferred queue.
+    bool scene_call_assert=env_flag("SE_VULKAN_SCENE_CALL_ASSERT",false);
+    std::atomic<std::thread::id> scene_owner{};std::atomic<uint64_t> offowner_scene_calls{},offowner_scene_pending{};
+    void check_scene_caller(const char* where){
+        std::thread::id owner=scene_owner.load(std::memory_order_relaxed);
+        if(owner==std::thread::id{}||owner==std::this_thread::get_id())return;
+        bool pending;{std::lock_guard q(deferred_mutex);pending=record_in_flight;}pending=pending||recording;
+        ++offowner_scene_calls;if(pending)++offowner_scene_pending;
+        if(scene_call_assert&&offowner_scene_calls.load()==1)std::fprintf(stderr,"SE_VULKAN_SCENE_CALL_ASSERT: scene call %s from a thread other than the frame owner (pending=%d)\n",where,int(pending));
+    }
     std::mutex snapshot_mutex;ReadSnapshot snapshot;uint64_t pipelined_frames{},pipelined_mask_mismatches{},pipelined_waits{},pipelined_wait_us{};
     // Wait census (only with SE_VULKAN_PIPELINE_REPORT): native frame address -> waits, microseconds.
     bool pipeline_census=std::getenv("SE_VULKAN_PIPELINE_REPORT")!=nullptr;std::map<void*,std::pair<uint64_t,uint64_t>> pipelined_wait_sites;
@@ -1723,7 +1750,7 @@ struct Renderer {uint32_t recipe_generation=1;
         std::memcpy(slot.uniform.mapped, &constants, sizeof(constants)); check(vmaFlushAllocation(allocator, slot.uniform.memory, 0, sizeof(constants)), "flush frame constants");
         VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }; begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check(vkBeginCommandBuffer(slot.command, &begin), "begin frame command"); frame_mark("frame begin");
-        frame_meshes.clear(); frame_sprites.clear(); frame_lines[0].clear(); frame_lines[1].clear(); recording=true; guest.resources_open=true; lap(7); return 0;
+        frame_meshes.clear(); frame_sprites.clear(); frame_lines[0].clear(); frame_lines[1].clear(); recording=true; frame_owner=std::this_thread::get_id(); scene_owner.store(frame_owner,std::memory_order_relaxed); guest.resources_open=true; lap(7); return 0;
     }
     // Acquires the slot's swapchain image. begin_frame (can_resize) recreates the swapchain on
     // OUT_OF_DATE and retries once; end_frame cannot resize an open frame, so it marks the surface
@@ -2000,7 +2027,7 @@ struct Renderer {uint32_t recipe_generation=1;
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
         if(world.current().queued&&timing_pool){vkCmdWriteTimestamp2(slot.command,VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,timing_pool,slot_index*2+1);timing_valid[slot_index]=true;}
         frame_mark("frame end");if(profile_label_open){vkCmdEndDebugUtilsLabelEXT(slot.command);profile_label_open=false;}
-        check(vkEndCommandBuffer(slot.command), "end frame command"); recording = false;
+        check(vkEndCommandBuffer(slot.command), "end frame command"); recording = false; frame_owner = {};
         guest.passes.clear();guest.has_early_owned=guest.has_global_clear=false;tenant_end_frame(); // Frame packets never replay implicitly in a later frame.
         performance.finish_us=perf_take();
         VkCommandBufferSubmitInfo command{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO }; command.commandBuffer = slot.command;
@@ -2225,7 +2252,8 @@ template<class Fn> int32_t call(void* context, Fn&& fn) {
     if(renderer->pipeline_census){uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-lock_at).count());renderer->lock_wait_us+=us;
         if(us>20){renderer->lock_request_since_launch_us+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(lock_at-renderer->tl_launch).count());++renderer->lock_blocked;void* frames[4]{};CaptureStackBackTrace(0,4,frames,nullptr);for(void* frame:frames){auto& site=renderer->lock_sites[frame];++site[0];site[1]+=us;}}}
 #endif
-    try { if(renderer->record_pending||renderer->record_running){auto start=std::chrono::steady_clock::now();renderer->await_recording(lock);uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count());renderer->pipelined_wait_us+=us;++renderer->pipelined_waits;
+    try { struct Notify{Renderer* r;~Notify(){if(r->gate_waiters)r->record_cv.notify_all();}} notify{renderer};renderer->pass_frame_gate(lock);
+        if(renderer->record_pending||renderer->record_running){auto start=std::chrono::steady_clock::now();renderer->await_recording(lock);uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count());renderer->pipelined_wait_us+=us;++renderer->pipelined_waits;
 #if defined(_WIN32)
         if(renderer->pipeline_census){void* frames[3]{};CaptureStackBackTrace(0,3,frames,nullptr);for(void* frame:frames){auto& site=renderer->pipelined_wait_sites[frame];++site.first;site.second+=us;}}
 #endif
@@ -2236,8 +2264,8 @@ template<class Fn> int32_t call(void* context, Fn&& fn) {
             for(void* frame:frames){auto& site=renderer->call_sites[frame];++site[0];site[1]+=us;if(presenting)site[2]+=us;}return result;}
 #endif
         return fn(*renderer); }
-    catch (const std::exception& e) { renderer->error = e.what(); global_error = renderer->error; return -1; }
-    catch (...) { renderer->error = "unknown native Vulkan error"; global_error = renderer->error; return -1; }
+    catch (const std::exception& e) { global_error = e.what(); return -1; }
+    catch (...) { global_error = "unknown native Vulkan error"; return -1; }
 }
 }
 
@@ -2254,21 +2282,24 @@ template<class Fn> int32_t call_deferrable(void* context, Fn fn) {
 template<class Fn> int32_t call_scene(void* context, Fn&& fn) {
     if (!context) { global_error = "null Vulkan context"; return -1; }
     auto* renderer = static_cast<Renderer*>(context);
+    renderer->check_scene_caller("call_scene");
     if(!renderer->early_release)return call(context,std::forward<Fn>(fn));
     std::unique_lock lock(renderer->api_mutex);
     try{
+        struct Notify{Renderer* r;~Notify(){if(r->gate_waiters)r->record_cv.notify_all();}} notify{renderer};renderer->pass_frame_gate(lock);
         renderer->record_cv.wait(lock,[&]{return !renderer->record_pending&&(!renderer->record_running||renderer->record_released.load(std::memory_order_acquire));});
         WorldState::tl_scene_side=true;renderer->scene_lock=&lock;struct Clear{Renderer* r;~Clear(){r->scene_lock=nullptr;WorldState::tl_scene_side=false;}} clear{renderer};
         if(renderer->record_running)renderer->flush_deferred_scene();else{renderer->await_recording(lock);renderer->flush_deferred();}
         return fn(*renderer);
     }
-    catch (const std::exception& e) { renderer->error = e.what(); global_error = renderer->error; return -1; }
-    catch (...) { renderer->error = "unknown native Vulkan error"; global_error = renderer->error; return -1; }
+    catch (const std::exception& e) { global_error = e.what(); return -1; }
+    catch (...) { global_error = "unknown native Vulkan error"; return -1; }
 }
 // Deferrable scene-only calls (pass and cell commits): queued while recording, applied by the next scene call.
 template<class Fn> int32_t call_deferrable_scene(void* context, Fn fn) {
     if (!context) { global_error = "null Vulkan context"; return -1; }
     auto* renderer = static_cast<Renderer*>(context);
+    renderer->check_scene_caller("call_deferrable_scene");
     {std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){renderer->deferred.push_back({std::move(fn),true});return 0;}}
     return call(context,fn);
 }
@@ -2435,8 +2466,11 @@ void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) acti
             std::fprintf(f,",\"CallSites\":[");bool first=true;for(auto& [name,site]:exports){std::fprintf(f,"%s{\"Export\":\"%s\",\"Calls\":%llu,\"Us\":%llu,\"PresentUs\":%llu}",first?"":",",name.c_str(),(unsigned long long)site[0],(unsigned long long)site[1],(unsigned long long)site[2]);first=false;}std::fprintf(f,"]");}
         if(symbols)SymCleanup(process);
 #endif
+        std::fprintf(f,",\"FrameGate\":%d,\"GateOffOwnerCalls\":%llu,\"GateWaits\":%llu,\"GateWaitUs\":%llu,\"OffOwnerSceneCalls\":%llu,\"OffOwnerScenePending\":%llu",int(r->frame_gate),(unsigned long long)r->gate_offowner_calls,(unsigned long long)r->gate_waits,(unsigned long long)r->gate_wait_us,(unsigned long long)r->offowner_scene_calls.load(),(unsigned long long)r->offowner_scene_pending.load());
         std::fprintf(f,"}\n");std::fclose(f);}} delete static_cast<Renderer*>(context); }
-const char* SEVK_CALL sevk_last_error(void* context) { return context ? static_cast<Renderer*>(context)->error.c_str() : global_error.c_str(); }
+// The calling thread's last failure (milestone 5): a shared per-renderer string could be rewritten by another
+// thread while this one copies it. Every wrapper records its failure in the thread-local global_error.
+const char* SEVK_CALL sevk_last_error(void*) { return global_error.c_str(); }
 int32_t SEVK_CALL sevk_init_gbuffer(void* ctx,const void* vs,uint64_t vb,const void* ps,uint64_t pb) {return call(ctx,[&](Renderer& r){r.init_stock(vs,vb,ps,pb);return 0;});}
 int32_t SEVK_CALL sevk_upload_gbuffer_mesh(void* ctx,uint64_t id,const SevkGBufferVertex* v,uint32_t vc,const uint32_t* i,uint32_t ic) {return call(ctx,[&](Renderer& r){r.upload_stock(id,v,vc,i,ic);return 0;});}
 int32_t SEVK_CALL sevk_render_gbuffer(void* ctx,uint32_t w,uint32_t h,const void* frame,uint32_t fb,const float* proj,const SevkGBufferDraw* draws,uint32_t count) {return call(ctx,[&](Renderer& r){r.render_stock(w,h,frame,fb,proj,draws,count);return 0;});}
