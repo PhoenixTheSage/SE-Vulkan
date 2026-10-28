@@ -26,6 +26,8 @@ internal sealed class FramePacket
     public float AnimationDelta;
     // The probe ambient light sum gathered in Apply (VulkanScene.GatherProbeAmbient).
     public float ProbeAmbient;
+    // The voxel clipmap update inputs (camera message state), consumed at the start of Build.
+    public bool HaveCamera,CameraSmooth;public MatrixD CameraWorld;public BoundingFrustumD VoxelFrustum;public float VoxelFar;
     // An UnloadData during Apply: Build forgets the previous particle camera.
     public bool ResetParticleCamera;
 }

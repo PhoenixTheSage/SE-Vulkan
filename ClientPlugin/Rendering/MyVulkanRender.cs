@@ -280,17 +280,14 @@ public sealed class MyVulkanRender : IMyRender
         // Keep GPU constants finite until the next environment update arrives.
         if(!light.SunLightDirection.IsValid() || light.SunLightDirection.LengthSquared()<1e-8f)light.SunLightDirection=Vector3.Forward;
         float animationDelta = animationClock.Sample();if(particles.Paused)animationDelta=0;
-        // The loading screen stays at 100% until each clipmap raises Loaded.
-        // That counter only advances inside Clipmap.Update, and stock runs it
-        // even while DrawScene is deferred. Gating it on a scene draw never
-        // lets the world leave the loading screen.
-        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Clipmaps))if(haveCamera)voxels.Update(cameraWorld,voxelFrustum,voxelFar,cameraSmooth);
-        FrameProfiler.Lap(FrameProfiler.Section.Clipmaps);
-        if (!draw || !host.CanPresent) return null;
+        // The loading screen stays at 100% until each clipmap raises Loaded. That counter only advances inside
+        // Clipmap.Update, and stock runs it even while DrawScene is deferred: with no frame to build, the clipmap
+        // update runs here; otherwise it runs at the start of Build (voxels are Build state).
+        if (!draw || !host.CanPresent) { UpdateVoxels(haveCamera,cameraWorld,voxelFrustum,voxelFar,cameraSmooth); return null; }
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Particles)){
         if (drawScene)
         {
-            var next=scene.Next;next.ExternalDepthRevision=voxels.MeshUpdates+voxels.LodChanges;next.HighlightSepia=postprocess.AppliedSettings.Data.SepiaStrength;next.ProbeDrawDistance=probes.AppliedSettings.DrawDistance;next.RenderSettings=renderConfiguration;next.ShadowSettings=shadows.AppliedSettings.Data;next.ShadowDrawDistance=shadows.DrawDistance;scene.SetCamera(camera, CurrentDrawTime, animationDelta);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ParticleDraw))particles.Draw(camera,animationDelta,renderConfiguration);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.DecalDraw))decals.Draw(camera,CurrentDrawTime.Seconds,gameplayFrame,(int)renderConfiguration.User.ParticleQuality);
+            var next=scene.Next;next.HighlightSepia=postprocess.AppliedSettings.Data.SepiaStrength;next.ProbeDrawDistance=probes.AppliedSettings.DrawDistance;next.RenderSettings=renderConfiguration;next.ShadowSettings=shadows.AppliedSettings.Data;next.ShadowDrawDistance=shadows.DrawDistance;scene.SetCamera(camera, CurrentDrawTime, animationDelta);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ParticleDraw))particles.Draw(camera,animationDelta,renderConfiguration);using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.DecalDraw))decals.Draw(camera,CurrentDrawTime.Seconds,gameplayFrame,(int)renderConfiguration.User.ParticleQuality);
         }
         FrameProfiler.Lap(FrameProfiler.Section.Particles);
         }
@@ -303,11 +300,17 @@ public sealed class MyVulkanRender : IMyRender
         }
         var frame=new FramePacket{DrawScene=drawScene,ApplyBuildOrder=applyBuildOrder,Camera=camera,CameraView=cameraView,CameraProjection=cameraProjection,ViewProjection=viewProjection,VoxelDrawFrustum=voxelDrawFrustum,
             Light=light,TextureMultipliers=textureMultipliers,RenderConfiguration=renderConfiguration,DeviceSettings=settings,BackBuffer=BackBufferResolution,
-            GameplayFrame=gameplayFrame,DrawTime=CurrentDrawTime,AnimationDelta=animationDelta,ProbeAmbient=probeAmbient,ResetParticleCamera=particleCameraReset};
+            GameplayFrame=gameplayFrame,DrawTime=CurrentDrawTime,AnimationDelta=animationDelta,ProbeAmbient=probeAmbient,HaveCamera=haveCamera,CameraSmooth=cameraSmooth,CameraWorld=cameraWorld,VoxelFrustum=voxelFrustum,VoxelFar=voxelFar,ResetParticleCamera=particleCameraReset};
         particleCameraReset=false;
         // The stats overlay joins this frame's sprite batch (it reads the profiler and game stats only).
         renderStats.Draw(sprites, BackBufferResolution.X);
         return frame;
+    }
+    void UpdateVoxels(bool haveCamera,MatrixD cameraWorld,BoundingFrustumD voxelFrustum,float voxelFar,bool cameraSmooth)
+    {
+        voxels.BindOwnerThread();
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Clipmaps)){voxels.FlushMessages();if(haveCamera)voxels.Update(cameraWorld,voxelFrustum,voxelFar,cameraSmooth);}
+        FrameProfiler.Lap(FrameProfiler.Section.Clipmaps);
     }
     // Build: the frame from its packet and the scene's latched inputs, through the native frame slot and sprites.
     void BuildFrame(FramePacket frame)
@@ -324,6 +327,9 @@ public sealed class MyVulkanRender : IMyRender
             backend.CameraPosition = camera;
             backend.BeginPacketCollection();
             particles.SubmitQueued();decals.SubmitPackets();
+            UpdateVoxels(frame.HaveCamera,frame.CameraWorld,frame.VoxelFrustum,frame.VoxelFar,frame.CameraSmooth);
+            // The occlusion revision follows this frame's voxel changes (the update above).
+            if(drawScene)scene.Next.ExternalDepthRevision=scene.ExternalDepthRevision=voxels.MeshUpdates+voxels.LodChanges;
             var worldResolution=resolution.Update(backend,frame.DeviceSettings,renderConfiguration,drawScene,animationDelta*1000);
             GuestBridge.BeginScene(backend,scene);GuestBridge.SetPostprocess(postprocess);
             if(drawScene)BackendRuntime.RaiseScene(new[]{camera.X,camera.Y,camera.Z},
@@ -581,7 +587,7 @@ public sealed class MyVulkanRender : IMyRender
                 foreach (string file in ((MyRenderMessageUnloadTextures)message).Files) scene.TextureCache.Unload(file); break;
             case MyRenderMessageEnum.UnloadData:
                 sessionLog?.UnloadSession();textureMultipliers=MyTextureDebugMultipliers.Defaults;
-                decals?.Clear();particleCameraReset=true;haveCamera=false;particles?.Clear();environment?.Clear(); voxels?.Clear(); scene.Clear(); sprites.Clear(); generated.Clear(); break;
+                decals?.Clear();particleCameraReset=true;haveCamera=false;particles?.Clear();environment?.Clear(); voxels?.BindOwnerThread(); voxels?.Clear(); scene.Clear(); sprites.Clear(); generated.Clear(); break;
             case MyRenderMessageEnum.DebugDrawLine3D: debugLines.Add((MyRenderMessageDebugDrawLine3D)message); break;
             case MyRenderMessageEnum.DebugClearPersistentMessages: debugLines.ClearPersistent(); break;
             case MyRenderMessageEnum.SetFrameTimeStep: animationClock.StepOverride = ((MyRenderMessageSetFrameTimeStep)message).TimeStepInSeconds; break;

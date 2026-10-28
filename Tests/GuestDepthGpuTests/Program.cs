@@ -196,6 +196,7 @@ partial class Program
         voxels.Process(new MyRenderMessageVoxelCreate {Id=14,Clipmap=clipmap,WorldMatrix=MatrixD.CreateTranslation(10,0,-3),Size=new Vector3I(32),
             RenderFlags=RenderFlags.Visible|RenderFlags.CastShadows|RenderFlags.SkipInMainView});
         voxels.Materials.Update(new[]{new MyRenderVoxelMaterialData {TextureSets=new MyRenderVoxelMaterialData.TextureSet[3]}},true);
+        voxels.FlushMessages(); // voxel messages replay on the owner before the clipmap is used
         var cell=clipmap.Actor.CreateCell(Vector3D.Zero,0);cell.SetVisible(true);
         var voxelVertices=new MyList<MyVertexFormatVoxelSingleData>();
         foreach(var p in new[]{new Vector3(-1,-1,0),new Vector3(1,-1,0),new Vector3(0,1,0)})

@@ -34,33 +34,61 @@ public sealed partial class VulkanVoxels : IDisposable
     public string LodStatus=>string.Join(",",actors.Values.SelectMany(a=>a.Cells).Where(c=>c.Visible).GroupBy(c=>c.Lod).OrderBy(g=>g.Key).Select(g=>g.Key+":"+g.Count()));
     public VulkanVoxels(NativeBackend backend,VulkanTextureCache textures=null){this.backend=backend;var cache=textures??new VulkanTextureCache(backend);Materials=new VulkanVoxelMaterials(backend,cache);Foliage=new VulkanFoliage(backend,cache,Materials);}
     private void RequireOwner(){int current=Thread.CurrentThread.ManagedThreadId;if(thread==0)thread=current;if(thread!=current)throw new InvalidOperationException("Voxel scene callback must run on the render owner thread.");}
+    // Frame split (milestone 4, slice 3): voxels are Build state. Their messages run in Apply: Process validates against
+    // the Apply ID set, copies what the message carries and queues it in issue order. FlushMessages replays the queue on
+    // the owner (the start of Update, BeginPlan and Draw), so the clipmap update, which Build runs at its start (or the
+    // render thread when no frame is drawn), sees the messages first. BindOwnerThread hands the owner check to the thread
+    // that holds voxels.
+    private enum OpKind:byte{Create,Materials,Preload,Remove,Matrix,Dither}
+    private struct Op{public OpKind Kind;public uint Id;public Vector3I Size;public MatrixD Matrix;public RenderFlags Flags;public float Dither;public IMyLodController Clipmap;public float? SpherizeRadius;public Vector3D SpherizeCenter;public MyRenderVoxelMaterialData[] Materials;public byte[] Preload;public bool Create;}
+    private readonly List<Op> ops=new List<Op>();private readonly HashSet<uint> applyActors=new HashSet<uint>();
+    public void BindOwnerThread()=>thread=Thread.CurrentThread.ManagedThreadId;
     public bool Process(MyRenderMessageBase message)
     {
-        RequireOwner();
         switch(message.MessageType)
         {
             case MyRenderMessageEnum.VoxelCreate:
                 var create=(MyRenderMessageVoxelCreate)message;
-                if(actors.ContainsKey(create.Id))throw new InvalidOperationException("Duplicate voxel actor id.");
+                if(applyActors.Contains(create.Id))throw new InvalidOperationException("Duplicate voxel actor id.");
                 if(create.SpherizeRadius.HasValue && (!create.SpherizePosition.IsValid() || (float.IsNaN(create.SpherizeRadius.Value) || float.IsInfinity(create.SpherizeRadius.Value)) || create.SpherizeRadius.Value<=0))throw new InvalidOperationException("Invalid planet spherization parameters.");
-                var actor=new Actor(this,create.Id,create.Size,create.WorldMatrix,create.RenderFlags,create.Dithering,create.Clipmap){SpherizeRadius=create.SpherizeRadius,SpherizeCenter=create.SpherizePosition};actors.Add(create.Id,actor);
-                try{create.Clipmap.VoxelRenderDataProcessorProvider=provider;create.Clipmap.BindToActor(actor);actor.SetMatrix(create.WorldMatrix);}catch{actors.Remove(create.Id);actor.Dispose();throw;}return true;
-            case MyRenderMessageEnum.CreateRenderVoxelMaterials:Materials.Update(((MyRenderMessageCreateRenderVoxelMaterials)message).Materials,true);return true;
-            case MyRenderMessageEnum.UpdateRenderVoxelMaterials:Materials.Update(((MyRenderMessageUpdateRenderVoxelMaterials)message).Materials,false);return true;
-            case MyRenderMessageEnum.PreloadVoxelMaterials:Materials.Preload(((MyRenderMessagePreloadVoxelMaterials)message).Materials);return true;
+                if(create.Clipmap==null)throw new ArgumentNullException(nameof(create.Clipmap));
+                applyActors.Add(create.Id);ops.Add(new Op{Kind=OpKind.Create,Id=create.Id,Size=create.Size,Matrix=create.WorldMatrix,Flags=create.RenderFlags,Dither=create.Dithering,Clipmap=create.Clipmap,SpherizeRadius=create.SpherizeRadius,SpherizeCenter=create.SpherizePosition});return true;
+            case MyRenderMessageEnum.CreateRenderVoxelMaterials:ops.Add(new Op{Kind=OpKind.Materials,Materials=(MyRenderVoxelMaterialData[])((MyRenderMessageCreateRenderVoxelMaterials)message).Materials?.Clone(),Create=true});return true;
+            case MyRenderMessageEnum.UpdateRenderVoxelMaterials:ops.Add(new Op{Kind=OpKind.Materials,Materials=(MyRenderVoxelMaterialData[])((MyRenderMessageUpdateRenderVoxelMaterials)message).Materials?.Clone(),Create=false});return true;
+            case MyRenderMessageEnum.PreloadVoxelMaterials:ops.Add(new Op{Kind=OpKind.Preload,Preload=(byte[])((MyRenderMessagePreloadVoxelMaterials)message).Materials?.Clone()});return true;
             case MyRenderMessageEnum.RemoveRenderObject:
-                uint id=((MyRenderMessageRemoveRenderObject)message).ID;if(!actors.TryGetValue(id,out var removed))return false;removed.Dispose();actors.Remove(id);return true;
+                uint id=((MyRenderMessageRemoveRenderObject)message).ID;if(!applyActors.Remove(id))return false;ops.Add(new Op{Kind=OpKind.Remove,Id=id});return true;
             case MyRenderMessageEnum.UpdateRenderObject:
-                var update=(MyRenderMessageUpdateRenderObject)message;if(!actors.TryGetValue(update.ID,out var moved))return false;
-                try{if(update.Data.HasWorldMatrix)moved.SetMatrix(update.Data.WorldMatrix);}finally{update.Data.Clean();}return true;
+                var update=(MyRenderMessageUpdateRenderObject)message;if(!applyActors.Contains(update.ID))return false;
+                try{if(update.Data.HasWorldMatrix)ops.Add(new Op{Kind=OpKind.Matrix,Id=update.ID,Matrix=update.Data.WorldMatrix});}finally{update.Data.Clean();}return true;
             case MyRenderMessageEnum.UpdateRenderEntity:
-                var appearance=(MyRenderMessageUpdateRenderEntity)message;if(!actors.TryGetValue(appearance.ID,out var changed))return false;if(appearance.Dithering.HasValue)changed.Dither=appearance.Dithering.Value;return true;
+                var appearance=(MyRenderMessageUpdateRenderEntity)message;if(!applyActors.Contains(appearance.ID))return false;if(appearance.Dithering.HasValue)ops.Add(new Op{Kind=OpKind.Dither,Id=appearance.ID,Dither=appearance.Dithering.Value});return true;
         }
         return false;
     }
+    public void FlushMessages()
+    {
+        if(ops.Count==0)return;RequireOwner();
+        // Replay a snapshot: a failing create rethrows with the rest of the queue left for the next flush.
+        var queued=ops.ToArray();ops.Clear();
+        foreach(var op in queued)
+        {
+            switch(op.Kind)
+            {
+                case OpKind.Create:
+                    var actor=new Actor(this,op.Id,op.Size,op.Matrix,op.Flags,op.Dither,op.Clipmap){SpherizeRadius=op.SpherizeRadius,SpherizeCenter=op.SpherizeCenter};actors.Add(op.Id,actor);
+                    try{op.Clipmap.VoxelRenderDataProcessorProvider=provider;op.Clipmap.BindToActor(actor);actor.SetMatrix(op.Matrix);}catch{actors.Remove(op.Id);actor.Dispose();throw;}break;
+                case OpKind.Materials:Materials.Update(op.Materials,op.Create);break;
+                case OpKind.Preload:Materials.Preload(op.Preload);break;
+                case OpKind.Remove:if(actors.TryGetValue(op.Id,out var removed)){removed.Dispose();actors.Remove(op.Id);}break;
+                case OpKind.Matrix:if(actors.TryGetValue(op.Id,out var moved))moved.SetMatrix(op.Matrix);break;
+                case OpKind.Dither:if(actors.TryGetValue(op.Id,out var changed))changed.Dither=op.Dither;break;
+            }
+        }
+    }
     public void Update(MatrixD cameraWorld,BoundingFrustumD frustum,float far,bool smooth)
     {
-        RequireOwner();foreach(var actor in actors.Values.ToArray())
+        RequireOwner();FlushMessages();foreach(var actor in actors.Values.ToArray())
         {actor.Clipmap.DoVisibilityUpdates=true;if(MyClipmap.EnableUpdate)actor.Clipmap.Update(ref cameraWorld,frustum,far,smooth);}
     }
     public float ProbeDrawDistance,ShadowDrawDistance;
@@ -96,7 +124,7 @@ public sealed partial class VulkanVoxels : IDisposable
     void MarkVisible(HashSet<uint> visible,uint id){if(visible!=null)visible.Add(id);else aheadVisible.Add(id);}
     public void BeginPlan(Vector3D camera,BoundingFrustumD frustum)
     {
-        RequireOwner();DropPlan();
+        RequireOwner();FlushMessages();DropPlan();
         if(!FastPathEnabled||!PlanAheadEnabled||!backend.WorldLayouts.TryGetValue(20,out var single)||!backend.WorldLayouts.TryGetValue(21,out var triple))return;
         // First use of a layout fills shared reflection caches; do it on this thread.
         VoxelObjectConstants.Warm(single);VoxelObjectConstants.Warm(triple);
@@ -106,7 +134,7 @@ public sealed partial class VulkanVoxels : IDisposable
     void RecycleConstants(CellDraw item){for(int i=0;i<item.PartCount;i++)ReflectedConstantBuffer.Recycle(partConstants[item.PartStart+i]);}
     public void Draw(Vector3D camera,BoundingFrustumD frustum,HashSet<uint> visible)
     {
-        RequireOwner();
+        RequireOwner();FlushMessages();
         if(planTask!=null&&planCamera==camera){var task=planTask.Value;planTask=null;task.Wait();
             if(emittedAhead){emittedAhead=false;backend.SpliceEmitter(emitter);foreach(uint id in aheadVisible)visible.Add(id);EmitAheadFrames++;return;}
             if(EmitAheadEnabled)EmitAheadFallbacks++;
@@ -206,7 +234,7 @@ public sealed partial class VulkanVoxels : IDisposable
     }
     struct CellDraw {public Actor Actor;public Cell Cell;public MatrixD Matrix;public double Distance;public bool Outside,OutsideProbe,Casts;public Vector3 Origin;public float Radius;public uint Cascades;public int PartStart,PartCount;}
     readonly List<CellDraw> cellScratch=new();readonly List<MyVoxelMaterialTriple> frameMaterials=new();readonly List<Part> retiredParts=new();readonly List<byte[]> partConstants=new();
-    public void Clear(){RequireOwner();foreach(var actor in actors.Values.ToArray())actor.Dispose();actors.Clear();Foliage.Clear();Materials.ClearResident();}
+    public void Clear(){RequireOwner();ops.Clear();applyActors.Clear();foreach(var actor in actors.Values.ToArray())actor.Dispose();actors.Clear();Foliage.Clear();Materials.ClearResident();}
     public void Dispose(){Clear();Foliage.Dispose();Materials.Dispose();}
     private sealed class Part {public NativeBackend.WorldRecipe Recipe;public ulong Mesh;public MyVoxelMaterialTriple Material;public MyVertexFormatVoxelSingleData[] Vertices;public uint[] Indices;public List<VulkanFoliage.Stream> Foliage;public int FoliageVersion;public float Density;}
     private sealed class Actor : IMyVoxelActor,IDisposable

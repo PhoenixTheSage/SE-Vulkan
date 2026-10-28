@@ -2592,3 +2592,76 @@ messages in Apply and draws in Build's lighting setup.
 3. Voxels.
 4. Texture cache and media.
 5. Profilers.
+
+## Phase 4 frame split, milestone 4, slice 3: voxels (2026-10-27)
+
+### What changed
+
+Voxels (actors, clipmap cells and their native meshes) are Build state now.
+The game's clipmap callbacks create, delete and show cells and swap meshes,
+which frees the old native meshes. Build plans (on a worker), emits and draws
+from those same cells.
+
+- **Voxel messages are queued.** Create, remove, matrix and dither, and
+  material create, update and preload run in Apply: `Process` validates them
+  against an Apply ID set, copies the payload and queues it in issue order.
+  `FlushMessages` replays the queue on the owner at the start of `Update`,
+  `BeginPlan` and `Draw`. The dispatch return values (handled or not) still
+  come from the Apply ID set.
+- **The clipmap update runs at the start of Build,** after particles and
+  decals are submitted, with the camera inputs carried in the frame packet.
+  When no frame is built it runs on the render thread, because the loading
+  screen only advances inside `Clipmap.Update`.
+- **The external depth revision** (voxel mesh and LOD changes, which
+  invalidate occlusion) is set in Build right after the update, so it
+  matches what Apply used to read.
+- **`BindOwnerThread`** hands the owner check to whichever thread runs the
+  update, including unload's `Clear`.
+- **Test updates:**
+  - VoxelGpuTests and GuestDepthGpuTests call `FlushMessages()` after
+    messages whose effect they use straight away (clipmap actor binding,
+    unload).
+  - VoxelGpuTests' first check asserted 54 world pipelines, a count from
+    before the distance-fade and voxel variants. It now asserts 620, the
+    count WorldPassGpuTests asserts after the same setup. It then passes 51
+    checks under validation, including the voxel actor binding, the clipmap
+    update and unload.
+  - StaticDecalGpuTests has the same stale 54 and is not updated here.
+
+### Gates
+
+- **Verify mode, 0 mismatches:** orbit `Vulkan-41ce797f…` (53.16 million
+  checks) and interior `Vulkan-ff0c00fc…` (52.69 million).
+- **Same-process lane** (`ApplyBuildOrder` old/new/old, `Vulkan-f07e5df2…`):
+  - `packets.sig` is `A80773F0EFB164E0` (2,126 packets) in all three phases;
+  - every other artifact is byte-identical;
+  - view noise is 288 pixels against a 164-pixel return floor, with max delta
+    21 against 21.
+- **GPU suites under validation:** NativePass 126, SceneSubmission 267,
+  ShadowOcclusion 36, Probe 427, WorldPass 542/542, Interop 16, HudBillboard
+  with 0 validation errors, BillboardPacket 43, DepthGeometry 41, GuestDepth
+  1,900, Voxel 51.
+- **Validation gameplay run** `Vulkan-f7d7a64a…`: validation enabled, 0 errors.
+
+### The timing run
+
+The single CpuDetail run of this batch (`Vulkan-6f8c14b6…`) drew an 8.69 ms
+interval. The previous two batches drew 7.01 ms (slice 2) and 6.01 ms
+(slice 1).
+
+| Phase (wall ms per frame) | Slice 1 | Slice 2 | Slice 3 |
+|---|---|---|---|
+| Draw | 5.40 | 6.28 | 7.76 |
+| Messages | 0.365 | 0.448 | 0.514 |
+| QueueWorld | 0.648 | 0.771 | 1.028 |
+| Clipmaps (moved in this slice) | 0.110 | 0.113 | 0.086 |
+
+The slowdown is close to uniform across phases these slices never touched,
+and the phase this slice moved got cheaper. That points to machine state
+(load, clocks, temperature), not the code. Single unpaired runs cannot
+settle it; a paired NP run against the pre-split commit would.
+
+### Remaining in milestone 4
+
+4. Texture cache and media.
+5. Profilers.
