@@ -257,8 +257,10 @@ public sealed class MyVulkanRender : IMyRender
             try{frame=ApplyFrame(draw);}
             catch{EndOpenUploads();throw;}
             if(frame==null){EndOpenUploads();return;}
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Handoff)){
             if(frame.DrawScene&&frame.ApplyBuildOrder)scene.LatchFrame();
-            sprites.LatchMain();particles.LatchQueue();decals.LatchPackets();postprocess.Latch();probes.Latch();shadows.Latch();environment.Latch();media?.FlushRemovals();
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HandoffLatches)){sprites.LatchMain();particles.LatchQueue();decals.LatchPackets();postprocess.Latch();probes.Latch();shadows.Latch();environment.Latch();media?.FlushRemovals();}
+            }
             BuildFrame(frame);
             PublishVisible();
         }
@@ -324,9 +326,11 @@ public sealed class MyVulkanRender : IMyRender
             try
             {
             // Packet collection belongs to Build; the particle and decal output Apply produced joins it here.
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.BuildPrologue)){
             backend.CameraPosition = camera;
-            backend.BeginPacketCollection();
-            particles.SubmitQueued();decals.SubmitPackets();
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PrologueCollection))backend.BeginPacketCollection();
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PrologueSubmit)){particles.SubmitQueued();decals.SubmitPackets();}
+            }
             UpdateVoxels(frame.HaveCamera,frame.CameraWorld,frame.VoxelFrustum,frame.VoxelFar,frame.CameraSmooth);
             // The occlusion revision follows this frame's voxel changes (the update above).
             if(drawScene)scene.Next.ExternalDepthRevision=scene.ExternalDepthRevision=voxels.MeshUpdates+voxels.LodChanges;

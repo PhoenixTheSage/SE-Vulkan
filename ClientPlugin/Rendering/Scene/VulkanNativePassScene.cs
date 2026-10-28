@@ -57,7 +57,7 @@ public sealed partial class VulkanScene
         public readonly Dictionary<int,ulong> Levels=new();
         public readonly HashSet<ActorData> Members=new();
     }
-    private readonly HashSet<ActorData> nativePassDirty=new();
+    private HashSet<ActorData> nativePassDirty=new();
     private readonly Dictionary<(VulkanModel,string,bool,bool),PassFamily> nativePassFamilies=new();
     private readonly Dictionary<ulong,PassFamily> nativePassFamilyByHandle=new();
     private readonly Dictionary<string,uint> nativePassMaterials=new(StringComparer.Ordinal);

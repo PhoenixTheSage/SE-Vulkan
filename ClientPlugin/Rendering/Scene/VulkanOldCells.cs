@@ -20,7 +20,7 @@ public sealed partial class VulkanScene
     public bool PipelinedRecordingEnabled {get=>backend?.PipelinedRecordingEnabled??false;set{if(backend!=null)backend.PipelinedRecordingEnabled=value;}}
     // Full commits rebuild representations; pose commits (transforms, shadow
     // poses, group and exclusion changes) send only placement and flags.
-    readonly HashSet<ActorData> cellDirty=new(),cellPoseDirty=new();
+    HashSet<ActorData> cellDirty=new(),cellPoseDirty=new();
     bool cellsActive;int cellPolicy=-1;uint cellRecipeRevision;
     int ownedCells;
     public int NativeCellCount=>ownedCells;

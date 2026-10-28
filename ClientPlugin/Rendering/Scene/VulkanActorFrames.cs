@@ -24,13 +24,21 @@ public sealed partial class VulkanScene
         MatrixD inverse;int inverseIndex=-1;
         // Build-only cache of the inverse world matrix (the game's MyActor.WorldMatrixInv).
         public MatrixD WorldInv{get{if(inverseIndex!=WorldIndex){MatrixD.Invert(ref World,out inverse);inverseIndex=WorldIndex;}return inverse;}}
+        // An actor not marked since the other slot was refreshed: its state is that slot's (the inverse cache stays
+        // keyed by WorldIndex).
+        public void CopyFrom(ActorFrame source)
+        {
+            World=source.World;WorldIndex=source.WorldIndex;ForwardScale=source.ForwardScale;LocalAabb=source.LocalAabb;HasLocalAabb=source.HasLocalAabb;
+            HasParent=source.HasParent;Visible=source.Visible;Destroyed=source.Destroyed;Bounds=source.Bounds;GroupRoot=source.GroupRoot;
+        }
         // MyActor.CalculateCameraDistanceSquared for a parented actor.
         public float ParentedCameraDistanceSquared(Vector3D camera)=>(float)LocalAabb.DistanceSquared(Vector3D.Transform(camera,WorldInv));
     }
     int applyParity,buildParity;
     // Actors whose frame may have changed: everything RefreshSpatialIndex drains (transform, geometry, visibility
     // and parent changes reach it, including descendants), plus creation and removal. An actor is refreshed in the
-    // frame it is noted and in the next one, so both parity slots catch up; everything else keeps its frames.
+    // frame it is noted; in the next one (if not noted again) its other slot, refreshed then, is copied, so both
+    // parity slots catch up; everything else keeps its frames.
     HashSet<ActorData> frameDirty=new(),frameDirtyPrevious=new();
     void NoteActorFrame(ActorData data)=>frameDirty.Add(data);
     ActorFrame BuildFrameOf(ActorData data)=>data.Frames[buildParity];
@@ -39,7 +47,7 @@ public sealed partial class VulkanScene
         using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorSnapshot);
         int slot=applyParity;
         foreach(var data in frameDirty)RefreshActorFrame(data.Frames[slot],data);
-        foreach(var data in frameDirtyPrevious)if(!frameDirty.Contains(data))RefreshActorFrame(data.Frames[slot],data);
+        foreach(var data in frameDirtyPrevious)if(!frameDirty.Contains(data))data.Frames[slot].CopyFrom(data.Frames[slot^1]);
         frameDirtyPrevious.Clear();(frameDirty,frameDirtyPrevious)=(frameDirtyPrevious,frameDirty);
     }
     void RefreshActorFrame(ActorFrame frame,ActorData data)

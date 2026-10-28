@@ -575,7 +575,7 @@ namespace ClientPlugin.Rendering.Scene
         public void BuildScene(NativeBackend target)
         {
             using var sceneProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene);
-            FlushBuildOps();
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.BuildOps))FlushBuildOps();
             sizeCullStats=new ActorSizeCullStats{Enabled=ActorSizeCullingEnabled?1u:0u};
             newViewStats=new NewActorViewStats{Enabled=NewActorViewsEnabled?1u:0u};
             viewEligibilityStats=new ViewEligibilityStats{Enabled=ViewEligibilityEnabled?1u:0u};
@@ -1249,10 +1249,12 @@ namespace ClientPlugin.Rendering.Scene
             private readonly VulkanScene scene;
             public VulkanLightComponent(VulkanScene scene) { this.scene = scene;FlareId=++scene.nextFlareId; }
             public readonly ulong FlareId;
+            // Bumped by UpdateData, the only writer of Data and EffectiveData (the light snapshot copies on change).
+            public uint DataRevision;
             public Vector3D Position => Owner.WorldMatrix.Translation;
             public override void UpdateData(ref UpdateRenderLightData data)
             {
-                m_originalData = data; m_data = data;
+                m_originalData = data; m_data = data; DataRevision++;
                 if (data.Glare.Glares != null)
                 {
                     m_originalData.Glare.Glares = (MySubGlare[])data.Glare.Glares.Clone();

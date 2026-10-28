@@ -2856,3 +2856,108 @@ runs:
 
 Milestone 6, the build thread behind `SE_VULKAN_FRAME_SPLIT=1`, or first the
 hand-off and snapshot trims above.
+
+## Phase 4 frame split: pricing and trimming the single-thread cost (2026-10-28)
+
+### Pricing it
+
+New CpuDetail phases cover work the split added that no phase measured:
+- `Handoff`, split into:
+  - `HandoffFields`: `SyncBuildActors` and `FoldActorFields`;
+  - `HandoffSceneState`;
+  - `HandoffDirty`: the settings latch and the dirty-set folds;
+  - `HandoffLatches`: the subsystem latches;
+- `LightSnapshot`;
+- `BuildPrologue`, split into `PrologueCollection` (`BeginPacketCollection`)
+  and `PrologueSubmit` (the particle and decal submit);
+- `BuildOps` (`FlushBuildOps`).
+
+First same-session CpuDetail pair, current `Vulkan-12613c83…` against
+pre-split `Vulkan-c7f79605…` (run 1 of each; run 3 failed and run 4 was
+disturbed):
+- Draw: 7.57 against 7.08 ms.
+- The split's phases: hand-off 0.183, light snapshot 0.150, actor snapshot
+  0.087, Build prologue 0.257.
+- Native waits are not the cause: 1,509 pipelined waits in 9,029 frames,
+  nearly all texture uploads.
+- Allocation is unchanged (about 300 KB per frame).
+
+**Cross-session CpuDetail runs cannot attribute this.** Comparing with the
+2026-10-27 runs moved whole frames by 1.5 ms.
+
+### The trims
+
+- **Light snapshot.**
+  - `VulkanLightComponent.DataRevision` is bumped in `UpdateData`, the only
+    writer of `Data` and `EffectiveData`; the decompiled `MyLightComponent`
+    never writes `m_data`.
+  - The snapshot copies the two `UpdateRenderLightData` structs only when the
+    revision moved.
+  - It copies the owner's world matrix only when `WorldMatrixIndex` moved.
+- **Actor snapshot.** An actor noted last frame but not this one used to be
+  recomputed: world matrix, visibility and group-root parent walks. Now
+  `ActorFrame.CopyFrom` copies the other parity slot, which was refreshed
+  from the same, unchanged state one frame earlier.
+- **Dirty-set folds.** `FoldDirty` swaps Build's and Apply's native-pass,
+  cell, cell-pose and GPU dirty sets when Build's is empty, instead of
+  `UnionWith` plus `Clear`. Apply sets only ever Add and Clear, so the
+  contents and the iteration order are identical.
+
+### Results
+
+After the first two trims (single CpuDetail run `Vulkan-ed583bd9…`, verify
+`Vulkan-8695fa3f…` with 0 mismatches in 42.9 million checks):
+- light snapshot 0.150 → 0.061;
+- actor snapshot 0.087 → 0.061;
+- hand-off 0.145 (fields 0.048, dirty sets and settings 0.085);
+- prologue 0.227 (`BeginPacketCollection` 0.196).
+
+**`BeginPacketCollection` is not new.** At `8588f01` it ran at the same point
+of Draw outside any phase.
+
+Gate batch with all three trims:
+- **Verify:** 0 mismatches. Orbit `Vulkan-f308b16d…` 32.9 million checks,
+  interior `Vulkan-d5146466…` 44.8 million.
+- **Lane** `Vulkan-65d1bd48…`: `packets.sig` identical in all three phases.
+- **GPU suites under validation:** NativePass 126, SceneSubmission 267,
+  ShadowOcclusion 36, Probe 427, WorldPass 542/542, Interop 18 (19 with the
+  gate), HudBillboard 0 errors, BillboardPacket 43, DepthGeometry 41,
+  GuestDepth 1,900, Voxel 51, Sprite 29.
+- **VAL** `Vulkan-2e44aabc…`: 0 errors.
+- **CpuDetail pair.** The box ran about 13% slower than for the first pair.
+
+  | Run | Present ms | Draw ms |
+  |---|---|---|
+  | Current `Vulkan-6106dc10…` | 9.63 | 8.57 |
+  | Pre-split `Vulkan-5bb37792…` | 9.12 | 8.09 |
+  | Pre-split `Vulkan-fd96fedc…` (disturbed, P95 16.7) | 10.88 | 9.60 |
+  | Current `Vulkan-f32771e1…` | 9.76 | 8.69 |
+
+  The split's own phases in current run 1:
+
+  | Phase | ms/frame |
+  |---|---|
+  | `Handoff` | 0.163: fields 0.075, dirty sets and settings 0.074, latches 0.002 |
+  | `ActorSnapshot` | 0.096 |
+  | `LightSnapshot` | 0.079 |
+  | `PrologueSubmit` (moved from `ParticleDraw`, -0.073) | 0.036 |
+  | `BuildOps` | 0.019 |
+
+  Apply-side marks: shadow poses +0.045, spatial index +0.024, messages
+  +0.023. Occlusion is 0.11 ms cheaper, because its bounds refresh moved to
+  the incremental Build-side path.
+
+**Reading:**
+- The Draw gap is still about 0.49 ms: 6% of Draw here, 7% in the first pair.
+  Normalized for the slower box, the trims recovered about 0.05–0.1 ms, which
+  is inside single-pair noise.
+- The light snapshot is the clear win: 0.150 → 0.079 on a slower box.
+- What remains is the copy cost of the hand-off itself. It is spread over a
+  dozen sites, none above 0.1 ms.
+- Milestone 6 moves about 2.3 ms of Apply off Build's critical path, against
+  this 0.5 ms. Further one-thread trimming is low-value unless the split
+  stays off by default.
+
+### Next
+
+Milestone 6, the build thread behind `SE_VULKAN_FRAME_SPLIT=1`.

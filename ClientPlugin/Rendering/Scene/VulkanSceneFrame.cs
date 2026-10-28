@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using ClientPlugin.Diagnostics;
 using ClientPlugin.Rendering.Interop;
 using VRage.Render.Scene;
 using VRageMath;
@@ -51,20 +52,26 @@ public sealed partial class VulkanScene
     {
         public VulkanLightComponent Light;public uint OwnerId;public bool HasOwner,Destroyed,Visible;public MatrixD World;
         public VRageRender.Messages.UpdateRenderLightData Data,Effective;
+        // The light's DataRevision and the owner's WorldMatrixIndex as of the copies above.
+        public uint Revision;public int WorldIndex=-1;
     }
     // End of Apply: copy every light's owner state and data into the Apply light frame.
     void SnapshotLights()
     {
+        using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightSnapshot);
         var frame=applyLights;frame.Count=0;
         foreach(var light in lights)
         {
             if(frame.Count==frame.All.Count)frame.All.Add(new LightSnapshot());
             var snapshot=frame.All[frame.Count++];var owner=light.Owner;
+            bool same=ReferenceEquals(snapshot.Light,light);
             snapshot.Light=light;snapshot.HasOwner=owner!=null;snapshot.Destroyed=owner?.IsDestroyed??true;snapshot.Visible=owner!=null&&IsVisible(owner);
-            snapshot.OwnerId=owner!=null&&!owner.IsDestroyed?owner.ID:0;snapshot.World=owner!=null&&!owner.IsDestroyed?owner.WorldMatrix:MatrixD.Identity;
-            snapshot.Data=light.Data;snapshot.Effective=light.EffectiveData;
+            bool live=owner!=null&&!owner.IsDestroyed;snapshot.OwnerId=live?owner.ID:0;
+            if(!live){snapshot.World=MatrixD.Identity;snapshot.WorldIndex=-1;}
+            else{int index=owner.WorldMatrixIndex;if(!same||index!=snapshot.WorldIndex||snapshot.WorldIndex<0){snapshot.World=owner.WorldMatrix;snapshot.WorldIndex=index;}}
+            if(!same||snapshot.Revision!=light.DataRevision){snapshot.Data=light.Data;snapshot.Effective=light.EffectiveData;snapshot.Revision=light.DataRevision;}
         }
-        for(int i=frame.Count;i<frame.All.Count;i++)frame.All[i].Light=null;
+        for(int i=frame.Count;i<frame.All.Count;i++){frame.All[i].Light=null;frame.All[i].WorldIndex=-1;}
     }
     LightFrame applyLights=new(),buildLights=new();
     // True on the thread running Build (BeginBuild to EndBuild, or to the next UpdateScene); code shared by both
@@ -74,6 +81,7 @@ public sealed partial class VulkanScene
     internal Vector3D SideCamera=>building?FrameView.CameraPosition:Environment.CameraPosition;
     public void LatchFrame()
     {
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HandoffDirty)){
         RenderSettings=Next.RenderSettings;ShadowSettings=Next.ShadowSettings;
         ProbeDrawDistance=Next.ProbeDrawDistance;ShadowDrawDistance=Next.ShadowDrawDistance;HighlightSepia=Next.HighlightSepia;ExternalDepthRevision=Next.ExternalDepthRevision;
         frustum=Next.Frustum;lodFov=Next.LodFov;groupNear=Next.GroupNear;
@@ -81,6 +89,7 @@ public sealed partial class VulkanScene
         FrameView=Environment;
         (applyLights,buildLights)=(buildLights,applyLights);
         LatchActorFrames();
+        }
         FoldApplyState();
     }
     public void EndBuild()=>building=false;

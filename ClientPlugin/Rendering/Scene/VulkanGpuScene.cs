@@ -13,7 +13,7 @@ using VRageRender.Import;
 
 namespace ClientPlugin.Rendering.Scene;
 public sealed partial class VulkanScene {
-    readonly HashSet<ActorData> gpuDirty=new();
+    HashSet<ActorData> gpuDirty=new();
     readonly Dictionary<(VulkanModel,string,uint),ulong> gpuFamilies=new();
     readonly Dictionary<byte[],ulong> gpuSources=new();
     readonly Dictionary<ulong,HashSet<string>> gpuFamilyMaterials=new();

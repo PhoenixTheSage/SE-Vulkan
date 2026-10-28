@@ -29,7 +29,7 @@ public static class RendererCpuProfiler
         NativePassPublish, NativePassFallbacks, NativePassEndVisibility,
         GpuFrameInputs, GpuTopologyPublication, GpuResidentQueue, GpuRootQueries,
         GpuVisibilityPublication,
-        MainOwnerDeclare, NewViewSpots, NewViewSelect, DrawWorldSetup, PreparedAppend, CandidatePlan, CellCommits, CellPublish, OffscreenTargets, OffscreenNative, VoxelCull, VoxelMaterials, VoxelEmit, Flares, Billboards, ParticleDraw, DecalDraw, EnvironmentDraw, GuestPreparation, PostprocessConfigure, ProbesConfigure, ProbeAmbient, ProbeFaceFrames, ProbeNative, GuestFrame, OcclusionBounds, OcclusionResults, PublicationJoin, ActorSnapshot, Count
+        MainOwnerDeclare, NewViewSpots, NewViewSelect, DrawWorldSetup, PreparedAppend, CandidatePlan, CellCommits, CellPublish, OffscreenTargets, OffscreenNative, VoxelCull, VoxelMaterials, VoxelEmit, Flares, Billboards, ParticleDraw, DecalDraw, EnvironmentDraw, GuestPreparation, PostprocessConfigure, ProbesConfigure, ProbeAmbient, ProbeFaceFrames, ProbeNative, GuestFrame, OcclusionBounds, OcclusionResults, PublicationJoin, ActorSnapshot, LightSnapshot, Handoff, BuildPrologue, BuildOps, HandoffFields, HandoffSceneState, HandoffDirty, HandoffLatches, PrologueCollection, PrologueSubmit, Count
     }
     public static bool Enabled {get;}=Environment.GetEnvironmentVariable("SE_VULKAN_CPU_DETAIL")=="1";
     static readonly Counter[] Current=new Counter[(int)Phase.Count];

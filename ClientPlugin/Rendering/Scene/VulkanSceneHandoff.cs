@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using ClientPlugin.Diagnostics;
 using VRageMath;
 
 namespace ClientPlugin.Rendering.Scene;
@@ -21,7 +22,14 @@ public sealed partial class VulkanScene
     readonly Dictionary<uint,ActorData> buildActors=new();
     readonly List<(uint Id,ActorData Data)> actorLog=new();
     // Apply-side dirty marks, folded into the Build sets by LatchFrame.
-    readonly HashSet<ActorData> applyPassDirty=new(),applyCellDirty=new(),applyCellPoseDirty=new(),applyGpuDirty=new(),applyGroupDirty=new();
+    HashSet<ActorData> applyPassDirty=new(),applyCellDirty=new(),applyCellPoseDirty=new(),applyGpuDirty=new();readonly HashSet<ActorData> applyGroupDirty=new();
+    // Folds an Apply dirty set into Build's and leaves the Apply set empty. Apply sets only ever Add and Clear, so when
+    // Build's set is empty, swapping gives the same contents and iteration order as UnionWith, without the copy.
+    static void FoldDirty(ref HashSet<ActorData> build,ref HashSet<ActorData> apply)
+    {
+        if(build.Count==0){(build,apply)=(apply,build);return;}
+        build.UnionWith(apply);apply.Clear();
+    }
     bool applyMembershipDirty;long applyVisibilityRevision;
     const byte DirtyGpuBinding=1,DirtyGpuAppearance=2,DirtyPassBinding=4,DirtyPassAppearance=8;
     void LogActor(uint id,ActorData data)=>actorLog.Add((id,data));
@@ -33,17 +41,17 @@ public sealed partial class VulkanScene
     void MarkMembershipDirty(){if(building)groupMembershipDirty=true;else applyMembershipDirty=true;}
     void FoldApplyState()
     {
-        SyncBuildActors();
-        FoldActorFields();
-        FoldSceneState();
-        nativePassDirty.UnionWith(applyPassDirty);cellDirty.UnionWith(applyCellDirty);cellPoseDirty.UnionWith(applyCellPoseDirty);
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HandoffFields)){SyncBuildActors();FoldActorFields();}
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HandoffSceneState))FoldSceneState();
+        using var dirty=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HandoffDirty);
+        FoldDirty(ref nativePassDirty,ref applyPassDirty);FoldDirty(ref cellDirty,ref applyCellDirty);FoldDirty(ref cellPoseDirty,ref applyCellPoseDirty);
         foreach(var actor in applyGpuDirty)
         {
-            gpuDirty.Add(actor);byte bits=actor.ApplyDirtyBits;actor.ApplyDirtyBits=0;
+            byte bits=actor.ApplyDirtyBits;actor.ApplyDirtyBits=0;
             actor.GpuBindingDirty|=(bits&DirtyGpuBinding)!=0;actor.GpuAppearanceDirty|=(bits&DirtyGpuAppearance)!=0;
             actor.PassBindingDirty|=(bits&DirtyPassBinding)!=0;actor.PassAppearanceDirty|=(bits&DirtyPassAppearance)!=0;
         }
-        applyPassDirty.Clear();applyCellDirty.Clear();applyCellPoseDirty.Clear();applyGpuDirty.Clear();
+        FoldDirty(ref gpuDirty,ref applyGpuDirty);
         foreach(var data in applyGroupDirty)DirtyGroupNow(data);applyGroupDirty.Clear();
         if(applyMembershipDirty){groupMembershipDirty=true;applyMembershipDirty=false;}
         visibilityRevision+=applyVisibilityRevision;applyVisibilityRevision=0;
