@@ -26,7 +26,7 @@ namespace ClientPlugin.Rendering.Interop;
 [StructLayout(LayoutKind.Sequential,Pack=8)]public struct NativePassTransparent {public ulong Actor;public uint Owner,Lod;public float Alpha;public uint Reserved;}
 [StructLayout(LayoutKind.Sequential,Pack=8)]public struct NativePassFallback {public ulong Actor;public uint Owner,Reserved;public NativePassLod Lod;public uint Padding;}
 [StructLayout(LayoutKind.Sequential,Pack=8)]public struct NativePassGroupAudit {public uint View,Kind,Shader,First,Count,Instances,OwnerOffset,Flags;public ulong Mesh,Color,Normal,Extensions,Alpha;}
-[StructLayout(LayoutKind.Sequential,Pack=8)]public struct NativePassProfile {public uint Size,AbiVersion;public ulong Prepares,Publishes,CommittedActors,SelectedActors,EmittedRows,StreamBytes,Groups;public double CommitsUs,PrepareUs,RequestsUs,PublishUs,EmitUs,SpotsUs;public ulong AppearanceEntries;public double ActorParseUs,ActorApplyUs;}
+[StructLayout(LayoutKind.Sequential,Pack=8)]public struct NativePassProfile {public uint Size,AbiVersion;public ulong Prepares,Publishes,CommittedActors,SelectedActors,EmittedRows,StreamBytes,Groups;public double CommitsUs,PrepareUs,RequestsUs,PublishUs,EmitUs,SpotsUs;public ulong AppearanceEntries;public double ActorParseUs,ActorApplyUs,SelectUs,MergeUs,SettleUs;public ulong BatchCacheMisses,BatchCacheEntries;}
 public sealed class NativePassPreparation {public NativePassQuery[] Queries;public NativePassMissing[] Missing;public NativePassFallback[] Fallbacks;}
 // Reused per frame by publication: arrays keep their capacity; the counts say how much is valid.
 public sealed class NativePassPreparationBuffer {public NativePassQuery[] Queries=Array.Empty<NativePassQuery>();public NativePassMissing[] Missing=Array.Empty<NativePassMissing>();public NativePassFallback[] Fallbacks=Array.Empty<NativePassFallback>();public int QueryCount,MissingCount,FallbackCount;}
@@ -56,6 +56,10 @@ public sealed partial class NativeBackend {
     PassAuditFn passAudit;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int PassProfileFn(IntPtr ctx,uint enable,ref NativePassProfile profile);
     PassProfileFn passProfile;
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int PassToggleFn(IntPtr ctx,uint enable);
+    PassToggleFn passBatchCache;
+    // Native publication batch cache (plan item 1b); the frozen-light lane flips it in-process to prove identical output.
+    public void SetPassBatchCache(bool enable){passBatchCache??=PassFunction<PassToggleFn>("sevk_pass_set_batch_cache");Check(passBatchCache(context,enable?1u:0u),context);}
     T PassFunction<T>(string name)where T:Delegate=>(T)Marshal.GetDelegateForFunctionPointer(GetSymbol(name),typeof(T));
     public void ConfigureNativePasses(VulkanShaderLibrary library){
         if(NativePassReady)return;if(!WorldReady)throw new InvalidOperationException("Configure world before native pass models.");

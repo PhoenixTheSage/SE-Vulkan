@@ -283,14 +283,20 @@ public sealed class MyVulkanRender : IMyRender
             {
                 var frame=ApplyFrame(draw);
                 JoinBuild();
-                PublishVisible();
-                if(frame==null){presentHere=true;return;}
-                Handoff(frame);
-                // Once a second, with Build joined: its native reads may wait for the recording in flight.
-                SampleDiagnostics();
-                if(captures.Count>0){presentHere=true;backend.BeginUploads();uploadsOpen=true;BuildFrame(frame);return;}
-                var laps=FrameProfiler.Current;FrameProfiler.Detach();
-                buildThread.Launch(()=>BuildOnThread(frame,laps));
+                // Serial section: neither thread builds from the join to the launch, so only what the launch needs
+                // runs here. Build(N)'s visible set swaps out and is published after the launch.
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.SplitSerial))
+                {
+                    (frameVisible,publishedVisible)=(publishedVisible,frameVisible);
+                    if(frame==null){presentHere=true;PublishVisible(publishedVisible);return;}
+                    Handoff(frame);
+                    // Once a second, with Build joined: its native reads may wait for the recording in flight.
+                    SampleDiagnostics();
+                    if(captures.Count>0){presentHere=true;PublishVisible(publishedVisible);backend.BeginUploads();uploadsOpen=true;BuildFrame(frame);return;}
+                    var laps=FrameProfiler.Current;FrameProfiler.Detach();
+                    buildThread.Launch(()=>BuildOnThread(frame,laps));
+                }
+                PublishVisible(publishedVisible);
             }
         }
         catch (Exception error) { Fatal(error); throw; }
@@ -320,13 +326,14 @@ public sealed class MyVulkanRender : IMyRender
             if(frame==null){EndOpenUploads();return;}
             Handoff(frame);
             BuildFrame(frame);
-            PublishVisible();
+            PublishVisible(frameVisible);
         }
         catch (Exception error) { Fatal(error); throw; }
     }
     // The objects Build saw this frame, published to the game's visible set (committed by AfterRender) at the hand-off.
-    readonly HashSet<uint> frameVisible=new();
-    void PublishVisible(){var write=SharedData.VisibleObjects.Write;foreach(uint id in frameVisible)write.Add(id);frameVisible.Clear();}
+    // Split: Build fills frameVisible while the render thread publishes the previous Build's set (publishedVisible).
+    HashSet<uint> frameVisible=new(),publishedVisible=new();
+    void PublishVisible(HashSet<uint> set){var write=SharedData.VisibleObjects.Write;foreach(uint id in set)write.Add(id);set.Clear();}
     void EndOpenUploads(){if(!uploadsOpen)return;uploadsOpen=false;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads();}
     // Apply: everything that consumes the game's update frame. Returns the frame for Build, or null when nothing is drawn.
     FramePacket ApplyFrame(bool draw)
@@ -598,8 +605,16 @@ public sealed class MyVulkanRender : IMyRender
     private void Process(MyRenderMessageBase message)
     {
         annotation = (int)message.MessageType;
-        // Split: these touch Build state directly (clears, device and render settings); every handler sees them joined.
-        if (buildThread != null && (message.MessageType == MyRenderMessageEnum.UnloadData || message.MessageType == MyRenderMessageEnum.SwitchRenderSettings || message.MessageType == MyRenderMessageEnum.SwitchDeviceSettings)) JoinBuild();
+        // Split: these touch Build state directly (clears, device and render settings), or replace and unload native
+        // textures (generated textures, texture unloads) that Build's frame and its upload batch may use; every
+        // handler sees them joined. All are rare (load, unload, settings), so the join costs no steady-state overlap.
+        if (buildThread != null && message.MessageType switch
+            {
+                MyRenderMessageEnum.UnloadData or MyRenderMessageEnum.SwitchRenderSettings or MyRenderMessageEnum.SwitchDeviceSettings
+                    or MyRenderMessageEnum.CreateGeneratedTexture or MyRenderMessageEnum.ResetGeneratedTexture or MyRenderMessageEnum.DestroyGeneratedTexture
+                    or MyRenderMessageEnum.UnloadTexture or MyRenderMessageEnum.UnloadTextures => true,
+                _ => false
+            }) JoinBuild();
         probes.Process(message);shadows.Process(message);if(message.MessageType==MyRenderMessageEnum.UnloadData)postprocess.Process(message);
         decals?.Observe(message);if(decals!=null&&decals.Process(message)){VulkanDiagnostics.Message(message.MessageType,MessageDisposition.Handler);return;}
         if(particles!=null && particles.Process(message)){VulkanDiagnostics.Message(message.MessageType,MessageDisposition.Handler);return;}

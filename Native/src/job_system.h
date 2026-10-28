@@ -42,6 +42,17 @@ inline void raise_worker_priority(std::thread& thread,int priority){
 #endif
 }
 enum class Priority:uint8_t {High,Normal};
+// Frame split (SE_VULKAN_FRAME_SPLIT=1): the native recording paces the frame and overlaps the next frame's Build,
+// whose publication fan-out would otherwise outrank the recording's own Normal fan-out (cascades, spots, uploads, the
+// pass packing it consumes). Under the split, jobs submitted from the pacing stage (the recording thread, and jobs
+// it fans out) run High and every other job runs Normal, in submission order. Opt-in (SE_VULKAN_RECORD_JOBS_FIRST=1):
+// the 2026-10-28 A/B measured no gain, since the recording's lap growth was not job starvation. Off the split,
+// priorities are unchanged.
+inline bool pacing_priorities(){
+    static const bool enabled=[]{const char* split=std::getenv("SE_VULKAN_FRAME_SPLIT");const char* first=std::getenv("SE_VULKAN_RECORD_JOBS_FIRST");
+        return split&&std::string(split)=="1"&&first&&std::string(first)=="1";}();
+    return enabled;}
+inline thread_local bool tl_pacing_stage=false;
 // Telemetry slots; SevkJobStats reports them in this order.
 enum Kind:uint32_t {PassView,PassPack,CellView,QueueValidate,Upload,Cascade,Spot,KindCount};
 constexpr uint32_t KindSlots=12;
@@ -75,7 +86,7 @@ public:
 };
 
 class System {
-    struct Task {std::function<void()> fn;Group* group;Kind kind;uint64_t queued_ns;};
+    struct Task {std::function<void()> fn;Group* group;Kind kind;uint64_t queued_ns;bool pacing{};};
     std::mutex mutex;std::condition_variable work_ready,done;
     std::deque<Task> queues[2];std::vector<std::thread> threads;bool stopping{};
     std::atomic<uint32_t> queued{};uint32_t sleepers{};uint64_t spin_ns=spin_ns_setting();
@@ -85,7 +96,10 @@ class System {
         uint64_t wait=start-queued;k.wait_ns+=wait;k.max_wait_ns=std::max(k.max_wait_ns,wait);k.run_ns+=end-start;}
     void execute(Task& task,bool helped){
         uint64_t start=now_ns();
+        // A pacing job's own fan-out inherits its priority (restored after, since a waiter may run this job).
+        bool outer=tl_pacing_stage;tl_pacing_stage=task.pacing||outer;
         try{task.fn();}catch(...){std::lock_guard lock(mutex);if(!task.group->failure)task.group->failure=std::current_exception();}
+        tl_pacing_stage=outer;
         record(task.kind,task.queued_ns,start,now_ns(),helped);task.fn={};
         {std::lock_guard lock(mutex);task.group->pending.fetch_sub(1,std::memory_order_acq_rel);}done.notify_all();
     }
@@ -108,7 +122,8 @@ public:
         bool wake=false;
         {std::lock_guard lock(mutex);if(stopping)throw std::runtime_error("job system stopped");
             if(group.owner&&group.owner!=this)throw std::runtime_error("job group belongs to another system");group.owner=this;
-            group.pending.fetch_add(1,std::memory_order_acq_rel);queues[priority==Priority::High?0:1].push_back({std::move(fn),&group,kind,now_ns()});queued.fetch_add(1,std::memory_order_release);
+            bool pacing=tl_pacing_stage;if(pacing_priorities())priority=pacing?Priority::High:Priority::Normal;
+            group.pending.fetch_add(1,std::memory_order_acq_rel);queues[priority==Priority::High?0:1].push_back({std::move(fn),&group,kind,now_ns(),pacing});queued.fetch_add(1,std::memory_order_release);
             wake=sleepers>0;uint32_t depth=uint32_t(queues[0].size()+queues[1].size());std::lock_guard s(stats_mutex);stats.peak_queued=std::max(stats.peak_queued,depth);}
         if(wake)work_ready.notify_one();
     }
@@ -157,11 +172,19 @@ inline void parallel_for(Kind kind,Priority priority,uint32_t lanes,uint32_t cou
 // A dedicated thread for one blocking pipeline stage at a time (recording,
 // present). start() waits for the previous task to finish; wait() joins and
 // rethrows its failure.
+// A stage spins briefly (SE_VULKAN_STAGE_SPIN_US; 300 µs under SE_VULKAN_FRAME_SPLIT=1, otherwise 0) before blocking,
+// so a start that follows within the window skips the kernel wake. Under the split the recording stage paces the
+// frame and is relaunched within about a millisecond of finishing.
+inline uint64_t stage_spin_ns(){
+    static const uint64_t ns=[]{if(const char* v=std::getenv("SE_VULKAN_STAGE_SPIN_US")){char* end{};long n=std::strtol(v,&end,10);if(end!=v&&n>=0)return uint64_t(std::min(n,5000l))*1000;}
+        const char* split=std::getenv("SE_VULKAN_FRAME_SPLIT");return split&&std::string(split)=="1"?uint64_t(300000):uint64_t(0);}();
+    return ns;}
 class Stage {
     std::mutex mutex;std::condition_variable ready,completed;std::thread thread;
-    std::function<void()> work;bool stopping{},queued{},busy{};std::exception_ptr failure;
+    std::function<void()> work;bool stopping{},queued{},busy{};std::exception_ptr failure;std::atomic<bool> signal{false};
     void worker(){for(;;){std::function<void()> task;
-        {std::unique_lock lock(mutex);ready.wait(lock,[&]{return stopping||queued;});if(stopping&&!queued)return;task=std::move(work);work={};queued=false;}
+        if(uint64_t spin=stage_spin_ns()){uint64_t until=now_ns()+spin;while(!signal.load(std::memory_order_acquire)&&now_ns()<until)cpu_relax();}
+        {std::unique_lock lock(mutex);ready.wait(lock,[&]{return stopping||queued;});if(stopping&&!queued)return;task=std::move(work);work={};queued=false;signal.store(false,std::memory_order_relaxed);}
         std::exception_ptr error;try{task();}catch(...){error=std::current_exception();}
         {std::lock_guard lock(mutex);failure=error;busy=false;}completed.notify_all();}}
 public:
@@ -171,7 +194,7 @@ public:
     bool pending(){std::lock_guard lock(mutex);return busy;}
     void start(std::function<void()> fn){
         {std::unique_lock lock(mutex);completed.wait(lock,[&]{return !busy;});if(stopping)throw std::runtime_error("stage stopped");
-            work=std::move(fn);queued=busy=true;failure=nullptr;}
+            work=std::move(fn);queued=busy=true;failure=nullptr;signal.store(true,std::memory_order_release);}
         ready.notify_one();}
     void wait(){std::exception_ptr error;{std::unique_lock lock(mutex);completed.wait(lock,[&]{return !busy;});error=failure;failure=nullptr;}if(error)std::rethrow_exception(error);}
 };

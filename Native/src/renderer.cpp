@@ -42,6 +42,8 @@
 #include <stdexcept>
 #include <string>
 #include <chrono>
+#include <map>
+#include <sstream>
 #include <unordered_map>
 // Environment switch: unset keeps fallback; "0" is off, anything else on.
 static bool env_flag(const char* name,bool fallback){const char* v=std::getenv(name);return v?std::strcmp(v,"0")!=0:fallback;}
@@ -513,6 +515,24 @@ struct Renderer {uint32_t recipe_generation=1;
     }
     // Census only: exports whose calls waited at the frame gate, and scene calls made off the frame owner.
     std::map<void*,std::pair<uint64_t,uint64_t>> gate_sites,offowner_scene_sites;std::mutex offowner_sites_mutex;
+    // Census (milestone 6 diagnosis): scene calls (call_scene) that waited for a recording to release or finish, and
+    // the api_mutex wait in front of them; ordinary-call recording waits split by lane (the frame owner, which is the
+    // build thread under the split, against every other thread).
+    uint64_t scene_waits{},scene_wait_us{},scene_lock_waits{},scene_lock_us{},owner_waits{},owner_wait_us{};
+    uint64_t upload_flushes{},upload_present_us{},upload_submit_us{},end_upload_calls{},end_upload_us{},end_upload_slow{},end_upload_in_flight{},end_upload_in_flight_us{};
+    // Census: recording waits in call() by the waiting thread's OS description (.NET publishes Thread.Name there, so
+    // the build thread reads "Vulkan frame build"), independent of which thread last began a frame.
+    std::map<std::string,std::pair<uint64_t,uint64_t>> wait_threads;
+    static const std::string& thread_label(){
+        thread_local std::string label=[]{std::string name;
+#if defined(_WIN32)
+            PWSTR description=nullptr;if(SUCCEEDED(GetThreadDescription(GetCurrentThread(),&description))&&description){for(PWSTR c=description;*c;++c)name.push_back(*c<128?char(*c):'?');LocalFree(description);}
+#endif
+            if(name.empty()){std::ostringstream id;id<<"thread "<<std::this_thread::get_id();name=id.str();}return name;}();
+        return label;}
+    std::map<void*,std::pair<uint64_t,uint64_t>> scene_wait_sites;
+    // The thread that builds frames (scene_owner persists; frame_owner clears when each frame ends).
+    bool on_frame_owner()const{auto owner=scene_owner.load(std::memory_order_relaxed);return owner!=std::thread::id{}&&owner==std::this_thread::get_id();}
     // Scene-mutating calls (call_scene, call_deferrable_scene) belong to the thread that builds frames; under the frame
     // split, Apply issues none (its native scene work moved to Build's prologue). Counted always; with
     // SE_VULKAN_SCENE_CALL_ASSERT=1 the first offender per export is printed to stderr. Pending: a pass frame or
@@ -539,7 +559,11 @@ struct Renderer {uint32_t recipe_generation=1;
     // Census only: launch->record task end, and launch->lock request for blocked calls (waits over 20 us).
     uint64_t tl_record_end_us{},tl_record_ends{},lock_request_since_launch_us{},lock_blocked{};
     // Census only: after submit -> present started, generated frame, frame generation, end_frame return, record task end.
-    uint64_t tl_post_us[5]{};std::chrono::steady_clock::time_point tl_post_at{};
+    uint64_t tl_post_us[5]{};
+    // Census of the recording's start and end: launch to stage entry, api_mutex hand-over, settle_cells, the early
+    // release, and the end-of-recording re-lock of api_mutex (held meanwhile by the next frame's scene calls).
+    uint64_t launch_lap_us[5]{};
+    std::atomic<bool> relock_wanted{false};std::chrono::steady_clock::time_point tl_post_at{};
     void tl_post(int i){auto now=std::chrono::steady_clock::now();tl_post_us[i]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(now-tl_post_at).count());tl_post_at=now;}
     std::map<void*,std::pair<uint64_t,uint64_t>> packing_wait_sites;uint64_t packing_blocked[2]{},packing_blocked_us[2]{};
     VkSurfaceKHR surface{}; VkSwapchainKHR swapchain{};
@@ -829,11 +853,14 @@ struct Renderer {uint32_t recipe_generation=1;
         publish_launch_snapshot();uint32_t predicted=snapshot.cache_mask;bool checked=snapshot.cache_valid;
         {std::lock_guard q(deferred_mutex);record_in_flight=true;}record_pending=true;tl_launch=std::chrono::steady_clock::now();tl_pipelined=true;
         record_stage.start([this,predicted,checked]{
-            std::unique_lock lock(api_mutex);record_pending=false;record_running=true;
-            tl_recording_thread=true;record_lock=&lock;if(early_release)world.recording_submission=int32_t(world.active_submission);
+            auto entered=std::chrono::steady_clock::now();launch_lap_us[0]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(entered-tl_launch).count());
+            std::unique_lock lock(api_mutex);record_pending=false;record_running=true;launch_lap_us[1]+=tl_since(entered);
+            tl_recording_thread=true;sevk_jobs::tl_pacing_stage=true;record_lock=&lock;if(early_release)world.recording_submission=int32_t(world.active_submission);
             try{end_frame();tl_post(3);++pipelined_frames;if(checked&&(shadow_image_mask&((1u<<shadow_count)-1))!=predicted)++pipelined_mask_mismatches;}
             catch(const std::exception& e){record_error=e.what();record_failed=true;}catch(...){record_error="unknown native Vulkan error";record_failed=true;}
-            if(!lock.owns_lock())lock.lock();
+            // std::mutex is not fair: the next frame's back-to-back scene calls could keep winning api_mutex while the
+            // finished recording waits for it. Scene calls see relock_wanted and yield (call_scene) until it is in.
+            if(!lock.owns_lock()){auto relock=std::chrono::steady_clock::now();relock_wanted.store(true,std::memory_order_release);lock.lock();relock_wanted.store(false,std::memory_order_release);launch_lap_us[4]+=tl_since(relock);}
             record_lock=nullptr;world.recording_submission=-1;tl_recording_thread=false;rec_view.valid=false;rec_view.groups.clear();rec_view.streams.clear();record_released.store(false,std::memory_order_release);
             {std::lock_guard s(snapshot_mutex);snapshot.work=work;}
             {std::lock_guard q(deferred_mutex);record_in_flight=false;}record_running=false;tl_post(4);tl_pipelined=false;tl_record_end_us+=tl_since(tl_launch);++tl_record_ends;lock.unlock();record_cv.notify_all();});
@@ -933,6 +960,7 @@ struct Renderer {uint32_t recipe_generation=1;
         const char* selection_env=std::getenv("SE_VULKAN_PARALLEL_SELECTION");pass_scene.scene.parallel_selection=!selection_env||std::strcmp(selection_env,"0")!=0;
         pass_scene.scene.lod_dedupe=env_flag("SE_VULKAN_PASS_LOD_DEDUPE",false);
         pass_scene.scene.view_cache=env_flag("SE_VULKAN_PASS_VIEW_CACHE",true);
+        pass_scene.scene.batch_cache=env_flag("SE_VULKAN_PASS_BATCH_CACHE",false);
         const char* packing_env=std::getenv("SE_VULKAN_ASYNC_PASS_PACKING");pass_scene.scene.set_async_packing(packing_env?std::strcmp(packing_env,"0")!=0:std::thread::hardware_concurrency()>=4);
         // The worker holds api_mutex while recording, so record_running identifies its joins.
         if(pipeline_census)pass_scene.scene.on_blocked=[this](double us){int lane=record_running?1:0;++packing_blocked[lane];packing_blocked_us[lane]+=uint64_t(us);
@@ -1966,7 +1994,8 @@ struct Renderer {uint32_t recipe_generation=1;
         critical_profile::Finish critical_finish{critical};
         critical_profile::Scope critical_record(critical_profile::RecordOwner,true);
         if (!recording) { if (suspended) return 1; throw std::runtime_error("end_frame without begin_frame"); }
-        settle_cells();release_recording_lock();
+        {auto settle=std::chrono::steady_clock::now();settle_cells();auto settled=std::chrono::steady_clock::now();release_recording_lock();
+            if(tl_pipelined){launch_lap_us[2]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(settled-settle).count());launch_lap_us[3]+=tl_since(settled);}}
         // Host guest callbacks run after BeginFrame and before EndFrame.
         // No guest resource has been referenced by this command buffer yet.
         // Close that allocation window before recording the world/guest draws.
@@ -2262,6 +2291,8 @@ template<class Fn> int32_t call(void* context, Fn&& fn) {
 #endif
     try { struct Notify{Renderer* r;~Notify(){if(r->gate_waiters)r->record_cv.notify_all();}} notify{renderer};renderer->pass_frame_gate(lock);
         if(renderer->record_pending||renderer->record_running){auto start=std::chrono::steady_clock::now();renderer->await_recording(lock);uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count());renderer->pipelined_wait_us+=us;++renderer->pipelined_waits;
+        if(renderer->on_frame_owner()){++renderer->owner_waits;renderer->owner_wait_us+=us;}
+        if(renderer->pipeline_census){auto& t=renderer->wait_threads[Renderer::thread_label()];++t.first;t.second+=us;}
 #if defined(_WIN32)
         if(renderer->pipeline_census){void* frames[3]{};CaptureStackBackTrace(0,3,frames,nullptr);for(void* frame:frames){auto& site=renderer->pipelined_wait_sites[frame];++site.first;site.second+=us;}}
 #endif
@@ -2292,10 +2323,21 @@ template<class Fn> int32_t call_scene(void* context, Fn&& fn) {
     auto* renderer = static_cast<Renderer*>(context);
     renderer->check_scene_caller("call_scene");
     if(!renderer->early_release)return call(context,std::forward<Fn>(fn));
+    while(renderer->relock_wanted.load(std::memory_order_acquire))sevk_jobs::cpu_relax();
+    auto lock_at=std::chrono::steady_clock::now();
     std::unique_lock lock(renderer->api_mutex);
     try{
-        struct Notify{Renderer* r;~Notify(){if(r->gate_waiters)r->record_cv.notify_all();}} notify{renderer};renderer->pass_frame_gate(lock);
-        renderer->record_cv.wait(lock,[&]{return !renderer->record_pending&&(!renderer->record_running||renderer->record_released.load(std::memory_order_acquire));});
+        struct Notify{Renderer* r;~Notify(){if(r->gate_waiters)r->record_cv.notify_all();}} notify{renderer};
+        if(renderer->pipeline_census){uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-lock_at).count());if(us>20){++renderer->scene_lock_waits;renderer->scene_lock_us+=us;}}
+        renderer->pass_frame_gate(lock);
+        auto ready=[&]{return !renderer->record_pending&&(!renderer->record_running||renderer->record_released.load(std::memory_order_acquire));};
+        if(renderer->pipeline_census&&!ready()){auto at=std::chrono::steady_clock::now();renderer->record_cv.wait(lock,ready);
+            uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-at).count());++renderer->scene_waits;renderer->scene_wait_us+=us;
+#if defined(_WIN32)
+            void* frames[4]{};CaptureStackBackTrace(0,4,frames,nullptr);for(void* frame:frames){auto& site=renderer->scene_wait_sites[frame];++site.first;site.second+=us;}
+#endif
+        }
+        renderer->record_cv.wait(lock,ready);
         WorldState::tl_scene_side=true;renderer->scene_lock=&lock;struct Clear{Renderer* r;~Clear(){r->scene_lock=nullptr;WorldState::tl_scene_side=false;}} clear{renderer};
         if(renderer->record_running)renderer->flush_deferred_scene();else{renderer->await_recording(lock);renderer->flush_deferred();}
         return fn(*renderer);
@@ -2308,7 +2350,14 @@ template<class Fn> int32_t call_deferrable_scene(void* context, Fn fn) {
     if (!context) { global_error = "null Vulkan context"; return -1; }
     auto* renderer = static_cast<Renderer*>(context);
     renderer->check_scene_caller("call_deferrable_scene");
-    {std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){renderer->deferred.push_back({std::move(fn),true});return 0;}}
+    // Once an early-released recording has taken its snapshots, run the call as a scene call (call_scene replays the
+    // queued scene calls first, so order holds) instead of copying, queuing and replaying it. Under the frame split
+    // Build runs almost entirely while the previous frame records, so every commit took the queue before.
+    // SE_VULKAN_DIRECT_SCENE_COMMITS=0 keeps the queue.
+    static const bool direct=[]{const char* v=std::getenv("SE_VULKAN_DIRECT_SCENE_COMMITS");return !(v&&std::string(v)=="0");}();
+    {std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){
+        if(!(direct&&renderer->early_release&&renderer->record_released.load(std::memory_order_acquire))){renderer->deferred.push_back({std::move(fn),true});return 0;}}}
+    if(direct&&renderer->early_release)return call_scene(context,std::move(fn));
     return call(context,fn);
 }
 // Calls whose state has its own lock: no api_mutex, no wait for recording.
@@ -2463,7 +2512,7 @@ void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) acti
                 for(auto& [address,site]:addresses){info->SizeOfStruct=sizeof(SYMBOL_INFO);info->MaxNameLen=255;DWORD64 offset=0;
                     if(SymFromAddr(process,DWORD64(address),&offset,info)&&std::strncmp(info->Name,"sevk_",5)==0){auto& e=exports[info->Name];e.first+=site.first;e.second+=site.second;}}}
             std::fprintf(f,",\"%s\":[",label);bool first=true;for(auto& [name,site]:exports){std::fprintf(f,"%s{\"Export\":\"%s\",\"Waits\":%llu,\"WaitUs\":%llu}",first?"":",",name.c_str(),(unsigned long long)site.first,(unsigned long long)site.second);first=false;}std::fprintf(f,"]");};
-        sites("Sites",r->pipelined_wait_sites);sites("PackingSites",r->packing_wait_sites);sites("GateSites",r->gate_sites);sites("OffOwnerSceneSites",r->offowner_scene_sites);
+        sites("Sites",r->pipelined_wait_sites);sites("PackingSites",r->packing_wait_sites);sites("GateSites",r->gate_sites);sites("OffOwnerSceneSites",r->offowner_scene_sites);sites("SceneWaitSites",r->scene_wait_sites);
         {std::map<std::string,std::array<uint64_t,3>> exports;
             if(symbols){alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO)+256]{};auto* info=reinterpret_cast<SYMBOL_INFO*>(buffer);
                 for(auto& [address,site]:r->call_sites){info->SizeOfStruct=sizeof(SYMBOL_INFO);info->MaxNameLen=255;DWORD64 offset=0;
@@ -2475,6 +2524,11 @@ void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) acti
         if(symbols)SymCleanup(process);
 #endif
         std::fprintf(f,",\"FrameGate\":%d,\"GateOffOwnerCalls\":%llu,\"GateWaits\":%llu,\"GateWaitUs\":%llu,\"OffOwnerSceneCalls\":%llu,\"OffOwnerScenePending\":%llu",int(r->frame_gate),(unsigned long long)r->gate_offowner_calls,(unsigned long long)r->gate_waits,(unsigned long long)r->gate_wait_us,(unsigned long long)r->offowner_scene_calls.load(),(unsigned long long)r->offowner_scene_pending.load());
+        std::fprintf(f,",\"SceneWaits\":%llu,\"SceneWaitUs\":%llu,\"SceneLockWaits\":%llu,\"SceneLockUs\":%llu,\"OwnerWaits\":%llu,\"OwnerWaitUs\":%llu",(unsigned long long)r->scene_waits,(unsigned long long)r->scene_wait_us,(unsigned long long)r->scene_lock_waits,(unsigned long long)r->scene_lock_us,(unsigned long long)r->owner_waits,(unsigned long long)r->owner_wait_us);
+        std::fprintf(f,",\"UploadFlushes\":%llu,\"UploadPresentJoinUs\":%llu,\"UploadSubmitUs\":%llu",(unsigned long long)r->upload_flushes,(unsigned long long)r->upload_present_us,(unsigned long long)r->upload_submit_us);
+        std::fprintf(f,",\"WaitThreads\":[");{bool wf=true;for(auto& [name,site]:r->wait_threads){std::string clean;for(char c:name)if(c!='"'&&c!='\\')clean.push_back(c);std::fprintf(f,"%s{\"Thread\":\"%s\",\"Waits\":%llu,\"WaitUs\":%llu}",wf?"":",",clean.c_str(),(unsigned long long)site.first,(unsigned long long)site.second);wf=false;}}std::fprintf(f,"]");
+        std::fprintf(f,",\"LaunchLapUs\":[%llu,%llu,%llu,%llu,%llu]",(unsigned long long)r->launch_lap_us[0],(unsigned long long)r->launch_lap_us[1],(unsigned long long)r->launch_lap_us[2],(unsigned long long)r->launch_lap_us[3],(unsigned long long)r->launch_lap_us[4]);
+        std::fprintf(f,",\"EndUploadCalls\":%llu,\"EndUploadUs\":%llu,\"EndUploadSlow\":%llu,\"EndUploadInFlight\":%llu,\"EndUploadInFlightUs\":%llu",(unsigned long long)r->end_upload_calls,(unsigned long long)r->end_upload_us,(unsigned long long)r->end_upload_slow,(unsigned long long)r->end_upload_in_flight,(unsigned long long)r->end_upload_in_flight_us);
         std::fprintf(f,"}\n");std::fclose(f);}} delete static_cast<Renderer*>(context); }
 // The calling thread's last failure (milestone 5): a shared per-renderer string could be rewritten by another
 // thread while this one copies it. Every wrapper records its failure in the thread-local global_error.
@@ -2485,7 +2539,17 @@ int32_t SEVK_CALL sevk_render_gbuffer(void* ctx,uint32_t w,uint32_t h,const void
 int32_t SEVK_CALL sevk_readback_gbuffer(void* ctx,uint32_t attachment,void* pixels,uint64_t bytes) {return call(ctx,[&](Renderer& r){r.read_stock(attachment,pixels,bytes);return 0;});}
 int32_t SEVK_CALL sevk_get_gbuffer_stats(void* ctx,SevkGBufferStats* stats) {return call(ctx,[&](Renderer& r){if(!stats || stats->size!=sizeof(SevkGBufferStats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("stock stats ABI mismatch");*stats=r.stock.stats;stats->size=sizeof(*stats);stats->abi_version=SEVK_ABI_VERSION;return 0;});}
 int32_t SEVK_CALL sevk_begin_uploads(void* ctx){return call_deferrable(ctx,[](Renderer& r){r.begin_uploads();return 0;});}
-int32_t SEVK_CALL sevk_end_uploads(void* ctx){return call(ctx,[&](Renderer& r){r.end_uploads();return 0;});}
+// Census: the export's whole cost from entry to exit (lock, gate, recording wait, deferred replay, flush), to set
+// against the managed EndUploads phase.
+int32_t SEVK_CALL sevk_end_uploads(void* ctx){
+    auto* renderer=static_cast<Renderer*>(ctx);
+    if(!renderer||!renderer->pipeline_census)return call(ctx,[&](Renderer& r){r.end_uploads();return 0;});
+    bool in_flight;{std::lock_guard q(renderer->deferred_mutex);in_flight=renderer->record_in_flight;}
+    auto at=std::chrono::steady_clock::now();int32_t result=call(ctx,[&](Renderer& r){r.end_uploads();return 0;});
+    uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-at).count());
+    std::lock_guard sites(renderer->offowner_sites_mutex);++renderer->end_upload_calls;renderer->end_upload_us+=us;if(us>100)++renderer->end_upload_slow;
+    if(in_flight){++renderer->end_upload_in_flight;renderer->end_upload_in_flight_us+=us;}
+    return result;}
 int32_t SEVK_CALL sevk_get_work_stats(void* ctx,SevkWorkStats* stats){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)return -1;return call_snapshot(ctx,[&](Renderer& r)->std::optional<int32_t>{*stats=r.snapshot.work;return 0;},[&](Renderer& r){*stats=r.work;return 0;});}
 int32_t SEVK_CALL sevk_get_performance_stats(void* ctx,SevkPerformanceStats* stats){return call(ctx,[&](Renderer& r){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("performance stats ABI mismatch");*stats=r.performance;return 0;});}
 int32_t SEVK_CALL sevk_set_texture_validation_cache(void* ctx,uint32_t enabled){return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("queue policy cannot change during recording");r.world.texture_validation_cache=enabled!=0;return 0;});}

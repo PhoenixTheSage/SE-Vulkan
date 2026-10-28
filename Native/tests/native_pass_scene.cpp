@@ -1,6 +1,7 @@
 #include "../src/native_pass_scene.h"
 #include <iostream>
 #include <cstring>
+#include <random>
 void require(bool ok,const char* text){if(!ok)throw std::runtime_error(text);}
 template<class F>void rejects(F&& fn,const char* text){bool failed=false;try{fn();}catch(const std::runtime_error&){failed=true;}require(failed,text);}
 static void run(){
@@ -119,9 +120,75 @@ static void run(){
     require(recycled.static_spot_updates()==(uint64_t(1)<<15),"recreated owner invalidates the prior static spotlight pose");
     }
 }
+// Batch cache (plan item 1b): two scenes, identical except for the batch cache, take the same random models,
+// families (some LODs unbound, so fallbacks and lazy binding occur), actors, views and per-frame mutations; every
+// publication output must match exactly.
+static uint64_t differential_misses=0,differential_entries=0;
+static void differential(uint32_t seed,bool lod_dedupe,bool view_cache){
+    using namespace native_pass;Scene a,b;a.batch_cache=false;b.batch_cache=true;b.profiling=true;uint64_t groups_seen=0;a.lod_dedupe=b.lod_dedupe=lod_dedupe;a.view_cache=b.view_cache=view_cache;
+    std::mt19937 rng(seed);auto rnd=[&](uint32_t n){return uint32_t(rng()%n);};
+    auto both=[&](auto&& fn){auto x=fn(a);auto y=fn(b);require(x==y,"differential scenes diverged in handles");return x;};
+    Model m1{{Part{1,10,11,12,0,0,3,1,0,false,false,true},Part{1,20,21,22,0,3,3,2,0,false,false,true},Part{1,30,31,32,33,6,3,3,1,true,false,true}}};
+    Model m2{{Part{2,10,11,12,0,0,6,1,0,false,true,true},Part{2,20,21,22,0,6,3,4,0,false,false,false}}};
+    Model m3=m1;m3.glass=true;Model m4{};m4.glass=true;const Model templates[]{m1,m2,m3,m4};
+    std::vector<uint64_t> families;
+    for(int f=0;f<4;++f){uint64_t family=both([&](Scene& s){return s.register_family({10.f,30.f,80.f});});families.push_back(family);
+        for(uint32_t lod=0;lod<4;++lod){if(lod>0&&rnd(4)==0)continue;auto& t=templates[(f+lod)%4];uint64_t model=both([&](Scene& s){return s.register_model(t);});both([&](Scene& s){s.bind_level(family,lod,model);return 0;});}}
+    auto make_actor=[&](uint32_t i){Actor x{};x.owner=100+i;x.family=families[rnd(4)];x.group=rnd(3)?1+rnd(8):0;double px=double(rnd(200))-100,pz=-double(rnd(150))-1;
+        x.selection.translation={px,0,pz};x.selection.bounds={{px-1,-1,pz-1},{px+1,1,pz+1}};x.dynamic=rnd(4)==0;x.selection.skip_main=rnd(10)==0;x.key_colour[0]=uint16_t(0x3800+rnd(64));
+        if(rnd(4)==0)x.appearance={{uint32_t(1+rnd(4)),{0x3800,0x3c00,0x3c00,0x3c00},rnd(2)==0}};return x;};
+    std::vector<uint64_t> handles;uint32_t next_owner=0;
+    for(;next_owner<60;++next_owner){auto x=make_actor(next_owner);handles.push_back(both([&](Scene& s){return s.register_actor(x);}));}
+    Frame frame{};frame.selection.coefficient=1;frame.selection.delta=.1f;frame.selection.global.smooth_camera_distance=50;frame.selection.global.hysteresis=.1f;
+    View static_spot{15,Kind::Depth};static_spot.only_static=true;View dynamic_spot{16,Kind::Depth};dynamic_spot.only_dynamic=true;
+    // Views 3-5 stand in for probe faces: one is in the frame's list per frame, rotating, as the probe cycle does in
+    // game; the others leave the list (not just disable), so later views change position. View 9 comes and goes too.
+    std::vector<View> base{{0,Kind::Colour},{1,Kind::Depth},{2,Kind::Depth},{3,Kind::Forward},{4,Kind::Forward},{5,Kind::Forward},{9,Kind::Forward},static_spot,dynamic_spot};base[2].lod={0,1,0};base[0].lod={0,0,1};
+    auto same=[&](){
+        auto& ga=a.render_groups();auto& gb=b.render_groups();require(ga.size()==gb.size(),"batch cache changed the group count");
+        for(size_t i=0;i<ga.size();++i)require(ga[i].key==gb[i].key&&ga[i].kind==gb[i].kind&&ga[i].main_part==gb[i].main_part&&ga[i].stream->index==gb[i].stream->index&&ga[i].stream->owners==gb[i].stream->owners&&ga[i].stream->instances==gb[i].stream->instances&&ga[i].stream->identities==gb[i].stream->identities,"batch cache changed a group or its stream");
+        auto& sa=a.instance_streams();auto& sb=b.instance_streams();require(sa.size()==sb.size(),"batch cache changed the stream count");
+        for(size_t i=0;i<sa.size();++i)require(sa[i]->owners==sb[i]->owners&&sa[i]->instances==sb[i]->instances&&sa[i]->identities==sb[i]->identities,"batch cache changed a stream");
+        auto& ta=a.transparent_requests();auto& tb=b.transparent_requests();require(ta.size()==tb.size(),"batch cache changed glass tickets");
+        for(size_t i=0;i<ta.size();++i)require(ta[i].actor==tb[i].actor&&ta[i].owner==tb[i].owner&&ta[i].lod==tb[i].lod&&ta[i].alpha==tb[i].alpha,"batch cache changed a glass ticket");
+        auto& fa=a.explicit_fallbacks();auto& fb=b.explicit_fallbacks();
+        if(fa.size()!=fb.size()){std::cerr<<"fallbacks uncached="<<fa.size()<<" cached="<<fb.size()<<'\n';for(auto& x:fa)std::cerr<<"  u "<<x.actor<<" owner "<<x.owner<<'\n';for(auto& x:fb)std::cerr<<"  c "<<x.actor<<" owner "<<x.owner<<'\n';}
+        require(fa.size()==fb.size(),"batch cache changed fallbacks");
+        for(size_t i=0;i<fa.size();++i)require(fa[i].actor==fb[i].actor&&fa[i].owner==fb[i].owner&&fa[i].lod.current==fb[i].lod.current&&fa[i].lod.previous==fb[i].lod.previous&&fa[i].lod.transition==fb[i].lod.transition,"batch cache changed a fallback");
+        require(a.main_visible_owners()==b.main_visible_owners(),"batch cache changed the visible owners");
+        require(a.static_spot_updates()==b.static_spot_updates(),"batch cache changed static spot updates");
+    };
+    for(int f=0;f<150;++f){
+        frame.views.clear();bool with_nine=rnd(3)!=0;
+        for(auto& view:base)if((view.id<3||view.id>5||view.id==3+uint32_t(f)%3)&&(view.id!=9||with_nine))frame.views.push_back(view);
+        frame.selection.camera.x+=double(rnd(9))-4;frame.selection.camera.z+=double(rnd(31))-15;
+        for(int k=rnd(6);k>0;--k){uint64_t h=handles[rnd(uint32_t(handles.size()))];auto moved=a.actor_state(h);double dx=double(rnd(5))-2;moved.selection.translation.x+=dx;moved.selection.bounds.minimum.x+=dx;moved.selection.bounds.maximum.x+=dx;
+            if(rnd(3)==0){moved.appearance={{uint32_t(1+rnd(4)),{0x3800,0x3c00,0x3c00,0x3c00},rnd(2)==0}};moved.replace_appearance=true;}
+            both([&](Scene& s){s.update_actor(h,moved);return 0;});}
+        if(rnd(10)==0&&handles.size()>20){size_t i=rnd(uint32_t(handles.size()));uint64_t h=handles[i];both([&](Scene& s){s.remove_actor(h);return 0;});handles.erase(handles.begin()+i);}
+        if(rnd(8)==0){auto x=make_actor(next_owner++);handles.push_back(both([&](Scene& s){return s.register_actor(x);}));}
+        if(rnd(20)==0){uint64_t family=families[rnd(4)];uint32_t lod=rnd(4);auto& t=templates[rnd(4)];uint64_t model=both([&](Scene& s){return s.register_model(t);});both([&](Scene& s){s.bind_level(family,lod,model);return 0;});}
+        // Rare, and followed by fresh bindings, so most frames still publish real batches.
+        if(rnd(60)==0){uint64_t mesh=1+rnd(2);both([&](Scene& s){s.invalidate_dependency(3,mesh);return 0;});
+            for(uint64_t family:families){auto& t=templates[rnd(4)];uint64_t model=both([&](Scene& s){return s.register_model(t);});both([&](Scene& s){s.bind_level(family,0,model);return 0;});}}
+        if(rnd(15)==0)base[1].lod.shift=int(rnd(2));
+        if(rnd(12)==0){Frame copy=frame;both([&](Scene& s){s.prepare(copy);s.cancel();return 0;});}
+        std::vector<QueryResult> hidden;for(uint64_t g=1;g<=8;++g)if(rnd(4)==0)hidden.push_back({g,uint64_t(rnd(8))});
+        Frame copy=frame;both([&](Scene& s){s.prepare(copy);return 0;});
+        both([&](Scene& s){s.publish(hidden);return 0;});
+        same();groups_seen+=b.render_groups().size();
+        if(rnd(6)==0)both([&](Scene& s){s.clear_frame();return 0;});
+    }
+    // Not vacuous: real groups were published, and most selected actors replayed from the cache.
+    require(groups_seen>150*4,"differential frames published too few groups to compare");
+    require(b.profile.batch_cache_entries>0&&b.profile.batch_cache_misses*2<b.profile.batch_cache_entries,"batch cache rarely hit in the differential run");
+    differential_misses+=b.profile.batch_cache_misses;differential_entries+=b.profile.batch_cache_entries;
+}
 int main(){
-    // Every check runs with LOD readiness dedupe and the view cache each off and on; the outputs must not differ.
-    try{for(int mode=0;mode<4;++mode){native_pass::Scene::default_lod_dedupe=(mode&1)!=0;native_pass::Scene::default_view_cache=(mode&2)!=0;run();}
-        std::cout<<"Native resident per-view producer checks passed\n";}
+    // Every check runs with LOD readiness dedupe, the view cache and the batch cache each off and on; the outputs
+    // must not differ. The differential run compares the batch cache with the uncached path frame by frame.
+    try{for(int mode=0;mode<8;++mode){native_pass::Scene::default_lod_dedupe=(mode&1)!=0;native_pass::Scene::default_view_cache=(mode&2)!=0;native_pass::Scene::default_batch_cache=(mode&4)!=0;run();}
+        for(uint32_t seed=1;seed<=24;++seed)differential(seed,(seed&1)!=0,(seed&2)!=0);
+        std::cout<<"Native resident per-view producer checks passed (batch cache differential: 24 seeds x 150 frames, "<<differential_misses<<" of "<<differential_entries<<" view entries recomputed)\n";}
     catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<'\n';return 1;}
 }

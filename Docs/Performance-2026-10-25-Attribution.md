@@ -3056,3 +3056,217 @@ against 4.41 / 4.68 earlier).
    - an earlier recording snapshot;
    - deferrable or snapshot-answered Build-prologue calls;
    - a deeper pipeline.
+
+### The census pair: Build does not wait on the recording (2026-10-28)
+
+New native census (with `SE_VULKAN_PIPELINE_REPORT`): `SceneWaits` /
+`SceneWaitUs` / `SceneWaitSites` (scene calls that waited for the recording's
+early release), `SceneLockWaits` / `SceneLockUs` (their `api_mutex` wait over
+20 µs), and `OwnerWaits` / `OwnerWaitUs` (ordinary-call recording waits on the
+frame owner, which is the build thread under the split).
+
+Same-session pair, orbit, CpuDetail plus the census, interleaved
+single / split / split / single (lanes `NPCP`, `NPXCP`). The box drifted
+faster through the batch.
+
+| Run | Present ms | Recording waits, ms/frame | Owner (Build) waits | Scene waits | Gate waits, ms/frame |
+|---|---|---|---|---|---|
+| Single `Vulkan-20bf3674…` | 6.53 | 0.12 | 0 | 0 | 0 |
+| Split `Vulkan-e1642769…` | 6.84 | 0.65 | 0 | 0 | 0.04 |
+| Split `Vulkan-9b839f38…` | 6.13 | 0.64 | 0 | 0 | 0.03 |
+| Single `Vulkan-d62f0baa…` | 5.95 | — | — | — | — |
+
+- **The earlier diagnosis was wrong.** Build never waits on the recording:
+  zero owner waits and zero scene waits in both split runs. The extra
+  0.5 ms per frame of recording waits falls on the other threads, mainly
+  Apply's ordinary calls on the render thread. The render thread then idles
+  4.1–4.6 ms in `BuildJoin`, so those waits are off the critical path.
+- **The critical path is the build thread, and it got slower.** `BuildThread`
+  is 6.48 / 5.81 ms, about equal to the whole single-thread `Frame` (6.43 /
+  5.86). Build shed Apply (about 1.4 ms) but grew by about the same amount.
+- **Broad inflation rather than one wall.** Under the split, Build phases run
+  10–25% slower:
+
+  | Phase | Single | Split |
+  |---|---|---|
+  | Scene | 2.85 / 2.58 | 3.63 / 3.19 |
+  | QueueWorld | 0.72 / 0.67 | 0.95 / 0.85 |
+  | NativePassPublication | 1.28 / 1.22 | 1.51 / 1.37 |
+  | EndUploads | 0.15 / 0.18 | **0.70 / 0.64** |
+
+  The native recording's own sections inflate too: Prepare 1.00 / 0.95 →
+  1.39 / 1.08 ms, Main 0.95 / 0.94 → 1.27 / 1.04 ms.
+- **Working hypothesis: CPU contention.** On 16 logical CPUs, the split keeps
+  render (Apply), build, the recording worker, 7 job workers, 2 stage threads
+  and the game's update thread hot at once. Before, the recording overlapped
+  Apply; now it overlaps Build and Build's jobs, so siblings share cores.
+  `EndUploads` (+0.5 ms, an ordinary call with no recording wait) is the one
+  phase that looks specific rather than proportional.
+- **Profiler artifact:** under the split, `frame-profile.json` `Total` double
+  counts (13.8 / 11.7 ms). Ignore it until the lap hand-over is fixed.
+
+### Next
+
+1. Find what grew in `EndUploads`: a native lap split into staging flush,
+   submit, and any queue or fence wait.
+2. Test the contention hypothesis: a split pair with `SE_VULKAN_JOB_THREADS`
+   at 5 against the default 7.
+3. If contention holds, size the job pool for the split rather than the
+   whole box, or move Apply's ordinary calls (uploads, LCD textures) to
+   deferrable forms so the render thread stops competing for `api_mutex`.
+
+### Contention test and the `end_uploads` laps (2026-10-28)
+
+New census fields: `UploadFlushes`, `UploadPresentJoinUs` and
+`UploadSubmitUs`. They time the upload batch's wait for an asynchronous
+present in flight (`join_present`) and its queue submit.
+
+Batch, orbit, CpuDetail plus census: one single-thread reference, then split
+runs at 7, 5, 5 and 7 job workers (`SE_VULKAN_JOB_THREADS`; lanes `NPCP`,
+`NPXCP`, `NPXCP5`).
+
+| Run | Workers | Present ms | BuildThread | EndUploads | Scene | Job wait µs |
+|---|---|---|---|---|---|---|
+| Single `Vulkan-7e1326ab…` | 7 | 6.57 | — | 0.14 | 2.89 | 34 |
+| Split `Vulkan-2034a46d…` | 7 | 6.11 | 5.80 | 0.44 | 3.22 | 30 |
+| Split `Vulkan-d3ffca38…` | 5 | 6.05 | 5.76 | 0.64 | 3.08 | 44 |
+| Split `Vulkan-f60a1812…` | 5 | 6.08 | 5.78 | 0.66 | 3.10 | 43 |
+| Split `Vulkan-e738d83a…` | 7 | 6.02 | 5.73 | 0.66 | 3.03 | 29 |
+
+- **The job-pool hypothesis is out.** At 5 workers, the split runs at
+  6.05 / 6.08 ms against 6.11 / 6.02 at 7. Build's phases and the
+  recording's sections don't move, and job queue waits rise from 30 to
+  44 µs.
+- **The upload flush isn't the `EndUploads` growth.** A batch has work on
+  only 6–10% of frames. Its present join costs 0.08 (single) and 0.13 (split)
+  ms per frame, and the submit 0.005. Deferred-call replay is unchanged
+  (0.058 / 0.056 ms per frame). The native `end_uploads` export doesn't even
+  reach the per-export call census.
+- **The recording waits are not Build's or Apply's.** Even single-threaded,
+  `Waits` (0.11 ms per frame) carries zero owner waits. So the waiting caller
+  is a third thread in both modes (a guest or worker publication), and it
+  grows to 0.44–0.65 ms per frame under the split. It is off the critical
+  path.
+- **Split against single.** Here the split is 0.46–0.55 ms faster than the
+  single-thread run, but the one single run came first and the box drifted
+  faster through the previous batch. This is not a clean pair.
+- **What's left.** The managed `EndUploads` phase grows by 0.3–0.5 ms with no
+  matching native cost: a managed-side stall (GC suspension or preemption at
+  the P/Invoke return) or time inside the native wrapper's lock and gate that
+  these counters don't cover. Build's other phases run 5–10% slower than
+  single-threaded, smaller than the first pair suggested.
+
+### Next
+
+1. Time `sevk_end_uploads` natively from entry to exit, including the lock
+   and gate, and compare it with the managed phase.
+2. Count GCs per frame (gen0/gen1 and pause time) in both modes.
+3. A clean interleaved single/split pair (single / split / split / single)
+   to price the split at the current state.
+
+### Interleaved pair with the `end_uploads` timer and GC report (2026-10-28)
+
+Lanes `NPCP` / `NPXCP` / `NPXCP` / `NPCP` (`m6i`). New: `EndUploadCalls`,
+`EndUploadUs` and `EndUploadSlow` in the pipeline report, and the harness's
+`gc.json` (gen0/1/2 collections, total pause, MB allocated over the sampled
+window).
+
+| Run | Present ms | BuildThread | EndUploads ms | `end_uploads` µs/call | Gen0 / pause |
+|---|---|---|---|---|---|
+| Single `Vulkan-284c0684…` | 6.70 | — | 0.27 | 199 | 191 / 493 ms |
+| Split `Vulkan-81d499b3…` | 6.28 | 5.96 | 0.52 | 421 | 205 / 548 ms |
+| Split `Vulkan-070fad2b…` | 9.22 (box busy, discarded) | 8.48 | 0.61 | 448 | 143 / 596 ms |
+| Single `Vulkan-816d5bac…` | 6.41 | — | 0.19 | 166 | 199 / 482 ms |
+
+- The split gains about 0.27 ms on the usable runs.
+- `end_uploads` doubles natively under the split. In the product
+  configuration it is `EndOpenUploads`, Build's first ordinary native call
+  right before `BeginFrame`, so it carries any wait for the previous frame's
+  recording.
+- GC is the same in both modes: about 6.5 gen0 collections a second, about
+  2.5 ms each.
+- `frame-profile` `Total` measures Apply start to Build commit (latency), not
+  a double count.
+
+### Crash fix, thread census and the fix B A/B (2026-10-28)
+
+- **VALX crash at unload** (`Vulkan-9611f680…`, `stderr.txt`): an access
+  violation in `NativeBackend.UploadTexture` from
+  `VulkanTextureCache.RemoveGenerated` during Apply, after
+  `VUID-vkCmdPipelineBarrier2-commandBuffer-recording`. Fixed by joining
+  Build before generated-texture and texture-unload messages. Two VALX runs
+  afterwards were clean (`Vulkan-4279b217…`, `Vulkan-13433291…`).
+- **Thread census (`m6k`).** Recording waits are all on "Vulkan frame build"
+  (0.556 ms per frame). The owner counter keyed on `frame_owner`, which
+  `end_frame` clears; it now keys on `scene_owner`.
+- **Fix B A/B (`m6l`).** Split 6.09 / 6.21 ms with fix B off, 6.76 (first
+  run) / 6.31 on, single 6.19. The recording laps are equal with and
+  without it, so fix B is now opt-in. Recording launch to start is
+  0.38–0.44 ms in every run. Build waits on the recording 0.65–0.69 ms per
+  frame under the split, 0.22 single-threaded. See the plan's "Why the split
+  does not pay yet" for the model.
+
+### Fix round 2 pricing and 1b (2026-10-28)
+
+- `m6m`: split 5.45 / 6.27 ms, single 6.67 / 5.94, pre-split PS0 5.40 /
+  5.40. The split now beats single-threaded by about 0.45 ms on average,
+  but is still about 0.46 ms behind pre-split.
+- Recording launch laps under the split: wake 0.012 ms, relock 0.013 ms.
+  `settle_cells` 0.25–0.30 ms is now the largest. Build waits on the
+  recording 0.7–0.8 ms per frame.
+- 1b, the publication batch cache, is built and unit-gated (differential
+  test, `NativePassGpuTests`, `InteropTests`). See the plan, "Why the split
+  does not pay yet", for the design.
+
+### 1b in game: both cache forms lose (2026-10-28)
+
+Split, CpuDetail and census on, cache on / off / off / on. Numbers are per
+frame from `native-pass-preparation.json`.
+
+| Run | Present ms | Publish µs | Select µs | Merge µs | Misses |
+|---|---|---|---|---|---|
+| Per-actor on `m1b` | 5.59, 5.85 | 725, 745 | 525, 531 | 148, 160 | 833–839 |
+| Off `m1b` | 5.52, 5.48 | 618, 613 | 389, 382 | 142, 141 | — |
+| Per-view on `m1c` (`f04a75bd…`, `986effb8…`) | 5.66, 5.53 | 792, 773 | 580, 568 | 157, 150 | 1,223, 1,194 |
+| Off `m1c` (`3441ba25…`, `b433fada…`) | 5.52, 5.43 | 616, 607 | 386, 382 | 140, 136 | — |
+
+- Both runs of each form are clean: no crash and only the usual Steam and
+  Fossilize lines in `stderr.txt`.
+- The per-view form misses more than the per-actor one did, and selection
+  costs about 190 µs more than with the cache off. Present cadence is
+  0.12 ms worse.
+- **Likely cause (from the code, not yet measured):** `publish()` bumps
+  `structure_serial` whenever `shape_of(frame.views)` changes. The shape
+  hashes the list of views present, and in game probe faces join and leave
+  that list from frame to frame. Each bump drops every actor's entries.
+  Entries also match on `view_index`, the view's position in the list, which
+  shifts when an earlier view leaves. The differential test rotates probes
+  by toggling `enabled` on views that stay in the list, so it never
+  exercised either path.
+- **Fix (built and gated, not yet measured in game):**
+  - Each entry is checked against its own view's shape, and the global bump
+    is gone.
+  - The differential test now removes views from the list. With the old bump
+    put back it fails; with the fix it recomputes 28% of view entries.
+  - `NativePassGpuTests` passes 126 checks with the cache on, with 0
+    validation errors.
+  - `BatchCacheEntries` is now in `native-pass-preparation.json`.
+
+### 1b fixed pair `m1d` (2026-10-28)
+
+Split, cache on / off / off / on. All four runs were clean (no
+`VUID`/exception lines in `stderr.txt`). The box ran about 0.4 ms slower
+than `m1c`, for every lane.
+
+| Run | Present ms | Publish µs | Select µs | Merge µs | Misses / entries |
+|---|---|---|---|---|---|
+| On `0f2bab2f…` | 5.92 | 624 | 403 | 164 | 197 / 2,764 |
+| Off `83c98249…` | 5.92 | 666 | 417 | 153 | — |
+| Off `cf61215b…` | 5.98 | 658 | 410 | 151 | — |
+| On `bd905931…` | 5.94 | 616 | 396 | 164 | 190 / 2,746 |
+
+- The cache now hits 93% of view entries, but publish only drops about
+  40 µs, and present cadence is flat.
+- A hit still pays the per-row batch mapping and row pushes, which are most
+  of selection's cost.
+- 1b is closed: built, off by default.

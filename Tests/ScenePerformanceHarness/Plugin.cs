@@ -339,7 +339,7 @@ public sealed partial class Plugin : IPlugin
                 MySessionLoader.LoadSingleplayerSession(world);
             }
             if (!loadRequested || MySession.Static == null || !MySession.Static.Ready) return;
-            if(transitionUntil>=0){if(lifetime.Elapsed.TotalSeconds<transitionUntil)return;transitionUntil=-1;sampleAt=lifetime.Elapsed.TotalSeconds;sampling=true;MyRenderProxy.TakeScreenshot(Vector2.One,Path.Combine(reports,"view.png"),debug:false,ignoreSprites:false,showNotification:false);}
+            if(transitionUntil>=0){if(lifetime.Elapsed.TotalSeconds<transitionUntil)return;transitionUntil=-1;sampleAt=lifetime.Elapsed.TotalSeconds;BeginGcWindow();sampling=true;MyRenderProxy.TakeScreenshot(Vector2.One,Path.Combine(reports,"view.png"),debug:false,ignoreSprites:false,showNotification:false);}
             if (readyAt < 0) { readyAt = lifetime.Elapsed.TotalSeconds;File.WriteAllText(Path.Combine(reports,"ready.txt"),MySession.Static.Name); }
             double seconds = lifetime.Elapsed.TotalSeconds-readyAt;
             if(HudAuditEnabled && seconds>=10){AuditRichHud(seconds);return;}
@@ -349,16 +349,26 @@ public sealed partial class Plugin : IPlugin
             if (sampleAt < 0 && seconds >= 45)
             {
                 MyRenderProxy.TakeScreenshot(Vector2.One,Path.Combine(reports,"view.png"),debug:false,ignoreSprites:false,showNotification:false);
-                sampleAt = lifetime.Elapsed.TotalSeconds;sampling = true;
+                sampleAt = lifetime.Elapsed.TotalSeconds;BeginGcWindow();sampling = true;
                 File.WriteAllText(Path.Combine(reports,"sampling.txt"),DateTime.UtcNow.ToString("O"));
             }
             if (sampleAt >= 0 && lifetime.Elapsed.TotalSeconds-sampleAt >= 30) Finish();
         }
         catch(Exception error) { File.WriteAllText(Path.Combine(reports,"failure.txt"),error.ToString());finished=true;sampling=false;MySandboxGame.ExitThreadSafe(); }
     }
+    // Process-wide GC activity over the sampled window: collections per generation and total pause time (gc.json).
+    static readonly int[] gcStart=new int[3];static TimeSpan gcPauseStart;static long gcAllocatedStart;static System.Diagnostics.Stopwatch gcWindow;
+    static void BeginGcWindow(){for(int g=0;g<3;g++)gcStart[g]=GC.CollectionCount(g);gcPauseStart=GC.GetTotalPauseDuration();gcAllocatedStart=GC.GetTotalAllocatedBytes();gcWindow=System.Diagnostics.Stopwatch.StartNew();}
+    void WriteGcWindow()
+    {
+        if(gcWindow==null)return;
+        File.WriteAllText(Path.Combine(reports,"gc.json"),JsonSerializer.Serialize(new{Seconds=gcWindow.Elapsed.TotalSeconds,Gen0=GC.CollectionCount(0)-gcStart[0],Gen1=GC.CollectionCount(1)-gcStart[1],Gen2=GC.CollectionCount(2)-gcStart[2],
+            PauseMs=(GC.GetTotalPauseDuration()-gcPauseStart).TotalMilliseconds,AllocatedMB=(GC.GetTotalAllocatedBytes()-gcAllocatedStart)/1048576.0,
+            Scope="Process-wide over the sampled window. Counts include collections triggered by any thread; PauseMs is the runtime's total suspension time."},new JsonSerializerOptions{WriteIndented=true}));
+    }
     void Finish()
     {
-        sampling=false;finished=true;WriteFrameStateAudit();WriteNativeCritical();
+        sampling=false;finished=true;WriteGcWindow();WriteFrameStateAudit();WriteNativeCritical();
         WriteBenchmarkFrameAudit();
         if(gpuComputeLast!=null)File.WriteAllText(Path.Combine(reports,"gpu-compute-timings.json"),JsonSerializer.Serialize(new{Names=new[]{"Samples","Selection","MembershipCounts","SpotUnion","RetainedGroups","GroupScan","BlockScan","SuperScan","ScanOffsets","Scatter","Arguments"},First=gpuComputeFirst,Last=gpuComputeLast,Delta=gpuComputeLast.Select((v,i)=>v-gpuComputeFirst[i]).ToArray(),Unit="Nanoseconds accumulated over completed prior-slot GPU samples"},new JsonSerializerOptions{WriteIndented=true}));
         if(gpuTopologyLast!=null)File.WriteAllText(Path.Combine(reports,"gpu-topology-counters.json"),JsonSerializer.Serialize(new{Names=new[]{"ActorAdds","ActorRemoves","FamilyChanges","SourceChanges","RootGroupChanges","Publications","Frames"},First=gpuTopologyFirst,Last=gpuTopologyLast,Delta=gpuTopologyLast.Select((v,i)=>v-gpuTopologyFirst[i]).ToArray()},new JsonSerializerOptions{WriteIndented=true}));

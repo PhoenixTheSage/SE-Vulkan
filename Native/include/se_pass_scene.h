@@ -23,7 +23,7 @@ typedef struct SevkPassTransparent {uint64_t actor;uint32_t owner,lod;float alph
 typedef struct SevkPassFallback {uint64_t actor;uint32_t owner,reserved;SevkSceneLod lod;uint32_t padding;} SevkPassFallback;
 /* Diagnostic-only group/owner readback; never used to emit managed packets. */
 typedef struct SevkPassGroupAudit {uint32_t view,kind,shader,first,count,instances,owner_offset,flags;uint64_t mesh,colour,normal,extensions,alpha;} SevkPassGroupAudit;
-typedef struct SevkPassProfile {uint32_t size,abi_version;uint64_t prepares,publishes,committed_actors,selected_actors,emitted_rows,stream_bytes,groups;double commits_us,prepare_us,requests_us,publish_us,emit_us,spots_us;uint64_t appearance_entries;double actor_parse_us,actor_apply_us;} SevkPassProfile;
+typedef struct SevkPassProfile {uint32_t size,abi_version;uint64_t prepares,publishes,committed_actors,selected_actors,emitted_rows,stream_bytes,groups;double commits_us,prepare_us,requests_us,publish_us,emit_us,spots_us;uint64_t appearance_entries;double actor_parse_us,actor_apply_us;double select_us,merge_us,settle_us;uint64_t batch_cache_misses,batch_cache_entries;} SevkPassProfile;
 SEVK_API int32_t SEVK_CALL sevk_pass_init_pipeline(void* ctx,uint32_t id,const void* vertex,uint64_t vb,const void* pixel,uint64_t pb);
 SEVK_API int32_t SEVK_CALL sevk_pass_set_placeholder(void* ctx,const void* bytes,uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_pass_register_model(void* ctx,const SevkPassPart* parts,uint32_t count,uint64_t* handle);
@@ -45,3 +45,5 @@ SEVK_API int32_t SEVK_CALL sevk_pass_actor_selector(void* ctx,uint64_t actor,uin
 SEVK_API int32_t SEVK_CALL sevk_pass_visible_owners(void* ctx,uint32_t* owners,uint32_t capacity,uint32_t* count);
 SEVK_API int32_t SEVK_CALL sevk_pass_group_audit(void* ctx,SevkPassGroupAudit* groups,uint32_t group_capacity,uint32_t* group_count,uint32_t* owners,uint32_t owner_capacity,uint32_t* owner_count);
 SEVK_API int32_t SEVK_CALL sevk_pass_profile(void* ctx,uint32_t enable,SevkPassProfile* profile);
+// Publication batch cache on (1) or off (0) at runtime (SE_VULKAN_PASS_BATCH_CACHE sets the start value); output is identical.
+SEVK_API int32_t SEVK_CALL sevk_pass_set_batch_cache(void* ctx,uint32_t enable);
