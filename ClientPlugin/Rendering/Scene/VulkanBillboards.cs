@@ -15,7 +15,9 @@ namespace ClientPlugin.Rendering.Scene
         private readonly VulkanScene scene;
         private readonly NativeBackend backend;
         private readonly List<MyBillboard> generated = new List<MyBillboard>();
-        private readonly List<MyBillboard> frame = new List<MyBillboard>();
+        // Frame split (milestone 6): Collect (Apply) fills the collected* buffers and Latch (the hand-off) swaps them
+        // into the ones Build prepares and emits, so a concurrent Apply never rewrites the frame Build is emitting.
+        private List<MyBillboard> frame = new List<MyBillboard>(), collected = new List<MyBillboard>();
         private readonly List<MyBillboard> hudFrame = new List<MyBillboard>();
         private readonly List<ulong> handles = new List<ulong>();
         private static readonly uint[] Indices = { 0, 1, 2, 0, 2, 3 };
@@ -24,9 +26,10 @@ namespace ClientPlugin.Rendering.Scene
 
         public VulkanBillboards(VulkanScene scene, NativeBackend backend) { this.scene = scene; this.backend = backend; }
 
-        public void Draw(MySharedData shared){Collect(shared);Prepare();EmitPackets(backend.BillboardPackets);}
+        public void Draw(MySharedData shared){Collect(shared);Latch();Prepare();EmitPackets(backend.BillboardPackets);}
+        public void Latch(){(frame,collected)=(collected,frame);(matrices,collectedMatrices)=(collectedMatrices,matrices);(hiddenParent,collectedHidden)=(collectedHidden,hiddenParent);haveShared=collectedShared;}
         // Frame split (milestone 1): Apply collects at its end; Build appends what was generated since (flares) and emits.
-        public void DrawCollected(){DrainGenerated();Prepare();EmitPackets(backend.BillboardPackets);}
+        public void DrawCollected(){DrainGenerated(frame);Prepare();EmitPackets(backend.BillboardPackets);}
         // Fork (job graph, plan 2.2): the render thread collects at the serial point; a worker then runs
         // the flares, whose glare billboards go to a private capture list and follow the collected
         // generated billboards exactly as they would through the queue, then prepares and emits into a
@@ -37,8 +40,8 @@ namespace ClientPlugin.Rendering.Scene
         private readonly List<NativeBillboardDraw> pending = new List<NativeBillboardDraw>();
         private bool pendingReady;
         // The collected frame's view-projections, copied so Build never reads the game's read buffer.
-        private readonly Dictionary<int, MyBillboardViewProjection> matrices = new Dictionary<int, MyBillboardViewProjection>();
-        private bool haveShared;
+        private Dictionary<int, MyBillboardViewProjection> matrices = new Dictionary<int, MyBillboardViewProjection>(), collectedMatrices = new Dictionary<int, MyBillboardViewProjection>();
+        private bool haveShared, collectedShared;
         public long AheadFrames { get; private set; }
         public long AheadFallbacks { get; private set; }
         public static bool Verify = System.Environment.GetEnvironmentVariable("SE_VULKAN_EFFECTS_VERIFY") == "1";
@@ -47,7 +50,7 @@ namespace ClientPlugin.Rendering.Scene
         public long VerifyMismatches { get; private set; }
         public void EmitAhead(Action flares)
         {
-            pendingReady = false; pending.Clear(); flareCapture.Clear(); DrainGenerated();
+            pendingReady = false; pending.Clear(); flareCapture.Clear(); DrainGenerated(frame);
             capture = flareCapture; try { flares(); } finally { capture = null; }
             frame.AddRange(flareCapture); flareCapture.Clear();
             Prepare();
@@ -68,21 +71,22 @@ namespace ClientPlugin.Rendering.Scene
         }
         public void Collect(MySharedData shared)
         {
-            frame.Clear(); matrices.Clear(); haveShared = shared != null;
+            var into = collected;
+            into.Clear(); collectedMatrices.Clear(); collectedShared = shared != null;
             if (shared != null)
             {
-                foreach (MyBillboard billboard in shared.Billboards.Read.Billboards) frame.Add(Copy(billboard));
-                shared.ApplyActionOnPersistentBillboards(billboard => frame.Add(Copy(billboard)));
-                foreach (var entry in shared.Billboards.Read.Matrices) matrices[entry.Key] = entry.Value;
+                foreach (MyBillboard billboard in shared.Billboards.Read.Billboards) into.Add(Copy(billboard));
+                shared.ApplyActionOnPersistentBillboards(billboard => into.Add(Copy(billboard)));
+                foreach (var entry in shared.Billboards.Read.Matrices) collectedMatrices[entry.Key] = entry.Value;
             }
-            DrainGenerated();
-            ResolveParents();
+            DrainGenerated(into);
+            ResolveParents(into, collectedHidden);
         }
         // Parented billboards follow a game actor that Apply moves and destroys: resolve them while collecting, into
         // world space, exactly as emission and the sort key did. A missing or hidden parent keeps its place in the
         // (unstable) sort and is skipped at emission.
-        private readonly HashSet<MyBillboard> hiddenParent = new HashSet<MyBillboard>();
-        private void ResolveParents()
+        private HashSet<MyBillboard> hiddenParent = new HashSet<MyBillboard>(), collectedHidden = new HashSet<MyBillboard>();
+        private static void ResolveParents(List<MyBillboard> frame, HashSet<MyBillboard> hiddenParent)
         {
             hiddenParent.Clear();
             foreach (MyBillboard billboard in frame)
@@ -99,7 +103,7 @@ namespace ClientPlugin.Rendering.Scene
                 { billboard.Position1 = Vector3D.Transform(billboard.Position1, parent); billboard.Position2 = Vector3D.Transform(billboard.Position2, parent); billboard.Position3 = Vector3D.Transform(billboard.Position3, parent); }
             }
         }
-        private void DrainGenerated() { lock (generated) { frame.AddRange(generated); generated.Clear(); } }
+        private void DrainGenerated(List<MyBillboard> into) { lock (generated) { into.AddRange(generated); generated.Clear(); } }
         private void Prepare()
         {
             var projections=new float[512];for(int j=0;j<32;j++)Array.Copy(NativeBackend.MatrixValues(MatrixD.Identity),0,projections,j*16,16);

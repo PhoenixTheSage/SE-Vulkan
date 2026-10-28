@@ -329,7 +329,7 @@ namespace ClientPlugin.Rendering.Scene
                 case MyRenderMessageEnum.AddRuntimeModel:
                     var runtime = (MyRenderMessageAddRuntimeModel)message;
                     if(OldResources.Initialized&&OldResources.Exists(runtime.Name))return true;
-                    if(OldResources.Initialized){var identity=OldResources.Transient.CreateRuntime(runtime.Name,runtime.ModelData.Sections.Count,false);OldResources.Transient.UpdateRuntime(identity,runtime.ModelData.Sections.ConvertAll(section=>section.MaterialName));}
+                    if(OldResources.Initialized)lock(OldResources){var identity=OldResources.Transient.CreateRuntime(runtime.Name,runtime.ModelData.Sections.Count,false);OldResources.Transient.UpdateRuntime(identity,runtime.ModelData.Sections.ConvertAll(section=>section.MaterialName));}
                     models.PutRuntime(runtime.Name, runtime.ModelData);
                     return true;
                 case MyRenderMessageEnum.CreateRenderInstanceBuffer:
@@ -459,16 +459,16 @@ namespace ClientPlugin.Rendering.Scene
                     }
                     return true;
                 case MyRenderMessageEnum.PreloadModel:
-                    var preload = (MyRenderMessagePreloadModel)message;if(OldResources.Initialized&&preload.ForceOldPipeline)OldResources.Get(preload.Name);models.Get(preload.Name, preload.Rescale); return true;
+                    var preload = (MyRenderMessagePreloadModel)message;if(OldResources.Initialized&&preload.ForceOldPipeline)lock(OldResources)OldResources.Get(preload.Name);models.Get(preload.Name, preload.Rescale); return true;
                 case MyRenderMessageEnum.CreateRenderVoxelDebris:
                     // This existing pending visual path still consumes OLD
                     // file identities in stock. Preserve its source clock even
                     // while the outer dispatcher reports missing debris draw.
-                    var debris=(MyRenderMessageCreateRenderVoxelDebris)message;if(OldResources.Initialized&&debris.Model!=null)OldResources.Get(debris.Model);return false;
+                    var debris=(MyRenderMessageCreateRenderVoxelDebris)message;if(OldResources.Initialized&&debris.Model!=null)lock(OldResources)OldResources.Get(debris.Model);return false;
                 case MyRenderMessageEnum.PreloadModels:
-                    var preloadMany=(MyRenderMessagePreloadModels)message;foreach (string name in preloadMany.Models){if(OldResources.Initialized&&!preloadMany.ForInstancedComponent)OldResources.Get(name);models.Get(name);} return true;
+                    var preloadMany=(MyRenderMessagePreloadModels)message;foreach (string name in preloadMany.Models){if(OldResources.Initialized&&!preloadMany.ForInstancedComponent)lock(OldResources)OldResources.Get(name);models.Get(name);} return true;
                 case MyRenderMessageEnum.PreloadMaterials:
-                    string materialModel=((MyRenderMessagePreloadMaterials)message).Name;if(OldResources.Initialized)OldResources.Get(materialModel);models.Get(materialModel); return true;
+                    string materialModel=((MyRenderMessagePreloadMaterials)message).Name;if(OldResources.Initialized)lock(OldResources)OldResources.Get(materialModel);models.Get(materialModel); return true;
                 case MyRenderMessageEnum.PreloadTextures:
                     var files = ((MyRenderMessagePreloadTextures)message).Files;
                     if (files != null) foreach (string file in files) TextureCache.GetTexture(file); return true;
@@ -607,13 +607,13 @@ namespace ClientPlugin.Rendering.Scene
                 if(planned){var plan=candidatePlans[candidateIndex++];ancestorsVisible=plan.Visible;ownerKey=plan.Key;}
                 else{ancestorsVisible=data.Model!=null&&BuildFrameOf(data).Visible;ownerKey=ancestorsVisible&&(data.Flags&RenderFlags.SkipInMainView)==0?MainGroupKey(data,true):null;}
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.MainOwnerDeclare,false))if(ownerKey!=null)target.DeclareMainOwner(data.Id,ownerKey);
-                if(data.GpuOwned){if((data.Flags&RenderFlags.SkipInMainView)==0&&(frustum==null||frustum.Contains(data.Bounds)!=ContainmentType.Disjoint))visible.Add(data.Id);continue;}if(data.PassOwned||data.CellOwned)continue;
+                if(data.GpuOwned){if((data.Flags&RenderFlags.SkipInMainView)==0&&(frustum==null||frustum.Contains(BuildFrameOf(data).Bounds)!=ContainmentType.Disjoint))visible.Add(data.Id);continue;}if(data.PassOwned||data.CellOwned)continue;
                 long actorStarted = Stopwatch.GetTimestamp();
                 bool actorVisible;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorAncestorVisibility,false))actorVisible=ancestorsVisible&&((data.Flags&RenderFlags.SkipInMainView)==0 || NewActorViewsEnabled);
                 if (!actorVisible) { profileCullTicks += Stopwatch.GetTimestamp() - actorStarted; continue; }
                 var viewProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorViewGate,false);
                 MatrixD world = BuildFrameOf(data).World;
-                BoundingBoxD bounds = data.Bounds;
+                BoundingBoxD bounds = BuildFrameOf(data).Bounds;
                 bool probeOnly=(data.Flags&RenderFlags.SkipInMainView)!=0 || frustum != null && data.StaticInstances == null && frustum.Contains(bounds) == ContainmentType.Disjoint;
                 double objectDistance=System.Math.Sqrt(Vector3D.DistanceSquared(bounds.Center,FrameView.CameraPosition));
                 bool outsideProbe=ProbeDrawDistance<=0 || objectDistance>ProbeDrawDistance+bounds.HalfExtents.Length();
@@ -1075,7 +1075,7 @@ namespace ClientPlugin.Rendering.Scene
         public override void Clear()
         {
             // Unload runs with Build joined: flush the queued Build work and act on Build state directly.
-            FlushBuildOps();bool wasBuilding=building;building=true;
+            LatchBuildOps();FlushBuildOps();bool wasBuilding=building;building=true;
             try{
             foreach (uint id in new List<uint>(actors.Keys)) Remove(id);
             SyncBuildActors();
@@ -1124,7 +1124,8 @@ namespace ClientPlugin.Rendering.Scene
         // run flares and billboard emission on a worker, finish on the render thread before QueueWorld.
         public static bool EffectsAheadEnabled = System.Environment.GetEnvironmentVariable("SE_VULKAN_EFFECTS_AHEAD") != "0";
         public bool EffectsAhead { get => EffectsAheadEnabled; set => EffectsAheadEnabled = value; }
-        public void CollectBillboards(MySharedData shared) => billboards.Collect(shared);
+        // Apply collects and LatchFrame hands the collection to Build; the old-order lane collects inside Build, so it latches at once.
+        public void CollectBillboards(MySharedData shared) { billboards.Collect(shared); if (building) billboards.Latch(); }
         public void DrawFlaresAndBillboardsAhead(MatrixD view, MatrixD projection, int width, int height, float multiplier) => billboards.EmitAhead(() => DrawFlares(view, projection, width, height, multiplier));
         public void FinishBillboards() => billboards.FinishAhead();
         public long BillboardAheadFrames => billboards.AheadFrames;

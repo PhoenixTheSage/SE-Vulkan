@@ -206,6 +206,8 @@ public sealed partial class Plugin : IPlugin
         if(!CameraSweepEnabled){
             harmony.Patch(AccessTools.Method(renderer, "Draw", new[] { typeof(bool) }), prefix: new HarmonyMethod(typeof(Plugin), nameof(BeginDraw)));
             harmony.Patch(AccessTools.Method(renderer, "Present"), prefix: new HarmonyMethod(typeof(Plugin), nameof(BeforePresent)), postfix: new HarmonyMethod(typeof(Plugin), nameof(EndPresent)));
+            // Frame split (milestone 6): absent on pinned baselines, so resolved by name and skipped when missing.
+            var submit=AccessTools.Method(renderer,"SubmitFrame");if(submit!=null)harmony.Patch(submit,prefix:new HarmonyMethod(typeof(Plugin),nameof(BeforeSubmit)));
         }
         else if(SweepIsolation)harmony.Patch(AccessTools.Method(renderer, "Draw", new[] { typeof(bool) }),prefix:new HarmonyMethod(typeof(Plugin),nameof(ApplySweepPolicy)));
         if(!CameraSweepEnabled)InstallFrameGapCensus();
@@ -250,7 +252,13 @@ public sealed partial class Plugin : IPlugin
     // after it, every telemetry read would wait for the in-flight recording,
     // which the product never does. Telemetry then describes the previous frame.
     static bool PipelinedPresent(object __instance)=>__instance is MyVulkanRender&&((NativeBackend)BackendField.GetValue(__instance)).PipelinedRecordingEnabled;
-    static void BeforePresent(object __instance){gapPrefixAt=Stopwatch.GetTimestamp();if(PipelinedPresent(__instance))SampleFrame(__instance);gapPrefixEndAt=Stopwatch.GetTimestamp();if(sampling)gapHarnessSample+=GapMs(gapPrefixAt,gapPrefixEndAt);}
+    // Frame split (SE_VULKAN_FRAME_SPLIT=1): Present returns at once and the build thread submits the frame, so the sample
+    // is taken there, right before the native launch: the same point of the frame as the pipelined Present prefix. A
+    // render-thread read would wait for Build's open frame and recording, which the product never does.
+    static readonly System.Reflection.FieldInfo FrameSplitField=AccessTools.Field(typeof(MyVulkanRender),"FrameSplit");
+    static bool SplitFrames=>FrameSplitField!=null&&(bool)FrameSplitField.GetValue(null);
+    static void BeforeSubmit(object __instance,bool renderThread){if(!renderThread)SampleFrame(__instance);}
+    static void BeforePresent(object __instance){gapPrefixAt=Stopwatch.GetTimestamp();if(PipelinedPresent(__instance)&&!SplitFrames)SampleFrame(__instance);gapPrefixEndAt=Stopwatch.GetTimestamp();if(sampling)gapHarnessSample+=GapMs(gapPrefixAt,gapPrefixEndAt);}
     static void EndPresent(object __instance)
     {
         gapPostfixAt=Stopwatch.GetTimestamp();if(sampling&&gapPrefixEndAt!=0)gapPresentBody+=GapMs(gapPrefixEndAt,gapPostfixAt);

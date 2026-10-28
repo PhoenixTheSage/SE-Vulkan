@@ -80,7 +80,7 @@ public sealed partial class VulkanScene
     unsafe void AppendPose(ActorData data)
     {
         var pose=new NativeCellPose{Size=344,Flags=CellFlags(data,false,instances[data.InstanceBuffer].EnabledSkinning),Group=data.OcclusionGroup?.QueryId??0};
-        var bounds=data.Bounds;pose.Bounds[0]=bounds.Min.X;pose.Bounds[1]=bounds.Min.Y;pose.Bounds[2]=bounds.Min.Z;pose.Bounds[3]=bounds.Max.X;pose.Bounds[4]=bounds.Max.Y;pose.Bounds[5]=bounds.Max.Z;
+        var bounds=BuildFrameOf(data).Bounds;pose.Bounds[0]=bounds.Min.X;pose.Bounds[1]=bounds.Min.Y;pose.Bounds[2]=bounds.Min.Z;pose.Bounds[3]=bounds.Max.X;pose.Bounds[4]=bounds.Max.Y;pose.Bounds[5]=bounds.Max.Z;
         var actorFrame=BuildFrameOf(data);var local=actorFrame.LocalAabb;pose.LocalMinimum[0]=local.Min.X;pose.LocalMinimum[1]=local.Min.Y;pose.LocalMinimum[2]=local.Min.Z;pose.LocalMaximum[0]=local.Max.X;pose.LocalMaximum[1]=local.Max.Y;pose.LocalMaximum[2]=local.Max.Z;
         var world=actorFrame.World;var inverse=actorFrame.WorldInv;for(int r=0;r<4;r++)for(int c=0;c<4;c++){pose.World[r*4+c]=world[r,c];pose.Inverse[r*4+c]=inverse[r,c];}
         cellPoses.Add(pose);cellPoseHandles.Add(data.CellHandle);
@@ -122,7 +122,7 @@ public sealed partial class VulkanScene
         var input=new NativeCell{Size=416,Owner=data.Id,Group=data.OcclusionGroup?.QueryId??0,InstanceCount=count,InstanceOffset=(ulong)cellBytes.Count,LevelOffset=(uint)levelStart,LevelCount=(uint)levelCount,ThresholdOffset=(uint)cellThresholds.Count,ThresholdCount=eligible?(uint)root.LodDistances.Length:0};
         cellBytes.AddRange(stream);if(eligible)cellThresholds.AddRange(root.LodDistances);
         input.Flags=CellFlags(data,eligible,buffer.EnabledSkinning);
-        var bounds=data.Bounds;input.Bounds[0]=bounds.Min.X;input.Bounds[1]=bounds.Min.Y;input.Bounds[2]=bounds.Min.Z;input.Bounds[3]=bounds.Max.X;input.Bounds[4]=bounds.Max.Y;input.Bounds[5]=bounds.Max.Z;
+        var bounds=BuildFrameOf(data).Bounds;input.Bounds[0]=bounds.Min.X;input.Bounds[1]=bounds.Min.Y;input.Bounds[2]=bounds.Min.Z;input.Bounds[3]=bounds.Max.X;input.Bounds[4]=bounds.Max.Y;input.Bounds[5]=bounds.Max.Z;
         var actorFrame=BuildFrameOf(data);var local=actorFrame.LocalAabb;input.LocalMinimum[0]=local.Min.X;input.LocalMinimum[1]=local.Min.Y;input.LocalMinimum[2]=local.Min.Z;input.LocalMaximum[0]=local.Max.X;input.LocalMaximum[1]=local.Max.Y;input.LocalMaximum[2]=local.Max.Z;
         var world=actorFrame.World;var inverse=actorFrame.WorldInv;for(int r=0;r<4;r++)for(int c=0;c<4;c++){input.World[r*4+c]=world[r,c];input.Inverse[r*4+c]=inverse[r,c];}
         var selector=data.Lod.Export();int Key(VulkanModel model)=>model==null?-1:distinct.IndexOf(model);

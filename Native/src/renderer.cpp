@@ -506,8 +506,13 @@ struct Renderer {uint32_t recipe_generation=1;
         if(!frame_gated())return;++gate_offowner_calls;if(!frame_gate)return;
         auto at=std::chrono::steady_clock::now();++gate_waiters;struct Leave{uint32_t& n;~Leave(){--n;}} leave{gate_waiters};
         record_cv.wait(lock,[&]{return !frame_gated()&&!record_pending&&!record_running;});
-        ++gate_waits;gate_wait_us+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-at).count());
+        uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-at).count());++gate_waits;gate_wait_us+=us;
+#if defined(_WIN32)
+        if(pipeline_census){void* frames[4]{};CaptureStackBackTrace(0,4,frames,nullptr);for(void* frame:frames){auto& site=gate_sites[frame];++site.first;site.second+=us;}}
+#endif
     }
+    // Census only: exports whose calls waited at the frame gate, and scene calls made off the frame owner.
+    std::map<void*,std::pair<uint64_t,uint64_t>> gate_sites,offowner_scene_sites;std::mutex offowner_sites_mutex;
     // Scene-mutating calls (call_scene, call_deferrable_scene) belong to the thread that builds frames; under the frame
     // split, Apply issues none (its native scene work moved to Build's prologue). Counted always; with
     // SE_VULKAN_SCENE_CALL_ASSERT=1 the first offender per export is printed to stderr. Pending: a pass frame or
@@ -519,6 +524,9 @@ struct Renderer {uint32_t recipe_generation=1;
         if(owner==std::thread::id{}||owner==std::this_thread::get_id())return;
         bool pending;{std::lock_guard q(deferred_mutex);pending=record_in_flight;}pending=pending||recording;
         ++offowner_scene_calls;if(pending)++offowner_scene_pending;
+#if defined(_WIN32)
+        if(pipeline_census){void* frames[4]{};CaptureStackBackTrace(0,4,frames,nullptr);std::lock_guard sites(offowner_sites_mutex);for(void* frame:frames){auto& site=offowner_scene_sites[frame];++site.first;site.second+=pending?1:0;}}
+#endif
         if(scene_call_assert&&offowner_scene_calls.load()==1)std::fprintf(stderr,"SE_VULKAN_SCENE_CALL_ASSERT: scene call %s from a thread other than the frame owner (pending=%d)\n",where,int(pending));
     }
     std::mutex snapshot_mutex;ReadSnapshot snapshot;uint64_t pipelined_frames{},pipelined_mask_mismatches{},pipelined_waits{},pipelined_wait_us{};
@@ -2455,7 +2463,7 @@ void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) acti
                 for(auto& [address,site]:addresses){info->SizeOfStruct=sizeof(SYMBOL_INFO);info->MaxNameLen=255;DWORD64 offset=0;
                     if(SymFromAddr(process,DWORD64(address),&offset,info)&&std::strncmp(info->Name,"sevk_",5)==0){auto& e=exports[info->Name];e.first+=site.first;e.second+=site.second;}}}
             std::fprintf(f,",\"%s\":[",label);bool first=true;for(auto& [name,site]:exports){std::fprintf(f,"%s{\"Export\":\"%s\",\"Waits\":%llu,\"WaitUs\":%llu}",first?"":",",name.c_str(),(unsigned long long)site.first,(unsigned long long)site.second);first=false;}std::fprintf(f,"]");};
-        sites("Sites",r->pipelined_wait_sites);sites("PackingSites",r->packing_wait_sites);
+        sites("Sites",r->pipelined_wait_sites);sites("PackingSites",r->packing_wait_sites);sites("GateSites",r->gate_sites);sites("OffOwnerSceneSites",r->offowner_scene_sites);
         {std::map<std::string,std::array<uint64_t,3>> exports;
             if(symbols){alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO)+256]{};auto* info=reinterpret_cast<SYMBOL_INFO*>(buffer);
                 for(auto& [address,site]:r->call_sites){info->SizeOfStruct=sizeof(SYMBOL_INFO);info->MaxNameLen=255;DWORD64 offset=0;

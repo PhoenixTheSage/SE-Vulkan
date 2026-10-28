@@ -32,7 +32,7 @@ public sealed partial class VulkanScene
         var maskModel = actor.RenderModel ?? actor.Model;
         float[] mask = ReferenceEquals(atlasModel, maskModel) ? atlas : Copy(maskModel);
         var m = BuildFrameOf(actor).World;
-        var box = actor.Bounds;
+        var box = BuildFrameOf(actor).Bounds;
         return new object[] { atlas, mask,
             new double[] { m.M11,m.M12,m.M13,m.M14,m.M21,m.M22,m.M23,m.M24,m.M31,m.M32,m.M33,m.M34,m.M41,m.M42,m.M43,m.M44 },
             new double[] { box.Center.X,box.Center.Y,box.Center.Z,box.HalfExtents.X,box.HalfExtents.Y,box.HalfExtents.Z },
@@ -71,11 +71,12 @@ public sealed partial class VulkanScene
             lightIds.Add(light.OwnerId);
             positions.Add(position.X); positions.Add(position.Y); positions.Add(position.Z); positions.Add(data.PointLight.Range);
         }
-        foreach (var pair in actors)
+        // buildActors enumerates in the same order as actors (milestone 2, slice 2).
+        foreach (var pair in buildActors)
         {
             var actor = pair.Value;
             if (actor.Model == null || BuildFrameOf(actor).Destroyed) continue;
-            var box = actor.Bounds;
+            var box = BuildFrameOf(actor).Bounds;
             var center = box.Center;
             var half = box.HalfExtents;
             if (pair.Key == localActor) anchor = center;

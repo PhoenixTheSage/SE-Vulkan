@@ -51,7 +51,7 @@ namespace ClientPlugin.Rendering.Content
         private static readonly string[] Tags = { "Vertices", "Normals", "Tangents", "Bitangents", "Binormals", "TexCoords0", "MeshParts", "MeshSections", "BoundingBox", "BlendIndices", "BlendWeights", "PatternScale", "GeometryDataAsset", "LODs" };
         private readonly NativeBackend backend;
         private readonly Dictionary<string, VulkanModel> models = new Dictionary<string, VulkanModel>(StringComparer.OrdinalIgnoreCase);
-        private ulong nextMesh = 0x100000000;
+        private long nextMesh = 0x100000000;
         public int Count => models.Count;
         private readonly bool compactGeometry=Environment.GetEnvironmentVariable("SE_VULKAN_EXPANDED_GEOMETRY")!="1";
         private long expandedVertexBytes,uploadedVertexBytes,indexBytes,skinVertexBytes,skinIndexBytes;
@@ -59,9 +59,13 @@ namespace ClientPlugin.Rendering.Content
         public event Action<string, Exception> LoadFailed;
 
         public VulkanModelCache(NativeBackend backend) { this.backend = backend; }
-        public ulong AllocateMesh() => nextMesh++;
+        // Frame split (milestone 6): Apply loads models (SetModel, PutRuntime) while Build loads LOD models on a miss
+        // (GetLod) and allocates depth ranges, so loads serialize on gate and mesh ids come from an atomic counter.
+        private readonly object gate = new object();
+        public ulong AllocateMesh() => (ulong)System.Threading.Interlocked.Increment(ref nextMesh) - 1;
 
-        public VulkanModel Get(string path, float scale = 1)
+        public VulkanModel Get(string path, float scale = 1) { lock (gate) return GetLocked(path, scale); }
+        private VulkanModel GetLocked(string path, float scale)
         {
             if (string.IsNullOrWhiteSpace(path)) return null;
             string key = path + "@" + scale.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
@@ -164,11 +168,12 @@ namespace ClientPlugin.Rendering.Content
             }
         }
 
-        public VulkanModel PutRuntime(string name, MyModelData data)
+        public VulkanModel PutRuntime(string name, MyModelData data) { lock (gate) return PutRuntimeLocked(name, data); }
+        private VulkanModel PutRuntimeLocked(string name, MyModelData data)
         {
             string key = name + "@1";
             VulkanModel old;
-            if (models.TryGetValue(key, out old)) Release(old);
+            if (models.TryGetValue(key, out old)) { if (DeferReleases && old != null) pendingReleases.Add(old); else Release(old); }
             var model = new VulkanModel { Name = name, Bounds = data.AABB, Vertices = new float[checked(data.Positions.Count * 8)] };
             for (int i = 0; i < data.Positions.Count; ++i)
                 WriteVertex(model.Vertices, i, data.Positions[i], i < data.Normals.Count ? data.Normals[i] : Vector3.Up, i < data.TexCoords.Count ? data.TexCoords[i] : Vector2.Zero);
@@ -350,7 +355,12 @@ namespace ClientPlugin.Rendering.Content
             model.ExpandedVertexBytes=model.UploadedVertexBytes=model.IndexBytes=model.SkinVertexBytes=model.SkinIndexBytes=0;
         }
 
-        public void Clear() { foreach (var model in models.Values) Release(model); models.Clear(); }
+        public void Clear() { lock (gate) { FlushReleases(); foreach (var model in models.Values) Release(model); models.Clear(); } }
+        // Frame split (milestone 6): a runtime model replaced during Apply may still be drawn by the frame Build is
+        // assembling, so its native meshes are released at the hand-off, once that Build has joined.
+        public bool DeferReleases;
+        private readonly List<VulkanModel> pendingReleases = new List<VulkanModel>();
+        public void FlushReleases() { foreach (var model in pendingReleases) Release(model); pendingReleases.Clear(); }
         public void Dispose() => Clear();
     }
 }

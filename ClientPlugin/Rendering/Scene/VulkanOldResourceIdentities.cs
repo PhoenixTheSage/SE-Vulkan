@@ -9,15 +9,17 @@ namespace ClientPlugin.Rendering.Scene;
 
 public sealed partial class VulkanScene
 {
+    // Frame split (milestone 6): Apply registers identities (preload messages, runtime models) while Build resolves
+    // them, so every use of OldResources takes its lock.
     void EnsureOldModelIdentity(ActorData actor)
     {
         if(!OldResources.Initialized||!actor.TrackOldIdentity||actor.Model==null||actor.OldModel!=null)return;
-        if(KnownStockOldPipeline(actor)||(actor.StaticInstances==null&&!models.IsStockNewModel(actor.Model)))actor.OldModel=OldResources.Get(actor.Model.Name);
+        if(KnownStockOldPipeline(actor)||(actor.StaticInstances==null&&!models.IsStockNewModel(actor.Model)))lock(OldResources)actor.OldModel=OldResources.Get(actor.Model.Name);
     }
     void RegisterOldIdentityVariants(ActorData actor)
     {
         if(actor.OldModel==null||(actor.OldVariantModel==actor.OldModel&&actor.OldVariantRevision==actor.MaterialRevision))return;
-        foreach(var item in actor.Materials)OldResources.RegisterTextureChange(actor.OldModel,item.Key,item.Value.Textures);
+        lock(OldResources)foreach(var item in actor.Materials)OldResources.RegisterTextureChange(actor.OldModel,item.Key,item.Value.Textures);
         actor.OldVariantModel=actor.OldModel;actor.OldVariantRevision=actor.MaterialRevision;
     }
     void RegisterOldActorLayouts(ActorData actor)
@@ -26,7 +28,7 @@ public sealed partial class VulkanScene
         int stream=actor.InstanceBuffer!=uint.MaxValue&&instances.TryGetValue(actor.InstanceBuffer,out var buffer)?buffer.OldLayout:0;
         if(actor.OldLayoutModel==actor.OldModel&&actor.OldLayoutInstance==actor.InstanceBuffer&&actor.OldLayoutStream==stream)return;
         var model=actor.OldModel;var layouts=new int[model.LodCount];
-        for(int lod=0;lod<layouts.Length;lod++){int original=model.Layout(lod);layouts[lod]=stream!=0?OldResources.Layouts.Combine(original,stream):original;}
+        lock(OldResources)for(int lod=0;lod<layouts.Length;lod++){int original=model.Layout(lod);layouts[lod]=stream!=0?OldResources.Layouts.Combine(original,stream):original;}
         actor.OldLodLayouts=layouts;actor.OldLayoutModel=model;actor.OldLayoutInstance=actor.InstanceBuffer;actor.OldLayoutStream=stream;
     }
     // Source LOD matches resolve and canonicalize asset paths; they depend only
@@ -48,7 +50,7 @@ public sealed partial class VulkanScene
         int material=identity.Material(lod,part.SourceIndex),resource=identity.Resource(lod),layout=actor.OldLodLayouts[lod];
         uint flags=actor.SkinMatrices!=null?512u:0u;
         if(actor.InstanceBuffer!=uint.MaxValue&&instances.TryGetValue(actor.InstanceBuffer,out var buffer)&&buffer.OldLayout!=0){bool bones=identity.File!=null&&identity.File.Lods[lod].Layout.Animated;flags|=buffer.OldCube?(bones?8192u:4096u):16384u;}
-        var technique=OldResources.Materials.Get(material).Technique;
+        VRageRender.Import.MyMeshDrawTechnique technique;lock(OldResources)technique=OldResources.Materials.Get(material).Technique;
         return new NativeOldPartOrder{Key=StockOldSortKey.Pack(StockOldSortKey.IsDecal(technique),StockOldSortKey.Technique(technique),flags,layout,resource,material),Resource=(uint)resource,Material=(uint)material,Layout=(uint)layout,Proxy=(uint)identity.Proxy(lod,part.SourceIndex),Valid=1};
     }
     // Bounded CPU diagnostic, called on the render owner after held captures.

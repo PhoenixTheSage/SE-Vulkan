@@ -81,8 +81,9 @@ public sealed partial class VulkanScene
         foreach(var member in group.DirtyMembers)
         {
             bool contributes=!BuildFrameOf(member).Destroyed && BuildFrameOf(member).Visible;
-            if(contributes)box.Include(member.Bounds);
-            member.GroupContributes=contributes;member.GroupContribution=member.Bounds;
+            var memberBounds=BuildFrameOf(member).Bounds;
+            if(contributes)box.Include(memberBounds);
+            member.GroupContributes=contributes;member.GroupContribution=memberBounds;
         }
         group.Bounds=box;return true;
     }

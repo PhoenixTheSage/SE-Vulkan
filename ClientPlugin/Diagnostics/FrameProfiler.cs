@@ -52,29 +52,35 @@ internal static class FrameProfiler
     // Ten seconds at 240 fps needs 2400 entries. Retain headroom through 409 fps.
     const int Capacity = 4096;
     static readonly Sample[] History = new Sample[Capacity];
-    static readonly float[] Pending = new float[SectionCount];
     static readonly float[] LatestMilliseconds = new float[SectionCount];
     static int count, next;
-    static long frameStart;
-    static volatile bool drawing;
     static bool haveLatest, haveDrawBaseline;
-    // Frame split (milestone 4, slice 5): laps may come from Apply (the render thread) and Build (later its own thread).
-    // Each thread keeps its own lap mark; a thread's first lap in a frame starts its mark and adds nothing. Pending is
-    // shared, so its updates take a lock (uncontended on one thread).
+    // Frame split: laps come from Apply (the render thread) and Build (milestone 6: its own thread). Each frame has its
+    // own lap buffer; BeginDraw opens the next one on the render thread, and the build thread adopts the frame it builds
+    // (Adopt), so Build(N) and Apply(N+1) never write the same buffer. Each thread keeps its own lap mark per frame;
+    // a thread's first lap in a frame starts its mark and adds nothing. Buffer updates take a lock (uncontended).
+    public sealed class Frame
+    {
+        internal readonly float[] Pending = new float[SectionCount];
+        internal long Start;internal int Id;internal bool Open;
+    }
+    static readonly Frame[] frames = { new Frame(), new Frame(), new Frame() };
     static readonly object gate = new object();
-    static int frameId;
+    static int frameId, frameIndex;
+    [ThreadStatic] static Frame threadLaps;
     [ThreadStatic] static long threadMark;
     [ThreadStatic] static int threadFrame;
-    static ref long Mark(long now)
+    static ref long Mark(Frame laps, long now)
     {
-        if (threadFrame != Volatile.Read(ref frameId)) { threadFrame = frameId; threadMark = now; }
+        if (threadFrame != laps.Id) { threadFrame = laps.Id; threadMark = now; }
         return ref threadMark;
     }
-    static void Add(Section section, long ticks)
+    static void Add(Frame laps, Section section, long ticks)
     {
         float ms = (float)(ticks * 1000.0 / Stopwatch.Frequency);
-        lock (gate) Pending[(int)section] += ms;
+        lock (gate) laps.Pending[(int)section] += ms;
     }
+    static Frame OpenLaps { get { var laps = threadLaps; return laps != null && laps.Open ? laps : null; } }
     static ulong drawBaseline;
     static ulong gpuBaseline;
     static Sample latest;
@@ -82,45 +88,51 @@ internal static class FrameProfiler
     public static void BeginDraw()
     {
         long now = Stopwatch.GetTimestamp();
+        Frame laps;
         lock (gate)
         {
-            frameStart = now;
-            Array.Clear(Pending, 0, Pending.Length);
-            threadFrame = ++frameId;
-            threadMark = now;
+            frameIndex = (frameIndex + 1) % frames.Length; laps = frames[frameIndex];
+            Array.Clear(laps.Pending, 0, laps.Pending.Length);
+            laps.Start = now; laps.Id = ++frameId; laps.Open = true;
         }
-        drawing = true;
+        threadLaps = laps; threadFrame = laps.Id; threadMark = now;
     }
+    /// <summary>The calling thread's open frame, to hand to the thread that finishes it.</summary>
+    public static Frame Current => OpenLaps;
+    /// <summary>The build thread continues the frame it builds; the render thread detaches once it hands the frame over.</summary>
+    public static void Adopt(Frame laps) { threadLaps = laps; if (laps != null) { threadFrame = laps.Id; threadMark = Stopwatch.GetTimestamp(); } }
+    public static void Detach() => threadLaps = null;
     public static void Lap(Section section)
     {
-        if (!drawing) return;
+        var laps = OpenLaps; if (laps == null) return;
         long now = Stopwatch.GetTimestamp();
-        ref long mark = ref Mark(now);
-        Add(section, now - mark);
+        ref long mark = ref Mark(laps, now);
+        Add(laps, section, now - mark);
         mark = now;
     }
     public static void Since(Section section, long started)
     {
-        if (!drawing) return;
+        var laps = OpenLaps; if (laps == null) return;
         long now = Stopwatch.GetTimestamp();
-        Add(section, now - started);
-        Mark(now) = now;
+        Add(laps, section, now - started);
+        Mark(laps, now) = now;
     }
     public static void Deposit(Section section, long ticks)
     {
-        if (!drawing || ticks <= 0) return;
-        Add(section, ticks);
+        var laps = OpenLaps; if (laps == null || ticks <= 0) return;
+        Add(laps, section, ticks);
     }
     public static void Advance()
     {
-        if (!drawing) return;
+        var laps = OpenLaps; if (laps == null) return;
         long now = Stopwatch.GetTimestamp();
-        Mark(now) = now;
+        Mark(laps, now) = now;
     }
     public static void Commit(bool paused, uint spotUs, uint shadowUs, uint mainUs, uint probeUs, uint prepareUs, uint tailUs, uint waitUs, uint acquireUs, uint resetUs, ulong worldDraws, ulong gpuSample = 0, float gpuMs = -1)
     {
-        if (!drawing) return;
+        var laps = OpenLaps; if (laps == null) return;
         long now = Stopwatch.GetTimestamp();
+        lock (gate) {
         ulong frameDraws = 0;
         if (worldDraws != 0)
         {
@@ -134,12 +146,12 @@ internal static class FrameProfiler
         if (haveGpu) gpuBaseline = gpuSample;
         var sample = new Sample
         {
-            Tick = now, Paused = paused, Total = (float)((now - frameStart) * 1000.0 / Stopwatch.Frequency),
+            Tick = now, Paused = paused, Total = (float)((now - laps.Start) * 1000.0 / Stopwatch.Frequency),
             SpotUs = spotUs, ShadowUs = shadowUs, MainUs = mainUs, ProbeUs = probeUs, PrepareUs = prepareUs, TailUs = tailUs, WaitUs = waitUs, AcquireUs = acquireUs, ResetUs = resetUs,
             GpuMs = haveGpu ? gpuMs : -1, NewGpu = newGpu,
             WorldDraws = frameDraws, Milliseconds = store ? History[next].Milliseconds ?? new float[SectionCount] : LatestMilliseconds
         };
-        lock (gate) Array.Copy(Pending, sample.Milliseconds, SectionCount);
+        Array.Copy(laps.Pending, sample.Milliseconds, SectionCount);
         latest = sample;
         haveLatest = true;
         if (store)
@@ -148,15 +160,23 @@ internal static class FrameProfiler
             next = (next + 1) % Capacity;
             if (count < Capacity) count++;
         }
-        drawing = false;
+        laps.Open = false;
+        }
+        threadLaps = null;
     }
     static void ClearHistory()
     {
+        lock (gate) {
         Array.Clear(History, 0, History.Length);
         count = 0;
         next = 0;
+        }
     }
     public static View Capture(bool live)
+    {
+        lock (gate) return CaptureLocked(live);
+    }
+    static View CaptureLocked(bool live)
     {
         var view = new View { Live = live, HaveFrame = haveLatest, GpuMs = -1, Milliseconds = new float[SectionCount] };
         if (!haveLatest) return view;

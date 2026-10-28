@@ -93,6 +93,10 @@ public sealed partial class VulkanScene
         FoldApplyState();
     }
     public void EndBuild()=>building=false;
+    // Frame split, milestone 6: with the build thread, runtime models replaced during Apply release their meshes at
+    // the hand-off (FlushModelReleases), after the Build that may still draw them has joined.
+    public bool FrameSplit{get=>models.DeferReleases;set=>models.DeferReleases=value;}
+    public void FlushModelReleases()=>models.FlushReleases();
     // Build prologue: the native light and spot submission of the latched frame.
     void CommitLights(NativeBackend target)
     {

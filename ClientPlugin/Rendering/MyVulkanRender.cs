@@ -187,6 +187,15 @@ public sealed class MyVulkanRender : IMyRender
             foreach (string system in new[] { "Sprites and clipping", "Fonts", "Models and materials", "Actors and instancing", "Character skinning", "RenderDirect animations", "Skybox", "Sun and ambient lighting", "Local lighting", "Cascaded shadows", "Fixed exposure tone mapping", "Construction dithering", "Billboards", "LCD targets", "Screenshot readback" })
                 VulkanDiagnostics.Set(system, SubsystemState.Ready, "Implementation online; awaiting observed frames and live visual acceptance.");
             media = new VulkanMedia(backend, scene.TextureCache, sprites);
+            if (FrameSplit)
+            {
+                // The split needs the Apply-order scene update; verify mode compares Build's copies with live state,
+                // which moves on under a concurrent Apply, so it is single-thread only.
+                VulkanScene.ApplyBuildOrderEnabled = true; VulkanScene.FramePacketVerifyEnabled = false;
+                scene.FrameSplit = true; voxels.LatchedMessages = true; debugLines.Latched = true;
+                buildThread = new FrameBuildThread();
+                sessionLog?.Write("Frame split: Build runs on its own thread (SE_VULKAN_FRAME_SPLIT=1).");
+            }
             VulkanDiagnostics.Set("Creative fixture acceptance", SubsystemState.Unavailable, "Requires live controlled-scene comparison, HUD/LCD verification and Vulkan capture.");
             return settings;
         }
@@ -201,7 +210,7 @@ public sealed class MyVulkanRender : IMyRender
     public void DisposeDevice()
     {
         if (disposed) return; disposed = true;
-        try { try { host?.RestoreDisplayMode(); media?.Dispose(); particles?.Dispose();environment?.Dispose(); voxels?.Dispose(); scene?.Dispose(); } finally { backend?.Dispose(); } }
+        try { try { buildThread?.Dispose(); buildThread = null; host?.RestoreDisplayMode(); media?.Dispose(); particles?.Dispose();environment?.Dispose(); voxels?.Dispose(); scene?.Dispose(); } finally { backend?.Dispose(); } }
         catch (Exception error) { BackendRuntime.FailStartup("Vulkan shutdown failed: " + error.Message); throw; }
         finally { try { sessionLog?.Close(); } catch { } BackendRuntime.EndSession(); if (Active == this) Active = null; }
     }
@@ -210,6 +219,7 @@ public sealed class MyVulkanRender : IMyRender
     public void ApplySettings(MyRenderDeviceSettings value)
     {
         if (value.AdapterOrdinal != settings.AdapterOrdinal || value.UseStereoRendering) throw new NotSupportedException("Adapter and stereo changes require supported Vulkan capabilities.");
+        JoinBuild();
         sessionLog?.Apply(value);
         host.ApplySettings(value); settings = value;
         var output = DisplayPlacement.PresentationSize((int)host.Width, (int)host.Height, value.BackBufferWidth, value.BackBufferHeight);
@@ -244,8 +254,59 @@ public sealed class MyVulkanRender : IMyRender
     // publication, QueueWorld, frame slot and sprites). Build reads the FramePacket and the scene's latched inputs,
     // never what message processing rewrites. Both run here, back to back, on the render thread.
     bool uploadsOpen,particleCameraReset;
+    // Phase 4 frame split, milestone 6: SE_VULKAN_FRAME_SPLIT=1 runs Build(N) and its submission (RaiseFrame,
+    // EndFrameAsync) on a dedicated build thread while this thread returns to the game and runs Apply(N+1). Draw(N+1)
+    // is Apply, join Build(N), publish its visible set, hand off, launch Build(N+1). A frame with a screenshot request
+    // is built here and submitted by Present, so the readback holds it. Messages that touch Build state (unload,
+    // device and render settings) join first. Off, Draw runs Apply and Build back to back here, as before.
+    static readonly bool FrameSplit=Environment.GetEnvironmentVariable("SE_VULKAN_FRAME_SPLIT")=="1";
+    FrameBuildThread buildThread;
+    bool presentHere;
+    void JoinBuild(){if(buildThread==null||!buildThread.InFlight)return;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.BuildJoin))buildThread.Join();}
+    void Handoff(FramePacket frame)
+    {
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Handoff)){
+        if(frame.DrawScene&&frame.ApplyBuildOrder)scene.LatchFrame();
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HandoffLatches)){sprites.LatchMain();particles.LatchQueue();decals.LatchPackets();postprocess.Latch();probes.Latch();shadows.Latch();environment.Latch();media?.FlushRemovals();
+            if(FrameSplit){voxels.LatchMessages();debugLines.Latch();scene.FlushModelReleases();}}
+        }
+    }
+    void DrawSplit(bool draw)
+    {
+        FrameProfiler.BeginDraw();
+        RendererCpuProfiler.BeginFrame();
+        ApplyThreadPolicies();
+        presentHere=false;
+        try
+        {
+            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Draw))
+            {
+                var frame=ApplyFrame(draw);
+                JoinBuild();
+                PublishVisible();
+                if(frame==null){presentHere=true;return;}
+                Handoff(frame);
+                // Once a second, with Build joined: its native reads may wait for the recording in flight.
+                SampleDiagnostics();
+                if(captures.Count>0){presentHere=true;backend.BeginUploads();uploadsOpen=true;BuildFrame(frame);return;}
+                var laps=FrameProfiler.Current;FrameProfiler.Detach();
+                buildThread.Launch(()=>BuildOnThread(frame,laps));
+            }
+        }
+        catch (Exception error) { Fatal(error); throw; }
+        finally { if(!presentHere)RendererCpuProfiler.EndFrame(); }
+    }
+    void BuildOnThread(FramePacket frame,FrameProfiler.Frame laps)
+    {
+        FrameProfiler.Adopt(laps);RendererCpuProfiler.BeginBuild();
+        // Build loads textures synchronously, as on one thread (voxel materials need them at once).
+        scene.TextureCache.BindLoaderThread();
+        try{backend.BeginUploads();uploadsOpen=true;BuildFrame(frame);SubmitFrame(frame.DrawScene,false);}
+        finally{RendererCpuProfiler.EndBuild();FrameProfiler.Detach();}
+    }
     public void Draw(bool draw = true)
     {
+        if(FrameSplit){DrawSplit(draw);return;}
         FrameProfiler.BeginDraw();
         RendererCpuProfiler.BeginFrame();
         ApplyThreadPolicies();
@@ -257,10 +318,7 @@ public sealed class MyVulkanRender : IMyRender
             try{frame=ApplyFrame(draw);}
             catch{EndOpenUploads();throw;}
             if(frame==null){EndOpenUploads();return;}
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Handoff)){
-            if(frame.DrawScene&&frame.ApplyBuildOrder)scene.LatchFrame();
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HandoffLatches)){sprites.LatchMain();particles.LatchQueue();decals.LatchPackets();postprocess.Latch();probes.Latch();shadows.Latch();environment.Latch();media?.FlushRemovals();}
-            }
+            Handoff(frame);
             BuildFrame(frame);
             PublishVisible();
         }
@@ -285,7 +343,7 @@ public sealed class MyVulkanRender : IMyRender
         // The loading screen stays at 100% until each clipmap raises Loaded. That counter only advances inside
         // Clipmap.Update, and stock runs it even while DrawScene is deferred: with no frame to build, the clipmap
         // update runs here; otherwise it runs at the start of Build (voxels are Build state).
-        if (!draw || !host.CanPresent) { UpdateVoxels(haveCamera,cameraWorld,voxelFrustum,voxelFar,cameraSmooth); return null; }
+        if (!draw || !host.CanPresent) { JoinBuild(); if(FrameSplit)voxels.LatchMessages(); UpdateVoxels(haveCamera,cameraWorld,voxelFrustum,voxelFar,cameraSmooth); return null; }
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Particles)){
         if (drawScene)
         {
@@ -336,6 +394,8 @@ public sealed class MyVulkanRender : IMyRender
             if(drawScene)scene.Next.ExternalDepthRevision=scene.ExternalDepthRevision=voxels.MeshUpdates+voxels.LodChanges;
             var worldResolution=resolution.Update(backend,frame.DeviceSettings,renderConfiguration,drawScene,animationDelta*1000);
             GuestBridge.BeginScene(backend,scene);GuestBridge.SetPostprocess(postprocess);
+            // The guest view clip follows the frame being built (it was set during message intake).
+            if(frame.HaveCamera&&frame.VoxelFar!=lastViewClip){lastViewClip=frame.VoxelFar;GuestBridge.SetViewClip(frame.VoxelFar);}
             if(drawScene)BackendRuntime.RaiseScene(new[]{camera.X,camera.Y,camera.Z},
                 new[]{-light.SunLightDirection.X,-light.SunLightDirection.Y,-light.SunLightDirection.Z});
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ShadowFit)){
@@ -411,30 +471,37 @@ public sealed class MyVulkanRender : IMyRender
         finally{if(drawScene)scene.EndBuild();}
     }
     // The probe plan inputs of the frame being built (the plan provider is created once and reads these).
-    Vector3D buildCamera;MyEnvironmentLightData buildLight;MyTimeSpan buildDrawTime;
+    Vector3D buildCamera;MyEnvironmentLightData buildLight;MyTimeSpan buildDrawTime;float lastViewClip;
     public void Present()
     {
+        // Split: the build thread submits the frame (SubmitFrame) unless Draw built it here.
+        if (FrameSplit && !presentHere) return;
+        presentHere = false;
         if (!frameOpen) { RendererCpuProfiler.EndFrame();FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); return; }
-        try
-        {
-            if (captures.Count > 0) backend.RequestReadback();
-            FrameProfiler.Lap(FrameProfiler.Section.Host);
-            long nativeStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            GuestBridge.Bind(backend, scene);
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GuestFrame))BackendRuntime.RaiseFrame();
-            if(backend.PipelinedRecordingEnabled)SampleDiagnostics();
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeRecord)){if(backend.PipelinedRecordingEnabled)backend.EndFrameAsync();else backend.EndFrame();} frameOpen = false;
-            shadows.CommitPreparedFrame();
-            RendererCpuProfiler.EndFrame();
-            FrameProfiler.Since(FrameProfiler.Section.NativeRecord, nativeStart);
-            var profiled = backend.GetWorkStats();
-            var gpuProfile = backend.GetResolutionStats();
-            FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, profiled.SpotUs, profiled.ShadowUs, profiled.MainUs, profiled.ProbeUs, profiled.PrepareUs, profiled.TailUs, profiled.WaitUs, profiled.AcquireUs, profiled.ResetUs, profiled.WorldDraws,
-                drawScene && gpuProfile.TimingSupported != 0 ? gpuProfile.Samples : 0, gpuProfile.GpuMs);
-            CompleteCaptures();
-            if(!backend.PipelinedRecordingEnabled)SampleDiagnostics();
-        }
+        try { SubmitFrame(drawScene, true); }
         catch (Exception error) { Fatal(error); throw; }
+    }
+    // The frame's submission: guest frame callback, native recording, profiler commit. On the render thread (Present)
+    // it also completes screenshots, closes the render thread's CPU-detail frame and samples diagnostics; the build
+    // thread leaves those to Draw.
+    void SubmitFrame(bool frameDrawScene, bool renderThread)
+    {
+        if (!frameOpen) { FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); return; }
+        if (renderThread && captures.Count > 0) backend.RequestReadback();
+        FrameProfiler.Lap(FrameProfiler.Section.Host);
+        long nativeStart = System.Diagnostics.Stopwatch.GetTimestamp();
+        GuestBridge.Bind(backend, scene);
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GuestFrame))BackendRuntime.RaiseFrame();
+        if(renderThread&&backend.PipelinedRecordingEnabled)SampleDiagnostics();
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeRecord)){if(backend.PipelinedRecordingEnabled)backend.EndFrameAsync();else backend.EndFrame();} frameOpen = false;
+        shadows.CommitPreparedFrame();
+        if(renderThread)RendererCpuProfiler.EndFrame();
+        FrameProfiler.Since(FrameProfiler.Section.NativeRecord, nativeStart);
+        var profiled = backend.GetWorkStats();
+        var gpuProfile = backend.GetResolutionStats();
+        FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, profiled.SpotUs, profiled.ShadowUs, profiled.MainUs, profiled.ProbeUs, profiled.PrepareUs, profiled.TailUs, profiled.WaitUs, profiled.AcquireUs, profiled.ResetUs, profiled.WorldDraws,
+            frameDrawScene && gpuProfile.TimingSupported != 0 ? gpuProfile.Samples : 0, gpuProfile.GpuMs);
+        if(renderThread){CompleteCaptures();if(!backend.PipelinedRecordingEnabled)SampleDiagnostics();}
     }
     // Once a second. Its native reads are ordinary calls: with pipelined recording it runs before the
     // launch, because after it every read would wait for the whole recording.
@@ -531,6 +598,8 @@ public sealed class MyVulkanRender : IMyRender
     private void Process(MyRenderMessageBase message)
     {
         annotation = (int)message.MessageType;
+        // Split: these touch Build state directly (clears, device and render settings); every handler sees them joined.
+        if (buildThread != null && (message.MessageType == MyRenderMessageEnum.UnloadData || message.MessageType == MyRenderMessageEnum.SwitchRenderSettings || message.MessageType == MyRenderMessageEnum.SwitchDeviceSettings)) JoinBuild();
         probes.Process(message);shadows.Process(message);if(message.MessageType==MyRenderMessageEnum.UnloadData)postprocess.Process(message);
         decals?.Observe(message);if(decals!=null&&decals.Process(message)){VulkanDiagnostics.Message(message.MessageType,MessageDisposition.Handler);return;}
         if(particles!=null && particles.Process(message)){VulkanDiagnostics.Message(message.MessageType,MessageDisposition.Handler);return;}
@@ -552,7 +621,7 @@ public sealed class MyVulkanRender : IMyRender
                 foreach (var child in ((MyRenderMessageDrawCommands)message).Messages) dispatchMessage(child); break;
             case MyRenderMessageEnum.DrawScene: drawScene = true; break;
             case MyRenderMessageEnum.SetCameraViewMatrix:
-                var cam = (MyRenderMessageSetCameraViewMatrix)message; haveCamera=true; camera = cam.CameraPosition;cameraWorld=MatrixD.Invert(cam.ViewMatrix);voxelFrustum=new BoundingFrustumD(cam.ViewMatrix*(MatrixD)cam.ProjectionMatrix);voxelFar=cam.FarPlane;GuestBridge.SetViewClip(voxelFar);cameraSmooth=cam.Smooth;voxelDrawFrustum=new BoundingFrustumD(cam.ViewMatrix*(MatrixD)cam.ProjectionFarMatrix);
+                var cam = (MyRenderMessageSetCameraViewMatrix)message; haveCamera=true; camera = cam.CameraPosition;cameraWorld=MatrixD.Invert(cam.ViewMatrix);voxelFrustum=new BoundingFrustumD(cam.ViewMatrix*(MatrixD)cam.ProjectionMatrix);voxelFar=cam.FarPlane;cameraSmooth=cam.Smooth;voxelDrawFrustum=new BoundingFrustumD(cam.ViewMatrix*(MatrixD)cam.ProjectionFarMatrix);
                 cameraView = cam.ViewMatrix; cameraView.Translation = Vector3D.Zero; cameraProjection=cam.FOV>0?ReverseDepth(Matrix.CreatePerspectiveFovRhInfiniteComplementary(cam.FOV,BackBufferResolution.X/(float)BackBufferResolution.Y,cam.NearPlane)):cam.ProjectionMatrix;cameraProjection.M31=cam.ProjectionOffsetX;cameraProjection.M32=cam.ProjectionOffsetY; viewProjection = cameraView * cameraProjection; break;
             case MyRenderMessageEnum.UpdateShadowSettings:
                 if(!shadows.StockFittingEnabled || !shadows.StockSchedulingEnabled){disposition=MessageDisposition.Pending;Pending(message,"Simplified shadow fallback selected; enable stock fitting and scheduling for projected-size pruning and usage-based cascade cadence.");}
@@ -590,7 +659,7 @@ public sealed class MyVulkanRender : IMyRender
             case MyRenderMessageEnum.UnloadTextures:
                 foreach (string file in ((MyRenderMessageUnloadTextures)message).Files) scene.TextureCache.Unload(file); break;
             case MyRenderMessageEnum.UnloadData:
-                sessionLog?.UnloadSession();textureMultipliers=MyTextureDebugMultipliers.Defaults;
+                lastViewClip=0;sessionLog?.UnloadSession();textureMultipliers=MyTextureDebugMultipliers.Defaults;
                 decals?.Clear();particleCameraReset=true;haveCamera=false;particles?.Clear();environment?.Clear(); voxels?.BindOwnerThread(); voxels?.Clear(); scene.Clear(); sprites.Clear(); generated.Clear(); break;
             case MyRenderMessageEnum.DebugDrawLine3D: debugLines.Add((MyRenderMessageDebugDrawLine3D)message); break;
             case MyRenderMessageEnum.DebugClearPersistentMessages: debugLines.ClearPersistent(); break;

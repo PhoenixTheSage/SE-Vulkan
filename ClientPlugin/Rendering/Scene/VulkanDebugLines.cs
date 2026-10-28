@@ -14,7 +14,11 @@ public sealed class VulkanDebugLines
 {
     const int MaxFrameMessages=100000,MaxPersistent=1000;
     struct Line{public Vector3D From,To;public Color ColorFrom,ColorTo;public bool DepthRead;}
-    readonly List<(Line line,bool persistent)> frame=new();
+    List<(Line line,bool persistent)> frame=new(),latchedFrame=new();
+    // Frame split (milestone 6): with the build thread, Latch hands Apply's lines to Build at the hand-off and Submit
+    // draws the latched ones; without it, Submit draws the live list, as before.
+    public bool Latched;bool latchedClear;
+    public void Latch(){(frame,latchedFrame)=(latchedFrame,frame);frame.Clear();overflow=0;latchedClear|=clearPersistent;clearPersistent=false;}
     readonly List<Line> persistent=new();
     int overflow;bool clearPersistent;
     NativeLineVertex[] depthVertices=new NativeLineVertex[256],overlayVertices=new NativeLineVertex[256];
@@ -32,7 +36,7 @@ public sealed class VulkanDebugLines
 
     public void ClearPersistent()=>clearPersistent=true;
 
-    public void Clear(){frame.Clear();persistent.Clear();overflow=0;clearPersistent=false;}
+    public void Clear(){frame.Clear();latchedFrame.Clear();persistent.Clear();overflow=0;clearPersistent=latchedClear=false;}
 
     /// <summary>Submits this frame's and the persistent lines, then advances the queues as MyRender11.ProcessDebugMessages does.</summary>
     public void Submit(NativeBackend backend,Vector3D camera)
@@ -46,13 +50,15 @@ public sealed class VulkanDebugLines
             vertices[count++]=new NativeLineVertex{X=a.X,Y=a.Y,Z=a.Z,Color=line.ColorFrom.PackedValue};
             vertices[count++]=new NativeLineVertex{X=b.X,Y=b.Y,Z=b.Z,Color=line.ColorTo.PackedValue};
         }
-        foreach(var entry in frame)Emit(entry.line);
+        var lines=Latched?latchedFrame:frame;
+        foreach(var entry in lines)Emit(entry.line);
         foreach(var line in persistent)Emit(line);
         backend.DrawLines(depthVertices,depth,true);
         backend.DrawLines(overlayVertices,overlay,false);
-        foreach(var entry in frame)if(entry.persistent)persistent.Add(entry.line);
-        frame.Clear();overflow=0;
-        if(clearPersistent){persistent.Clear();clearPersistent=false;}
+        foreach(var entry in lines)if(entry.persistent)persistent.Add(entry.line);
+        lines.Clear();if(!Latched)overflow=0;
+        bool clear=Latched?latchedClear:clearPersistent;
+        if(clear){persistent.Clear();if(Latched)latchedClear=false;else clearPersistent=false;}
         else if(persistent.Count>MaxPersistent)persistent.RemoveRange(0,persistent.Count-MaxPersistent);
     }
 }

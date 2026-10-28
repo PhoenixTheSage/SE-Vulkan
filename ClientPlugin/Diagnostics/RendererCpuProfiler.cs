@@ -29,7 +29,7 @@ public static class RendererCpuProfiler
         NativePassPublish, NativePassFallbacks, NativePassEndVisibility,
         GpuFrameInputs, GpuTopologyPublication, GpuResidentQueue, GpuRootQueries,
         GpuVisibilityPublication,
-        MainOwnerDeclare, NewViewSpots, NewViewSelect, DrawWorldSetup, PreparedAppend, CandidatePlan, CellCommits, CellPublish, OffscreenTargets, OffscreenNative, VoxelCull, VoxelMaterials, VoxelEmit, Flares, Billboards, ParticleDraw, DecalDraw, EnvironmentDraw, GuestPreparation, PostprocessConfigure, ProbesConfigure, ProbeAmbient, ProbeFaceFrames, ProbeNative, GuestFrame, OcclusionBounds, OcclusionResults, PublicationJoin, ActorSnapshot, LightSnapshot, Handoff, BuildPrologue, BuildOps, HandoffFields, HandoffSceneState, HandoffDirty, HandoffLatches, PrologueCollection, PrologueSubmit, Count
+        MainOwnerDeclare, NewViewSpots, NewViewSelect, DrawWorldSetup, PreparedAppend, CandidatePlan, CellCommits, CellPublish, OffscreenTargets, OffscreenNative, VoxelCull, VoxelMaterials, VoxelEmit, Flares, Billboards, ParticleDraw, DecalDraw, EnvironmentDraw, GuestPreparation, PostprocessConfigure, ProbesConfigure, ProbeAmbient, ProbeFaceFrames, ProbeNative, GuestFrame, OcclusionBounds, OcclusionResults, PublicationJoin, ActorSnapshot, LightSnapshot, Handoff, BuildPrologue, BuildOps, HandoffFields, HandoffSceneState, HandoffDirty, HandoffLatches, PrologueCollection, PrologueSubmit, BuildJoin, BuildThread, Count
     }
     public static bool Enabled {get;}=Environment.GetEnvironmentVariable("SE_VULKAN_CPU_DETAIL")=="1";
     static readonly Counter[] Current=new Counter[(int)Phase.Count];
@@ -69,15 +69,42 @@ public static class RendererCpuProfiler
     {
         if(!Enabled||!active)return;
         frame.Dispose();active=false;
-        Array.Copy(Current,Completed,Current.Length);completedOwner=owner;completedSequence=sequence;completedReadTicks=readTicks;
+        Array.Copy(Current,Completed,Current.Length);
+        lock(buildGate){if(buildReady){for(int i=0;i<Completed.Length;i++)Add(ref Completed[i],BuildDone[i]);buildReady=false;}}
+        completedOwner=owner;completedSequence=sequence;completedReadTicks=readTicks;
         Array.Copy(currentMessageTicks,completedMessageTicks,MessageTypes);Array.Copy(currentMessageCalls,completedMessageCalls,MessageTypes);
         completedGen0=GC.CollectionCount(0)-gen0;completedGen1=GC.CollectionCount(1)-gen1;completedGen2=GC.CollectionCount(2)-gen2;
     }
-    // Scopes belong to the render thread; a forked producer's calls on a worker are not measured. Frame split
-    // (milestone 4, slice 5): Build still runs on this thread, so its phases record as before. Once Build has its own
-    // thread (milestone 6), its scopes need a second lane bound there; until then off-owner scopes stay no-ops.
-    public static Scope Measure(Phase phase,bool counters=true)=>Enabled&&active&&Environment.CurrentManagedThreadId==ownerManaged?new Scope(phase,counters):default;
+    // Scopes belong to the render thread, or to the build thread while a Build runs there (milestone 6); a forked
+    // producer's calls on a worker are not measured.
+    public static Scope Measure(Phase phase,bool counters=true)
+    {
+        if(!Enabled)return default;
+        int thread=Environment.CurrentManagedThreadId;
+        if(active&&thread==ownerManaged)return new Scope(phase,counters,Current);
+        if(buildActive&&thread==buildManaged)return new Scope(phase,counters,BuildCurrent);
+        return default;
+    }
     static int ownerManaged;
+    // Frame split (milestone 6): the build thread's lane. BeginBuild/EndBuild bracket one Build on that thread; its
+    // counters wait in BuildDone and fold into the render thread's next completed frame (Apply of frame N+1 plus
+    // Build of frame N, joined during it). The BuildThread phase is that Build's wall time.
+    static readonly Counter[] BuildCurrent=new Counter[(int)Phase.Count],BuildDone=new Counter[(int)Phase.Count];
+    static int buildManaged;static volatile bool buildActive;static bool buildReady;static Scope buildFrame;
+    static readonly object buildGate=new object();
+    public static void BeginBuild()
+    {
+        if(!Enabled)return;
+        Array.Clear(BuildCurrent,0,BuildCurrent.Length);buildManaged=Environment.CurrentManagedThreadId;buildActive=true;
+        buildFrame=Measure(Phase.BuildThread);
+    }
+    public static void EndBuild()
+    {
+        if(!Enabled||!buildActive)return;
+        buildFrame.Dispose();buildActive=false;
+        lock(buildGate){if(!buildReady)Array.Clear(BuildDone,0,BuildDone.Length);for(int i=0;i<BuildDone.Length;i++)Add(ref BuildDone[i],BuildCurrent[i]);buildReady=true;}
+    }
+    static void Add(ref Counter t,in Counter c){t.Calls+=c.Calls;t.CpuCalls+=c.CpuCalls;t.CycleCalls+=c.CycleCalls;t.Wall+=c.Wall;t.Cpu+=c.Cpu;t.Cycles+=c.Cycles;t.Allocated+=c.Allocated;}
     public static Snapshot Capture()
         =>Describe(Completed,1,completedSequence,completedOwner,completedReadTicks);
     static Snapshot Describe(Counter[] values,long frames,long lastSequence,uint thread,long overhead)
@@ -158,31 +185,32 @@ public static class RendererCpuProfiler
         public void Reset(){Array.Clear(totals,0,totals.Length);frames=lastSequence=overhead=dropped=0;sampleCount=0;thread=0;
             if(Enabled){Array.Clear(messageTicks,0,MessageTypes);Array.Clear(messageCalls,0,MessageTypes);Array.Clear(messageSpikeTicks,0,MessageTypes);}messageSpikeFrames=0;}
     }
-    struct Counter {public long Calls,CpuCalls,CycleCalls,Wall,Cpu,Allocated;public ulong Cycles;}
+    internal struct Counter {public long Calls,CpuCalls,CycleCalls,Wall,Cpu,Allocated;public ulong Cycles;}
     public struct Scope:IDisposable
     {
         readonly Phase phase;
         readonly bool live,counters,cpuOk,cyclesOk;
         readonly long wall,cpu,allocated;
         readonly ulong cycles;
-        internal Scope(Phase phase,bool counters)
+        readonly Counter[] target;
+        internal Scope(Phase phase,bool counters,Counter[] target)
         {
-            this.phase=phase;this.counters=counters;live=true;
+            this.phase=phase;this.counters=counters;this.target=target;live=true;
             long start=Stopwatch.GetTimestamp();cpu=0;cycles=0;allocated=0;cpuOk=cyclesOk=false;
             if(counters){if(phase==Phase.Frame)cpuOk=ReadCpu(out cpu);cyclesOk=QueryThreadCycleTime(new IntPtr(-2),out cycles);allocated=Allocated?.Invoke()??0;}
-            wall=Stopwatch.GetTimestamp();readTicks+=wall-start;
+            wall=Stopwatch.GetTimestamp();if(target==Current)readTicks+=wall-start;
         }
         public void Dispose()
         {
             if(!live)return;
-            long now=Stopwatch.GetTimestamp();ref var c=ref Current[(int)phase];c.Calls++;c.Wall+=now-wall;
+            long now=Stopwatch.GetTimestamp();ref var c=ref target[(int)phase];c.Calls++;c.Wall+=now-wall;
             if(counters){
                 long allocationEnd=Allocated?.Invoke()??0;
                 if(cpuOk&&ReadCpu(out long cpuEnd)){c.Cpu+=Math.Max(0,cpuEnd-cpu);c.CpuCalls++;}
                 if(cyclesOk&&QueryThreadCycleTime(new IntPtr(-2),out ulong cycleEnd)&&cycleEnd>=cycles){c.Cycles+=cycleEnd-cycles;c.CycleCalls++;}
                 c.Allocated+=Math.Max(0,allocationEnd-allocated);
             }
-            readTicks+=Stopwatch.GetTimestamp()-now;
+            if(target==Current)readTicks+=Stopwatch.GetTimestamp()-now;
         }
     }
     static bool ReadCpu(out long value)

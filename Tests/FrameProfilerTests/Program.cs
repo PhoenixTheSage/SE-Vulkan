@@ -22,3 +22,19 @@ Require(FrameProfiler.Capture(false).Frames == 4096, "Ring capacity/reuse failed
 FrameProfiler.Record = false; Frame(5, 8);
 Require(FrameProfiler.Capture(false).Frames == 0 && FrameProfiler.Capture(true).GpuMs == 8, "Recording off lost live GPU timing or retained history.");
 Console.WriteLine("PASS GPU sample deduplication, invalid samples, pause history, 240 fps capacity, ring reuse and live-only recording.");
+
+// Frame split: frame N's laps finish on the build thread (Adopt) while the render thread opens frame N+1; neither
+// frame's sections leak into the other, and the render thread's laps stop once it detaches.
+static void Spin(double ms) { var w = System.Diagnostics.Stopwatch.StartNew(); while (w.Elapsed.TotalMilliseconds < ms) { } }
+FrameProfiler.BeginDraw(); Spin(2); FrameProfiler.Lap(FrameProfiler.Section.Messages);
+var handed = FrameProfiler.Current; FrameProfiler.Detach();
+FrameProfiler.Lap(FrameProfiler.Section.Sprites); // detached: dropped
+var build = new Thread(() => { FrameProfiler.Adopt(handed); Spin(4); FrameProfiler.Lap(FrameProfiler.Section.Queue); Spin(1); FrameProfiler.Commit(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); });
+FrameProfiler.BeginDraw(); build.Start(); Spin(3); FrameProfiler.Lap(FrameProfiler.Section.Particles); build.Join();
+var split = FrameProfiler.Capture(true).Milliseconds;
+Require(split[(int)FrameProfiler.Section.Messages] >= 1.5f, "Apply's lap was lost in the hand-over.");
+Require(split[(int)FrameProfiler.Section.Queue] >= 3.5f && split[(int)FrameProfiler.Section.Queue] < 6f, "The build thread's first lap must count from its adoption of the frame.");
+Require(split[(int)FrameProfiler.Section.Particles] == 0 && split[(int)FrameProfiler.Section.Sprites] == 0, "Frame N+1's or a detached lap leaked into frame N.");
+FrameProfiler.Commit(false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+Require(FrameProfiler.Capture(true).Milliseconds[(int)FrameProfiler.Section.Particles] >= 2.5f, "Frame N+1 lost its own lap.");
+Console.WriteLine("PASS split frames: build-thread adoption, no cross-frame laps, detached laps dropped.");

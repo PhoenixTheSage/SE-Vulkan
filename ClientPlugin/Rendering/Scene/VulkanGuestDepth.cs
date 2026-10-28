@@ -57,7 +57,7 @@ public sealed partial class VulkanScene
                 // Batch bounds are not authoritative for every instance. Keep
                 // their actual streams and let the light projection clip them.
                 uint mask=actor.StaticInstances!=null || actor.InstanceBuffer!=uint.MaxValue
-                    ? ((1u<<GuestDepthFrusta.Length)-1)<<8 : GuestDepthMask(GuestDepthFrusta,actor.Bounds);
+                    ? ((1u<<GuestDepthFrusta.Length)-1)<<8 : GuestDepthMask(GuestDepthFrusta,BuildFrameOf(actor).Bounds);
                 if(mask==0)continue;
                 var model=actor.Model;
                 for(int lod=1;!model.Parts.Any(p=>DepthGeometrySegments.DrawsDepth(p.Technique)) && lod<=actor.Model.LodDescriptors.Length;lod++)

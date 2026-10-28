@@ -18,7 +18,10 @@ public sealed partial class VulkanScene
 {
     enum BuildOpKind:byte{ReleaseOwnership,RemoveActor,SpatialRefresh,ReleaseDeformations}
     struct BuildOp{public BuildOpKind Kind;public ActorData Data;public BoundingBoxD Sphere;public bool Removed,Static;}
-    readonly List<BuildOp> buildOps=new();
+    List<BuildOp> buildOps=new(),latchedBuildOps=new();
+    // Frame split (milestone 6): Apply keeps queueing while Build replays, so FoldApplyState moves the queue into
+    // latchedBuildOps and FlushBuildOps replays only those (on one thread the latch precedes Build, as before).
+    void LatchBuildOps(){if(buildOps.Count==0)return;if(latchedBuildOps.Count==0)(buildOps,latchedBuildOps)=(latchedBuildOps,buildOps);else{latchedBuildOps.AddRange(buildOps);buildOps.Clear();}}
     readonly Dictionary<uint,ActorData> buildActors=new();
     readonly List<(uint Id,ActorData Data)> actorLog=new();
     // Apply-side dirty marks, folded into the Build sets by LatchFrame.
@@ -41,7 +44,7 @@ public sealed partial class VulkanScene
     void MarkMembershipDirty(){if(building)groupMembershipDirty=true;else applyMembershipDirty=true;}
     void FoldApplyState()
     {
-        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HandoffFields)){SyncBuildActors();FoldActorFields();}
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HandoffFields)){SyncBuildActors();FoldActorFields();LatchBuildOps();billboards.Latch();}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HandoffSceneState))FoldSceneState();
         using var dirty=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HandoffDirty);
         FoldDirty(ref nativePassDirty,ref applyPassDirty);FoldDirty(ref cellDirty,ref applyCellDirty);FoldDirty(ref cellPoseDirty,ref applyCellPoseDirty);
@@ -58,7 +61,7 @@ public sealed partial class VulkanScene
     }
     void FlushBuildOps()
     {
-        foreach(var op in buildOps)
+        foreach(var op in latchedBuildOps)
         {
             var data=op.Data;
             switch(op.Kind)
@@ -76,7 +79,7 @@ public sealed partial class VulkanScene
                     break;
             }
         }
-        buildOps.Clear();
+        latchedBuildOps.Clear();
     }
     // A removed actor's Build state: native ownership, dirty entries, its occlusion group and candidate proxy.
     void RemoveBuildState(ActorData actor)

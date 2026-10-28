@@ -127,7 +127,7 @@ public sealed partial class VulkanScene
     }
     private unsafe NativePassActor PassActorInput(ActorData data,PassFamily family,List<NativePassAppearance> appearance,bool replaceAppearance=true)
     {
-        var actorFrame=BuildFrameOf(data);var matrix=actorFrame.World;var bounds=data.Bounds;
+        var actorFrame=BuildFrameOf(data);var matrix=actorFrame.World;var bounds=actorFrame.Bounds;
         var actor=new NativePassActor{Handle=data.PassHandle,Owner=data.Id,Family=family.Handle,Group=data.OcclusionGroup?.QueryId??0,Scale=(float)actorFrame.ForwardScale,Lod=data.NewLod.Export(),HaveCamera=data.HaveNewViewCamera?1u:0u,AppearanceOffset=(uint)appearance.Count};
         if(!(actor.Scale>0))actor.Scale=1;
         actor.Flags=32u|(actorFrame.Visible?1u:0u)|((data.Flags&RenderFlags.SkipInMainView)!=0?2u:0u)|((data.Flags&RenderFlags.SkipInForward)!=0?4u:0u)|((data.Flags&RenderFlags.CastShadows)!=0?8u:0u)|((data.Flags&RenderFlags.SkipInDepth)==0?16u:0u)|(data.DynamicShadow?64u:0u);

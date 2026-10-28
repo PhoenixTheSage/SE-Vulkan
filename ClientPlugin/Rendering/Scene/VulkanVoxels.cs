@@ -42,6 +42,11 @@ public sealed partial class VulkanVoxels : IDisposable
     private enum OpKind:byte{Create,Materials,Preload,Remove,Matrix,Dither}
     private struct Op{public OpKind Kind;public uint Id;public Vector3I Size;public MatrixD Matrix;public RenderFlags Flags;public float Dither;public IMyLodController Clipmap;public float? SpherizeRadius;public Vector3D SpherizeCenter;public MyRenderVoxelMaterialData[] Materials;public byte[] Preload;public bool Create;}
     private readonly List<Op> ops=new List<Op>();private readonly HashSet<uint> applyActors=new HashSet<uint>();
+    // Frame split (milestone 6): with the build thread, Apply keeps appending to ops while Build replays, so the
+    // hand-off moves ops into latchedOps (LatchMessages) and Build replays only those. Without it (one thread,
+    // tests), FlushMessages latches and replays together, as before.
+    public bool LatchedMessages;private readonly List<Op> latchedOps=new List<Op>();
+    public void LatchMessages(){if(ops.Count==0)return;latchedOps.AddRange(ops);ops.Clear();}
     public void BindOwnerThread()=>thread=Thread.CurrentThread.ManagedThreadId;
     public bool Process(MyRenderMessageBase message)
     {
@@ -68,9 +73,10 @@ public sealed partial class VulkanVoxels : IDisposable
     }
     public void FlushMessages()
     {
-        if(ops.Count==0)return;RequireOwner();
+        if(!LatchedMessages)LatchMessages();
+        if(latchedOps.Count==0)return;RequireOwner();
         // Replay a snapshot: a failing create rethrows with the rest of the queue left for the next flush.
-        var queued=ops.ToArray();ops.Clear();
+        var queued=latchedOps.ToArray();latchedOps.Clear();
         foreach(var op in queued)
         {
             switch(op.Kind)
@@ -234,7 +240,7 @@ public sealed partial class VulkanVoxels : IDisposable
     }
     struct CellDraw {public Actor Actor;public Cell Cell;public MatrixD Matrix;public double Distance;public bool Outside,OutsideProbe,Casts;public Vector3 Origin;public float Radius;public uint Cascades;public int PartStart,PartCount;}
     readonly List<CellDraw> cellScratch=new();readonly List<MyVoxelMaterialTriple> frameMaterials=new();readonly List<Part> retiredParts=new();readonly List<byte[]> partConstants=new();
-    public void Clear(){RequireOwner();ops.Clear();applyActors.Clear();foreach(var actor in actors.Values.ToArray())actor.Dispose();actors.Clear();Foliage.Clear();Materials.ClearResident();}
+    public void Clear(){RequireOwner();ops.Clear();latchedOps.Clear();applyActors.Clear();foreach(var actor in actors.Values.ToArray())actor.Dispose();actors.Clear();Foliage.Clear();Materials.ClearResident();}
     public void Dispose(){Clear();Foliage.Dispose();Materials.Dispose();}
     private sealed class Part {public NativeBackend.WorldRecipe Recipe;public ulong Mesh;public MyVoxelMaterialTriple Material;public MyVertexFormatVoxelSingleData[] Vertices;public uint[] Indices;public List<VulkanFoliage.Stream> Foliage;public int FoliageVersion;public float Density;}
     private sealed class Actor : IMyVoxelActor,IDisposable

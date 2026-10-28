@@ -2961,3 +2961,98 @@ Gate batch with all three trims:
 ### Next
 
 Milestone 6, the build thread behind `SE_VULKAN_FRAME_SPLIT=1`.
+
+## Phase 4 frame split, milestone 6: the build thread (2026-10-28)
+
+The plan's milestone 6 entry has the as-built description: `FrameBuildThread`,
+`DrawSplit`, the joins, upload-batch ownership, the races closed, profiler
+lanes and Anomaly documentation. This section has the measurements.
+
+### First split runs: five more races
+
+Every split run crashed in its first frames until five split-only races were
+closed:
+- **Voxel textures:** "Voxel DDS missing". Synchronous loads now run on the
+  build thread as the texture cache's second loader thread.
+- **The build-op queue:** "Collection was modified". It is now latched at the
+  hand-off.
+- **Billboard collection:** now double-buffered.
+- **The model cache:** now locked, with atomic mesh ids.
+- **`OldResources`:** now locked.
+
+All five behave identically on one thread. After the fixes the single-thread
+gates pass:
+- verify: 0 mismatches, orbit `Vulkan-45000d3a…` 32.9 million checks,
+  interior `Vulkan-4ee0dc66…` 48.7 million;
+- lane `Vulkan-ec2bee36…`: identical `packets.sig`;
+- suites pass;
+- VAL `Vulkan-ed4c45ce…`: 0 errors.
+
+The split runs show no exceptions, and VAL with the split
+(`Vulkan-87398742…`) has 0 validation errors.
+
+The single-thread VAL "present rendered frame failed" (out-of-date surface)
+at session unload is pre-existing: every earlier VAL run logs it twice.
+
+### The harness's render-thread telemetry
+
+The first census with the split (`Vulkan-69ae1b71…`) counted 3,820 gate
+waits, 19.8 s in all, about 2.7 ms per frame:
+- `sevk_get_present_flow_stats`: 17.7 s;
+- `sevk_get_performance_stats`: 1.2 s.
+
+These are the harness's per-frame reads in its Present prefix. Under the
+split they land in Build's open frame and recording.
+
+Production waits are small:
+- LCD renders: 0.08 s;
+- texture uploads: a handful;
+- the once-a-second `SampleDiagnostics` at the hand-off: 0.3 s.
+
+The harness now samples on the build thread (a `SubmitFrame` prefix) right
+before the native launch. After that (`Vulkan-58c250fc…`):
+- 72 gate waits, 0.36 s;
+- present interval 6.28 ms, unpaired.
+
+The off-owner scene calls in both runs are the frames the split builds on the
+render thread (the harness's screenshot frames), with Build joined.
+
+### The pair
+
+Same session, interleaved; the box ran about 25% slow (DX11 5.50 / 5.52
+against 4.41 / 4.68 earlier).
+
+| | Orbit present ms | Interior present ms |
+|---|---|---|
+| Single thread | 8.30, 8.30 | 6.32, 8.38 |
+| Split | 8.11, 8.07 | 8.08, 8.03 |
+| DX11 | 5.50 | 5.52 |
+
+- **Orbit:** the split is about 0.2 ms faster.
+- **Interior:** unusable. The two single-thread runs straddle a change of box
+  state (render-thread total 6.20 → 8.20 ms).
+
+### Why the overlap mostly vanished
+
+- The render thread loops with about 0.03 ms outside Draw, so under the split
+  its Draw (Apply plus the join) tracks Build.
+- Build(N) launches right after Build(N−1) launched the native recording of
+  N−1. On one thread, Apply sat between them and absorbed about 2 ms of that
+  recording; now Build's native calls wait for it.
+- Pipelined waits on ordinary calls rose from 0.17 ms per frame (single
+  thread, `Vulkan-b6be1343…`) to about 0.97 ms per frame (split,
+  `Vulkan-58c250fc…`). Scene-call waits for the early release are not counted
+  yet.
+- The wall moved from the render thread to the recording thread and Build's
+  wait on it.
+
+### Next
+
+1. Count scene-call waits for the early release, and Build-thread waits by
+   export.
+2. Take a same-session CpuDetail pair (single thread against split) with the
+   census.
+3. Then pick the remedy:
+   - an earlier recording snapshot;
+   - deferrable or snapshot-answered Build-prologue calls;
+   - a deeper pipeline.
