@@ -3270,3 +3270,40 @@ than `m1c`, for every lane.
 - A hit still pays the per-row batch mapping and row pushes, which are most
   of selection's cost.
 - 1b is closed: built, off by default.
+
+### 1a′ steps 1–3 pair `a1` (2026-10-28)
+
+Eight CpuDetail runs, interleaved in both orders. `NPXA1` (split) and `NPCA1`
+(single) turn on all three caches: `SE_VULKAN_PASS_GLASS_CACHE`,
+`SE_VULKAN_PREPARED_MIXED` and `SE_VULKAN_SKIN_CONSTANTS_CACHE`. `NPXCP` and
+`NPCP` are the same lanes with the caches off. Times in ms; both runs of each
+lane are shown.
+
+| Phase | Split, off | Split, on | Single, off | Single, on |
+|---|---|---|---|---|
+| Present interval | 6.02 / 6.05 | 5.90 / 6.02 | 6.53 / 6.27 | 6.46 / 6.13 |
+| BuildThread wall | 5.75 / 5.77 | 5.64 / 5.74 | | |
+| NativePassPublication | 1.40 / 1.40 | 1.29 / 1.29 | 1.30 / 1.29 | 1.18 / 1.17 |
+| GlassParts (79 calls) | 0.24 / 0.24 | 0.10 / 0.10 | 0.23 / 0.21 | 0.10 / 0.08 |
+| ActorTraversal | 0.45 / 0.43 | 0.43 / 0.43 | 0.43 / 0.41 | 0.43 / 0.38 |
+| PreparedActors (35 → 44 calls) | 0.11 / 0.10 | 0.15 / 0.15 | 0.10 / 0.10 | 0.15 / 0.13 |
+| LegacyRigidActors (9) | 0.12 / 0.11 | 0.08 / 0.08 | 0.12 / 0.11 | 0.07 / 0.06 |
+| LegacyOpaqueParts (86 → 14 calls) | 0.11 / 0.11 | 0.05 / 0.05 | 0.10 / 0.10 | 0.05 / 0.05 |
+| SkinnedActors (1) | 0.07 / 0.07 | 0.06 / 0.06 | 0.06 / 0.06 | 0.06 / 0.06 |
+
+- **Step 1, the glass cache, is the only real win.**
+  - `GlassParts` drops by about 0.13 ms, and `NativePassPublication` by
+    0.11–0.12 ms, in both modes.
+  - Present interval moves by about −0.08 ms (split) and −0.10 ms (single),
+    in the same direction in both orders. That is inside the box's noise.
+- **Step 2, mixed actors, is a wash.**
+  - `LegacyRigidActors` drops by about 0.04 ms (only glass is left on that
+    path), but `PreparedActors` grows by the same 0.04–0.05 ms for the 9
+    added actors.
+  - `ActorTraversal` is flat.
+  - It also adds 16 world packets. Keep it off.
+- **Step 3, skin constants, saves about 0.01 ms.** The animating astronaut
+  replaces its bone array every update, so the palette rebuilds every frame.
+- **Build is still far from target:** the build thread spends 5.6–5.7 ms of
+  wall time per frame, including its waits. Steps 1–3 took about 0.12 ms off
+  the 0.25–0.3 ms that was expected.

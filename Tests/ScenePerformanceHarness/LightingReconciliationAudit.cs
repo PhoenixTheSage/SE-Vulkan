@@ -63,7 +63,11 @@ public sealed partial class Plugin {
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     static void WriteSignatures(NativeBackend backend,string path){
         File.WriteAllText(Path.Combine(path,"packets.sig"),backend.LastPacketSignature.ToString("X16")+" "+backend.LastPacketSignatureCount);
-        File.WriteAllText(Path.Combine(path,"billboards.txt"),backend.LastBillboardSignature.ToString("X16")+" "+backend.BillboardPackets.Count);}
+        File.WriteAllText(Path.Combine(path,"billboards.txt"),backend.LastBillboardSignature.ToString("X16")+" "+backend.BillboardPackets.Count);
+        try{WriteGlassSignature(backend,path);}catch(MissingMemberException){}}
+    // Separate again: plugins before the glass signature lack LastGlassSignature.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static void WriteGlassSignature(NativeBackend backend,string path)=>File.WriteAllText(Path.Combine(path,"glass.sig"),backend.LastGlassSignature.ToString("X16")+" "+backend.LastGlassSignatureCount);
     static void LightingBeginDraw(object renderer){
         if(!lightingReconciliation||lightingRequested<0||renderer is not MyVulkanRender)return;
         var scene=SceneField.GetValue(renderer);var property=AccessTools.Property(scene.GetType(),lightingProperty??(lightingGpuScene?"GpuOpaqueOwnershipEnabled":lightingNativePass?"NativePassSceneEnabled":"ResidentProxiesEnabled"));if(property==null)throw new Exception("Pinned diagnostic plugin lacks the requested ownership switch.");

@@ -35,8 +35,7 @@ public sealed partial class VulkanScene
     public bool NativePassSceneEnabled {get;set;}=NativePassPolicy.Enabled;
     // Lane toggle for the native publication batch cache (SE_VULKAN_LIGHTING_PROPERTY=PassBatchCacheEnabled).
     bool passBatchCache=System.Environment.GetEnvironmentVariable("SE_VULKAN_PASS_BATCH_CACHE")=="1";
-    public bool PassBatchCacheEnabled {get=>passBatchCache;set{passBatchCache=value;backend.SetPassBatchCache(value);}}
-    // Same-process toggle for the frozen-light lane's packet signature gate.
+    public bool PassBatchCacheEnabled {get=>passBatchCache;set{passBatchCache=value;backend.SetPassBatchCache(value);}}    // Same-process toggle for the frozen-light lane's packet signature gate.
     public bool VoxelEmitAheadEnabled {get=>VulkanVoxels.EmitAheadEnabled;set=>VulkanVoxels.EmitAheadEnabled=value;}
     public bool ProbeStatsSnapshot {get=>NativeBackend.ProbeStatsSnapshotEnabled;set=>NativeBackend.ProbeStatsSnapshotEnabled=value;}
     public bool IndexExcludesOwnedActors {get=>IndexExcludesOwned;set{if(value==IndexExcludesOwned)return;IndexExcludesOwned=value;foreach(var actor in actors.Values)SyncIndexMembership(actor);}}
@@ -351,12 +350,69 @@ public sealed partial class VulkanScene
         bool hidden=!probeOnly&&QueryActorVisibility(data.Id,bounds);if(!probeOnly)visible.Add(data.Id);
         DrawActorLods(backend,data,BuildFrameOf(data).World,probeOnly,hidden,outside,bounds);
     }
+    // Pass glass cache (plan 1a′ step 1): a pass actor's glass parts for one LOD model, resolved once. Each part keeps
+    // its mesh, textures, glass material bytes and an Object constants template; per ticket only the world matrix and
+    // the alpha are written into a copy. Valid while the model, materials, colour, HSV, dithering, texture
+    // generation and the transparent multipliers hold. On by default (pair a1: publication -0.12 ms);
+    // SE_VULKAN_PASS_GLASS_CACHE=0, or the PassGlassCacheEnabled lane toggle, turns it off.
+    internal sealed class PassGlassEntry
+    {
+        public VulkanModel Model;public uint MaterialRevision;public Color Color;public Vector3 Hsv;public float Dithering;public long Textures;
+        public Vector4 ColorMultiplier;public float ReflectivityMultiplier,FresnelMultiplier,GlossMultiplier;public int Unsupported;public PassGlassPart[] Parts;
+    }
+    internal readonly struct PassGlassPart
+    {
+        public readonly ulong Mesh,Color,Normal;public readonly byte[] Material,Constants;public readonly bool Culling;
+        public PassGlassPart(ulong mesh,ulong color,ulong normal,byte[] material,byte[] constants,bool culling){Mesh=mesh;Color=color;Normal=normal;Material=material;Constants=constants;Culling=culling;}
+    }
+    public bool PassGlassCacheEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_PASS_GLASS_CACHE")!="0";
+    int glassAlphaOffset=-1;ShaderMetadata glassAlphaLayout;WorldConstants.MatrixRows glassRows;
+    PassGlassEntry PassGlassFor(ActorData actor,VulkanModel model)
+    {
+        var settings=RenderSettings;Vector3 hsv=actor.Hsv+colorizeHsv;long textures=TextureCache.Generation;var entries=actor.PassGlass;
+        if(entries!=null)foreach(var e in entries)if(ReferenceEquals(e.Model,model)){
+            if(e.MaterialRevision==actor.MaterialRevision&&e.Color==actor.Color&&e.Hsv==hsv&&e.Dithering==actor.Dithering&&e.Textures==textures&&e.ColorMultiplier==settings.TransparentColorMultiplier&&e.ReflectivityMultiplier==settings.TransparentReflectivityMultiplier&&e.FresnelMultiplier==settings.TransparentFresnelMultiplier&&e.GlossMultiplier==settings.TransparentGlossMultiplier)return e;
+            break;
+        }
+        var layout=backend.GlassLayouts[0];
+        if(!ReferenceEquals(layout,glassAlphaLayout)){glassAlphaLayout=layout;glassAlphaOffset=new ReflectedConstantBuffer(layout,"Object").OffsetOf("object_.custom_alpha");glassRows=WorldConstants.ObjectRows(layout);}
+        var entry=new PassGlassEntry{Model=model,MaterialRevision=actor.MaterialRevision,Color=actor.Color,Hsv=hsv,Dithering=actor.Dithering,Textures=textures,
+            ColorMultiplier=settings.TransparentColorMultiplier,ReflectivityMultiplier=settings.TransparentReflectivityMultiplier,FresnelMultiplier=settings.TransparentFresnelMultiplier,GlossMultiplier=settings.TransparentGlossMultiplier};
+        var parts=new List<PassGlassPart>();bool complete=true;
+        foreach(var part in model.Parts){
+            if(part.Technique!=MyMeshDrawTechnique.GLASS)continue;
+            if(!MyTransparentMaterials.TryGetMaterial(VRage.Utils.MyStringId.GetOrCompute(part.MaterialName??string.Empty),out var glass)){entry.Unsupported++;continue;}
+            actor.Materials.TryGetValue(part.MaterialName??string.Empty,out var material);
+            if(material!=null&&((material.Flags.Add&RenderFlags.SkipInMainView)!=0||(material.Flags.Remove&RenderFlags.Visible)!=0))continue;
+            // The template carries everything but the matrix and the alpha, which are written per ticket.
+            var template=WorldConstants.Object(layout,MatrixD.Identity,(material?.Color??actor.Color).ToVector3(),hsv,material?.Emissivity??1,0,null,actor.Dithering,false,255);
+            string colorPath=material?.Textures.ColorMetalFileName??glass.Texture,normalPath=material?.Textures.NormalGlossFileName??glass.GlossTexture;
+            ulong color=TextureCache.GetTexture(colorPath),normal=TextureCache.GetTexture(normalPath,false);
+            // Off the texture owner a texture still loading returns 0; such an entry is used once, not kept.
+            if(color==0&&!string.IsNullOrWhiteSpace(colorPath)||normal==0&&!string.IsNullOrWhiteSpace(normalPath))complete=false;
+            parts.Add(new PassGlassPart(part.Mesh,color,normal,NativeBackend.GlassMaterial(glass,model.Bounds.HalfExtents.X,RenderSettings),template,glass.TriangleFaceCulling));
+        }
+        entry.Parts=parts.ToArray();
+        if(!complete)return entry;
+        // One entry per LOD model the actor has shown glass at; replace a stale entry for the same model in place.
+        if(entries==null)actor.PassGlass=new[]{entry};
+        else{int i=Array.FindIndex(entries,e=>ReferenceEquals(e.Model,model));if(i>=0)entries[i]=entry;else{Array.Resize(ref entries,entries.Length+1);entries[entries.Length-1]=entry;actor.PassGlass=entries;}}
+        return entry;
+    }
     private void DrawNativePassGlass(NativePassTransparent ticket)
     {
         if(!RenderSettings.DrawTransparentModelsInstanced)return;
         if(!buildActors.TryGetValue(ticket.Owner,out var actor)||!actor.PassOwned||actor.PassHandle!=ticket.Actor)return;
         var model=models.GetLod(actor.Model,(int)ticket.Lod);var world=BuildFrameOf(actor).World;world.Translation-=FrameView.CameraPosition;
         using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GlassParts,false);
+        if(PassGlassCacheEnabled){
+            var entry=PassGlassFor(actor,model);UnsupportedMaterialDraws+=entry.Unsupported;
+            foreach(var part in entry.Parts){
+                var constants=(byte[])part.Constants.Clone();WorldConstants.WriteMatrix(constants,glassRows,world);unsafe{fixed(byte* raw=constants)*(float*)(raw+glassAlphaOffset)=ticket.Alpha;}
+                backend.AddGlassPacket(0,part.Mesh,part.Color,part.Normal,constants,part.Material,triangleFaceCulling:part.Culling);DrawnMeshes++;
+            }
+            return;
+        }
         foreach(var part in model.Parts){
             if(part.Technique!=MyMeshDrawTechnique.GLASS)continue;
             if(!MyTransparentMaterials.TryGetMaterial(VRage.Utils.MyStringId.GetOrCompute(part.MaterialName??string.Empty),out var glass)){UnsupportedMaterialDraws++;continue;}

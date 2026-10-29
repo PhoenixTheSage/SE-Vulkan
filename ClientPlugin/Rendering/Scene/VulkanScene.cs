@@ -76,6 +76,8 @@ namespace ClientPlugin.Rendering.Scene
             internal MainGroupKeyCache MainGroupKeys;
             public uint MaterialRevision;
             public NativeBackend.PreparedActor Submission;
+            internal PassGlassEntry[] PassGlass;
+            internal SkinConstantEntry[] SkinConstants;
             public uint SubmissionRevision,SubmissionType;
             public Color SubmissionColor;
             public Vector3 SubmissionHsv;
@@ -698,20 +700,23 @@ namespace ClientPlugin.Rendering.Scene
             long materialsAt = Stopwatch.GetTimestamp();
             world.Translation-=FrameView.CameraPosition;
             float? oldDecalDistance=null;bool glassDepthPolicyReady=false,oldGlassSource=false;
-            if(target.RetainedSubmissionEnabled && type!=1 && actor.SubmissionOpaque && !HasHighlight(actor.Id) && !buildLights.Excluded.Contains(actor.Id))
+            bool glassOnly=false;
+            if(target.RetainedSubmissionEnabled && type!=1 && (actor.SubmissionOpaque || PreparedMixedEnabled) && !HasHighlight(actor.Id) && !buildLights.Excluded.Contains(actor.Id))
             {
-                using var actorProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PreparedActors,false);
-                SubmitPreparedActor(target,actor,world,type,stream,count,casts,probeOnly,occluded,outsideProbe,cascades,origin,radius,dithered);
-                profileMaterialTicks+=Stopwatch.GetTimestamp()-materialsAt;
-                return;
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PreparedActors,false))
+                    SubmitPreparedActor(target,actor,world,type,stream,count,casts,probeOnly,occluded,outsideProbe,cascades,origin,radius,dithered);
+                if(actor.SubmissionOpaque){profileMaterialTicks+=Stopwatch.GetTimestamp()-materialsAt;return;}
+                glassOnly=true; // Mixed actor: the prepared submission holds the opaque parts; glass stays per part below.
             }
             using var legacyProfile=RendererCpuProfiler.Measure(type==1?RendererCpuProfiler.Phase.SkinnedActors:type==0?RendererCpuProfiler.Phase.LegacyRigidActors:RendererCpuProfiler.Phase.LegacyInstancedActors,false);
-            int partIndex=0;
+            if(LegacyCensusEnabled&&!glassOnly)NoteLegacyActor(target,actor,type);
+            int partIndex=0,skinOrdinal=0;
             foreach(var part in MaterialParts(actor))
             {
                 int cachedIndex=partIndex++;target.MainPart=(uint)cachedIndex;
                 using var oldOrderScope=target.WithOldOrder(OldPartOrder(actor,actor.RenderModel,part,(int)actor.RenderLod));
                 bool glass=(part.Flags&4)!=0;uint transparentType=type+((part.Flags&8)!=0?5u:0u);
+                if(glassOnly&&!glass)continue;
                 using var partProfile=RendererCpuProfiler.Measure(glass?RendererCpuProfiler.Phase.GlassParts:RendererCpuProfiler.Phase.LegacyOpaqueParts,false);
                 if(probeOnly && glass)continue; // Installed RenderForward captures atmosphere, not glass.
                 MyTransparentMaterial glassMaterial=null;if(glass && !MyTransparentMaterials.TryGetMaterial(VRage.Utils.MyStringId.GetOrCompute(part.MaterialName??string.Empty),out glassMaterial)){UnsupportedMaterialDraws++;continue;}
@@ -739,6 +744,10 @@ namespace ClientPlugin.Rendering.Scene
                     foreach(var skin in part.SkinParts)
                     {
                         // Every row is rewritten; Object copies the palette into the packet constants.
+                        int ordinal=skinOrdinal++;
+                        if(SkinConstantsCacheEnabled && !glass){
+                            uint cachedDraw=target.AddWorldPacket(pipeline,skin.Mesh,color,normal,extensions,alpha,SkinConstants(actor,ordinal,part,skin,target.WorldLayouts[pipeline],world,tint,hsv,material?.Emissivity??1),null,1,flags,cascades,origin,radius);SubmitHighlight(cachedDraw,actor,part,skin.StartIndex,skin.IndexCount,1);DrawnMeshes++;continue;
+                        }
                         var bones=boneScratch??=new float[60*16];var row=boneRowScratch??=new float[16];for(int i=0;i<60;++i){Matrix bone=i<skin.Bones.Length && skin.Bones[i]<actor.SkinMatrices.Length?actor.SkinMatrices[skin.Bones[i]]:Matrix.Identity;NativeBackend.MatrixValues(bone,row);Array.Copy(row,0,bones,i*16,16);}
                         if(glass)target.AddGlassPacket(transparentType,skin.Mesh,TextureCache.GetTexture(material?.Textures.ColorMetalFileName??glassMaterial.Texture),TextureCache.GetTexture(material?.Textures.NormalGlossFileName??glassMaterial.GlossTexture,false),Constants(bones),NativeBackend.GlassMaterial(glassMaterial,actor.RenderModel.Bounds.HalfExtents.X,RenderSettings),triangleFaceCulling:glassMaterial.TriangleFaceCulling,oldDecalDistanceSquared:oldDecalDistance);else {uint draw=target.AddWorldPacket(pipeline,skin.Mesh,color,normal,extensions,alpha,Constants(bones),null,1,flags,cascades,origin,radius);SubmitHighlight(draw,actor,part,skin.StartIndex,skin.IndexCount,1);}if(glass && !actor.SuppressViewHighlight && HasHighlight(actor.Id)){uint draw=target.AddWorldPacket(type,skin.Mesh,color,normal,extensions,alpha,Constants(bones),null,1,8192);SubmitHighlight(draw,actor,part,skin.StartIndex,skin.IndexCount,1);}DrawnMeshes++;
                     }
@@ -748,6 +757,25 @@ namespace ClientPlugin.Rendering.Scene
                 if(dithered)DitheredDraws++;
             }
             profileMaterialTicks += Stopwatch.GetTimestamp() - materialsAt;
+        }
+        // Actors with glass parts (stock old-pipeline LCDs, cockpits) submit their opaque parts through the
+        // prepared path; only glass keeps the per-part path. SE_VULKAN_PREPARED_MIXED=1, or the lane toggle.
+        public bool PreparedMixedEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_PREPARED_MIXED")=="1";
+        // Diagnostic: why actors still take the legacy per-part path (logged every 600 frames).
+        static readonly bool LegacyCensusEnabled=System.Environment.GetEnvironmentVariable("SE_VULKAN_LEGACY_CENSUS")=="1";
+        readonly Dictionary<string,int> legacyCensus=new();long legacyCensusFrame=-1;
+        private void NoteLegacyActor(NativeBackend target,ActorData actor,uint type)
+        {
+            if(legacyCensusFrame<0)legacyCensusFrame=FrameCounter;
+            string reason=(target.RetainedSubmissionEnabled?"":"retained-off,")+(actor.SubmissionOpaque?"":"glass,")+(HasHighlight(actor.Id)?"highlight,":"")+(buildLights.Excluded.Contains(actor.Id)?"excluded,":"")
+                +(actor.Dithering!=0?"dither,":"")+(KnownStockOldPipeline(actor)?"old,":"")+(models.IsStockNewModel(actor.Model)?"":"not-new,");
+            string key="type="+type+" "+reason+" parts="+actor.RenderModel.Parts.Count+" "+(actor.RenderModel.Name??"?");
+            legacyCensus.TryGetValue(key,out int n);legacyCensus[key]=n+1;
+            if(FrameCounter-legacyCensusFrame<600)return;
+            var text=new System.Text.StringBuilder("Vulkan legacy census over 600 frames:");
+            var rows=new List<KeyValuePair<string,int>>(legacyCensus);rows.Sort((a,b)=>b.Value.CompareTo(a.Value));
+            foreach(var pair in rows)text.Append("\n  ").Append(pair.Value).Append("  ").Append(pair.Key);
+            VRage.Utils.MyLog.Default?.WriteLine(text.ToString());legacyCensus.Clear();legacyCensusFrame=FrameCounter;
         }
         private void SubmitPreparedActor(NativeBackend target,ActorData actor,MatrixD world,uint type,byte[] stream,uint count,bool casts,bool probeOnly,bool occluded,bool outsideProbe,uint cascades,Vector3 origin,float radius,bool dithered)
         {
@@ -759,6 +787,7 @@ namespace ClientPlugin.Rendering.Scene
                 var parts=new List<NativeBackend.PreparedPart>(actor.RenderModel.Parts.Count);
                 foreach(var part in MaterialParts(actor))
                 {
+                    if((part.Flags&4)!=0)continue; // Glass is emitted per part by DrawWorld (PreparedMixedEnabled).
                     MaterialOverride material=null;if(actor.Materials.Count!=0)actor.Materials.TryGetValue(part.MaterialName??string.Empty,out material);
                     if(material!=null && ((material.Flags.Add&RenderFlags.SkipInMainView)!=0 || (material.Flags.Remove&RenderFlags.Visible)!=0))continue;
                     uint pipeline=MaterialPipeline(actor,part,type);
@@ -781,6 +810,7 @@ namespace ClientPlugin.Rendering.Scene
                 actor.SubmissionDepthGeometry=depthGeometry;actor.SubmissionTextures=TextureCache.Generation;
                 target.NoteSubmissionRebuild();
             }
+            if(!actor.SubmissionOpaque && actor.Submission.Parts.Length==0)return; // all-glass mixed actor
             uint flags=(casts?0u:512u)|actor.ExtraViewFlags;if(probeOnly||occluded)flags|=4096u;if(outsideProbe)flags|=16384u;if(actor.DynamicShadow || actor.LodAlpha!=0)flags|=0x1000000u;
             if(actor.SizeCulled)flags|=8192u;
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PreparedReplay,false))target.SubmitPreparedActor(actor.Submission,world,stream,count,flags,cascades,origin,radius,actor.LodAlpha);

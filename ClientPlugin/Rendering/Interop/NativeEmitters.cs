@@ -88,5 +88,18 @@ public sealed partial class NativeBackend
         return hash;
     }
     public ulong LastBillboardSignature {get;private set;}
-    void NotePacketSignature(){if(!PacketSignatureEnabled)return;LastPacketSignature=ComputePacketSignature();LastPacketSignatureCount=worldPackets.Count;LastBillboardSignature=BillboardSignature(BillboardPackets);}
+    // Glass packets, separately (they are not world packets): geometry, textures, constants, material and flags.
+    public ulong LastGlassSignature {get;private set;}
+    public int LastGlassSignatureCount {get;private set;}
+    ulong ComputeGlassSignature()
+    {
+        ulong hash=Mix(14695981039346656037UL,(ulong)glassPackets.Count);
+        foreach(var (p,material,distance) in glassPackets){
+            hash=Mix(hash,p.Pipeline);hash=Mix(hash,p.Mesh);hash=Mix(hash,p.Color);hash=Mix(hash,p.Normal);hash=Mix(hash,p.Count);hash=Mix(hash,p.Flags);
+            hash=MixFloat(hash,distance??-1);hash=MixBytes(hash,p.Constants,p.Constants?.Length??0);hash=MixBytes(hash,material,material?.Length??0);
+            hash=MixBytes(hash,p.Instances,p.Instances==null?0:(int)Math.Min(p.Instances.LongLength,p.Count*64L));
+        }
+        return hash;
+    }
+    void NotePacketSignature(){if(!PacketSignatureEnabled)return;LastPacketSignature=ComputePacketSignature();LastPacketSignatureCount=worldPackets.Count;LastBillboardSignature=BillboardSignature(BillboardPackets);LastGlassSignature=ComputeGlassSignature();LastGlassSignatureCount=glassPackets.Count;}
 }
