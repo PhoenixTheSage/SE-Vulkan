@@ -3404,3 +3404,47 @@ Runs, in batch order: `NPXCP` `Vulkan-33344471…`, `NPXE` `Vulkan-388e989b…`,
   no pinning.
 - **Conclusion:** every Build saving since `a1` lands on `EndUploads`. The
   recording chain (Plan 2 C) is now the pacing limit, as predicted.
+
+### C1: recording laps under the split, batch 52 (2026-10-29)
+
+Product defaults at `745ac8c` (early cells and parallel recipes on), no
+CpuDetail. `NPXL` (split) and `NPL1` (single), each twice, interleaved, with
+`SE_VULKAN_RECORD_TIMING` and the pipeline census. Laps are recording-thread
+CPU wall time from each frame mark to the next, per frame, mean of the two
+runs.
+
+| Present interval | Split | Single |
+|---|---|---|
+| Runs | 5.78 / 6.17 | 6.15 / 6.11 |
+| Recording, launch to end | 5.42 / 5.68 | 5.23 / 5.36 |
+| Sum of laps | 4.34 | 4.19 |
+
+| Lap (ms) | Split | Single | Split − single |
+|---|---|---|---|
+| spot shadows | 0.728 | 0.701 | +0.03 |
+| gbuffer new main | 0.638 | 0.650 | −0.01 |
+| prepare pass streams | 0.548 | 0.504 | +0.05 |
+| CSM copy | 0.527 | 0.427 | **+0.10** |
+| gbuffer voxels | 0.229 | 0.222 | +0.01 |
+| prepare geometry | 0.188 | 0.147 | +0.04 |
+| prepare materials | 0.173 | 0.116 | +0.06 |
+| prepare sort | 0.143 | 0.117 | +0.03 |
+| particles | 0.136 | 0.148 | −0.01 |
+| transparency | 0.124 | 0.130 | −0.01 |
+| postprocess tail | 0.063 | 0.149 | −0.09 |
+| everything else (14 laps, each < 0.09) | 0.85 | 0.92 | |
+
+Runs: `NPXL` `Vulkan-34f31a3b…`, `Vulkan-8476f132…`; `NPL1`
+`Vulkan-76a51094…`, `Vulkan-603e42ee…`.
+
+- **Top four laps: spot shadows 0.73, NEW main 0.64, pass streams 0.55,
+  CSM copy 0.53** — 2.4 of the 4.3 ms of laps. These are the C1 trims.
+- The split adds 0.16 ms to the laps, mostly in preparation (`CSM copy`
+  +0.10, materials +0.06, pass streams +0.05, geometry +0.04): the same
+  cache contention Build shows. `postprocess tail` is 0.09 shorter under the
+  split.
+- About 1.1–1.3 ms of launch-to-end is outside the laps (launch to start,
+  about 0.4 ms in `m6l`, plus the frame-begin and submit intervals the lap
+  timer doesn't count). That is the fifth candidate.
+- The target is the recording under about 4.0 ms from launch to end: about
+  1.5 ms off 5.4–5.7.
