@@ -3659,3 +3659,35 @@ the output images: the copy's queue-family acquire barrier had source
 stage `NONE`, so its layout transition did not chain after the
 frame-timeline wait. The gate counted only VUIDs and missed it. The
 acquire now uses `TRANSFER`, the wait's stage; gates now count hazards too.
+
+### The CPU chains after the light tiles, batches 84–86 (2026-10-29)
+
+**Launch gap, split by whether Build waited (new gap markers).** In the
+80–89% of frames where the build thread waits in `EndUploads` for the
+recording, the next launch follows the recording's end by about 330–370 µs:
+wake 22, OLD-cell emission join 58, deferred-call replay 77, managed work
+to `begin_frame` 75, `begin_frame` to launch 135. In the other frames Build
+itself arrives about 1.2 ms late.
+
+**Async submit (`SE_VULKAN_ASYNC_SUBMIT=1`, opt-in).** A FIFO thread issues
+the frame and upload-batch submits in timeline order when the decoupled
+present is active, so the recording no longer blocks about 0.2 ms behind
+the present call's driver lock. Three interleaved rounds: 4.72 against
+4.73 ms. Build then arrives late more often (waited frames 80% → 63%) and
+paces the frame. Kept as a diagnostic.
+
+**Upload batches** no longer join the present worker under the decoupled
+present; in the 4% of frames that flush uploads they waited about 2 ms.
+
+**Build prologue.** `ClearWorldPackets` spent 0.16 ms returning about
+3,000 constant blocks to the pool (reading each array's header, mostly
+cache misses). The previous frame's packet list is now recycled on a
+worker (`SE_VULKAN_ASYNC_PACKET_RECYCLE`, default on): 0.164 → 0.031 ms.
+Build's own work is about 3.9 ms (`BuildThread` 4.81 minus 0.89 waiting).
+
+**Batch 86:** split **4.74 / 4.78 / 4.73 ms** against DX11 4.22 / 4.23 /
+4.22. Every recording lap read about 10% slower than in batch 83 (laps
+4.06 against 3.73 ms; GPU frame 2.5 against 2.35 ms), so the box ran
+slower that session; DX11 can't show it, capped at the refresh. The
+recording chain (laps 4.06, submit 0.16, lock 0.09, gap 0.45) still paces
+the frame.

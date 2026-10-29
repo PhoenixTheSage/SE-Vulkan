@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using ClientPlugin.Rendering.Shaders;
 using VRageMath;
 
+using ClientPlugin.Diagnostics;
 namespace ClientPlugin.Rendering.Interop;
 
 public sealed partial class NativeBackend
@@ -24,6 +25,13 @@ public sealed partial class NativeBackend
     private readonly HashSet<uint> tintedGenericPipelines=new();
     public readonly Dictionary<uint, ShaderMetadata> WorldLayouts = new Dictionary<uint, ShaderMetadata>();
     private readonly List<WorldPacket> worldPackets = new List<WorldPacket>();
+    // Last frame's constant blocks return to the pool on a worker (SE_VULKAN_ASYNC_PACKET_RECYCLE, default on):
+    // pooling about 3,000 blocks reads each array's header, mostly cache misses, about 0.16 ms on the build thread.
+    // The build thread only copies the references out. The pool is locked; a block rented before the worker
+    // returns it is simply allocated fresh.
+    private byte[][] recycleSpare=Array.Empty<byte[]>();
+    private RenderJobs.Job? recycleJob;
+    static readonly bool AsyncPacketRecycle=Environment.GetEnvironmentVariable("SE_VULKAN_ASYNC_PACKET_RECYCLE")!="0";
     // In-place packet access. WorldPacket is a large struct with references;
     // copying it out and back per appended instance dominated batch appends.
     // The reference is valid only until the next Add to worldPackets.
@@ -362,7 +370,22 @@ public sealed partial class NativeBackend
         finally{constantPin.Free();if(instancePin.IsAllocated)instancePin.Free();}
     }
     byte[][] recycleScratch=Array.Empty<byte[]>();
-    private void ClearWorldPackets(){ShadowExclusions=Array.Empty<NativeShadowExclusion>();if(WorldReady)QueueShadowExclusions();int recycled=0;if(recycleScratch.Length<worldPackets.Count)recycleScratch=new byte[worldPackets.Count][];for(int i=0;i<worldPackets.Count;i++){ref readonly var packet=ref PacketAt(i);if(packet.RecycleConstants)recycleScratch[recycled++]=packet.Constants;}ReflectedConstantBuffer.RecycleMany(recycleScratch,recycled);worldPackets.Clear();if(WorldReady)QueueOcclusion(0,Array.Empty<NativeOcclusionDraw>());highlightPackets.Clear();if(WorldReady)Check(HighlightApi.Queue(context,null,0),context);if(WorldReady)Check(WorldApi.Queue(context,null,0,null,null,null,0),context);}
+    int CollectRecycled(List<WorldPacket> packets){int recycled=0;if(recycleScratch.Length<packets.Count)recycleScratch=new byte[packets.Count][];
+#if NETCOREAPP
+        var span=CollectionsMarshal.AsSpan(packets);for(int i=0;i<span.Length;i++){ref readonly var packet=ref span[i];if(packet.RecycleConstants)recycleScratch[recycled++]=packet.Constants;}
+#else
+        for(int i=0;i<packets.Count;i++){var packet=packets[i];if(packet.RecycleConstants)recycleScratch[recycled++]=packet.Constants;}
+#endif
+        return recycled;}
+    private void ClearWorldPackets(){
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearExclusions)){ShadowExclusions=Array.Empty<NativeShadowExclusion>();if(WorldReady)QueueShadowExclusions();}
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearRecycle)){
+            if(AsyncPacketRecycle){recycleJob?.Wait();recycleJob=null;(recycleScratch,recycleSpare)=(recycleSpare,recycleScratch);int count=CollectRecycled(worldPackets);worldPackets.Clear();
+                if(count>0){var blocks=recycleScratch;recycleJob=RenderJobs.Start(()=>ReflectedConstantBuffer.RecycleMany(blocks,count));}}
+            else{ReflectedConstantBuffer.RecycleMany(recycleScratch,CollectRecycled(worldPackets));worldPackets.Clear();}}
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearOcclusion))if(WorldReady)QueueOcclusion(0,Array.Empty<NativeOcclusionDraw>());
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearHighlights)){highlightPackets.Clear();if(WorldReady)Check(HighlightApi.Queue(context,null,0),context);}
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearWorldQueue))if(WorldReady)Check(WorldApi.Queue(context,null,0,null,null,null,0),context);}
     public void UploadWorldCube(ulong id,int width,int height,int format,byte[] bytes,bool srgb)
         => Check(WorldApi.Cube(context,id,(uint)width,(uint)height,TextureFormat(format),srgb?1u:0u,bytes,(ulong)bytes.Length),context);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]private delegate int CubeMipsFn(IntPtr ctx,ulong id,uint width,uint height,uint format,uint srgb,byte[] data,ulong bytes,uint mips);
