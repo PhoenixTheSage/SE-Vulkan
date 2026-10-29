@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using ClientPlugin.Platform;
 using ClientPlugin.Bootstrap;
+using ClientPlugin.Diagnostics;
 using VRageMath;
 
 namespace ClientPlugin.Rendering.Interop;
@@ -139,7 +140,12 @@ public sealed partial class NativeBackend : IDisposable
         else Check(api.DrawMesh(context, ref draw), context);
     }
 
-    public void BeginPacketCollection() { if(NativePassReady)ClearPassFrame(); frameMeshes.Clear(); ClearWorldPackets(); BeginRigidBatches(); ClearEnvironmentPackets(); ClearFoliagePackets(); ClearTransparencyPackets(); ClearDecalPackets(); collectingPackets = true; }
+    public void BeginPacketCollection() {
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PrologueClearPass))if(NativePassReady)ClearPassFrame();
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PrologueClearWorld)){frameMeshes.Clear(); ClearWorldPackets();}
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PrologueClearRigid))BeginRigidBatches();
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PrologueClearOther)){ClearEnvironmentPackets(); ClearFoliagePackets(); ClearTransparencyPackets(); ClearDecalPackets();}
+        collectingPackets = true; }
     public void DrawMesh(ulong mesh, MatrixD world, Vector4 linearTint, ulong texture, uint flags = 0)
     {
         world.Translation -= CameraPosition;

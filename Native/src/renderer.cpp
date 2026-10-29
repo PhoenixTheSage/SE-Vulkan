@@ -612,6 +612,39 @@ struct Renderer {uint32_t recipe_generation=1;
             auto task=std::move(decoupled.tasks.front());decoupled.tasks.pop_front();decoupled.busy=true;lock.unlock();
             PresentResult result{VK_ERROR_DEVICE_LOST,0,0};try{result=task();}catch(...){}
             lock.lock();decoupled.busy=false;decoupled.results.push_back(result);decoupled.cv.notify_all();}}
+    // Asynchronous frame-queue submission (SE_VULKAN_ASYNC_SUBMIT=1, opt-in, C1). With the decoupled present the
+    // frame queue carries only the frame and upload-batch submits; one FIFO thread issues them in timeline order, so
+    // the recording thread no longer blocks (about 0.2 ms) behind the present call's driver lock. Measured neutral
+    // (batches 84-85: 4.72 against 4.73 ms): the build thread then paces the frame. Every other frame-queue user
+    // drains the FIFO first (join_present). A failed submit is raised at the next frame.
+    bool async_submit_enabled=env_flag("SE_VULKAN_ASYNC_SUBMIT",false);
+    struct SubmitFifo{std::thread thread;std::mutex mutex;std::condition_variable cv;std::deque<std::function<void()>> tasks;bool busy{},stopping{};} submit_fifo;
+    std::atomic<int32_t> submit_error{0};
+    bool async_submit_active()const{return async_submit_enabled&&frame_decoupled;}
+    void submit_worker(){std::unique_lock lock(submit_fifo.mutex);
+        for(;;){submit_fifo.cv.wait(lock,[&]{return submit_fifo.stopping||!submit_fifo.tasks.empty();});if(submit_fifo.tasks.empty())return;
+            auto task=std::move(submit_fifo.tasks.front());submit_fifo.tasks.pop_front();submit_fifo.busy=true;lock.unlock();
+            try{task();}catch(...){submit_error.store(VK_ERROR_DEVICE_LOST);}
+            lock.lock();submit_fifo.busy=false;submit_fifo.cv.notify_all();}}
+    void submit_async(std::function<void()> task){
+        if(!submit_fifo.thread.joinable()){submit_fifo.stopping=false;submit_fifo.thread=std::thread([this]{
+#if defined(_WIN32)
+            SetThreadDescription(GetCurrentThread(),L"Vulkan frame submit");
+#endif
+            submit_worker();});}
+        {std::lock_guard lock(submit_fifo.mutex);submit_fifo.tasks.push_back(std::move(task));}submit_fifo.cv.notify_all();}
+    void raise_submit_error(){if(int32_t error=submit_error.exchange(0))check_gpu(VkResult(error),"asynchronous frame-queue submit");}
+    void drain_submits(){if(!submit_fifo.thread.joinable())return;{std::unique_lock lock(submit_fifo.mutex);submit_fifo.cv.wait(lock,[&]{return submit_fifo.tasks.empty()&&!submit_fifo.busy;});}raise_submit_error();}
+    void stop_submits(){if(!submit_fifo.thread.joinable())return;{std::lock_guard lock(submit_fifo.mutex);submit_fifo.stopping=true;}submit_fifo.cv.notify_all();submit_fifo.thread.join();submit_fifo.tasks.clear();}
+    // Queues a frame-queue submit whose infos are copied; then (optionally) the decoupled present task, so the copy is
+    // never submitted before the frame it waits for.
+    void submit_frame_async(VkCommandBuffer command,std::vector<VkSemaphoreSubmitInfo> waits,std::vector<VkSemaphoreSubmitInfo> signals,std::function<PresentResult()> present){
+        submit_async([this,command,waits=std::move(waits),signals=std::move(signals),present=std::move(present)]()mutable{
+            VkCommandBufferSubmitInfo info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};info.commandBuffer=command;
+            VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};submit.commandBufferInfoCount=1;submit.pCommandBufferInfos=&info;
+            submit.waitSemaphoreInfoCount=uint32_t(waits.size());submit.pWaitSemaphoreInfos=waits.data();submit.signalSemaphoreInfoCount=uint32_t(signals.size());submit.pSignalSemaphoreInfos=signals.data();
+            VkResult result=vkQueueSubmit2(queue,1,&submit,VK_NULL_HANDLE);if(result!=VK_SUCCESS){submit_error.store(result);return;}
+            if(present)enqueue_decoupled(std::move(present));});}
     void enqueue_decoupled(std::function<PresentResult()> task){
         if(!decoupled.thread.joinable()){decoupled.stopping=false;decoupled.thread=std::thread([this]{decoupled_worker();});start_present_watchdog();}
         render_wait_stage=2;std::unique_lock lock(decoupled.mutex);decoupled.cv.wait(lock,[&]{return decoupled.tasks.size()<2;});render_wait_stage=0;decoupled.tasks.push_back(std::move(task));decoupled.cv.notify_all();}
@@ -698,6 +731,8 @@ struct Renderer {uint32_t recipe_generation=1;
     }
     void join_present(bool propagate=true){
         critical_profile::Scope critical_join(critical_profile::PresentJoin);
+        // Queued frame submits enqueue their presents: drain them first.
+        if(propagate)drain_submits();else try{drain_submits();}catch(...){}
         if(decoupled.thread.joinable())drain_decoupled(true,propagate);
         if(!present_pending)return;
         auto begin=present_clock();present_stage.wait();present_pending=false;auto result=present_result;present_flow.last_join_us=uint32_t((present_clock()-begin)/1000);accept_present(result,propagate);
@@ -917,10 +952,10 @@ struct Renderer {uint32_t recipe_generation=1;
     // Starts end_frame on a worker; the caller holds api_mutex, so the worker
     // runs only after this call returns, and before any later ordinary call.
     std::chrono::steady_clock::time_point last_record_end{};bool gap_open{};
-    void gap_mark(const char* name){if(!gap_open||!last_record_end.time_since_epoch().count())return;record_count(name,std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-last_record_end).count());}
+    bool tl_waited_call{},tl_waited_frame{};void gap_mark(const char* name){if(!gap_open||!last_record_end.time_since_epoch().count())return;record_count(name,std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-last_record_end).count());}
     int end_frame_async(){
         if(!recording||!world.current().queued)return end_frame();
-        gap_mark("gap at launch us");gap_open=false;{std::lock_guard lock(gate_mutex);launches.fetch_add(1);}gate_cv.notify_all();
+        gap_mark("gap at launch us");if(tl_waited_frame)gap_mark("gap waited frame launch us");tl_waited_frame=false;gap_open=false;{std::lock_guard lock(gate_mutex);launches.fetch_add(1);}gate_cv.notify_all();
         if(last_record_end.time_since_epoch().count())record_count("launch gap us",std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-last_record_end).count());
         publish_launch_snapshot();uint32_t predicted=snapshot.cache_mask;bool checked=snapshot.cache_valid;
         {std::lock_guard q(deferred_mutex);record_in_flight=true;}record_pending=true;tl_launch=std::chrono::steady_clock::now();tl_pipelined=true;
@@ -1833,7 +1868,7 @@ struct Renderer {uint32_t recipe_generation=1;
     std::chrono::steady_clock::time_point tl_launch{},tl_submit[2]{};uint64_t tl_us[5]{},tl_frames{},tl_waited{};
     static uint64_t tl_since(std::chrono::steady_clock::time_point from){return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-from).count());}
     int begin_frame(const SevkFrameInfo& frame) {
-        gap_mark("gap begin_frame start us");struct GapEnd{Renderer* r;~GapEnd(){r->gap_mark("gap begin_frame end us");}} gap_end{this};
+        gap_mark("gap begin_frame start us");if(tl_waited_frame)gap_mark("gap waited frame begin_frame us");struct GapEnd{Renderer* r;~GapEnd(){r->gap_mark("gap begin_frame end us");}} gap_end{this};
         auto lap_at=std::chrono::steady_clock::now();auto lap=[&](int i){auto now=std::chrono::steady_clock::now();begin_lap_us[i]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(now-lap_at).count());lap_at=now;};
         submitted_frame=frame;jitter_begin_frame();
         guest.depth_ready=0;++guest.catalog_epoch;
@@ -2195,15 +2230,18 @@ struct Renderer {uint32_t recipe_generation=1;
         if(wait_count){submit.waitSemaphoreInfoCount=wait_count;submit.pWaitSemaphoreInfos=waits.data();}
         if (swapchain&&target_ready&&!frame_decoupled) { signals[1].semaphore = present_semaphores[image_index];
             signals[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; submit.signalSemaphoreInfoCount = 2; }
-        tail("tail copy wait us");if(!frame_decoupled)join_present();VkResult result = vkQueueSubmit2(queue, 1, &submit, VK_NULL_HANDLE);tail("tail submit us");if(tl_pipelined){tl_us[2]+=tl_since(acquired_at);++tl_frames;}tl_submit[slot_index]=std::chrono::steady_clock::now();tl_post_at=tl_submit[slot_index];
+        bool async_frame=async_submit_active();VkResult result=VK_SUCCESS;
+        std::vector<VkSemaphoreSubmitInfo> async_waits(waits.begin(),waits.begin()+wait_count),async_signals(signals.begin(),signals.begin()+submit.signalSemaphoreInfoCount);
+        tail("tail copy wait us");if(async_frame){raise_submit_error();if(!target_ready)submit_frame_async(slot.command,std::move(async_waits),std::move(async_signals),{});}else{if(!frame_decoupled)join_present();result = vkQueueSubmit2(queue, 1, &submit, VK_NULL_HANDLE);}tail("tail submit us");if(tl_pipelined){tl_us[2]+=tl_since(acquired_at);++tl_frames;}tl_submit[slot_index]=std::chrono::steady_clock::now();tl_post_at=tl_submit[slot_index];
         performance.submit_us=perf_take();
         check_gpu(result, "submit rendered frame"); if(upload_wait)upload_fence=0; ++stats.submitted_frames;critical_finish.submitted=true;
         if(capture_requested) {capture_completion=slot.completion;capture_valid=true;capture_requested=false;}
         depth_initialized = true; if(target_ready){last_image_valid = true; last_image_index = image_index;}
         if (frame_decoupled&&target_ready) {
+            std::function<PresentResult()> present_task;
             decoupled.initialized[slot_index]=true;uint64_t copy_value=++decoupled.value;decoupled.slot_value[slot_index]=copy_value;
             uint64_t gate=present_gate&&tl_pipelined?launches.load()+2:0;
-            enqueue_decoupled([this,source=decoupled.output[slot_index].handle,size=decoupled.size,chain=swapchain,frame_value=slot.completion,copy_value,gate]()->PresentResult{
+            present_task=[this,source=decoupled.output[slot_index].handle,size=decoupled.size,chain=swapchain,frame_value=slot.completion,copy_value,gate]()->PresentResult{
                 uint32_t k=decoupled.ring++%uint32_t(decoupled.commands.size());
                 auto wait_copy=[&](uint64_t value){if(!value)return;VkSemaphoreWaitInfo w{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};w.semaphoreCount=1;w.pSemaphores=&decoupled.timeline;w.pValues=&value;vkWaitSemaphores(device,&w,UINT64_MAX);};
                 uint64_t t0=present_clock();decoupled_stage=1;wait_copy(decoupled.command_done[k]);
@@ -2232,7 +2270,8 @@ struct Renderer {uint32_t recipe_generation=1;
                 // As in the direct path, present only once the copy completed, so the present call stays short.
                 uint64_t t3=present_clock();worker_ns[2]+=t3-t2;decoupled_stage=4;if(present_after_gpu){wait_copy(copy_value);decoupled_copied.store(copy_value,std::memory_order_release);}wait_present_gate(gate);decoupled_stage=5;uint64_t t4=present_clock();worker_ns[3]+=t4-t3;
                 VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};present.waitSemaphoreCount=1;present.pWaitSemaphores=&present_semaphores[index];present.swapchainCount=1;present.pSwapchains=&chain;present.pImageIndices=&index;
-                uint64_t begin=present_clock();uint64_t cycles_before=thread_cycles();VkResult status=vkQueuePresentKHR(present_queue,&present);decoupled_stage=6;worker_ns[4]+=present_clock()-begin;worker_ns[5]+=uint64_t(double(thread_cycles()-cycles_before)/3.6);++worker_tasks;if(status==VK_SUCCESS&&acquired==VK_SUBOPTIMAL_KHR)status=VK_SUBOPTIMAL_KHR;return PresentResult{status,begin,present_clock()};});
+                uint64_t begin=present_clock();uint64_t cycles_before=thread_cycles();VkResult status=vkQueuePresentKHR(present_queue,&present);decoupled_stage=6;worker_ns[4]+=present_clock()-begin;worker_ns[5]+=uint64_t(double(thread_cycles()-cycles_before)/3.6);++worker_tasks;if(status==VK_SUCCESS&&acquired==VK_SUBOPTIMAL_KHR)status=VK_SUBOPTIMAL_KHR;return PresentResult{status,begin,present_clock()};};
+            if(async_frame)submit_frame_async(slot.command,std::move(async_waits),std::move(async_signals),std::move(present_task));else enqueue_decoupled(std::move(present_task));
         } else if (swapchain&&target_ready) {
             image_initialized[image_index] = true;
             // One immutable task owns the queue until joined before any other
@@ -2352,7 +2391,7 @@ struct Renderer {uint32_t recipe_generation=1;
 #include "gpu_opaque_resident.inc"
     void cleanup() noexcept {
         critical.detach();
-        try{join_present(false);}catch(...){}stop_decoupled();
+        try{join_present(false);}catch(...){}stop_submits();stop_decoupled();
         try{join_cells_emit();}catch(...){}
         retire_job.join();csm_job.join();csm_copy_pending=false;
         try{cells_join();}catch(...){}
@@ -2441,14 +2480,14 @@ template<class Fn> int32_t call(void* context, Fn&& fn) {
         if(us>20){renderer->lock_request_since_launch_us+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(lock_at-renderer->tl_launch).count());++renderer->lock_blocked;void* frames[4]{};CaptureStackBackTrace(0,4,frames,nullptr);for(void* frame:frames){auto& site=renderer->lock_sites[frame];++site[0];site[1]+=us;}}}
 #endif
     try { struct Notify{Renderer* r;~Notify(){if(r->gate_waiters)r->record_cv.notify_all();}} notify{renderer};renderer->pass_frame_gate(lock);
-        if(renderer->record_pending||renderer->record_running){auto start=std::chrono::steady_clock::now();renderer->await_recording(lock);uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count());renderer->pipelined_wait_us+=us;++renderer->pipelined_waits;
+        if(renderer->record_pending||renderer->record_running){auto start=std::chrono::steady_clock::now();renderer->await_recording(lock);renderer->tl_waited_call=true;renderer->tl_waited_frame=true;uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count());renderer->pipelined_wait_us+=us;++renderer->pipelined_waits;
         if(renderer->on_frame_owner()){++renderer->owner_waits;renderer->owner_wait_us+=us;}
         if(renderer->pipeline_census){auto& t=renderer->wait_threads[Renderer::thread_label()];++t.first;t.second+=us;}
 #if defined(_WIN32)
         if(renderer->pipeline_census){void* frames[3]{};CaptureStackBackTrace(0,3,frames,nullptr);for(void* frame:frames){auto& site=renderer->pipelined_wait_sites[frame];++site.first;site.second+=us;}}
 #endif
-        } renderer->await_recording(lock); renderer->join_cells_emit(); renderer->flush_deferred();
-        renderer->join_cells_emit();
+        } bool waited=renderer->tl_waited_call;renderer->tl_waited_call=false; renderer->await_recording(lock); if(waited)renderer->gap_mark("gap waited awake us"); renderer->join_cells_emit(); if(waited)renderer->gap_mark("gap waited cells joined us"); renderer->flush_deferred();
+        renderer->join_cells_emit(); if(waited)renderer->gap_mark("gap waited replayed us");
 #if defined(_WIN32)
         if(renderer->pipeline_census){bool presenting=renderer->present_pending&&renderer->present_stage.pending();auto at=std::chrono::steady_clock::now();int32_t result=fn(*renderer);
             uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-at).count());void* frames[4]{};CaptureStackBackTrace(0,4,frames,nullptr);
