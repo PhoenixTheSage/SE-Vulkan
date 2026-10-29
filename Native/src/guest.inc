@@ -1003,7 +1003,7 @@ bool guest_draw_bus(VkCommandBuffer cmd, const GuestPass& pass, GuestPipeline& p
             if (!pass.extended && id == 0 && mark < 5 && (slot == 10 || slot == 11)) {
                 auto& world_slot = world.slots[slot_index];
                 const auto& source = slot == 10 ? world_slot.point_lights
-                    : light_tiles.requested ? world_slot.light_tile_gpu : world_slot.tiles;
+                    : tiles_active() ? world_slot.light_tile_gpu : world_slot.tiles;
                 planned_write.buffer = int(buffers.size());
                 buffers.push_back({ source.handle, 0, source.handle ? source.bytes : VK_WHOLE_SIZE });
                 planned.push_back(planned_write);

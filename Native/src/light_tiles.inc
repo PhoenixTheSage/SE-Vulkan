@@ -1,3 +1,5 @@
+// Tiles need the stock PrepareLights pipeline; without it the all-lights list is used.
+bool tiles_active()const{return light_tiles.requested&&light_tiles.pipeline;}
 void init_light_tiles(const void* spirv,uint64_t bytes){
     if(recording||light_tiles.pipeline)throw std::runtime_error("invalid light tile initialization");
     SpvReflectShaderModule reflection{};VkShaderModule module{};
@@ -29,7 +31,7 @@ void prepare_light_tile_storage(WorldSlot& slot,uint32_t tiles,uint32_t points){
     if(!slot.light_tile_readback.handle||slot.light_tile_readback.bytes<read_bytes){destroy_buffer(slot.light_tile_readback);slot.light_tile_readback=make_buffer(std::max(read_bytes,uint64_t(4096)),VK_BUFFER_USAGE_TRANSFER_DST_BIT,true,true);}
 }
 void dispatch_light_tiles(VkCommandBuffer cmd,WorldSlot& slot){
-    if(!light_tiles.requested)return;
+    if(!tiles_active())return;
     auto set=world_set(slot,light_tiles.layout);
     world_write_buffer(set,0,slot.frame,1280,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,1,slot.light_tile_constants,16,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     world_write_buffer(set,141,slot.point_lights,slot.point_lights.bytes,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);world_write_buffer(set,384,slot.light_tile_gpu,slot.light_tile_gpu.bytes,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);world_write_image(set,128,world.gbuffer[3].view);

@@ -57,7 +57,8 @@ public sealed partial class NativeBackend {
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int PassProfileFn(IntPtr ctx,uint enable,ref NativePassProfile profile);
     PassProfileFn passProfile;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int PassToggleFn(IntPtr ctx,uint enable);
-    PassToggleFn passBatchCache;
+    PassToggleFn passBatchCache,spotScissor;
+    public void SetSpotScissor(bool enable){spotScissor??=PassFunction<PassToggleFn>("sevk_pass_set_spot_scissor");Check(spotScissor(context,enable?1u:0u),context);}
     // Native publication batch cache (plan item 1b); the frozen-light lane flips it in-process to prove identical output.
     public void SetPassBatchCache(bool enable){passBatchCache??=PassFunction<PassToggleFn>("sevk_pass_set_batch_cache");Check(passBatchCache(context,enable?1u:0u),context);}
     T PassFunction<T>(string name)where T:Delegate=>(T)Marshal.GetDelegateForFunctionPointer(GetSymbol(name),typeof(T));

@@ -236,6 +236,7 @@ uint32_t point_tile_capacity(){
 }
 void world_light_data(WorldSlot& s){
     uint32_t total_points=0;for(uint32_t i=0;i<light_count;++i)if(!(lights[i].flags&1))++total_points;
+    record_count("point lights",double(total_points));if(light_tiles.stats.have_result&&light_tiles.stats.tiles)record_count("point tile lights",double(light_tiles.stats.assignments)/light_tiles.stats.tiles);
     uint32_t capacity=point_tile_capacity();if(total_points>capacity)throw std::runtime_error("point-light list exceeds the frame quality capacity");
     world_buffer(s.point_lights,std::max(1u,total_points)*48,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     auto* data=static_cast<float*>(s.point_lights.mapped);std::memset(data,0,std::max(1u,total_points)*48);
@@ -245,9 +246,9 @@ void world_light_data(WorldSlot& s){
             for(uint32_t c=0;c<3;++c)dest[36+c]=l.color[c]*l.intensity;dest[39]=(l.flags&2)?std::bit_cast<float>(l.reserved[0]):1;dest[40]=(l.flags&2)?std::bit_cast<float>(l.reserved[2]):1;dest[41]=(l.flags&2)?std::bit_cast<float>(l.reserved[1]):1;dest[45]=1;dest[47]=l.cone_cosine;std::memcpy(dest+48,l.direction,12);dest[51]=float(this->spots.resolution);if(auto config=find_spot(i)){std::memcpy(dest+16,config->projection,64);for(uint32_t row=0;row<4;++row){dest[16+row*4]=.5f*(config->projection[row*4]+config->projection[row*4+3]);dest[17+row*4]=.5f*(-config->projection[row*4+1]+config->projection[row*4+3]);}}
         }else {float* dest=data+points++*12;transform(l.position,dest);dest[3]=l.range;for(uint32_t c=0;c<3;++c)dest[4+c]=l.color[c]*l.intensity;dest[7]=(l.flags&2)?std::bit_cast<float>(l.reserved[0]):1;dest[8]=(l.flags&2)?std::bit_cast<float>(l.reserved[2]):1;dest[9]=(l.flags&2)?std::bit_cast<float>(l.reserved[1]):1;}}
     check(vmaFlushAllocation(allocator,s.point_lights.memory,0,VK_WHOLE_SIZE),"flush stock point lights");
-    light_tiles.points=points;light_tiles.stats.enabled=light_tiles.requested?1u:0u;light_tiles.stats.dispatches=0;light_tiles.stats.points=points;light_tiles.stats.frame=work.world_frames+1;
+    light_tiles.points=points;light_tiles.stats.enabled=tiles_active()?1u:0u;light_tiles.stats.dispatches=0;light_tiles.stats.points=points;light_tiles.stats.frame=work.world_frames+1;
     uint32_t tx=(extent.width+15)/16,ty=(extent.height+15)/16,tiles=tx*ty;light_tiles.stats.tiles=tiles;
-    if(light_tiles.requested){prepare_light_tile_storage(s,tiles,points);check(vmaFlushAllocation(allocator,s.spots.memory,0,VK_WHOLE_SIZE),"flush stock spot constants");return;}
+    if(tiles_active()){prepare_light_tile_storage(s,tiles,points);check(vmaFlushAllocation(allocator,s.spots.memory,0,VK_WHOLE_SIZE),"flush stock spot constants");return;}
     VkBuffer previous_tiles=s.tiles.handle;world_buffer(s.tiles,uint64_t(tiles)*(capacity+1)*4,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);auto* indices=static_cast<uint32_t*>(s.tiles.mapped);
     // The conservative list depends only on tile/point counts and capacity.
     // This slot's persistent buffer keeps it; rewrite only when those change.
@@ -268,9 +269,32 @@ VkDescriptorSet world_light_set(WorldSlot& s,bool spot=false,uint32_t id=UINT32_
     // capture target zero contains scene geometry; target one excludes it.
     world_write_image(set,138,world.skybox && world.cubes.count(world.skybox)?world.cubes.at(world.skybox).view:world.black.view);world_write_image(set,139,probes.ready?probes.final[0].image.view:world.ambient.view);world_write_image(set,145,probes.ready?probes.final[1].image.view:world.ambient.view);
     world_write_image(set,140,(post.config.flags&1)&&post.ao.image.handle?post.ao.image.view:textures.at(0).image.view);world_write_image(set,143,textures.at(probes.ready?probes.config.brdf:0).image.view);world_write_image(set,147,world.shadows.view);world_write_image(set,152,post.output?post.output->image.view:world.hdr.view);for(uint32_t i=0;i<4;++i)world_write_image(set,148+i,shadow_images[i].view);
-    if(spot){world_write_image(set,141,textures.at(0).image.view);world_write_image(set,142,shadow_images[0].view);world_write_image(set,271,{},shadow_sampler,true);}else {world_write_buffer(set,141,s.point_lights,s.point_lights.bytes,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);world_write_buffer(set,142,light_tiles.requested?s.light_tile_gpu:s.tiles,light_tiles.requested?s.light_tile_gpu.bytes:s.tiles.bytes,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);}
+    if(spot){world_write_image(set,141,textures.at(0).image.view);world_write_image(set,142,shadow_images[0].view);world_write_image(set,271,{},shadow_sampler,true);}else {world_write_buffer(set,141,s.point_lights,s.point_lights.bytes,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);world_write_buffer(set,142,tiles_active()?s.light_tile_gpu:s.tiles,tiles_active()?s.light_tile_gpu.bytes:s.tiles.bytes,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);}
     for(uint32_t b:{256u,258u,259u})world_write_image(set,b,{},standard_sampler(b),true);world_write_image(set,260,{},shadow_sampler,true);return set;}
-void world_fullscreen(VkCommandBuffer cmd,VkPipeline pipeline,VkDescriptorSet set,VkPipelineLayout layout,uint32_t offset=0){vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,&set,1,&offset);VkDeviceSize zero=0;vkCmdBindVertexBuffers(cmd,0,1,&world.quad.handle,&zero);world_viewport(cmd,extent.width,extent.height);vkCmdDraw(cmd,3,1,0,0);}
+void world_fullscreen(VkCommandBuffer cmd,VkPipeline pipeline,VkDescriptorSet set,VkPipelineLayout layout,uint32_t offset=0,const VkRect2D* scissor=nullptr){vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,&set,1,&offset);VkDeviceSize zero=0;vkCmdBindVertexBuffers(cmd,0,1,&world.quad.handle,&zero);world_viewport(cmd,extent.width,extent.height);if(scissor)vkCmdSetScissor(cmd,0,1,scissor);vkCmdDraw(cmd,3,1,0,0);}
+// Screen rectangle that holds every pixel the stock spot shader can write: it clips beyond the range and outside the
+// cone, so pixels outside the projected cone bounds only discard. False when the spot is entirely off screen.
+// Near or behind the camera the rectangle stays full screen.
+bool spot_scissor(const SevkLight& l,VkRect2D& out){
+    out={{0,0},{extent.width,extent.height}};
+    float d[3]{l.direction[0],l.direction[1],l.direction[2]};float length=std::sqrt(d[0]*d[0]+d[1]*d[1]+d[2]*d[2]);
+    if(!(l.range>0)||!(length>1e-6f))return true;for(float& v:d)v/=length;
+    float lo[3],hi[3];
+    if(l.cone_cosine<=0){for(uint32_t c=0;c<3;++c){lo[c]=l.position[c]-l.range;hi[c]=l.position[c]+l.range;}}
+    else{float radial=l.range*std::sqrt(std::max(0.f,1-l.cone_cosine*l.cone_cosine));
+        for(uint32_t c=0;c<3;++c){float tip=l.position[c]+d[c]*l.range,r=radial*std::sqrt(std::max(0.f,1-d[c]*d[c]));lo[c]=std::min(l.position[c],tip)-r;hi[c]=std::max(l.position[c],tip)+r;}}
+    const float* vp=reinterpret_cast<const float*>(world.current().frame.data())+48;
+    float x0=1e30f,y0=1e30f,x1=-1e30f,y1=-1e30f;
+    for(uint32_t k=0;k<8;++k){float p[3]{(k&1)?hi[0]:lo[0],(k&2)?hi[1]:lo[1],(k&4)?hi[2]:lo[2]};float clip[4];
+        for(uint32_t c=0;c<4;++c)clip[c]=p[0]*vp[c]+p[1]*vp[4+c]+p[2]*vp[8+c]+vp[12+c];
+        if(!(clip[3]>1e-3f))return true;float x=clip[0]/clip[3],y=clip[1]/clip[3];x0=std::min(x0,x);x1=std::max(x1,x);y0=std::min(y0,y);y1=std::max(y1,y);}
+    // The world viewport flips y: NDC +1 is the top row.
+    float w=float(extent.width),h=float(extent.height);
+    float left=std::floor((x0*.5f+.5f)*w)-2,right=std::ceil((x1*.5f+.5f)*w)+2,top=std::floor((.5f-y1*.5f)*h)-2,bottom=std::ceil((.5f-y0*.5f)*h)+2;
+    left=std::max(left,0.f);top=std::max(top,0.f);right=std::min(right,w);bottom=std::min(bottom,h);
+    if(right<=left||bottom<=top)return false;
+    out={{int32_t(left),int32_t(top)},{uint32_t(right-left),uint32_t(bottom-top)}};return true;
+}
 void capture_lighting_stage(VkCommandBuffer cmd,uint32_t stage){
     if(!world.lighting_diagnostics)return;
     if(world.lighting_stage_width!=world.width || world.lighting_stage_height!=world.height || world.lighting_stage_format!=world.hdr_format){
@@ -644,8 +668,13 @@ void render_world(){
     // Stock MyLightsRendering.Render accumulates points, spots, then
     // directional/environment. Preserve the order of packed-HDR rounding.
     frame_mark("ray sun visibility");trace_hardware_rays(cmd);frame_mark("deferred lighting");attachment(world.hdr);world.lighting_stage_valid=0;post_note_execution(257);world_fullscreen(cmd,world.lights[1],(post.lighting[1].layout?world_light_set(slot,false,257):lighting),native_light_layout(257));capture_lighting_stage(cmd,1);work.lighting_passes+=2;
-    uint32_t spot_index=0;for(uint32_t i=0;i<light_count;++i)if(lights[i].flags&1){auto config=find_spot(i);uint32_t stage_id=config&&(config->flags&1)?259u:258u;auto set=world_light_set(slot,true,stage_id);if(config){world_write_image(set,141,textures.at(config->cookie).image.view);if(config->cookie)++spots.stats.cookies;if(config->flags&1)world_write_image(set,142,spots.images[i].view);}post_note_execution(config && (config->flags&1)?259:258);world_fullscreen(cmd,world.lights[config && (config->flags&1)?3:2],set,native_light_layout(stage_id),static_cast<uint32_t>(world_align(208)*spot_index++));++work.lighting_passes;}
-    capture_lighting_stage(cmd,2);post_note_execution(256);world_fullscreen(cmd,world.lights[0],(post.lighting[0].layout?world_light_set(slot,false,256):lighting),native_light_layout(256));capture_lighting_stage(cmd,0);capture_lighting_terms(cmd,lighting);vkCmdEndRendering(cmd);tenant_execute(cmd);guest_replay(cmd,1);frame_mark("environment");render_environment(cmd,slot);guest_replay(cmd,2);frame_mark("flares");render_flares(cmd,slot);frame_mark("transparency");render_transparency(cmd,slot);guest_replay(cmd,3);frame_mark("postprocess");barrier(cmd,world.hdr.handle,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);render_postprocess(cmd,slot);work.tail_us=profile_take();gpu_owner_finish_frame(cmd,slot);world.initialized=true;++work.world_frames;
+    frame_mark("lighting spots");uint32_t spot_index=0;for(uint32_t i=0;i<light_count;++i)if(lights[i].flags&1){auto config=find_spot(i);uint32_t stage_id=config&&(config->flags&1)?259u:258u;auto set=world_light_set(slot,true,stage_id);if(config){world_write_image(set,141,textures.at(config->cookie).image.view);if(config->cookie)++spots.stats.cookies;if(config->flags&1)world_write_image(set,142,spots.images[i].view);}post_note_execution(config && (config->flags&1)?259:258);
+        VkRect2D area{};bool visible=!spot_scissor_enabled||spot_scissor(lights[i],area);uint32_t offset=static_cast<uint32_t>(world_align(208)*spot_index++);
+        spot_full_pixels+=uint64_t(extent.width)*extent.height;if(!visible)continue;if(spot_scissor_enabled)spot_scissor_pixels+=uint64_t(area.extent.width)*area.extent.height;
+        world_fullscreen(cmd,world.lights[config && (config->flags&1)?3:2],set,native_light_layout(stage_id),offset,spot_scissor_enabled?&area:nullptr);++work.lighting_passes;}
+    if(spot_scissor_enabled){VkRect2D full{{0,0},{extent.width,extent.height}};vkCmdSetScissor(cmd,0,1,&full);}
+    record_count("spot full kpixels",double(spot_full_pixels)/1000);record_count("spot scissor kpixels",double(spot_scissor_pixels)/1000);spot_full_pixels=spot_scissor_pixels=0;
+    frame_mark("lighting sun");capture_lighting_stage(cmd,2);post_note_execution(256);world_fullscreen(cmd,world.lights[0],(post.lighting[0].layout?world_light_set(slot,false,256):lighting),native_light_layout(256));capture_lighting_stage(cmd,0);capture_lighting_terms(cmd,lighting);vkCmdEndRendering(cmd);frame_mark("lighting tail");tenant_execute(cmd);guest_replay(cmd,1);frame_mark("environment");render_environment(cmd,slot);guest_replay(cmd,2);frame_mark("flares");render_flares(cmd,slot);frame_mark("transparency");render_transparency(cmd,slot);guest_replay(cmd,3);frame_mark("postprocess");barrier(cmd,world.hdr.handle,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);render_postprocess(cmd,slot);work.tail_us=profile_take();gpu_owner_finish_frame(cmd,slot);world.initialized=true;++work.world_frames;
 }
 void compose_world(){
     if(world.compose_format!=color_format){wait(next_completion);vkDestroyPipeline(device,world.compose,nullptr);world.compose={};auto shader=world_file_shader("world_compose_ps");

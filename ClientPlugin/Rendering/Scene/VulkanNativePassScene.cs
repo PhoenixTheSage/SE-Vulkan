@@ -36,6 +36,12 @@ public sealed partial class VulkanScene
     // Lane toggle for the native publication batch cache (SE_VULKAN_LIGHTING_PROPERTY=PassBatchCacheEnabled).
     bool passBatchCache=System.Environment.GetEnvironmentVariable("SE_VULKAN_PASS_BATCH_CACHE")=="1";
     public bool PassBatchCacheEnabled {get=>passBatchCache;set{passBatchCache=value;backend.SetPassBatchCache(value);}}    // Same-process toggle for the frozen-light lane's packet signature gate.
+    // Same-process toggle for the frozen-light lane: spot lighting passes scissored to their cones (native default on).
+    bool spotScissor=System.Environment.GetEnvironmentVariable("SE_VULKAN_SPOT_SCISSOR")!="0";
+    public bool SpotScissorEnabled {get=>spotScissor;set{spotScissor=value;backend.SetSpotScissor(value);}}
+    // Same-process toggle for the frozen-light lane: GPU tiled point-light selection (native default on).
+    bool lightTiles=System.Environment.GetEnvironmentVariable("SE_VULKAN_LIGHT_TILES")!="0";
+    public bool LightTilesEnabled {get=>lightTiles;set{lightTiles=value;backend.SetLightTiles(value);}}
     public bool VoxelEmitAheadEnabled {get=>VulkanVoxels.EmitAheadEnabled;set=>VulkanVoxels.EmitAheadEnabled=value;}
     public bool ProbeStatsSnapshot {get=>NativeBackend.ProbeStatsSnapshotEnabled;set=>NativeBackend.ProbeStatsSnapshotEnabled=value;}
     public bool IndexExcludesOwnedActors {get=>IndexExcludesOwned;set{if(value==IndexExcludesOwned)return;IndexExcludesOwned=value;foreach(var actor in actors.Values)SyncIndexMembership(actor);}}

@@ -3604,3 +3604,58 @@ the noise.
 - GPU + present chain about 4.4 ms: the worker waits about 2.96 ms for the
   GPU after each present, then presents for 1.38 ms;
 - cadence 4.9–5.1 ms against DX11 4.22–4.24 (240 Hz windowed).
+
+### The GPU frame: point-light tiles and the spot scissor, batches 79–83 (2026-10-29)
+
+**The present floor is not the driver's alone.** A standalone probe
+(`present_probe`, scratchpad) reproduces our present structure: windowed
+1920×1080 at 240 Hz, mailbox, 3 images, a worker that waits for the copy on
+a second queue and then presents, and a GPU kept busy about 2.9 ms per
+frame. Its `vkQueuePresentKHR` takes 0.19–0.29 ms; in the game it is
+1.3–1.5 ms. Image format, window size, borderless, the executable name and
+a slow window-message pump don't change that. Disabling the EOS overlay,
+Steam overlay or Fossilize layer one at a time left split cadence at
+5.56–5.61 ms. A D3D12 flip-model swapchain fed by Vulkan locks to the
+refresh (4.171 ms) unless tearing is allowed. Present-type switching and
+overlay checks are closed (user decision); the GPU frame and the CPU chain
+are the levers.
+
+**Deferred lighting, split by sub-mark (batch 81):** point pass 0.56–0.59,
+spot passes 0.05, sun 0.04 ms. Each spot pass ran the stock spot shader as a
+full-screen triangle; it is now scissored to its projected cone bounds
+(`SE_VULKAN_SPOT_SCISSOR`, default on). Covered pixels 15.7 → 10.4 M a
+frame, about 0.02 ms; frozen-light lane identical apart from the same
+noise region as control-return.
+
+**Point lights.** Pertam has 93 point lights in view. The native list gave
+every 16×16 tile all 93, so every pixel looped over all of them. GPU tile
+selection (the stock `PrepareLights` compute, built in an earlier session
+and validated then) was believed useless after batch 76, but it **never
+ran**: `Run-Isolated.ps1` writes `SE_VULKAN_LIGHT_TILES` from its own
+`-LightTiles` switch and overwrote the lane's `1`. With the switch:
+
+| Batch 82/83, split | Conservative list | GPU tiles |
+|---|---|---|
+| Lights per tile | 93 | 3.5 |
+| Tile selection (GPU) | 0 | 0.06 ms |
+| Point pass (GPU) | 0.56 ms | 0.05 ms |
+| GPU frame | 2.87 ms | 2.35–2.50 ms |
+
+Frozen-light lane (`LightTilesEnabled` toggle): shadows, probes and spot
+maps identical; the view differs in 299 of 8.3 M pixels, inside the same
+screen region as the 313 control-return differences. GPU tiles are now
+the default (`SE_VULKAN_LIGHT_TILES=0` reverts; the all-lights list stays
+the fallback when the tile pipeline is missing).
+
+**Result (batch 83, interleaved):** split **4.55 / 4.58 / 4.55 ms** against
+DX11 **4.23 / 4.22 / 4.22 ms**. The present chain (GPU wait 2.41 + present
+1.29 ms) is no longer the limit. The recording chain is: laps 3.73,
+blocked submit 0.22, lock release 0.08 and launch gap 0.59 ms, about
+4.6 ms.
+
+**Validation.** Every validation game run since the decoupled present
+(10:26 that day) logged a cross-queue `WRITE_AFTER_WRITE` sync hazard on
+the output images: the copy's queue-family acquire barrier had source
+stage `NONE`, so its layout transition did not chain after the
+frame-timeline wait. The gate counted only VUIDs and missed it. The
+acquire now uses `TRANSFER`, the wait's stage; gates now count hazards too.

@@ -47,3 +47,5 @@ SEVK_API int32_t SEVK_CALL sevk_pass_group_audit(void* ctx,SevkPassGroupAudit* g
 SEVK_API int32_t SEVK_CALL sevk_pass_profile(void* ctx,uint32_t enable,SevkPassProfile* profile);
 // Publication batch cache on (1) or off (0) at runtime (SE_VULKAN_PASS_BATCH_CACHE sets the start value); output is identical.
 SEVK_API int32_t SEVK_CALL sevk_pass_set_batch_cache(void* ctx,uint32_t enable);
+/* Scissor each spot lighting pass to its projected cone (default on; same-process lane toggle). */
+SEVK_API int32_t SEVK_CALL sevk_pass_set_spot_scissor(void* ctx,uint32_t enable);

@@ -638,6 +638,8 @@ struct Renderer {uint32_t recipe_generation=1;
     bool early_release=env_flag("SE_VULKAN_EARLY_RELEASE",true);
     // Spot caster grid (spots.inc); SE_VULKAN_SPOT_GRID=0 turns it off.
     bool spot_grid=env_flag("SE_VULKAN_SPOT_GRID",true);
+    // Spot lighting passes run the stock spot shader as a full-screen triangle; scissor each to its projected cone (C2).
+    bool spot_scissor_enabled=env_flag("SE_VULKAN_SPOT_SCISSOR",true);uint64_t spot_scissor_pixels{},spot_full_pixels{};
     bool pass_material_reuse=env_flag("SE_VULKAN_PASS_MATERIAL_REUSE",false);uint64_t world_mesh_revision{},pass_mesh_checked_revision{UINT64_MAX};
     bool parallel_main=env_flag("SE_VULKAN_PARALLEL_MAIN",true);
     std::atomic<bool> record_released{false};std::unique_lock<std::mutex>* record_lock{};std::unique_lock<std::mutex>* scene_lock{};
@@ -1023,7 +1025,8 @@ struct Renderer {uint32_t recipe_generation=1;
         if (!info.shader_directory || !*info.shader_directory) throw std::runtime_error("shader_directory is required");
         shader_directory = info.shader_directory; cache_directory = info.cache_directory ? info.cache_directory : "";
         anisotropy_samples = info.reserved==4||info.reserved==8||info.reserved==16 ? info.reserved : 1u;
-        const char* tile_env=std::getenv("SE_VULKAN_LIGHT_TILES");light_tiles.requested=tile_env && std::strcmp(tile_env,"1")==0;
+        const char* tile_env=std::getenv("SE_VULKAN_LIGHT_TILES");// GPU tiled light selection (stock PrepareLights) is on unless SE_VULKAN_LIGHT_TILES=0; the all-lights list stays the reference.
+        light_tiles.requested=!(tile_env && std::strcmp(tile_env,"0")==0);
         const char* parallel_env=std::getenv("SE_VULKAN_PARALLEL_CASCADES");world.parallel_cascades=parallel_env?std::strcmp(parallel_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* spots_env=std::getenv("SE_VULKAN_PARALLEL_SPOTS");world.parallel_spots=spots_env?std::strcmp(spots_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* pass_env=std::getenv("SE_VULKAN_PARALLEL_PASS");pass_scene.scene.set_parallel(pass_env?std::strcmp(pass_env,"1")==0:std::thread::hardware_concurrency()>=4);
@@ -2207,7 +2210,8 @@ struct Renderer {uint32_t recipe_generation=1;
                 decoupled_stage=2;uint64_t t1=present_clock();uint32_t index=0;VkResult acquired=vkAcquireNextImageKHR(device,chain,UINT64_MAX,decoupled.acquire[k],VK_NULL_HANDLE,&index);uint64_t t2=present_clock();worker_ns[0]+=t1-t0;worker_ns[1]+=t2-t1;
                 bool ok=acquired==VK_SUCCESS||acquired==VK_SUBOPTIMAL_KHR;VkCommandBuffer cmd=decoupled.commands[k];
                 if(ok){check(vkResetCommandBuffer(cmd,0),"reset present copy");VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;check(vkBeginCommandBuffer(cmd,&begin),"begin present copy");
-                    if(present_cross_family()){VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};b.dstStageMask=VK_PIPELINE_STAGE_2_TRANSFER_BIT;b.dstAccessMask=VK_ACCESS_2_TRANSFER_READ_BIT;
+                    // The acquire's source stage matches the frame-timeline wait (TRANSFER), so its layout transition chains after the release.
+                    if(present_cross_family()){VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};b.srcStageMask=VK_PIPELINE_STAGE_2_TRANSFER_BIT;b.dstStageMask=VK_PIPELINE_STAGE_2_TRANSFER_BIT;b.dstAccessMask=VK_ACCESS_2_TRANSFER_READ_BIT;
                         b.oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;b.newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;b.srcQueueFamilyIndex=queue_family;b.dstQueueFamilyIndex=present_family;
                         b.image=source;b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};d.imageMemoryBarrierCount=1;d.pImageMemoryBarriers=&b;vkCmdPipelineBarrier2(cmd,&d);}
                     barrier(cmd,swap_images[index],VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,0,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT);
