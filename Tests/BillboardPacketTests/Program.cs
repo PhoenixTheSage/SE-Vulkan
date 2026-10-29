@@ -70,7 +70,8 @@ class Program
         foreach(bool resident in new[]{true,false})
         {
             ClientPlugin.Rendering.Content.VulkanTextureCache.Resident=resident;backend.BillboardPackets.Clear();
-            renderer.Collect(shared);var worker=new System.Threading.Thread(()=>renderer.EmitAhead(Flare));worker.Start();worker.Join();renderer.FinishAhead();
+            // Collect fills the Apply-side buffers; Latch (the hand-off, milestone 6) gives them to emission.
+            renderer.Collect(shared);renderer.Latch();var worker=new System.Threading.Thread(()=>renderer.EmitAhead(Flare));worker.Start();worker.Join();renderer.FinishAhead();
             Check(Signature()==serial&&backend.BillboardPackets.Count==33,resident?"forked flares and billboards match serial packets":"texture miss falls back to the same packets on the render thread");
         }
         ClientPlugin.Rendering.Content.VulkanTextureCache.Resident=true;
