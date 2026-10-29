@@ -132,10 +132,10 @@ public sealed partial class VulkanScene
     }
     // Frame decision after native pass publication; group visibility uses the
     // same managed occlusion owners as the traversal and the native pass.
-    // Plan 2 A2 (SE_VULKAN_EARLY_CELL_PREPARE=1): start the native cell preparation with the early pass
+    // Plan 2 A2 (on by default since batch 50; SE_VULKAN_EARLY_CELL_PREPARE=0 turns it off): start the native cell preparation with the early pass
     // preparation, so it overlaps voxels and lighting setup. PublishCells prepares with the frame it builds then;
     // native reuses the early result only when the two frames are byte-identical and no cell changed since.
-    public bool EarlyCellPrepareEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_EARLY_CELL_PREPARE")=="1";
+    public bool EarlyCellPrepareEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_EARLY_CELL_PREPARE")!="0";
     public void BeginCellPrepare(){if(!EarlyCellPrepareEnabled||!cellsActive||ownedCells==0)return;var frame=CellFrame();backend.PrepareCellsAsync(ref frame);}
     unsafe NativeCellFrame CellFrame()
     {

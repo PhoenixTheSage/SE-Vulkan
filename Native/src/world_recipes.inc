@@ -54,8 +54,9 @@ size_t queued_draw_count()const{return pending_world.active?pending_world.draws.
 // Plan 2 B3. Every check runs first, serially, over the compact recipe_brief table (the same checks, in the same
 // per-draw order, as before; an invalid recipe is revalidated here). Only then are the draws built: written in
 // place into the zeroed vector (no temporary and second copy of each ~180-byte WorldDraw), and with
-// SE_VULKAN_PARALLEL_RECIPES=1 in disjoint ranges on the job pool for large frames.
-bool parallel_recipes=false;
+// in disjoint ranges on the job pool for large frames (on by default since batch 50; SE_VULKAN_PARALLEL_RECIPES=0
+// builds serially).
+bool parallel_recipes=true;
 void build_world_recipe_draws(const SevkRecipeDraw* draws,uint32_t count,uint32_t object_bytes,uint32_t instance_bytes){
     auto queued_at=std::chrono::steady_clock::now();
     uint64_t object_cursor=0;

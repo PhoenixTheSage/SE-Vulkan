@@ -995,7 +995,7 @@ struct Renderer {uint32_t recipe_generation=1;
         const char* marker_env=std::getenv("SE_VULKAN_PROFILE_MARKERS");profile_markers=marker_env && std::strcmp(marker_env,"1")==0;
         if(const char* world_queue=std::getenv("SE_VULKAN_DEFERRED_WORLD_QUEUE");world_queue&&std::strcmp(world_queue,"1")==0)deferred_world_queue=true;
         record_stage.place("SE_VULKAN_STAGE_CPU");
-        if(const char* recipes=std::getenv("SE_VULKAN_PARALLEL_RECIPES");recipes&&std::strcmp(recipes,"1")==0)parallel_recipes=true;
+        if(const char* recipes=std::getenv("SE_VULKAN_PARALLEL_RECIPES");recipes&&std::strcmp(recipes,"0")==0)parallel_recipes=false;
         if(const char* cell_publish=std::getenv("SE_VULKAN_DEFERRED_CELL_PUBLISH");cell_publish&&std::strcmp(cell_publish,"1")==0)deferred_cell_publish=true;
         if(const char* pass_spots=std::getenv("SE_VULKAN_PARALLEL_PASS_SPOTS");pass_spots&&std::strcmp(pass_spots,"0")==0)parallel_pass_spots=false;
         if(const char* reuse=std::getenv("SE_VULKAN_OFFSCREEN_REUSE");reuse&&std::strcmp(reuse,"0")==0)offscreen_reuse=false;

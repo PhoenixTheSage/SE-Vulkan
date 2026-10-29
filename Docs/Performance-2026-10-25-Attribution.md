@@ -3307,3 +3307,100 @@ lane are shown.
 - **Build is still far from target:** the build thread spends 5.6–5.7 ms of
   wall time per frame, including its waits. Steps 1–3 took about 0.12 ms off
   the 0.25–0.3 ms that was expected.
+
+
+### Plan 2 batches 49 and 50 (2026-10-29)
+
+Private Pertam orbit, CpuDetail and pipeline census on every run. Each lane
+ran twice, interleaved in both orders; times are the mean of the two runs, in
+ms. The box idled at 6–21% CPU. Present interval swung 0.3–0.8 ms between
+the two runs of the same lane, so it can't separate these lanes. The phase
+rows and cycles can.
+
+**Batch 49: Plan 2 against its baseline.** `NPS2` is the pinned `ae76859`
+plugin and native DLL (`TestResults/Plan2Base-ae76859-binaries`, built from
+`scratchpad/wt-p2base`; shaders are byte-identical between the two commits).
+`NPXCP`/`NPCP` are HEAD with the opt-ins off. `NPX2`/`NPC2` turn on
+`SE_VULKAN_WORLD_ARENA`, `SE_VULKAN_PARALLEL_RECIPES` and
+`SE_VULKAN_EARLY_CELL_PREPARE`.
+
+| Phase | `NPS2` (base, split) | `NPXCP` (split) | `NPX2` (split, opt-ins) | `NPCP` (single) | `NPC2` (single, opt-ins) |
+|---|---|---|---|---|---|
+| Present interval (runs) | 6.58 / 6.29 | 5.65 / 6.46 | 6.43 / 6.18 | 6.00 / 6.55 | 6.79 / 5.94 |
+| BuildThread wall | 6.15 | **5.80** | 6.03 | | |
+| Scene | 3.42 | 3.25 | 3.21 | 2.84 | 2.74 |
+| NativePassPublication | 1.33 | 1.34 | 1.24 | 1.26 | 1.15 |
+| CellPublish | 0.32 | 0.31 | **0.18** | 0.27 | **0.15** |
+| QueueWorld | 0.93 | 0.80 | 0.76 | 0.70 | 0.69 |
+| BlobPack | 0.23 | 0.22 | 0.30 | 0.18 | 0.24 |
+| NativeWorldQueue | 0.33 | 0.27 | 0.21 | 0.23 | 0.18 |
+| LightingSetup | 0.27 | **0.15** | 0.15 | 0.14 | 0.15 |
+| BuildPrologue | 0.39 | 0.34 | 0.32 | 0.26 | 0.26 |
+| EndUploads | 0.67 | 0.73 | **1.05** | 0.22 | 0.30 |
+
+Runs: `NPX2` `Vulkan-4481b67b…`, `Vulkan-82fee4d1…`; `NPXCP`
+`Vulkan-b3d6ef0f…`, `Vulkan-ce32af1c…`; `NPS2` `Vulkan-739dbe25…`,
+`Vulkan-a9a38590…`; `NPC2` `Vulkan-672dcec9…`, `Vulkan-ae778ee0…`; `NPCP`
+`Vulkan-7f03059d…`, `Vulkan-d28373f4…`; `NPXT` `Vulkan-5c5eb8fc…`.
+
+- **The always-on Plan 2 changes take 0.35 ms off the build thread**
+  (6.15 → 5.80; Scene cycles 11.1 M → 10.4 M).
+  - The frame-constant writer (B2) is most of it: `LightingSetup`, where
+    `WorldConstants.Frame` runs, 0.27 → 0.15.
+  - The in-place recipe build (B3): `NativeWorldQueue` 0.33 → 0.27.
+  - `BuildPrologue` −0.05.
+- **The three opt-ins together don't move cadence.** Early cells cut
+  `CellPublish` by 0.13 ms in both modes, but `EndUploads` grows 0.32 ms
+  under the split, so the build thread ends up 0.23 ms longer.
+- **Counters:** early cells hit on every frame (0 misses); the arena hit
+  94–98% (misses 2–6%), and its queue copy fell from about 60 µs to 6–8 µs.
+- **Topology (`NPXT`):** i9-9900K, 8 cores with SMT, logical CPUs 2n/2n+1
+  share a core, and one 16 MB L3 for all 16. There is no CCX split, so D1
+  reduces to "SMT siblings" against "separate cores".
+
+**Batch 50: each opt-in alone, and thread placement.** All split. `NPXCP` is
+the control. `NPXSEP` pins the build thread to CPU 2 and the recording stage
+to CPU 4 (separate cores), with job workers off cores 1–2
+(`SE_VULKAN_JOB_AFFINITY=FFC3`). `NPXSMT` pins them to CPUs 2 and 3 (one core)
+with workers off that core (`FFF3`).
+
+| Phase | `NPXCP` | `NPXE` (early cells) | `NPXR` (parallel recipes) | `NPXA` (arena) | `NPXSEP` | `NPXSMT` |
+|---|---|---|---|---|---|---|
+| Present interval (runs) | 6.75 / 5.98 | 6.57 / 6.05 | 6.03 / 6.38 | **8.04 / 7.73** | 7.02 / 6.13 | 6.68 / 6.30 |
+| BuildThread wall | 6.07 | 6.02 | **5.92** | 7.48 | 6.25 | 6.20 |
+| Scene | 3.42 | **3.23** | 3.39 | 4.41 | 3.37 | 3.42 |
+| NativePassPublication | 1.38 | 1.24 | 1.39 | 1.71 | 1.43 | 1.44 |
+| CellPublish | 0.32 | **0.18** | 0.32 | 0.38 | 0.31 | 0.33 |
+| QueueWorld | 0.82 | 0.83 | 0.78 | 1.01 | 0.78 | 0.83 |
+| BlobPack | 0.23 | 0.24 | 0.22 | 0.37 | 0.22 | 0.23 |
+| NativeWorldQueue | 0.28 | 0.29 | 0.25 | 0.27 | 0.27 | 0.28 |
+| EndUploads | 0.84 | 0.94 | 0.81 | 0.99 | 1.09 | 0.96 |
+| Scene cycles (M) | 11.0 | 10.6 | 10.9 | 14.1 | 10.7 | 11.2 |
+
+Runs, in batch order: `NPXCP` `Vulkan-33344471…`, `NPXE` `Vulkan-388e989b…`,
+`NPXR` `Vulkan-d45ad242…`, `NPXA` `Vulkan-da43e8ba…`, `NPXSEP`
+`Vulkan-e372bacf…`, `NPXSMT` `Vulkan-3a8df238…`, `NPXSMT` `Vulkan-a498bfdf…`,
+`NPXSEP` `Vulkan-ee26aee0…`, `NPXA` `Vulkan-a381d111…`, `NPXR`
+`Vulkan-34bc07b2…`, `NPXE` `Vulkan-ee7f9931…`, `NPXCP` `Vulkan-7ed0b37e…`.
+
+- **Early cells (A2): a real Build saving that the recording absorbs.**
+  `CellPublish` −0.14, Scene −0.19, publication cycles −9%, 0 misses. The
+  build thread is only 0.05 ms shorter, because `EndUploads` grows 0.10.
+- **Parallel recipes (B3): small and clean.** `NativeWorldQueue` −0.03,
+  build thread −0.15, `EndUploads` flat. It was not the cause of `NPX2`'s
+  extra wait.
+- **The arena (B4) alone is about 1.5 ms slower in both runs**, and the
+  slowdown is everywhere, not just in `BlobPack` (+0.14): Scene cycles +28%,
+  the render thread's `Handoff` +40%, job workers' mean run time +18%,
+  Gen1 GCs 6–9 against 3. The census shows no new waits (`SceneWaits` 0–2,
+  gate and lock waits flat), and the arena worked (copy 6–8 µs, 96–97% hits).
+  `NPX2`, which includes the arena, showed none of this in batch 49 (only
+  `BlobPack` +0.08). Not explained by the code; it needs a repeat pair before
+  any verdict. Keep it off.
+- **Placement (D1): pinning makes it worse in both layouts.** Separate cores
+  and SMT siblings both lengthen the build thread (+0.18, +0.13) and
+  `EndUploads` (+0.25, +0.12). The 11–24% split inflation is not fixed by
+  keeping the threads apart on this box (one shared L3). D1 is closed with
+  no pinning.
+- **Conclusion:** every Build saving since `a1` lands on `EndUploads`. The
+  recording chain (Plan 2 C) is now the pacing limit, as predicted.
