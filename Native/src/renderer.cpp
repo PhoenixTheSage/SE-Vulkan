@@ -585,13 +585,14 @@ struct Renderer {uint32_t recipe_generation=1;
     // submitting, about 0.45 ms of wait a frame. In this mode the frame composes into a per-slot output image and
     // never touches the swapchain or the present queue: a worker acquires, copies the output in on a second queue of
     // the same family, and presents, in order, up to two frames behind. Frame generation keeps the direct path.
-    bool decoupled_present_enabled=env_flag("SE_VULKAN_DECOUPLED_PRESENT",true),frame_decoupled{};VkQueue present_queue{};uint32_t queue_family_queues{};
+    bool decoupled_present_enabled=env_flag("SE_VULKAN_DECOUPLED_PRESENT",true),frame_decoupled{};VkQueue present_queue{};uint32_t queue_family_queues{},present_family{UINT32_MAX};bool present_family_split=env_flag("SE_VULKAN_PRESENT_FAMILY",true);
+    bool present_cross_family()const{return present_queue&&present_family!=UINT32_MAX&&present_family!=queue_family;}
     struct DecoupledPresent{Image output[2];bool initialized[2]{};VkExtent2D size{};VkCommandPool pool{};std::vector<VkCommandBuffer> commands;std::vector<uint64_t> command_done;
         std::vector<VkSemaphore> acquire;uint32_t ring{};VkSemaphore timeline{};uint64_t value{},slot_value[2]{};
         std::thread thread;std::mutex mutex;std::condition_variable cv;std::deque<std::function<PresentResult()>> tasks;std::vector<PresentResult> results;bool busy{},stopping{};} decoupled;
     // Hang diagnostics (SE_VULKAN_PRESENT_WATCHDOG=1; C1): the worker's stage, and a watchdog that appends the present and
     // timeline state to %TEMP%\sevk-present-hang.txt when frames stop for 5 s. It found the cross-queue deadlock.
-    std::atomic<int> decoupled_stage{0};std::atomic<uint64_t> worker_ns[5]{};std::atomic<uint64_t> worker_tasks{};std::atomic<uint64_t> decoupled_copied{0};
+    std::atomic<int> decoupled_stage{0};std::atomic<uint64_t> worker_ns[6]{};std::atomic<uint64_t> worker_tasks{};std::atomic<uint64_t> decoupled_copied{0};
     // Present gate (SE_VULKAN_PRESENT_GATE=1, off; C1): the present call holds a driver-wide lock for about 1.3 ms and
     // stalls queue submits on other threads, so this delays a pipelined frame's present until Build launched the
     // recording two frames on. Measured worse (6.1 ms against 4.9): the present then waits behind the next frame's GPU
@@ -1114,6 +1115,10 @@ struct Renderer {uint32_t recipe_generation=1;
                 if (surface) check(vkGetPhysicalDeviceSurfaceSupportKHR(devices[index], q, surface, &present), "query presentation queue");
                 if ((families[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) && present) { physical = devices[index]; queue_family = q; timestamp_bits=families[q].timestampValidBits; queue_family_queues=families[q].queueCount; break; }
             }
+            // A present-capable family without graphics (async compute) for the decoupled present, so the driver's
+            // present work does not queue behind the next frame on the graphics engine (C1).
+            if (physical && surface) for (uint32_t q = 0; q < queues; ++q) {if(q==queue_family || (families[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) || !(families[q].queueFlags & (VK_QUEUE_COMPUTE_BIT|VK_QUEUE_TRANSFER_BIT)))continue;
+                VkBool32 present = VK_FALSE; if (vkGetPhysicalDeviceSurfaceSupportKHR(devices[index], q, surface, &present) == VK_SUCCESS && present) { present_family = q; break; }}
             if (physical) { stats.api_version = properties.apiVersion; copy_text(stats.device_name, properties.deviceName); break; }
         }
         if (!physical) throw std::runtime_error("No Vulkan 1.4 graphics/presentation device with dynamic rendering, sync2, timeline, scalar layout, BC textures");
@@ -1156,7 +1161,9 @@ struct Renderer {uint32_t recipe_generation=1;
         features.features.multiDrawIndirect=world.indirect_supported;features.features.drawIndirectFirstInstance=world.indirect_supported;
         if(optional.features.samplerAnisotropy){features.features.samplerAnisotropy=VK_TRUE;anisotropy_limit=indirect_properties.limits.maxSamplerAnisotropy;}
         shadow_depth_bias_clamp=optional.features.depthBiasClamp;features.features.depthBiasClamp=shadow_depth_bias_clamp;
-        VkDeviceQueueCreateInfo q{ VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO }; q.queueFamilyIndex = queue_family; q.queueCount = (decoupled_present_enabled&&surface&&queue_family_queues>=2)?2u:1u; q.pQueuePriorities = q.queueCount==2?priorities:&priority;
+        if(!(decoupled_present_enabled&&surface&&present_family_split))present_family=UINT32_MAX;
+        VkDeviceQueueCreateInfo q{ VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO }; q.queueFamilyIndex = queue_family; q.queueCount = (decoupled_present_enabled&&surface&&present_family==UINT32_MAX&&queue_family_queues>=2)?2u:1u; q.pQueuePriorities = q.queueCount==2?priorities:&priority;
+        std::array<VkDeviceQueueCreateInfo,2> queue_infos{q,q};uint32_t queue_info_count=1;if(present_family!=UINT32_MAX){queue_infos[1].queueFamilyIndex=present_family;queue_infos[1].queueCount=1;queue_infos[1].pQueuePriorities=&priority;queue_info_count=2;}
         std::vector<VkExtensionProperties> available;
         if(vkEnumerateDeviceExtensionProperties){uint32_t available_count=0;if(vkEnumerateDeviceExtensionProperties(physical,nullptr,&available_count,nullptr)==VK_SUCCESS){available.resize(available_count);if(vkEnumerateDeviceExtensionProperties(physical,nullptr,&available_count,available.data())!=VK_SUCCESS)available.clear();else available.resize(available_count);}}
         auto has=[&](const char* name){for(auto& e:available)if(std::strcmp(e.extensionName,name)==0)return true;return false;};
@@ -1207,9 +1214,9 @@ struct Renderer {uint32_t recipe_generation=1;
                 VkFormatProperties visibility{};vkGetPhysicalDeviceFormatProperties(physical,VK_FORMAT_R8_UNORM,&visibility);ray.visibility_storage=(visibility.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)!=0;}}
         if(opaque_conditional){conditional.pNext=chain;chain=&conditional;}f13.pNext=chain;
         ngx_add_device_extensions(device_extensions, available, f12);
-        VkDeviceCreateInfo create{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &features }; create.queueCreateInfoCount = 1; create.pQueueCreateInfos = &q;
+        VkDeviceCreateInfo create{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &features }; create.queueCreateInfoCount = queue_info_count; create.pQueueCreateInfos = queue_infos.data();
         create.enabledExtensionCount=uint32_t(device_extensions.size());create.ppEnabledExtensionNames=device_extensions.empty()?nullptr:device_extensions.data();
-        check(vkCreateDevice(physical, &create, nullptr, &device), "create Vulkan device"); volkLoadDevice(device); vkGetDeviceQueue(device, queue_family, 0, &queue); if(q.queueCount==2)vkGetDeviceQueue(device, queue_family, 1, &present_queue);
+        check(vkCreateDevice(physical, &create, nullptr, &device), "create Vulkan device"); volkLoadDevice(device); vkGetDeviceQueue(device, queue_family, 0, &queue); if(present_family!=UINT32_MAX)vkGetDeviceQueue(device, present_family, 0, &present_queue);else if(q.queueCount==2)vkGetDeviceQueue(device, queue_family, 1, &present_queue);
 #if defined(_WIN32)
         if(exclusive_extension && !vkAcquireFullScreenExclusiveModeEXT)exclusive_extension=false;
 #endif
@@ -1621,7 +1628,7 @@ struct Renderer {uint32_t recipe_generation=1;
             if(decoupled_present_enabled&&present_queue&&swap_transfer){
                 for(auto& image:decoupled.output)image=make_image(extent.width,extent.height,color_format,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
                 decoupled.size=extent;uint32_t ring=count+1;
-                if(!decoupled.pool){VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};info.queueFamilyIndex=queue_family;info.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;check(vkCreateCommandPool(device,&info,nullptr,&decoupled.pool),"create present copy pool");}
+                if(!decoupled.pool){VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};info.queueFamilyIndex=present_cross_family()?present_family:queue_family;info.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;check(vkCreateCommandPool(device,&info,nullptr,&decoupled.pool),"create present copy pool");}
                 if(!decoupled.timeline){VkSemaphoreTypeCreateInfo type{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};type.semaphoreType=VK_SEMAPHORE_TYPE_TIMELINE;VkSemaphoreCreateInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,&type};check(vkCreateSemaphore(device,&info,nullptr,&decoupled.timeline),"create present copy timeline");}
                 while(decoupled.commands.size()<ring){VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};allocation.commandPool=decoupled.pool;allocation.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;allocation.commandBufferCount=1;VkCommandBuffer created{};check(vkAllocateCommandBuffers(device,&allocation,&created),"allocate present copy command");decoupled.commands.push_back(created);decoupled.command_done.push_back(0);}
                 for(uint32_t i=0;i<ring;++i){VkSemaphoreCreateInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};VkSemaphore s{};check(vkCreateSemaphore(device,&info,nullptr,&s),"create present acquire semaphore");decoupled.acquire.push_back(s);}
@@ -1864,8 +1871,8 @@ struct Renderer {uint32_t recipe_generation=1;
             slot.materials.clear();
         }
         target_ready=true;
-        start_present_watchdog();{bool next=decoupled_ready();if(next!=frame_decoupled){join_present();decoupled.initialized[0]=decoupled.initialized[1]=false;}frame_decoupled=next;}
-        if(frame_decoupled&&decoupled.thread.joinable()){drain_decoupled(false);uint64_t n=worker_tasks.exchange(0);if(n){const char* names[5]{"worker reuse wait us","worker acquire us","worker record submit us","worker copy wait us","worker present us"};for(int i=0;i<5;++i)record_count(names[i],double(worker_ns[i].exchange(0))/1000.0/double(n));}}
+        start_present_watchdog();{bool next=decoupled_ready();if(next!=frame_decoupled){join_present();decoupled.initialized[0]=decoupled.initialized[1]=false;std::fill(image_initialized.begin(),image_initialized.end(),false);}frame_decoupled=next;}
+        if(frame_decoupled&&decoupled.thread.joinable()){drain_decoupled(false);uint64_t n=worker_tasks.exchange(0);if(n){const char* names[6]{"worker reuse wait us","worker acquire us","worker record submit us","worker copy wait us","worker present us","worker present cpu us"};for(int i=0;i<6;++i)record_count(names[i],double(worker_ns[i].exchange(0))/1000.0/double(n));}}
         if(!frame_decoupled && !deferred_acquire && acquire_frame_image(slot,true))return 1;
         work.acquire_us=slot_take();
         check(vkResetCommandPool(device, slot.pool, 0), "reset frame commands"); work.reset_us=slot_take();lap(6);
@@ -1907,7 +1914,7 @@ struct Renderer {uint32_t recipe_generation=1;
         auto& slot=slots[slot_index];
         VkExtent2D target = present_extent.width ? present_extent : extent;
         VkImage image = frame_decoupled ? decoupled.output[slot_index].handle : swapchain ? swap_images[image_index] : offscreen.handle;
-        bool initialized = load || (frame_decoupled ? decoupled.initialized[slot_index] : swapchain ? image_initialized[image_index] : offscreen_initialized);
+        bool initialized = load || (frame_decoupled ? decoupled.initialized[slot_index]&&!present_cross_family() : swapchain ? image_initialized[image_index] : offscreen_initialized);
         barrier(slot.command, image, load ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : initialized ? (frame_decoupled ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : swapchain ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) : VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
             swapchain ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT : (initialized ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_NONE), initialized ? VK_ACCESS_2_MEMORY_WRITE_BIT : 0,
@@ -2152,7 +2159,12 @@ struct Renderer {uint32_t recipe_generation=1;
             VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};dependency.bufferMemoryBarrierCount=1;dependency.pBufferMemoryBarriers=&host;
             vkCmdPipelineBarrier2(slot.command,&dependency);
         }
-        if (frame_decoupled&&target_ready) barrier(slot.command, decoupled.output[slot_index].handle, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
+        if (frame_decoupled&&target_ready&&present_cross_family()) {
+            // Release to the present family; the copy acquires it with the same layouts.
+            VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};b.srcStageMask=VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;b.srcAccessMask=VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            b.oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;b.newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;b.srcQueueFamilyIndex=queue_family;b.dstQueueFamilyIndex=present_family;
+            b.image=decoupled.output[slot_index].handle;b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};d.imageMemoryBarrierCount=1;d.pImageMemoryBarriers=&b;vkCmdPipelineBarrier2(slot.command,&d);
+        } else if (frame_decoupled&&target_ready) barrier(slot.command, decoupled.output[slot_index].handle, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
         else if (swapchain&&target_ready) barrier(slot.command, swap_images[image_index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
@@ -2195,6 +2207,9 @@ struct Renderer {uint32_t recipe_generation=1;
                 decoupled_stage=2;uint64_t t1=present_clock();uint32_t index=0;VkResult acquired=vkAcquireNextImageKHR(device,chain,UINT64_MAX,decoupled.acquire[k],VK_NULL_HANDLE,&index);uint64_t t2=present_clock();worker_ns[0]+=t1-t0;worker_ns[1]+=t2-t1;
                 bool ok=acquired==VK_SUCCESS||acquired==VK_SUBOPTIMAL_KHR;VkCommandBuffer cmd=decoupled.commands[k];
                 if(ok){check(vkResetCommandBuffer(cmd,0),"reset present copy");VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;check(vkBeginCommandBuffer(cmd,&begin),"begin present copy");
+                    if(present_cross_family()){VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};b.dstStageMask=VK_PIPELINE_STAGE_2_TRANSFER_BIT;b.dstAccessMask=VK_ACCESS_2_TRANSFER_READ_BIT;
+                        b.oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;b.newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;b.srcQueueFamilyIndex=queue_family;b.dstQueueFamilyIndex=present_family;
+                        b.image=source;b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};d.imageMemoryBarrierCount=1;d.pImageMemoryBarriers=&b;vkCmdPipelineBarrier2(cmd,&d);}
                     barrier(cmd,swap_images[index],VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,0,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT);
                     VkImageCopy region{};region.srcSubresource=region.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};region.extent={size.width,size.height,1};
                     vkCmdCopyImage(cmd,source,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,swap_images[index],VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&region);
@@ -2213,7 +2228,7 @@ struct Renderer {uint32_t recipe_generation=1;
                 // As in the direct path, present only once the copy completed, so the present call stays short.
                 uint64_t t3=present_clock();worker_ns[2]+=t3-t2;decoupled_stage=4;if(present_after_gpu){wait_copy(copy_value);decoupled_copied.store(copy_value,std::memory_order_release);}wait_present_gate(gate);decoupled_stage=5;uint64_t t4=present_clock();worker_ns[3]+=t4-t3;
                 VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};present.waitSemaphoreCount=1;present.pWaitSemaphores=&present_semaphores[index];present.swapchainCount=1;present.pSwapchains=&chain;present.pImageIndices=&index;
-                uint64_t begin=present_clock();VkResult status=vkQueuePresentKHR(present_queue,&present);decoupled_stage=6;worker_ns[4]+=present_clock()-begin;++worker_tasks;if(status==VK_SUCCESS&&acquired==VK_SUBOPTIMAL_KHR)status=VK_SUBOPTIMAL_KHR;return PresentResult{status,begin,present_clock()};});
+                uint64_t begin=present_clock();uint64_t cycles_before=thread_cycles();VkResult status=vkQueuePresentKHR(present_queue,&present);decoupled_stage=6;worker_ns[4]+=present_clock()-begin;worker_ns[5]+=uint64_t(double(thread_cycles()-cycles_before)/3.6);++worker_tasks;if(status==VK_SUCCESS&&acquired==VK_SUBOPTIMAL_KHR)status=VK_SUBOPTIMAL_KHR;return PresentResult{status,begin,present_clock()};});
         } else if (swapchain&&target_ready) {
             image_initialized[image_index] = true;
             // One immutable task owns the queue until joined before any other

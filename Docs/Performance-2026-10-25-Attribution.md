@@ -3565,3 +3565,42 @@ fix (batch 65); GPU suites pass with 0 validation errors.
 both apparently colliding with the 1.26 ms present call holding the driver
 lock on the worker. The worker itself keeps up: per frame it waits about
 3.0 ms for the GPU and spends 1.26 ms presenting.
+
+### The present floor, batches 71–74 (2026-10-29)
+
+- **Swapchain images (batch 71):** 3 / 4 / 6 images → present call 1.30–1.44
+  ms, cadence 4.86–5.14 ms, no trend. Not a full flip queue.
+- **Present from the async compute family (batch 72):** family 2 has 8
+  present-capable queues without graphics. The output image is released by
+  the graphics family at the end of the frame and acquired by family 2 in
+  the copy (each frame starts it `UNDEFINED`, so it never transfers back).
+  VAL clean. No change: present 1.33–1.39 ms, cadence 4.95–5.06 against
+  4.96–4.97 on the second graphics queue.
+- **Present call CPU share (batch 73):** 1.52 ms wall, 0.47 ms of thread
+  cycles; about 1 ms blocked inside the driver.
+- **Gate on family 2 (batch 74):** present call 3.65 ms, laps 5.13 ms,
+  cadence 5.96 ms (gate off 4.96). Even from another family, the present
+  waits until the graphics work queued after it finishes, and other threads
+  stall meanwhile.
+
+**Consequence.** The GPU sits idle while each present runs (about 1–1.4 ms),
+because the next frame's submit cannot get in before it. The frame floor
+is about GPU frame (2.9–3.0 ms) + present (1.0–1.4 ms) ≈ 4.35–4.45 ms
+with this driver path, until the GPU frame gets shorter.
+
+### GPU passes and light tiles, batches 75–76 (2026-10-29)
+
+Split, `SE_VULKAN_GPU_PASS_TIMING`, GPU frame 2.89–2.95 ms: GBuffer geometry
+(lap `gbuffer voxels`) 0.92–0.94, deferred lighting 0.68–0.70, cascades
+0.22–0.24, HBAO 0.21, postprocess 0.19, shadow resolve 0.15, spot shadows
+0.15, CSM copy 0.07. With `SE_VULKAN_LIGHT_TILES=1` the lighting pass is
+unchanged (0.699 against 0.682): the tiles feed a CPU light selection, not
+the stock shader. Cadence `NPXTL` 4.96 / 4.93 against `NPX` 5.08 / 5.02, inside
+the noise.
+
+**Where the frame stands (late 2026-10-29).** Per frame, split:
+- recording chain about 4.7 ms: laps 3.45, blocked submit 0.55, lock
+  release 0.09, gap to the next launch 0.6–0.86;
+- GPU + present chain about 4.4 ms: the worker waits about 2.96 ms for the
+  GPU after each present, then presents for 1.38 ms;
+- cadence 4.9–5.1 ms against DX11 4.22–4.24 (240 Hz windowed).
