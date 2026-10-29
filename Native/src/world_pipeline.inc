@@ -290,6 +290,7 @@ void cleanup_world() noexcept {
     light_tiles={};
     for(auto& slot:world.cascade_descriptor_pools)for(auto pool:slot)if(pool)vkDestroyDescriptorPool(device,pool,nullptr);
     for(auto& slot:world.cascade_pools)for(auto pool:slot)if(pool)vkDestroyCommandPool(device,pool,nullptr);
+    csm_job.join();csm_copy_pending=false;for(uint32_t s=0;s<2;++s){if(csm_pools[s])vkDestroyCommandPool(device,csm_pools[s],nullptr);csm_pools[s]=VK_NULL_HANDLE;csm_commands[s]=VK_NULL_HANDLE;}
     for(uint32_t s=0;s<2;++s)for(uint32_t k=0;k<4;++k){if(world.main_pools[s][k])vkDestroyCommandPool(device,world.main_pools[s][k],nullptr);world.main_pools[s][k]=VK_NULL_HANDLE;world.main_commands[s][k].clear();}
     for(uint32_t s=0;s<2;++s)for(uint32_t k=0;k<8;++k){if(world.spot_pools[s][k])vkDestroyCommandPool(device,world.spot_pools[s][k],nullptr);world.spot_pools[s][k]=VK_NULL_HANDLE;world.spot_commands[s][k].clear();world.spot_used[s][k]=0;}
     for(auto& p:world.pipelines){if(p.handle)vkDestroyPipeline(device,p.handle,nullptr);if(p.stock_cascade)vkDestroyPipeline(device,p.stock_cascade,nullptr);if(p.stock_spot)vkDestroyPipeline(device,p.stock_spot,nullptr);}

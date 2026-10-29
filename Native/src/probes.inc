@@ -143,15 +143,15 @@ void plan_probes(){
 }
 void render_probes(VkCommandBuffer cmd,WorldSlot& slot,const std::vector<uint32_t>& offsets,const std::vector<uint32_t>& instance_offsets){
     critical_profile::Scope critical_probes(critical_profile::ProbeRecord,true);
-    if(!probe_planned)plan_probes();probe_planned=false;
-    if(!(probes.config.flags&1))return;probe_targets(cmd);
-    for(const auto& op:probe_ops){
-        if(op.kind==0)capture_probe_face(cmd,slot,op.arg,offsets,instance_offsets);
-        else if(op.kind==1)postprocess_probe_face(cmd,slot,op.arg);
-        else if(op.kind==2)build_probe_mips(cmd,op.arg);
-        else prefilter_probe_face(cmd,slot,op.arg);
+    cpu_lap("probe plan");if(!probe_planned)plan_probes();probe_planned=false;
+    if(!(probes.config.flags&1))return;cpu_lap("probe targets");probe_targets(cmd);
+    for(const auto& op:probe_ops){record_count(op.kind==0?"probe captures":op.kind==1?"probe postprocess ops":op.kind==2?"probe mip ops":"probe prefilter ops",1.0);
+        if(op.kind==0){cpu_lap("probe face prepare");capture_probe_face(cmd,slot,op.arg,offsets,instance_offsets);}
+        else if(op.kind==1){cpu_lap("probe postprocess");postprocess_probe_face(cmd,slot,op.arg);}
+        else if(op.kind==2){cpu_lap("probe mips");build_probe_mips(cmd,op.arg);}
+        else{cpu_lap("probe prefilter");prefilter_probe_face(cmd,slot,op.arg);}
     }
-    if(probe_blend_prepare){prepare_probe_face(slot,0);
+    cpu_lap("probe blend prepare");if(probe_blend_prepare){prepare_probe_face(slot,0);
     if(probe_blend){frame_mark("probe blend");uint32_t first=probe_blend_first,last=probe_blend_last;for(uint32_t k=first;k<last;++k){probe_transition(cmd,probes.final[k],VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);for(uint32_t m=0;m<probes.mips;++m){VkImageView targets[6];std::array<VkImageView,12> input{};for(uint32_t f=0;f<6;++f){targets[f]=probes.final[k].views[f*probes.mips+m];input[f]=probes.filtered[k].views[f*probes.mips+m];}probe_fullscreen(cmd,slot,2,0,probes.resolution>>m,targets,6,input,true);++probes.stats.blend_passes;}probe_transition(cmd,probes.final[k],VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);}probes.ready=true;}
     }
 }

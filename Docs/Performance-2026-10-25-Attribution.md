@@ -3448,3 +3448,120 @@ Runs: `NPXL` `Vulkan-34f31a3b…`, `Vulkan-8476f132…`; `NPL1`
   timer doesn't count). That is the fifth candidate.
 - The target is the recording under about 4.0 ms from launch to end: about
   1.5 ms off 5.4–5.7.
+
+### C1 step 0 and the first recording trims, batches 53–58 (2026-10-29)
+
+Every batch: `NPXL` (split) and `NPL1` (single), twice each, interleaved,
+with `SE_VULKAN_RECORD_TIMING` and the pipeline census; no CpuDetail. The
+lap report now carries per-frame **counters** and, per lap, the recording
+thread's **cycles** (`QueryThreadCycleTime`; the TSC runs at 3.6 GHz on this
+i9-9900K, so about 3.5 cycles per µs means the thread was running and well
+under 1 means it was waiting). Counters are per frame. (The first counter
+build kept counters across the timing-report reset, so batch 53's
+`PerFrame` values were about 2× too high; fixed from batch 54.)
+
+**What step 0 found.**
+- **Every recording lap is real CPU work** (3.5 cycles/µs), not lock
+  waits. Only the job joins (`spot wait`, `new main wait`) and the
+  swapchain wait (`postprocess tail`) wait.
+- **The recording thread wakes in about 3 µs.** The "0.4 ms launch to
+  start" from `m6l` was `settle_cells()`: the OLD-cell emission
+  (`SE_VULKAN_DEFERRED_CELL_EMISSION`, on) ran at the start of every
+  recording, about 0.45–0.53 ms for 871 cell draws.
+- **The view cleanup after the recording** (`rec_view.groups/streams.clear()`)
+  freed about 1,330 instance streams a frame: about 0.25 ms.
+- **`CSM copy` is the CSM copy**, not probes (probe work is under 0.05 ms
+  a frame): the up-to-4 `vkCmdCopyImage` of the depth cascades cost the
+  driver about 0.34 ms of CPU. Batching the 10 barriers into 2 saved about
+  0.04 ms.
+- **Spot shadows rebuilt about 3.9 of 6.5 frozen static maps every frame.**
+  The game moves grids at 60 Hz while frames render at about 180/s, so a
+  moving caster was "still" for a frame or two between updates; each time
+  it settled back into the static map (`NoteShadowPose`), marking the
+  managed static mask and, through `DirtyNativePass`, the native pass's.
+- **Pass streams:** about 210 KB in 1,331 streams a frame, below the old
+  256 KB threshold for the parallel copy. Most of the 0.28 ms before the
+  copy is about 2,900 `world.meshes.count` safety lookups.
+
+**Trims built (all default on):**
+
+| Change | Where | Recording-thread effect |
+|---|---|---|
+| Release the recording view's groups and streams on a worker (`retire_recording_view`) | `renderer.cpp` | off-lap cleanup 254 → 4 µs |
+| Record the CSM copies into a secondary on a worker, started before spot shadows (`start_csm_copies`) | `transparency.inc` | `CSM copy commands` 0.34 ms → gone (executes the secondary) |
+| Batch the CSM barriers (1 call in, 1 out) | `transparency.inc` | about −0.04 ms |
+| Keep a moving caster in the dynamic overlay until still for 30 frames (`ShadowSettleFrames`) | `VulkanScene.NoteShadowPose` | spot static rebuilds 3.9 → 2.9 a frame |
+| OLD-cell emission: records serial, bytes on the pool | `old_cells.inc` | 0.52 → 0.45 ms |
+| **Async OLD-cell emission** on a worker right after `EmitCells` (`SE_VULKAN_ASYNC_CELL_EMISSION=0` turns it off); every later native call and the recording's settle join it first | `old_cells.inc`, `renderer.cpp` | settle 0.45 ms → 0.0004 ms on the recording thread |
+| Pass-stream copy on the pool from 32 KB | `native_pass_render.inc` | none measurable (0.18 ms either way) |
+| Skip the per-group mesh lookups unless a mesh was removed since the last check | `native_pass_render.inc` | built in batch 59 |
+
+**Result so far (batch 58, `Vulkan-34b39fea…`, `Vulkan-97b91586…`):**
+split present **4.87 / 5.17 ms** against 5.36 / 5.60 in batch 57 and
+5.78 / 6.17 in batch 52; single 5.95 / 5.46. Recording laps 4.07 ms a frame
+(from 4.44). Gates on every batch: native 19/19, GPU suites (126, 267, 36,
+427, 542, 18, HUD, billboards 43) with 0 core and sync validation errors,
+VAL and VALX clean.
+
+**New limit:** with the recording shorter, its `postprocess tail` lap
+(`ensure_frame_image`: join the previous frame's present, then acquire)
+waits about 0.4 ms (0.18 cycles/µs). Mailbox, 3 images, present after GPU
+completion (`present-flow`: mean present call 1.2 ms including the GPU
+wait).
+
+### The present chain and the decoupled present, batches 59–66 (2026-10-29)
+
+**The present chain.** With the recording shorter, its tail waited about
+0.45–0.49 ms in `ensure_frame_image()` (`join present`: 0.05 cycles/µs).
+`vkQueuePresentKHR` itself takes about 1.2 ms on this box, **measured after**
+the wait for GPU completion (mailbox, 3 images, windowed), and both the
+acquire and the frame's own `vkQueueSubmit2` had to join it (swapchain and
+queue are externally synchronized). So the present chain, GPU (about 2.9 ms)
+plus the present call (about 1.2 ms), paced the frame at about 4.1 ms
+whatever the CPU did.
+
+**Policies tried (batch 60), split, laps on:**
+
+| Lane | Present cadence | Recording `join present` |
+|---|---|---|
+| `NPXL` (mailbox, present after GPU completion) | 5.18 / 5.00 | 0.44 / 0.40 |
+| `NPXLA0` (`SE_VULKAN_PRESENT_AFTER_GPU=0`) | 7.30 / 7.32 | 0.00 |
+| `NPXLI` (immediate, new `SE_VULKAN_PRESENT_MODE=immediate`) | 28.4 / 28.2 | 0.00 |
+
+Presenting before the GPU finishes stalls the driver (as the existing
+comment says); immediate mode is unusable in this windowed setup. Both stay
+off.
+
+**Decoupled present (`SE_VULKAN_DECOUPLED_PRESENT`, default on).** The frame
+composes into a per-slot output image and never touches the swapchain or
+the present queue. A present worker (FIFO, at most two queued) acquires,
+copies the output into the swapchain image on a **second queue of the same
+family**, waits for the copy, and presents. Frame generation, a missing
+second queue or missing transfer usage keep the direct path. The capture
+path reads the output image; the guest display view returns it.
+
+Two bugs found on the way, both now fixed:
+- **Cross-queue deadlock (batch 61, all game runs hung at startup).** The
+  next frame's submit GPU-waited on the copy of the frame two back, which
+  the worker had not submitted yet; the worker was inside the first
+  `vkQueuePresentKHR` on the second queue, which waits for the frame queue
+  to make progress. A temporary watchdog (dumps worker stage, queue depth
+  and both timelines when frames stop for 5 s) showed it. The frame now
+  waits for that copy on the CPU, and skips even that when the worker has
+  already seen the copy complete.
+- **Access violation at world load under validation (VALX, batch 64).**
+  Swapchain recreation idled only the frame queue, then destroyed the
+  swapchain and present semaphores while a present was pending on the
+  second queue. `resize_output` now also waits for the copies and idles the
+  present queue.
+
+**Results.** Batch 64: split `NPX` **4.93 / 4.92 ms** against DX11
+**4.24 / 4.24 ms** (same session, interleaved); recording laps 3.5 ms (the
+`join present` lap is gone). VAL clean; VALX clean twice after the resize
+fix (batch 65); GPU suites pass with 0 validation errors.
+
+**What the recording still pays after `frame end` (batch 66):** about
+0.35 ms waiting for the previous copy and 0.15–0.2 ms in `vkQueueSubmit2`,
+both apparently colliding with the 1.26 ms present call holding the driver
+lock on the worker. The worker itself keeps up: per frame it waits about
+3.0 ms for the GPU and spends 1.26 ms presenting.

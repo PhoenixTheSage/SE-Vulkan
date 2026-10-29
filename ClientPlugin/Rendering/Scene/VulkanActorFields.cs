@@ -26,6 +26,8 @@ public sealed partial class VulkanScene
         public bool Character,TrackOldIdentity=true;public string ConvertedOldMaterial;
         public readonly Dictionary<string,MaterialOverride> Materials=new(StringComparer.Ordinal);public uint MaterialRevision;
         public bool DynamicShadow,HaveShadowPose;public Vector3D ShadowCenter;public float ShadowRadius;
+        // Apply-only: frames since a dynamic caster last moved (not folded; Build never reads it).
+        public int ShadowStill;
         public bool SkinDirty;public byte Events;
     }
     const byte EventResetModel=1,EventResetLod=2,EventEnsureOld=4;

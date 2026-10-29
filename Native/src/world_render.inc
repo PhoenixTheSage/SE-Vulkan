@@ -399,7 +399,7 @@ void record_new_main(VkCommandBuffer cmd,WorldSlot& slot,const VkRenderingInfo* 
     // SE_VULKAN_PARALLEL_MAIN=1: contiguous entry ranges record into secondaries on the job pool and execute in
     // order inside a resumed rendering instance (load ops). GPU-opaque stock entries allocate shared descriptors,
     // so those frames stay serial, as do small ones.
-    bool stock_entries=std::any_of(entries.begin(),entries.end(),[](const Entry& e){return e.kind==1;});
+    cpu_lap("new main record");record_count("new main entries",double(entries.size()));bool stock_entries=std::any_of(entries.begin(),entries.end(),[](const Entry& e){return e.kind==1;});
     uint32_t workers=parallel_main&&resume&&!stock_entries&&entries.size()>=384?std::min<uint32_t>(4,std::min<uint32_t>(uint32_t(entries.size()/192),sevk_jobs::shared().worker_count()+1)):0u;
     world.main_tasks=0;
     if(workers<2){Counts counts;VkDescriptorSet indexed_set{};record_range(cmd,0,uint32_t(entries.size()),&indexed_set,counts);
@@ -426,7 +426,7 @@ void record_new_main(VkCommandBuffer cmd,WorldSlot& slot,const VkRenderingInfo* 
         record_range(target,first,last,nullptr,counts[k]);check(vkEndCommandBuffer(target),"end main secondary");};
     sevk_jobs::Group jobs;for(uint32_t k=1;k<workers;++k)sevk_jobs::shared().submit(jobs,sevk_jobs::Spot,sevk_jobs::Priority::High,[&record,k]{record(k);});
     std::exception_ptr failure;try{record(0);}catch(...){failure=std::current_exception();}
-    try{jobs.wait();}catch(...){if(!failure)failure=std::current_exception();}
+    cpu_lap("new main wait");try{jobs.wait();}catch(...){if(!failure)failure=std::current_exception();}
     if(failure)std::rethrow_exception(failure);
     // Same attachments, loaded: one instance for the secondaries, then inline again for the rest of the pass.
     std::vector<VkRenderingAttachmentInfo> colors(resume->pColorAttachments,resume->pColorAttachments+resume->colorAttachmentCount);for(auto& c:colors)if(c.imageView)c.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD;
@@ -599,7 +599,7 @@ void render_world(){
     uint32_t updates=scheduled_shadows?shadow_update_mask:reuse_shadows?0u:(1u<<shadow_count)-1;
     bool parallel=world.parallel_cascades && std::popcount(updates)>1;
     if(parallel){prepare_cascade_commands();for(uint32_t c=0;c<shadow_count;++c)if(updates&(1u<<c)){sevk_jobs::shared().submit(cascade_jobs[c],sevk_jobs::Cascade,sevk_jobs::Priority::Normal,[this,c,&cascade_counts]{cascade_counts[c]=record_cascade_secondary(c);});++world.cascade_tasks;}}
-    frame_mark("spot shadows");render_spot_shadows(cmd,slot,object_offsets,instance_offsets);work.spot_us=profile_take();frame_mark("cascades");
+    start_csm_copies();frame_mark("spot shadows");render_spot_shadows(cmd,slot,object_offsets,instance_offsets);work.spot_us=profile_take();frame_mark("cascades");
     if(updates){for(uint32_t c=0;c<shadow_count;++c){if(!(updates&(1u<<c)))continue;auto& image=shadow_images[c];barrier(cmd,image.handle,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT),VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
         VkRenderingAttachmentInfo d{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};d.imageView=image.view;d.imageLayout=VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;d.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;d.storeOp=VK_ATTACHMENT_STORE_OP_STORE;d.clearValue.depthStencil={1,0};VkRenderingInfo r{VK_STRUCTURE_TYPE_RENDERING_INFO};r.renderArea={{0,0},{shadow_resolution,shadow_resolution}};r.layerCount=1;r.pDepthAttachment=&d;if(parallel)r.flags=VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT;vkCmdBeginRendering(cmd,&r);world_viewport(cmd,shadow_resolution,shadow_resolution);
         if(parallel){GeometryRecordCounts count;{critical_profile::Scope join(critical_profile::CascadeJoin);cascade_jobs[c].wait();count=cascade_counts[c];}merge_shadow(count);world.cascade_task_commands+=count.commands;vkCmdExecuteCommands(cmd,1,&world.cascade_commands[slot_index][c]);}else emit_cascade(c);vkCmdEndRendering(cmd);barrier(cmd,image.handle,VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,(VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT),VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);render_shadow_occlusion(cmd,slot,c);}shadow_image_mask|=updates;std::memcpy(saved_shadow_matrices,shadow_matrices,sizeof(saved_shadow_matrices));saved_shadow_count=shadow_count;saved_caster_signature=caster_signature;saved_shadows=true;}render_guest_depth_views(cmd,slot);work.shadow_us=profile_take();frame_mark("gbuffer");

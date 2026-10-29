@@ -5,10 +5,45 @@ void prepare_csm(VkCommandBuffer cmd){
     cs[256]=0;for(uint32_t i=1;i<8;++i)cs[256+i]=i<=shadow_count?shadow_splits[i-1]:1e38f;cs[296]=1.f/shadow_resolution;cs[297]=shadow_bias;auto* integers=reinterpret_cast<uint32_t*>(cs);integers[298]=shadow_count;integers[299]=scheduled_shadows?shadow_valid_mask&shadow_image_mask:(1u<<shadow_count)-1;
     if(shadow_pass_constants_provided){std::memcpy(cs,shadow_pass_constants.data(),1200);integers[299]=scheduled_shadows?shadow_valid_mask&shadow_image_mask:(1u<<shadow_count)-1;}
     for(auto* b:{&transparency.shadow_constants[slot_index]})check(vmaFlushAllocation(allocator,b->memory,0,VK_WHOLE_SIZE),"flush copied transparency data");
+    // The copies were recorded on a worker into a secondary when start_csm_copies ran (C1); execute it in place.
+    if(csm_copy_pending){csm_copy_pending=false;csm_job.wait();vkCmdExecuteCommands(cmd,1,&csm_commands[slot_index]);return;}
     if(scheduled_shadows && !shadow_update_mask)return;
-    barrier(cmd,transparency.csm.handle,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT|VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,1,8);
-    for(uint32_t i=0;i<shadow_count;++i){if(scheduled_shadows && !(shadow_update_mask&(1u<<i)))continue;auto& src=shadow_images[i];barrier(cmd,src.handle,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_READ_BIT);VkImageCopy c{};c.srcSubresource={VK_IMAGE_ASPECT_DEPTH_BIT,0,0,1};c.dstSubresource={VK_IMAGE_ASPECT_DEPTH_BIT,0,i,1};c.extent={shadow_resolution,shadow_resolution,1};vkCmdCopyImage(cmd,src.handle,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,transparency.csm.handle,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&c);barrier(cmd,src.handle,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_READ_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);}
-    barrier(cmd,transparency.csm.handle,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_ASPECT_DEPTH_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT|VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,1,8);
+    record_csm_copies(cmd);
+}
+// The cascade-to-CSM copies, unchanged in content and order. vkCmdCopyImage of the depth cascades costs the driver
+// about 0.3 ms of CPU, so start_csm_copies records them on a worker as soon as the cascade set is known.
+void record_csm_copies(VkCommandBuffer cmd){
+    // The same transitions as before, batched: one barrier call into the copies and one out (C1: the separate calls
+    // cost the recording thread about 0.3 ms). The images are distinct, so batching changes no dependency.
+    auto image_barrier=[](VkImage image,VkImageLayout from,VkImageLayout to,VkPipelineStageFlags2 src,VkAccessFlags2 src_access,VkPipelineStageFlags2 dst,VkAccessFlags2 dst_access,uint32_t layers){
+        VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};b.srcStageMask=src;b.srcAccessMask=src_access;b.dstStageMask=dst;b.dstAccessMask=dst_access;b.oldLayout=from;b.newLayout=to;
+        b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;b.image=image;b.subresourceRange={VK_IMAGE_ASPECT_DEPTH_BIT,0,1,0,layers};return b;};
+    auto submit_barriers=[&](const std::vector<VkImageMemoryBarrier2>& list){VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};dependency.imageMemoryBarrierCount=uint32_t(list.size());dependency.pImageMemoryBarriers=list.data();vkCmdPipelineBarrier2(cmd,&dependency);};
+    constexpr VkPipelineStageFlags2 readers=VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT|VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    std::vector<VkImageMemoryBarrier2> into{image_barrier(transparency.csm.handle,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,readers,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,8)},
+        out{image_barrier(transparency.csm.handle,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,readers,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,8)};
+    std::vector<uint32_t> copied;
+    for(uint32_t i=0;i<shadow_count;++i){if(scheduled_shadows && !(shadow_update_mask&(1u<<i)))continue;copied.push_back(i);auto handle=shadow_images[i].handle;
+        into.push_back(image_barrier(handle,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_READ_BIT,1));
+        out.push_back(image_barrier(handle,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_READ_BIT,VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,1));}
+    submit_barriers(into);
+    for(uint32_t i:copied){VkImageCopy c{};c.srcSubresource={VK_IMAGE_ASPECT_DEPTH_BIT,0,0,1};c.dstSubresource={VK_IMAGE_ASPECT_DEPTH_BIT,0,i,1};c.extent={shadow_resolution,shadow_resolution,1};vkCmdCopyImage(cmd,shadow_images[i].handle,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,transparency.csm.handle,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&c);}
+    submit_barriers(out);
+}
+void start_csm_copies(){
+    csm_job.join();csm_copy_pending=false; // an aborted frame can leave one behind
+    if(scheduled_shadows && !shadow_update_mask)return;
+    auto& pool=csm_pools[slot_index];
+    if(!pool){VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};info.queueFamilyIndex=queue_family;check(vkCreateCommandPool(device,&info,nullptr,&pool),"create frame-owned CSM pool");}
+    // This slot's previous frame has completed, as for the spot and main pools.
+    check(vkResetCommandPool(device,pool,0),"reset completed CSM pool");
+    if(!csm_commands[slot_index]){VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};allocation.commandPool=pool;allocation.level=VK_COMMAND_BUFFER_LEVEL_SECONDARY;allocation.commandBufferCount=1;check(vkAllocateCommandBuffers(device,&allocation,&csm_commands[slot_index]),"allocate CSM secondary");}
+    VkCommandBuffer command=csm_commands[slot_index];
+    sevk_jobs::shared().submit(csm_job,sevk_jobs::Cascade,sevk_jobs::Priority::High,[this,command]{
+        VkCommandBufferInheritanceInfo inheritance{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;begin.pInheritanceInfo=&inheritance;
+        check(vkBeginCommandBuffer(command,&begin),"begin CSM secondary");record_csm_copies(command);check(vkEndCommandBuffer(command),"end CSM secondary");});
+    csm_copy_pending=true;
 }
 void init_transparency(uint32_t id,const void* vertex,uint64_t vb,const void* pixel,uint64_t pb){
     bool ldr=id>=100 && id<132;if(ldr)id=id-100+20;

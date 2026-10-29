@@ -580,6 +580,47 @@ struct Renderer {uint32_t recipe_generation=1;
     struct PresentResult {VkResult result;uint64_t begin_ns,end_ns;};
     // Async present runs on its own stage thread; present_pending marks an unjoined result.
     sevk_jobs::Stage present_stage;PresentResult present_result{};bool present_pending{};
+    // Decoupled present (SE_VULKAN_DECOUPLED_PRESENT=0 turns it off; C1). vkQueuePresentKHR holds its queue for about
+    // 1.2 ms here, and the recording had to join the previous present before acquiring the swapchain image and before
+    // submitting, about 0.45 ms of wait a frame. In this mode the frame composes into a per-slot output image and
+    // never touches the swapchain or the present queue: a worker acquires, copies the output in on a second queue of
+    // the same family, and presents, in order, up to two frames behind. Frame generation keeps the direct path.
+    bool decoupled_present_enabled=env_flag("SE_VULKAN_DECOUPLED_PRESENT",true),frame_decoupled{};VkQueue present_queue{};uint32_t queue_family_queues{};
+    struct DecoupledPresent{Image output[2];bool initialized[2]{};VkExtent2D size{};VkCommandPool pool{};std::vector<VkCommandBuffer> commands;std::vector<uint64_t> command_done;
+        std::vector<VkSemaphore> acquire;uint32_t ring{};VkSemaphore timeline{};uint64_t value{},slot_value[2]{};
+        std::thread thread;std::mutex mutex;std::condition_variable cv;std::deque<std::function<PresentResult()>> tasks;std::vector<PresentResult> results;bool busy{},stopping{};} decoupled;
+    // Hang diagnostics (SE_VULKAN_PRESENT_WATCHDOG=1; C1): the worker's stage, and a watchdog that appends the present and
+    // timeline state to %TEMP%\sevk-present-hang.txt when frames stop for 5 s. It found the cross-queue deadlock.
+    std::atomic<int> decoupled_stage{0};std::atomic<uint64_t> worker_ns[5]{};std::atomic<uint64_t> worker_tasks{};std::atomic<uint64_t> decoupled_copied{0};
+    // Present gate (SE_VULKAN_PRESENT_GATE=1, off; C1): the present call holds a driver-wide lock for about 1.3 ms and
+    // stalls queue submits on other threads, so this delays a pipelined frame's present until Build launched the
+    // recording two frames on. Measured worse (6.1 ms against 4.9): the present then waits behind the next frame's GPU
+    // work (3.9 ms calls) and the GPU frame grows to 3.7 ms. Kept as a diagnostic.
+    std::atomic<uint64_t> launches{0};bool present_gate=env_flag("SE_VULKAN_PRESENT_GATE",false);std::atomic<bool> gate_flush{false};std::mutex gate_mutex;std::condition_variable gate_cv;
+    void wait_present_gate(uint64_t target){if(!target)return;std::unique_lock lock(gate_mutex);gate_cv.wait_for(lock,std::chrono::milliseconds(50),[&]{return gate_flush.load()||launches.load()>=target;});}
+    void open_present_gate(){gate_flush=true;{std::lock_guard lock(gate_mutex);}gate_cv.notify_all();}std::thread present_watchdog;std::atomic<bool> watchdog_stop{false};std::atomic<int> render_wait_stage{0};
+    void start_present_watchdog(){static const bool enabled=env_flag("SE_VULKAN_PRESENT_WATCHDOG",false);if(!enabled||present_watchdog.joinable())return;present_watchdog=std::thread([this]{uint64_t last=~0ull;int still=0;
+        while(!watchdog_stop.load()){std::this_thread::sleep_for(std::chrono::milliseconds(500));uint64_t now=stats.submitted_frames;if(now!=last){last=now;still=0;continue;}if(++still!=10)continue;
+            uint64_t main_done=0,copy_done=0;if(device&&timeline)vkGetSemaphoreCounterValue(device,timeline,&main_done);if(device&&decoupled.timeline)vkGetSemaphoreCounterValue(device,decoupled.timeline,&copy_done);
+            char path[512];const char* temp=std::getenv("TEMP");std::snprintf(path,sizeof(path),"%s\\sevk-present-hang.txt",temp?temp:".");
+            if(FILE* f=std::fopen(path,"a")){std::fprintf(f,"stuck frames=%llu stage=%d render_wait=%d decoupled=%d tasks=%zu busy=%d value=%llu slot=%llu,%llu main_next=%llu main_done=%llu copy_done=%llu slot_completion=%llu,%llu present_calls=%llu recording=%d\n",
+                (unsigned long long)now,decoupled_stage.load(),render_wait_stage.load(),frame_decoupled?1:0,decoupled.tasks.size(),decoupled.busy?1:0,(unsigned long long)decoupled.value,(unsigned long long)decoupled.slot_value[0],(unsigned long long)decoupled.slot_value[1],
+                (unsigned long long)next_completion,(unsigned long long)main_done,(unsigned long long)copy_done,(unsigned long long)slots[0].completion,(unsigned long long)slots[1].completion,(unsigned long long)present_flow.completed_calls,recording?1:0);std::fclose(f);}}});}
+    void decoupled_worker(){std::unique_lock lock(decoupled.mutex);
+        for(;;){decoupled.cv.wait(lock,[&]{return decoupled.stopping||!decoupled.tasks.empty();});if(decoupled.tasks.empty())return;
+            auto task=std::move(decoupled.tasks.front());decoupled.tasks.pop_front();decoupled.busy=true;lock.unlock();
+            PresentResult result{VK_ERROR_DEVICE_LOST,0,0};try{result=task();}catch(...){}
+            lock.lock();decoupled.busy=false;decoupled.results.push_back(result);decoupled.cv.notify_all();}}
+    void enqueue_decoupled(std::function<PresentResult()> task){
+        if(!decoupled.thread.joinable()){decoupled.stopping=false;decoupled.thread=std::thread([this]{decoupled_worker();});start_present_watchdog();}
+        render_wait_stage=2;std::unique_lock lock(decoupled.mutex);decoupled.cv.wait(lock,[&]{return decoupled.tasks.size()<2;});render_wait_stage=0;decoupled.tasks.push_back(std::move(task));decoupled.cv.notify_all();}
+    // Applies finished presents on the calling (frame) thread; all=true waits for every queued one first.
+    void drain_decoupled(bool all,bool propagate=true){std::vector<PresentResult> done;
+        if(all)open_present_gate();render_wait_stage=1;{std::unique_lock lock(decoupled.mutex);if(all)decoupled.cv.wait(lock,[&]{return decoupled.tasks.empty()&&!decoupled.busy;});done.swap(decoupled.results);}render_wait_stage=0;if(all)gate_flush=false;
+        for(auto& r:done)accept_present(r,propagate);}
+    void stop_decoupled(){open_present_gate();watchdog_stop=true;if(present_watchdog.joinable())present_watchdog.join();if(!decoupled.thread.joinable())return;{std::lock_guard lock(decoupled.mutex);decoupled.stopping=true;}decoupled.cv.notify_all();decoupled.thread.join();decoupled.results.clear();}
+    void wait_decoupled_copies(){if(decoupled.timeline&&decoupled.value){VkSemaphoreWaitInfo w{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};w.semaphoreCount=1;w.pSemaphores=&decoupled.timeline;w.pValues=&decoupled.value;vkWaitSemaphores(device,&w,UINT64_MAX);}}
+    bool decoupled_ready()const{return decoupled_present_enabled&&swapchain&&present_queue&&swap_transfer&&async_present&&decoupled.output[0].handle&&!(display_flags&2);}
     bool async_present=!std::getenv("SE_VULKAN_ASYNC_PRESENT") || std::strcmp(std::getenv("SE_VULKAN_ASYNC_PRESENT"),"0")!=0;
     // Deferred acquire (SE_VULKAN_DEFERRED_ACQUIRE=0 restores acquiring in begin_frame): the swapchain image
     // is acquired at the start of end_frame, so begin_frame no longer joins the previous async present
@@ -596,11 +637,19 @@ struct Renderer {uint32_t recipe_generation=1;
     bool early_release=env_flag("SE_VULKAN_EARLY_RELEASE",true);
     // Spot caster grid (spots.inc); SE_VULKAN_SPOT_GRID=0 turns it off.
     bool spot_grid=env_flag("SE_VULKAN_SPOT_GRID",true);
-    bool pass_material_reuse=env_flag("SE_VULKAN_PASS_MATERIAL_REUSE",false);uint64_t world_mesh_revision{};
+    bool pass_material_reuse=env_flag("SE_VULKAN_PASS_MATERIAL_REUSE",false);uint64_t world_mesh_revision{},pass_mesh_checked_revision{UINT64_MAX};
     bool parallel_main=env_flag("SE_VULKAN_PARALLEL_MAIN",true);
     std::atomic<bool> record_released{false};std::unique_lock<std::mutex>* record_lock{};std::unique_lock<std::mutex>* scene_lock{};
     uint64_t early_releases{};
     struct RecordingView {bool valid{};std::vector<native_pass::Group> groups;std::vector<std::shared_ptr<native_pass::InstanceStream>> streams;bool pass_ready{};std::array<uint32_t,64> spot_views{};uint64_t static_dirty{};} rec_view;
+    // The recording view often holds the last references to about 3,000 replaced instance streams; freeing them cost
+    // the recording thread about 0.25 ms a frame (C1). They are swapped out and released on a worker instead.
+    std::vector<native_pass::Group> retired_groups;std::vector<std::shared_ptr<native_pass::InstanceStream>> retired_streams;sevk_jobs::Group retire_job;
+    void retire_recording_view(){retire_job.join();retired_groups.swap(rec_view.groups);retired_streams.swap(rec_view.streams);
+        if(retired_groups.empty()&&retired_streams.empty())return;
+        sevk_jobs::shared().submit(retire_job,sevk_jobs::Upload,sevk_jobs::Priority::Normal,[this]{retired_groups.clear();retired_streams.clear();});}
+    uint64_t spot_managed_static{},spot_fade_static{};
+    VkCommandPool csm_pools[2]{};VkCommandBuffer csm_commands[2]{};sevk_jobs::Group csm_job;bool csm_copy_pending{};
     // Recording and its job workers read the snapshot; scene calls (WorldState::tl_scene_side) read live state.
     bool rec_view_active()const{return rec_view.valid&&!WorldState::tl_scene_side;}
     // True inside a scene call made while an early-released recording runs.
@@ -627,7 +676,7 @@ struct Renderer {uint32_t recipe_generation=1;
     // by waiting for the previous present to finish.
     bool frame_image_pending{};
     bool ensure_frame_image(){if(!frame_image_pending)return target_ready;frame_image_pending=false;auto acquire_at=std::chrono::steady_clock::now();
-        join_present();target_ready=acquire_frame_image(slots[slot_index],false)==0;
+        cpu_lap("join present");join_present();cpu_lap("acquire");target_ready=acquire_frame_image(slots[slot_index],false)==0;cpu_lap("after acquire");
         work.acquire_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-acquire_at).count());return target_ready;}
     bool present_after_gpu=!std::getenv("SE_VULKAN_PRESENT_AFTER_GPU") || std::strcmp(std::getenv("SE_VULKAN_PRESENT_AFTER_GPU"),"0")!=0;
     SevkPresentFlowStats present_flow{sizeof(SevkPresentFlowStats),SEVK_ABI_VERSION};
@@ -646,6 +695,7 @@ struct Renderer {uint32_t recipe_generation=1;
     }
     void join_present(bool propagate=true){
         critical_profile::Scope critical_join(critical_profile::PresentJoin);
+        if(decoupled.thread.joinable())drain_decoupled(true,propagate);
         if(!present_pending)return;
         auto begin=present_clock();present_stage.wait();present_pending=false;auto result=present_result;present_flow.last_join_us=uint32_t((present_clock()-begin)/1000);accept_present(result,propagate);
     }
@@ -692,7 +742,7 @@ struct Renderer {uint32_t recipe_generation=1;
     LightTileState light_tiles;
     PassGpuState pass_scene;
     struct CellState {old_cells::Scene scene;std::unique_ptr<native_pass::ViewJobs> jobs;SevkCellStats stats{sizeof(SevkCellStats)};} cells;
-    bool deferred_cell_emission{},cells_emit_pending{};
+    bool deferred_cell_emission{},cells_emit_pending{},async_cell_emission{true},cells_emit_async{};sevk_jobs::Group cells_emit_job;uint32_t cells_emit_uncounted{};
     EnvironmentState environment;
     std::array<UploadSlot,2> upload_slots{}; uint32_t upload_index{};
     bool batching_uploads{}; VkCommandBuffer batch_command{}; uint64_t upload_fence{};
@@ -709,7 +759,7 @@ struct Renderer {uint32_t recipe_generation=1;
     // The harness resets both reports when its sampling window opens and stops them when it closes.
     bool timing_reports_active=true;
     void set_timing_reports(bool active){timing_reports_active=active;if(!active)return;
-        gpu_pass.passes.clear();gpu_pass.frames=0;gpu_pass.frame_ms=0;gpu_pass.target={};gpu_pass.armed={};record_laps.laps.clear();record_laps.frames=0;record_laps.open=nullptr;}
+        gpu_pass.passes.clear();gpu_pass.frames=0;gpu_pass.frame_ms=0;gpu_pass.target={};gpu_pass.armed={};record_laps.laps.clear();record_laps.lap_cycles.clear();record_laps.counters.clear();record_laps.frames=0;record_laps.open=nullptr;}
     void gpu_pass_mark(VkCommandBuffer cmd,const char* name){if(!gpu_pass.pool)return;uint32_t s=slot_index;
         if(std::strcmp(name,"frame begin")==0){vkCmdResetQueryPool(cmd,gpu_pass.pool,s*GpuPassTiming::capacity,GpuPassTiming::capacity);gpu_pass.used[s]=0;gpu_pass.armed[s]=false;gpu_pass.target[s]=0;}
         auto& used=gpu_pass.used[s];if(used>=GpuPassTiming::capacity)return;
@@ -728,12 +778,22 @@ struct Renderer {uint32_t recipe_generation=1;
     // SE_VULKAN_RECORD_TIMING=<file>: CPU recording time between frame marks and the extra cpu_lap
     // points inside preparation, attributed to the earlier name. The "frame begin" interval spans the
     // managed frame, so it is not counted. Written as JSON at shutdown.
-    struct RecordLaps{bool enabled{};std::string path;std::chrono::steady_clock::time_point at{};const char* open{};uint64_t frames{};
-        std::vector<std::pair<std::string,std::pair<double,uint64_t>>> laps;} record_laps;
-    void cpu_lap(const char* name){if(!record_laps.enabled)return;auto now=std::chrono::steady_clock::now();auto& r=record_laps;
+    struct RecordLaps{bool enabled{};std::string path;std::chrono::steady_clock::time_point at{};const char* open{};uint64_t frames{},cycles_at{};std::vector<std::pair<std::string,double>> lap_cycles;
+        std::vector<std::pair<std::string,std::pair<double,uint64_t>>> laps,counters;} record_laps;
+    // Counts and off-lap times next to the laps (C1 step 0), averaged per recorded frame in the report.
+    void record_count(const char* name,double value){if(!record_laps.enabled||!timing_reports_active)return;auto& c=record_laps.counters;
+        auto it=std::find_if(c.begin(),c.end(),[&](const auto& l){return l.first==name;});if(it==c.end()){c.push_back({name,{0.0,0}});it=c.end()-1;}it->second.first+=value;++it->second.second;}
+    static uint64_t thread_cycles(){
+#ifdef _WIN32
+        ULONG64 c{};QueryThreadCycleTime(GetCurrentThread(),&c);return c;
+#else
+        return 0;
+#endif
+    }
+    void cpu_lap(const char* name){if(!record_laps.enabled)return;auto now=std::chrono::steady_clock::now();uint64_t cycles=thread_cycles();auto& r=record_laps;
         if(r.open&&timing_reports_active&&std::strcmp(r.open,"frame begin")!=0){double us=std::chrono::duration<double,std::micro>(now-r.at).count();auto it=std::find_if(r.laps.begin(),r.laps.end(),[&](const auto& l){return l.first==r.open;});
-            if(it==r.laps.end()){r.laps.push_back({r.open,{0.0,0}});it=r.laps.end()-1;}it->second.first+=us;++it->second.second;}
-        r.at=now;r.open=name;if(std::strcmp(name,"frame end")==0){r.open=nullptr;if(timing_reports_active)++r.frames;}}
+            if(it==r.laps.end()){r.laps.push_back({r.open,{0.0,0}});r.lap_cycles.push_back({r.open,0.0});it=r.laps.end()-1;}it->second.first+=us;++it->second.second;r.lap_cycles[size_t(it-r.laps.begin())].second+=double(cycles-r.cycles_at);}
+        r.at=now;r.cycles_at=cycles;r.open=name;if(std::strcmp(name,"frame end")==0){r.open=nullptr;if(timing_reports_active)++r.frames;}}
     // Workers recording secondaries (parallel NEW main) must not write marks into the primary command buffer.
     static inline thread_local bool tl_suppress_marks=false;
     void frame_mark(const char* name){if(tl_suppress_marks)return;auto cmd=slots[slot_index].command;gpu_mark(cmd,name,next_completion+1);gpu_pass_mark(cmd,name);cpu_lap(name);
@@ -853,8 +913,12 @@ struct Renderer {uint32_t recipe_generation=1;
         for(auto& call:work)if(call.fn(*this))throw std::runtime_error("deferred scene call failed");}
     // Starts end_frame on a worker; the caller holds api_mutex, so the worker
     // runs only after this call returns, and before any later ordinary call.
+    std::chrono::steady_clock::time_point last_record_end{};bool gap_open{};
+    void gap_mark(const char* name){if(!gap_open||!last_record_end.time_since_epoch().count())return;record_count(name,std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-last_record_end).count());}
     int end_frame_async(){
         if(!recording||!world.current().queued)return end_frame();
+        gap_mark("gap at launch us");gap_open=false;{std::lock_guard lock(gate_mutex);launches.fetch_add(1);}gate_cv.notify_all();
+        if(last_record_end.time_since_epoch().count())record_count("launch gap us",std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-last_record_end).count());
         publish_launch_snapshot();uint32_t predicted=snapshot.cache_mask;bool checked=snapshot.cache_valid;
         {std::lock_guard q(deferred_mutex);record_in_flight=true;}record_pending=true;tl_launch=std::chrono::steady_clock::now();tl_pipelined=true;
         record_stage.start([this,predicted,checked]{
@@ -866,9 +930,10 @@ struct Renderer {uint32_t recipe_generation=1;
             // std::mutex is not fair: the next frame's back-to-back scene calls could keep winning api_mutex while the
             // finished recording waits for it. Scene calls see relock_wanted and yield (call_scene) until it is in.
             if(!lock.owns_lock()){auto relock=std::chrono::steady_clock::now();relock_wanted.store(true,std::memory_order_release);lock.lock();relock_wanted.store(false,std::memory_order_release);launch_lap_us[4]+=tl_since(relock);}
-            record_lock=nullptr;world.recording_submission=-1;tl_recording_thread=false;rec_view.valid=false;rec_view.groups.clear();rec_view.streams.clear();record_released.store(false,std::memory_order_release);
+            auto cleanup=std::chrono::steady_clock::now();record_lock=nullptr;world.recording_submission=-1;tl_recording_thread=false;rec_view.valid=false;retire_recording_view();record_released.store(false,std::memory_order_release);
+            record_count("off-lap view cleanup us",std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-cleanup).count());
             {std::lock_guard s(snapshot_mutex);snapshot.work=work;}
-            {std::lock_guard q(deferred_mutex);record_in_flight=false;}record_running=false;tl_post(4);tl_pipelined=false;tl_record_end_us+=tl_since(tl_launch);++tl_record_ends;lock.unlock();record_cv.notify_all();});
+            {std::lock_guard q(deferred_mutex);record_in_flight=false;}record_running=false;tl_post(4);last_record_end=std::chrono::steady_clock::now();gap_open=true;tl_pipelined=false;tl_record_end_us+=tl_since(tl_launch);++tl_record_ends;lock.unlock();record_cv.notify_all();});
         return 0;
     }
     void collect() {
@@ -961,7 +1026,7 @@ struct Renderer {uint32_t recipe_generation=1;
         const char* parallel_env=std::getenv("SE_VULKAN_PARALLEL_CASCADES");world.parallel_cascades=parallel_env?std::strcmp(parallel_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* spots_env=std::getenv("SE_VULKAN_PARALLEL_SPOTS");world.parallel_spots=spots_env?std::strcmp(spots_env,"1")==0:std::thread::hardware_concurrency()>=4;
         const char* pass_env=std::getenv("SE_VULKAN_PARALLEL_PASS");pass_scene.scene.set_parallel(pass_env?std::strcmp(pass_env,"1")==0:std::thread::hardware_concurrency()>=4);
-        const char* cell_emit_env=std::getenv("SE_VULKAN_DEFERRED_CELL_EMISSION");deferred_cell_emission=!cell_emit_env||std::strcmp(cell_emit_env,"0")!=0;
+        const char* cell_emit_env=std::getenv("SE_VULKAN_DEFERRED_CELL_EMISSION");deferred_cell_emission=!cell_emit_env||std::strcmp(cell_emit_env,"0")!=0;async_cell_emission=env_flag("SE_VULKAN_ASYNC_CELL_EMISSION",true);
         const char* selection_env=std::getenv("SE_VULKAN_PARALLEL_SELECTION");pass_scene.scene.parallel_selection=!selection_env||std::strcmp(selection_env,"0")!=0;
         pass_scene.scene.lod_dedupe=env_flag("SE_VULKAN_PASS_LOD_DEDUPE",false);
         pass_scene.scene.view_cache=env_flag("SE_VULKAN_PASS_VIEW_CACHE",true);
@@ -1047,7 +1112,7 @@ struct Renderer {uint32_t recipe_generation=1;
             for (uint32_t q = 0; q < queues; ++q) {
                 VkBool32 present = VK_TRUE;
                 if (surface) check(vkGetPhysicalDeviceSurfaceSupportKHR(devices[index], q, surface, &present), "query presentation queue");
-                if ((families[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) && present) { physical = devices[index]; queue_family = q; timestamp_bits=families[q].timestampValidBits; break; }
+                if ((families[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) && present) { physical = devices[index]; queue_family = q; timestamp_bits=families[q].timestampValidBits; queue_family_queues=families[q].queueCount; break; }
             }
             if (physical) { stats.api_version = properties.apiVersion; copy_text(stats.device_name, properties.deviceName); break; }
         }
@@ -1087,11 +1152,11 @@ struct Renderer {uint32_t recipe_generation=1;
         features.features.shaderStorageImageReadWithoutFormat=features.features.shaderStorageImageWriteWithoutFormat=tenant.without_format?VK_TRUE:VK_FALSE;
         if(opaque_caps.enabled){features.features.shaderFloat64=VK_TRUE;f11.shaderDrawParameters=VK_TRUE;
             f12.drawIndirectCount=VK_TRUE;f12.runtimeDescriptorArray=VK_TRUE;f12.shaderSampledImageArrayNonUniformIndexing=VK_TRUE;}
-        float priority = 1;
+        float priority = 1; const float priorities[2]{1,1};
         features.features.multiDrawIndirect=world.indirect_supported;features.features.drawIndirectFirstInstance=world.indirect_supported;
         if(optional.features.samplerAnisotropy){features.features.samplerAnisotropy=VK_TRUE;anisotropy_limit=indirect_properties.limits.maxSamplerAnisotropy;}
         shadow_depth_bias_clamp=optional.features.depthBiasClamp;features.features.depthBiasClamp=shadow_depth_bias_clamp;
-        VkDeviceQueueCreateInfo q{ VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO }; q.queueFamilyIndex = queue_family; q.queueCount = 1; q.pQueuePriorities = &priority;
+        VkDeviceQueueCreateInfo q{ VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO }; q.queueFamilyIndex = queue_family; q.queueCount = (decoupled_present_enabled&&surface&&queue_family_queues>=2)?2u:1u; q.pQueuePriorities = q.queueCount==2?priorities:&priority;
         std::vector<VkExtensionProperties> available;
         if(vkEnumerateDeviceExtensionProperties){uint32_t available_count=0;if(vkEnumerateDeviceExtensionProperties(physical,nullptr,&available_count,nullptr)==VK_SUCCESS){available.resize(available_count);if(vkEnumerateDeviceExtensionProperties(physical,nullptr,&available_count,available.data())!=VK_SUCCESS)available.clear();else available.resize(available_count);}}
         auto has=[&](const char* name){for(auto& e:available)if(std::strcmp(e.extensionName,name)==0)return true;return false;};
@@ -1144,7 +1209,7 @@ struct Renderer {uint32_t recipe_generation=1;
         ngx_add_device_extensions(device_extensions, available, f12);
         VkDeviceCreateInfo create{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &features }; create.queueCreateInfoCount = 1; create.pQueueCreateInfos = &q;
         create.enabledExtensionCount=uint32_t(device_extensions.size());create.ppEnabledExtensionNames=device_extensions.empty()?nullptr:device_extensions.data();
-        check(vkCreateDevice(physical, &create, nullptr, &device), "create Vulkan device"); volkLoadDevice(device); vkGetDeviceQueue(device, queue_family, 0, &queue);
+        check(vkCreateDevice(physical, &create, nullptr, &device), "create Vulkan device"); volkLoadDevice(device); vkGetDeviceQueue(device, queue_family, 0, &queue); if(q.queueCount==2)vkGetDeviceQueue(device, queue_family, 1, &present_queue);
 #if defined(_WIN32)
         if(exclusive_extension && !vkAcquireFullScreenExclusiveModeEXT)exclusive_extension=false;
 #endif
@@ -1441,7 +1506,8 @@ struct Renderer {uint32_t recipe_generation=1;
 #endif
     }
     void destroy_targets() {
-        join_present(false);
+        join_present(false);wait_decoupled_copies();
+        for(auto& image:decoupled.output)destroy_image(image);for(auto s:decoupled.acquire)vkDestroySemaphore(device,s,nullptr);decoupled.acquire.clear();decoupled.initialized[0]=decoupled.initialized[1]=false;decoupled.slot_value[0]=decoupled.slot_value[1]=0;
         release_exclusive();
         destroy_buffer(capture); capture_valid=false; capture_completion=0;
         destroy_image(offscreen); destroy_image(depth);
@@ -1458,6 +1524,8 @@ struct Renderer {uint32_t recipe_generation=1;
         join_present(false);flush_uploads();wait(next_completion);
         // The render timeline does not cover the presentation semaphore wait.
         if(swapchain)check(vkQueueWaitIdle(queue),"wait for presentation resize");
+        // Decoupled presents run on the second queue; its presentation must also be idle before the swapchain goes.
+        if(swapchain&&present_queue){wait_decoupled_copies();check(vkQueueWaitIdle(present_queue),"wait for decoupled presentation resize");}
         collect();destroy_targets();vsync = sync;
         sprite_w = logical_width; sprite_h = logical_height;
         if (!width || !height) { suspended = true; extent = { width, height }; stats.surface_ready = 0; return; }
@@ -1487,6 +1555,8 @@ struct Renderer {uint32_t recipe_generation=1;
                 bool generated = (display_flags & 2) != 0;
                 // Display bit 32 (HdrRender AllowTearing) also prefers IMMEDIATE; DX11 tears only without vsync too.
                 bool tearing = (display_flags & 32) != 0;
+                // SE_VULKAN_PRESENT_MODE=immediate prefers IMMEDIATE without vsync (diagnostic: the present chain, C1).
+                if(const char* forced=std::getenv("SE_VULKAN_PRESENT_MODE");forced&&std::strcmp(forced,"immediate")==0)tearing=true;
                 if ((generated || tearing) && std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_IMMEDIATE_KHR) != modes.end()) mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
                 else if (std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_MAILBOX_KHR) != modes.end()) mode = VK_PRESENT_MODE_MAILBOX_KHR;
                 else if (std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_IMMEDIATE_KHR) != modes.end()) mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
@@ -1498,7 +1568,10 @@ struct Renderer {uint32_t recipe_generation=1;
             if(const char* forced=std::getenv("SE_VULKAN_PRESENT_MODE")){std::string f(forced);VkPresentModeKHR want=f=="immediate"?VK_PRESENT_MODE_IMMEDIATE_KHR:f=="mailbox"?VK_PRESENT_MODE_MAILBOX_KHR:f=="fifo"?VK_PRESENT_MODE_FIFO_KHR:mode;
                 count=0;check(vkGetPhysicalDeviceSurfacePresentModesKHR(physical,surface,&count,nullptr),"query present modes");std::vector<VkPresentModeKHR> offered(count);check(vkGetPhysicalDeviceSurfacePresentModesKHR(physical,surface,&count,offered.data()),"query present modes");
                 if(std::find(offered.begin(),offered.end(),want)!=offered.end())mode=want;}
-            uint32_t images = caps.minImageCount + 1; if (caps.maxImageCount) images = std::min(images, caps.maxImageCount);
+            uint32_t images = caps.minImageCount + 1;
+            // SE_VULKAN_SWAP_IMAGES=<n> asks for more images (diagnostic: does the present call block on a full flip queue? C1).
+            if(const char* wanted=std::getenv("SE_VULKAN_SWAP_IMAGES")){long n=std::strtol(wanted,nullptr,10);if(n>long(images)&&n<=8)images=uint32_t(n);}
+            if (caps.maxImageCount) images = std::min(images, caps.maxImageCount);
             VkSwapchainCreateInfoKHR swap{ VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR }; swap.surface = surface; swap.minImageCount = images;
             swap.imageFormat = color_format; swap.imageColorSpace = chosen->colorSpace; swap.imageExtent = extent; swap.imageArrayLayers = 1;
             swap.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; readback_supported = (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
@@ -1545,6 +1618,14 @@ struct Renderer {uint32_t recipe_generation=1;
                 check(vkCreateSemaphore(device, &semaphore, nullptr, &signal), "create presentation semaphore"); present_semaphores.push_back(signal);
             }
             image_initialized.resize(count, false);
+            if(decoupled_present_enabled&&present_queue&&swap_transfer){
+                for(auto& image:decoupled.output)image=make_image(extent.width,extent.height,color_format,VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT,VK_IMAGE_ASPECT_COLOR_BIT);
+                decoupled.size=extent;uint32_t ring=count+1;
+                if(!decoupled.pool){VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};info.queueFamilyIndex=queue_family;info.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;check(vkCreateCommandPool(device,&info,nullptr,&decoupled.pool),"create present copy pool");}
+                if(!decoupled.timeline){VkSemaphoreTypeCreateInfo type{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};type.semaphoreType=VK_SEMAPHORE_TYPE_TIMELINE;VkSemaphoreCreateInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,&type};check(vkCreateSemaphore(device,&info,nullptr,&decoupled.timeline),"create present copy timeline");}
+                while(decoupled.commands.size()<ring){VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};allocation.commandPool=decoupled.pool;allocation.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;allocation.commandBufferCount=1;VkCommandBuffer created{};check(vkAllocateCommandBuffers(device,&allocation,&created),"allocate present copy command");decoupled.commands.push_back(created);decoupled.command_done.push_back(0);}
+                for(uint32_t i=0;i<ring;++i){VkSemaphoreCreateInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};VkSemaphore s{};check(vkCreateSemaphore(device,&info,nullptr,&s),"create present acquire semaphore");decoupled.acquire.push_back(s);}
+            }
         } else {
             color_format = VK_FORMAT_R8G8B8A8_SRGB; extent = present_extent = { width, height }; readback_supported = true;
             offscreen = make_image(width, height, color_format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -1742,6 +1823,7 @@ struct Renderer {uint32_t recipe_generation=1;
     std::chrono::steady_clock::time_point tl_launch{},tl_submit[2]{};uint64_t tl_us[5]{},tl_frames{},tl_waited{};
     static uint64_t tl_since(std::chrono::steady_clock::time_point from){return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-from).count());}
     int begin_frame(const SevkFrameInfo& frame) {
+        gap_mark("gap begin_frame start us");struct GapEnd{Renderer* r;~GapEnd(){r->gap_mark("gap begin_frame end us");}} gap_end{this};
         auto lap_at=std::chrono::steady_clock::now();auto lap=[&](int i){auto now=std::chrono::steady_clock::now();begin_lap_us[i]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(now-lap_at).count());lap_at=now;};
         submitted_frame=frame;jitter_begin_frame();
         guest.depth_ready=0;++guest.catalog_epoch;
@@ -1772,7 +1854,7 @@ struct Renderer {uint32_t recipe_generation=1;
         auto slot_stamp=std::chrono::steady_clock::now();
         auto slot_take=[&](){auto now=std::chrono::steady_clock::now();uint32_t elapsed=(uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(now-slot_stamp).count();slot_stamp=now;return elapsed;};
         if(slot.completion&&tl_submit[slot_index].time_since_epoch().count()){uint64_t done{};vkGetSemaphoreCounterValue(device,timeline,&done);tl_us[3]+=tl_since(tl_submit[slot_index]);if(done<slot.completion)++tl_waited;}
-        {auto fence_at=std::chrono::steady_clock::now();wait(slot.completion);tl_us[4]+=tl_since(fence_at);}
+        {auto fence_at=std::chrono::steady_clock::now();render_wait_stage=3;wait(slot.completion);render_wait_stage=0;tl_us[4]+=tl_since(fence_at);}
         // Display bit 64 (HdrRender LowLatencyMode): DX11 sets MaximumFrameLatency 1, so also drain the previous frame.
         if(display_flags&64)wait(slots[(slot_index+1)%slots.size()].completion);
         work.wait_us=slot_take();lap(3); collect();lap(4);sample_light_tiles(slot_index);lap(5);
@@ -1782,7 +1864,9 @@ struct Renderer {uint32_t recipe_generation=1;
             slot.materials.clear();
         }
         target_ready=true;
-        if(!deferred_acquire && acquire_frame_image(slot,true))return 1;
+        start_present_watchdog();{bool next=decoupled_ready();if(next!=frame_decoupled){join_present();decoupled.initialized[0]=decoupled.initialized[1]=false;}frame_decoupled=next;}
+        if(frame_decoupled&&decoupled.thread.joinable()){drain_decoupled(false);uint64_t n=worker_tasks.exchange(0);if(n){const char* names[5]{"worker reuse wait us","worker acquire us","worker record submit us","worker copy wait us","worker present us"};for(int i=0;i<5;++i)record_count(names[i],double(worker_ns[i].exchange(0))/1000.0/double(n));}}
+        if(!frame_decoupled && !deferred_acquire && acquire_frame_image(slot,true))return 1;
         work.acquire_us=slot_take();
         check(vkResetCommandPool(device, slot.pool, 0), "reset frame commands"); work.reset_us=slot_take();lap(6);
         NativeFrame constants{}; constants.frame = frame; constants.light_count = std::min(64u,light_count);
@@ -1822,9 +1906,9 @@ struct Renderer {uint32_t recipe_generation=1;
     void begin_main_rendering(const SevkFrameInfo& frame,bool load=false) {
         auto& slot=slots[slot_index];
         VkExtent2D target = present_extent.width ? present_extent : extent;
-        VkImage image = swapchain ? swap_images[image_index] : offscreen.handle;
-        bool initialized = load || (swapchain ? image_initialized[image_index] : offscreen_initialized);
-        barrier(slot.command, image, load ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : initialized ? (swapchain ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) : VK_IMAGE_LAYOUT_UNDEFINED,
+        VkImage image = frame_decoupled ? decoupled.output[slot_index].handle : swapchain ? swap_images[image_index] : offscreen.handle;
+        bool initialized = load || (frame_decoupled ? decoupled.initialized[slot_index] : swapchain ? image_initialized[image_index] : offscreen_initialized);
+        barrier(slot.command, image, load ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : initialized ? (frame_decoupled ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : swapchain ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) : VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
             swapchain ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT : (initialized ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_NONE), initialized ? VK_ACCESS_2_MEMORY_WRITE_BIT : 0,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
@@ -1832,7 +1916,7 @@ struct Renderer {uint32_t recipe_generation=1;
             VK_IMAGE_ASPECT_DEPTH_BIT, (load||depth_initialized) ? VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT|VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT : VK_PIPELINE_STAGE_2_NONE,
             (load||depth_initialized) ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT|VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0,
             VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
-        VkRenderingAttachmentInfo color{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }; color.imageView = swapchain ? swap_views[image_index] : offscreen.view;
+        VkRenderingAttachmentInfo color{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }; color.imageView = frame_decoupled ? decoupled.output[slot_index].view : swapchain ? swap_views[image_index] : offscreen.view;
         color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; color.loadOp = load ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR; color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         std::memcpy(color.clearValue.color.float32, frame.clear_color, 4 * sizeof(float));
         VkRenderingAttachmentInfo d{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }; d.imageView = depth.view; d.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
@@ -2002,14 +2086,15 @@ struct Renderer {uint32_t recipe_generation=1;
         critical_profile::Scope critical_record(critical_profile::RecordOwner,true);
         if (!recording) { if (suspended) return 1; throw std::runtime_error("end_frame without begin_frame"); }
         {auto settle=std::chrono::steady_clock::now();settle_cells();auto settled=std::chrono::steady_clock::now();release_recording_lock();
-            if(tl_pipelined){launch_lap_us[2]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(settled-settle).count());launch_lap_us[3]+=tl_since(settled);}}
+            if(tl_pipelined){launch_lap_us[2]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(settled-settle).count());launch_lap_us[3]+=tl_since(settled);}
+            record_count("off-lap settle cells us",std::chrono::duration<double,std::micro>(settled-settle).count());record_count("off-lap lock release us",std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-settled).count());}
         // Host guest callbacks run after BeginFrame and before EndFrame.
         // No guest resource has been referenced by this command buffer yet.
         // Close that allocation window before recording the world/guest draws.
         guest.resources_open=false;
         auto& slot = slots[slot_index];
         auto record_at=std::chrono::steady_clock::now();if(tl_pipelined)tl_us[0]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(record_at-tl_launch).count());
-        frame_image_pending=deferred_acquire&&swapchain;
+        frame_image_pending=deferred_acquire&&swapchain&&!frame_decoupled;
         if(tl_pipelined)tl_us[1]+=tl_since(record_at);auto acquired_at=std::chrono::steady_clock::now();
         auto perf_stamp=std::chrono::steady_clock::now();
         auto perf_take=[&](){auto now=std::chrono::steady_clock::now();auto us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(now-perf_stamp).count());perf_stamp=now;return us;};
@@ -2054,7 +2139,7 @@ struct Renderer {uint32_t recipe_generation=1;
             if(!readback_supported) throw std::runtime_error("surface does not support transfer-source capture");
             wait(capture_completion);
             if(!capture.handle) capture=make_buffer(uint64_t(extent.width)*extent.height*(color_format==VK_FORMAT_R16G16B16A16_SFLOAT?8:4),VK_BUFFER_USAGE_TRANSFER_DST_BIT,true);
-            VkImage image=swapchain?swap_images[image_index]:offscreen.handle;
+            VkImage image=frame_decoupled?decoupled.output[slot_index].handle:swapchain?swap_images[image_index]:offscreen.handle;
             barrier(slot.command,image,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_READ_BIT);
             VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={extent.width,extent.height,1};
@@ -2067,10 +2152,12 @@ struct Renderer {uint32_t recipe_generation=1;
             VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};dependency.bufferMemoryBarrierCount=1;dependency.pBufferMemoryBarriers=&host;
             vkCmdPipelineBarrier2(slot.command,&dependency);
         }
-        if (swapchain&&target_ready) barrier(slot.command, swap_images[image_index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_ASPECT_COLOR_BIT,
+        if (frame_decoupled&&target_ready) barrier(slot.command, decoupled.output[slot_index].handle, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+        else if (swapchain&&target_ready) barrier(slot.command, swap_images[image_index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
         if(world.current().queued&&timing_pool){vkCmdWriteTimestamp2(slot.command,VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,timing_pool,slot_index*2+1);timing_valid[slot_index]=true;}
-        frame_mark("frame end");if(profile_label_open){vkCmdEndDebugUtilsLabelEXT(slot.command);profile_label_open=false;}
+        frame_mark("frame end");auto tail_at=std::chrono::steady_clock::now();auto tail=[&](const char* name){auto now=std::chrono::steady_clock::now();record_count(name,std::chrono::duration<double,std::micro>(now-tail_at).count());tail_at=now;};if(profile_label_open){vkCmdEndDebugUtilsLabelEXT(slot.command);profile_label_open=false;}
         check(vkEndCommandBuffer(slot.command), "end frame command"); recording = false; frame_owner = {};
         guest.passes.clear();guest.has_early_owned=guest.has_global_clear=false;tenant_end_frame(); // Frame packets never replay implicitly in a later frame.
         performance.finish_us=perf_take();
@@ -2082,19 +2169,52 @@ struct Renderer {uint32_t recipe_generation=1;
         // Separate submits are not ordered. The frame samples images whose layout
         // transition is in the upload batch, so it waits on that timeline value.
         std::array<VkSemaphoreSubmitInfo,2> waits{}; uint32_t wait_count=0;
-        if(swapchain&&target_ready)waits[wait_count++]=acquired;
+        if(swapchain&&target_ready&&!frame_decoupled)waits[wait_count++]=acquired;
+        // The previous copy out of this slot's output image must finish before the frame overwrites it. A CPU wait,
+        // not a GPU wait-before-signal: the driver's present on the second queue waits for the frame queue to progress,
+        // so a frame blocked on a copy the worker has not submitted yet deadlocked (C1). The copy ran a frame ago.
+        tail("tail end commands us");if(frame_decoupled&&decoupled.slot_value[slot_index]&&decoupled_copied.load(std::memory_order_acquire)<decoupled.slot_value[slot_index]){render_wait_stage=4;VkSemaphoreWaitInfo w{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};w.semaphoreCount=1;w.pSemaphores=&decoupled.timeline;w.pValues=&decoupled.slot_value[slot_index];vkWaitSemaphores(device,&w,UINT64_MAX);render_wait_stage=0;}
         uint64_t upload_wait=0;if(upload_fence && upload_fence<slot.completion){upload_wait=upload_fence;waits[wait_count].sType=VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;waits[wait_count].semaphore=timeline;waits[wait_count].value=upload_wait;waits[wait_count].stageMask=VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;++wait_count;}
         VkSubmitInfo2 submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 }; submit.commandBufferInfoCount = 1; submit.pCommandBufferInfos = &command;
         submit.signalSemaphoreInfoCount = 1; submit.pSignalSemaphoreInfos = signals.data();
         if(wait_count){submit.waitSemaphoreInfoCount=wait_count;submit.pWaitSemaphoreInfos=waits.data();}
-        if (swapchain&&target_ready) { signals[1].semaphore = present_semaphores[image_index];
+        if (swapchain&&target_ready&&!frame_decoupled) { signals[1].semaphore = present_semaphores[image_index];
             signals[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; submit.signalSemaphoreInfoCount = 2; }
-        join_present();VkResult result = vkQueueSubmit2(queue, 1, &submit, VK_NULL_HANDLE);if(tl_pipelined){tl_us[2]+=tl_since(acquired_at);++tl_frames;}tl_submit[slot_index]=std::chrono::steady_clock::now();tl_post_at=tl_submit[slot_index];
+        tail("tail copy wait us");if(!frame_decoupled)join_present();VkResult result = vkQueueSubmit2(queue, 1, &submit, VK_NULL_HANDLE);tail("tail submit us");if(tl_pipelined){tl_us[2]+=tl_since(acquired_at);++tl_frames;}tl_submit[slot_index]=std::chrono::steady_clock::now();tl_post_at=tl_submit[slot_index];
         performance.submit_us=perf_take();
         check_gpu(result, "submit rendered frame"); if(upload_wait)upload_fence=0; ++stats.submitted_frames;critical_finish.submitted=true;
         if(capture_requested) {capture_completion=slot.completion;capture_valid=true;capture_requested=false;}
         depth_initialized = true; if(target_ready){last_image_valid = true; last_image_index = image_index;}
-        if (swapchain&&target_ready) {
+        if (frame_decoupled&&target_ready) {
+            decoupled.initialized[slot_index]=true;uint64_t copy_value=++decoupled.value;decoupled.slot_value[slot_index]=copy_value;
+            uint64_t gate=present_gate&&tl_pipelined?launches.load()+2:0;
+            enqueue_decoupled([this,source=decoupled.output[slot_index].handle,size=decoupled.size,chain=swapchain,frame_value=slot.completion,copy_value,gate]()->PresentResult{
+                uint32_t k=decoupled.ring++%uint32_t(decoupled.commands.size());
+                auto wait_copy=[&](uint64_t value){if(!value)return;VkSemaphoreWaitInfo w{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};w.semaphoreCount=1;w.pSemaphores=&decoupled.timeline;w.pValues=&value;vkWaitSemaphores(device,&w,UINT64_MAX);};
+                uint64_t t0=present_clock();decoupled_stage=1;wait_copy(decoupled.command_done[k]);
+                decoupled_stage=2;uint64_t t1=present_clock();uint32_t index=0;VkResult acquired=vkAcquireNextImageKHR(device,chain,UINT64_MAX,decoupled.acquire[k],VK_NULL_HANDLE,&index);uint64_t t2=present_clock();worker_ns[0]+=t1-t0;worker_ns[1]+=t2-t1;
+                bool ok=acquired==VK_SUCCESS||acquired==VK_SUBOPTIMAL_KHR;VkCommandBuffer cmd=decoupled.commands[k];
+                if(ok){check(vkResetCommandBuffer(cmd,0),"reset present copy");VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;check(vkBeginCommandBuffer(cmd,&begin),"begin present copy");
+                    barrier(cmd,swap_images[index],VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,0,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                    VkImageCopy region{};region.srcSubresource=region.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};region.extent={size.width,size.height,1};
+                    vkCmdCopyImage(cmd,source,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,swap_images[index],VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&region);
+                    barrier(cmd,swap_images[index],VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,VK_IMAGE_ASPECT_COLOR_BIT,VK_PIPELINE_STAGE_2_TRANSFER_BIT,VK_ACCESS_2_TRANSFER_WRITE_BIT,VK_PIPELINE_STAGE_2_NONE,0);
+                    check(vkEndCommandBuffer(cmd),"end present copy");}
+                // The copy waits for the frame; on a failed acquire the submit still signals, so the next frame's wait holds.
+                std::array<VkSemaphoreSubmitInfo,2> waits{};waits[0]={VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};waits[0].semaphore=timeline;waits[0].value=frame_value;waits[0].stageMask=VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                if(ok){waits[1]={VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};waits[1].semaphore=decoupled.acquire[k];waits[1].stageMask=VK_PIPELINE_STAGE_2_TRANSFER_BIT;}
+                std::array<VkSemaphoreSubmitInfo,2> signals{};signals[0]={VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};signals[0].semaphore=decoupled.timeline;signals[0].value=copy_value;signals[0].stageMask=VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                if(ok){signals[1]={VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};signals[1].semaphore=present_semaphores[index];signals[1].stageMask=VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;}
+                VkCommandBufferSubmitInfo command{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};command.commandBuffer=cmd;
+                VkSubmitInfo2 copy{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};copy.waitSemaphoreInfoCount=ok?2u:1u;copy.pWaitSemaphoreInfos=waits.data();copy.commandBufferInfoCount=ok?1u:0u;copy.pCommandBufferInfos=&command;copy.signalSemaphoreInfoCount=ok?2u:1u;copy.pSignalSemaphoreInfos=signals.data();
+                decoupled_stage=3;VkResult submitted=vkQueueSubmit2(present_queue,1,&copy,VK_NULL_HANDLE);decoupled.command_done[k]=copy_value;
+                if(submitted!=VK_SUCCESS){uint64_t now=present_clock();return PresentResult{submitted,now,now};}
+                if(!ok){uint64_t now=present_clock();return PresentResult{acquired,now,now};}
+                // As in the direct path, present only once the copy completed, so the present call stays short.
+                uint64_t t3=present_clock();worker_ns[2]+=t3-t2;decoupled_stage=4;if(present_after_gpu){wait_copy(copy_value);decoupled_copied.store(copy_value,std::memory_order_release);}wait_present_gate(gate);decoupled_stage=5;uint64_t t4=present_clock();worker_ns[3]+=t4-t3;
+                VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};present.waitSemaphoreCount=1;present.pWaitSemaphores=&present_semaphores[index];present.swapchainCount=1;present.pSwapchains=&chain;present.pImageIndices=&index;
+                uint64_t begin=present_clock();VkResult status=vkQueuePresentKHR(present_queue,&present);decoupled_stage=6;worker_ns[4]+=present_clock()-begin;++worker_tasks;if(status==VK_SUCCESS&&acquired==VK_SUBOPTIMAL_KHR)status=VK_SUBOPTIMAL_KHR;return PresentResult{status,begin,present_clock()};});
+        } else if (swapchain&&target_ready) {
             image_initialized[image_index] = true;
             // One immutable task owns the queue until joined before any other
             // queue operation. Per-image semaphore reuse still follows acquire.
@@ -2110,11 +2230,11 @@ struct Renderer {uint32_t recipe_generation=1;
             };
             if(async_present){present_pending=true;present_stage.start([this,submit_present]{present_result=submit_present();});}else accept_present(submit_present());
         } else if(!swapchain) offscreen_initialized = true;
-        performance.present_us=perf_take();tl_post(0);
+        tail("tail present enqueue us");performance.present_us=perf_take();tl_post(0);
         present_generated_frame();tl_post(1);
         fg_note_game();
         fg_publish();tl_post(2);
-        slot_index = (slot_index + 1) % slots.size(); return suspended ? 1 : 0;
+        tail("tail generated and fg us");slot_index = (slot_index + 1) % slots.size(); return suspended ? 1 : 0;
     }
     void remove(uint32_t kind, uint64_t id) {
         if (recording) throw std::runtime_error("resource removal must precede begin_frame");
@@ -2213,6 +2333,9 @@ struct Renderer {uint32_t recipe_generation=1;
 #include "gpu_opaque_resident.inc"
     void cleanup() noexcept {
         critical.detach();
+        try{join_present(false);}catch(...){}stop_decoupled();
+        try{join_cells_emit();}catch(...){}
+        retire_job.join();csm_job.join();csm_copy_pending=false;
         try{cells_join();}catch(...){}
         try{join_present(false);}catch(...){}
         try{end_uploads();}catch(...){}
@@ -2276,6 +2399,7 @@ struct Renderer {uint32_t recipe_generation=1;
             if (texture_layout) vkDestroyDescriptorSetLayout(device, texture_layout, nullptr);
             if (shadow_layout) vkDestroyDescriptorSetLayout(device,shadow_layout,nullptr);
             if (upload_pool) vkDestroyCommandPool(device, upload_pool, nullptr);
+            if(decoupled.pool)vkDestroyCommandPool(device,decoupled.pool,nullptr);decoupled.pool={};decoupled.commands.clear();decoupled.command_done.clear();if(decoupled.timeline)vkDestroySemaphore(device,decoupled.timeline,nullptr);decoupled.timeline={};
             if (timeline) vkDestroySemaphore(device, timeline, nullptr);
             if (allocator) vmaDestroyAllocator(allocator);
             vkDestroyDevice(device, nullptr);
@@ -2304,7 +2428,8 @@ template<class Fn> int32_t call(void* context, Fn&& fn) {
 #if defined(_WIN32)
         if(renderer->pipeline_census){void* frames[3]{};CaptureStackBackTrace(0,3,frames,nullptr);for(void* frame:frames){auto& site=renderer->pipelined_wait_sites[frame];++site.first;site.second+=us;}}
 #endif
-        } renderer->await_recording(lock); renderer->flush_deferred();
+        } renderer->await_recording(lock); renderer->join_cells_emit(); renderer->flush_deferred();
+        renderer->join_cells_emit();
 #if defined(_WIN32)
         if(renderer->pipeline_census){bool presenting=renderer->present_pending&&renderer->present_stage.pending();auto at=std::chrono::steady_clock::now();int32_t result=fn(*renderer);
             uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-at).count());void* frames[4]{};CaptureStackBackTrace(0,4,frames,nullptr);
@@ -2347,6 +2472,7 @@ template<class Fn> int32_t call_scene(void* context, Fn&& fn) {
         }
         renderer->record_cv.wait(lock,ready);
         WorldState::tl_scene_side=true;renderer->scene_lock=&lock;struct Clear{Renderer* r;~Clear(){r->scene_lock=nullptr;WorldState::tl_scene_side=false;}} clear{renderer};
+        renderer->join_cells_emit();
         if(renderer->record_running)renderer->flush_deferred_scene();else{renderer->await_recording(lock);renderer->flush_deferred();}
         return fn(*renderer);
     }
@@ -2509,7 +2635,9 @@ void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) acti
         std::fprintf(f,"]}\n");std::fclose(f);}
     if(r->record_laps.enabled)if(FILE* f=std::fopen(r->record_laps.path.c_str(),"w")){const auto& l=r->record_laps;double frames=double(std::max<uint64_t>(1,l.frames));
         std::fprintf(f,"{\"Frames\":%llu,\"Scope\":\"Recording-thread CPU wall time from each frame mark or lap to the next, per recorded frame.\",\"Laps\":[",(unsigned long long)l.frames);
-        for(size_t i=0;i<l.laps.size();++i)std::fprintf(f,"%s{\"Name\":\"%s\",\"Ms\":%.4f,\"Calls\":%llu}",i?",":"",l.laps[i].first.c_str(),l.laps[i].second.first/frames/1000.0,(unsigned long long)l.laps[i].second.second);
+        for(size_t i=0;i<l.laps.size();++i)std::fprintf(f,"%s{\"Name\":\"%s\",\"Ms\":%.4f,\"Calls\":%llu,\"MCycles\":%.4f}",i?",":"",l.laps[i].first.c_str(),l.laps[i].second.first/frames/1000.0,(unsigned long long)l.laps[i].second.second,i<l.lap_cycles.size()?l.lap_cycles[i].second/frames/1e6:0.0);
+        std::fprintf(f,"],\"Counters\":[");
+        for(size_t i=0;i<l.counters.size();++i)std::fprintf(f,"%s{\"Name\":\"%s\",\"PerFrame\":%.4f,\"Samples\":%llu}",i?",":"",l.counters[i].first.c_str(),l.counters[i].second.first/frames,(unsigned long long)l.counters[i].second.second);
         std::fprintf(f,"]}\n");std::fclose(f);}
     if(const char* path=std::getenv("SE_VULKAN_PIPELINE_REPORT"))if(FILE* f=std::fopen(path,"w")){std::fprintf(f,"{\"PipelinedFrames\":%llu,\"MaskMismatches\":%llu,\"Waits\":%llu,\"WaitUs\":%llu,\"PackingBlocked\":%llu,\"PackingBlockedUs\":%llu,\"PackingWorkerBlocked\":%llu,\"PackingWorkerBlockedUs\":%llu,\"DeferredFlushes\":%llu,\"DeferredCalls\":%llu,\"DeferredUs\":%llu,\"BeginLapUs\":[%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu],\"TimelineFrames\":%llu,\"TimelineUs\":[%llu,%llu,%llu,%llu,%llu],\"FenceNotReady\":%llu,\"WaitFlushes\":%llu,\"WaitFlushUs\":%llu,\"WaitSemaphoreUs\":%llu",(unsigned long long)r->pipelined_frames,(unsigned long long)r->pipelined_mask_mismatches,(unsigned long long)r->pipelined_waits,(unsigned long long)r->pipelined_wait_us,(unsigned long long)r->packing_blocked[0],(unsigned long long)r->packing_blocked_us[0],(unsigned long long)r->packing_blocked[1],(unsigned long long)r->packing_blocked_us[1],(unsigned long long)r->deferred_flushes,(unsigned long long)r->deferred_calls,(unsigned long long)r->deferred_us,(unsigned long long)r->begin_lap_us[0],(unsigned long long)r->begin_lap_us[1],(unsigned long long)r->begin_lap_us[2],(unsigned long long)r->begin_lap_us[3],(unsigned long long)r->begin_lap_us[4],(unsigned long long)r->begin_lap_us[5],(unsigned long long)r->begin_lap_us[6],(unsigned long long)r->begin_lap_us[7],(unsigned long long)r->tl_frames,(unsigned long long)r->tl_us[0],(unsigned long long)r->tl_us[1],(unsigned long long)r->tl_us[2],(unsigned long long)r->tl_us[3],(unsigned long long)r->tl_us[4],(unsigned long long)r->tl_waited,(unsigned long long)r->wait_flushes,(unsigned long long)r->wait_flush_us,(unsigned long long)r->wait_sem_us);
 #if defined(_WIN32)

@@ -669,6 +669,7 @@ VkImageView guest_source(uint64_t id, bool* hdr) {
     // that ID. Updated hosts use the disjoint 0x10..0x12 range above.
     if(id>=0xFFFF000000000009ull && id<=0xFFFF00000000000Bull){auto& target=world.attach[id-0xFFFF000000000009ull];return target.image.view?target.image.view:VK_NULL_HANDLE;}
     if (id == kGuestDisplay) {
+        if (frame_decoupled) return decoupled.output[slot_index].view;
         if (swapchain && !ensure_frame_image()) return VK_NULL_HANDLE;
         if (swapchain && image_index < swap_views.size()) return swap_views[image_index];
         return offscreen.view ? offscreen.view : VK_NULL_HANDLE;

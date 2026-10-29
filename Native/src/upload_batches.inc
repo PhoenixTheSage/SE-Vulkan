@@ -33,7 +33,7 @@ void flush_uploads() {
     else{join_present();check_gpu(vkQueueSubmit2(queue,1,&submit,VK_NULL_HANDLE),"submit batched uploads");}
     upload_fence=slot.completion;++work.upload_batches;batch_command={};upload_index=(upload_index+1)%upload_slots.size();
 }
-void end_uploads(){flush_uploads();batching_uploads=false;}
+void end_uploads(){gap_mark("gap end_uploads start us");flush_uploads();batching_uploads=false;gap_mark("gap end_uploads end us");}
 void cleanup_uploads() noexcept {
     batch_command={};batching_uploads=false;
     for(auto& slot:upload_slots){for(auto& b:slot.pending)destroy_buffer(b);for(auto& b:slot.reusable)destroy_buffer(b);if(slot.pool)vkDestroyCommandPool(device,slot.pool,nullptr);slot={};}

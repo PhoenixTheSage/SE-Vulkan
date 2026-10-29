@@ -898,7 +898,13 @@ namespace ClientPlugin.Rendering.Scene
             bool skinned = a.SkinMatrices != null;
             bool rootMoved = !a.HaveShadowPose || !NearlySame(data.ShadowPose, pose);
             bool wasDynamic=a.DynamicShadow,geometryDirty=data.GeometryDirty;
-            bool dynamic=skinned || rootMoved || geometryDirty;
+            // A moving caster stays in the dynamic overlay until it has been still for ShadowSettleFrames. The game
+            // moves grids at 60 Hz while frames render at about 180 per second, so settling after one still frame
+            // flipped casters between static and dynamic every few frames and rebuilt about 4 frozen spot maps a frame
+            // (C1). The final depth is the same either way: the overlay draws over a copy of the static map.
+            bool moving=skinned || rootMoved || geometryDirty;
+            if(moving)a.ShadowStill=0;else if(wasDynamic)a.ShadowStill++;
+            bool dynamic=moving || (wasDynamic && a.ShadowStill<ShadowSettleFrames);
             data.GeometryDirty=false;if(dynamic!=wasDynamic)W(data).DynamicShadow=dynamic;
             if(wasDynamic!=dynamic)DirtyNativePass(data,appearance:false);
             if (!skinned && !rootMoved && !geometryDirty && !wasDynamic) return;
@@ -915,8 +921,9 @@ namespace ClientPlugin.Rendering.Scene
                 data.ShadowPose = pose; W(data); a.ShadowCenter = bounds.Center; a.ShadowRadius = (float)bounds.HalfExtents.Length(); a.HaveShadowPose = true;
             }
             if(!dynamic && (rootMoved || geometryDirty || wasDynamic))MarkSpots(a.ShadowCenter, a.ShadowRadius, false);
-            if(dynamic)MarkSpots(a.ShadowCenter, a.ShadowRadius, true);
+            if(moving)MarkSpots(a.ShadowCenter, a.ShadowRadius, true);
         }
+        const int ShadowSettleFrames=30;
         void MarkSpots(Vector3D center, float radius, bool dynamic)
         {
             var frame = SideLights;

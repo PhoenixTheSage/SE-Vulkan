@@ -50,15 +50,19 @@ void prepare_pass_gpu(WorldSlot& slot){
     if(opaque_stock.ready)prepare_opaque_stock(slot);cpu_lap("prepare pass streams");
     pass_scene.offsets.clear();pass_scene.materials.clear();if(!pass_ready_now())return;auto& groups=pass_groups();if(groups.empty())return;auto& streams=pass_streams();uint64_t bytes=0;for(auto& stream:streams)bytes+=stream->instances.size();auto& reuse=pass_scene.reuse[slot_index];bool same=pass_material_reuse&&reuse.valid&&reuse.material_revision==slot.material_revision&&reuse.material_epoch==slot.material_epoch&&reuse.mesh_revision==world_mesh_revision&&reuse.keys.size()==groups.size();
     if(same)for(size_t i=0;i<groups.size();++i)if(reuse.keys[i]!=groups[i].key||reuse.kinds[i]!=groups[i].kind){same=false;break;}
-    if(!same)for(auto& group:groups)if(!world.meshes.count(group.key.mesh))throw std::runtime_error("native pass publication lost geometry dependency");if(bytes>256ull*1024*1024)throw std::runtime_error("native pass stream budget");
-    world_buffer(pass_scene.instances[slot_index],bytes,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);world_buffer(pass_scene.objects[slot_index],128,VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);std::memcpy(pass_scene.objects[slot_index].mapped,pass_scene.placeholder.data(),128);check(vmaFlushAllocation(allocator,pass_scene.objects[slot_index].memory,0,128),"flush native pass placeholder");uint32_t cursor=0;
+    // Registration already rejects a missing mesh, so a group can lose its mesh only through a removal, which bumps
+    // world_mesh_revision. The per-group lookups (about 2,900 a frame, C1) run again only after one.
+    if(!same&&world_mesh_revision!=pass_mesh_checked_revision){for(auto& group:groups)if(!world.meshes.count(group.key.mesh))throw std::runtime_error("native pass publication lost geometry dependency");pass_mesh_checked_revision=world_mesh_revision;}if(bytes>256ull*1024*1024)throw std::runtime_error("native pass stream budget");
+    cpu_lap("pass stream buffers");world_buffer(pass_scene.instances[slot_index],bytes,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);world_buffer(pass_scene.objects[slot_index],128,VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);std::memcpy(pass_scene.objects[slot_index].mapped,pass_scene.placeholder.data(),128);check(vmaFlushAllocation(allocator,pass_scene.objects[slot_index].memory,0,128),"flush native pass placeholder");uint32_t cursor=0;
     std::vector<uint32_t> stream_offsets;stream_offsets.reserve(streams.size());for(auto& stream:streams){stream_offsets.push_back(cursor);cursor+=uint32_t(stream->instances.size());}
     // Large frames copy the streams on the pool; every stream lands at the offset computed above.
     auto* stream_base=static_cast<uint8_t*>(pass_scene.instances[slot_index].mapped);
     auto copy_stream=[&](uint32_t i){const auto& data=streams[i]->instances;if(!data.empty())std::memcpy(stream_base+stream_offsets[i],data.data(),data.size());};
-    if(bytes>=256*1024&&streams.size()>1)sevk_jobs::parallel_for(sevk_jobs::Upload,sevk_jobs::Priority::High,4,uint32_t(streams.size()),copy_stream);
+    cpu_lap("pass stream copy");if(bytes>=32*1024&&streams.size()>1)sevk_jobs::parallel_for(sevk_jobs::Upload,sevk_jobs::Priority::High,4,uint32_t(streams.size()),copy_stream);
     else for(uint32_t i=0;i<streams.size();++i)copy_stream(i);
     for(auto& group:groups)pass_scene.offsets.push_back(stream_offsets.at(group.stream->index));
+    record_count("pass stream bytes",double(bytes));record_count("pass streams",double(streams.size()));record_count("pass groups",double(groups.size()));record_count("pass material reuse",same?1.0:0.0);
+    cpu_lap("prepare pass materials");
     // Unchanged groups on an unchanged slot cache reuse last frame's sets (no mesh or material-cache lookups).
     if(same)pass_scene.materials=reuse.materials;
     else{bool all_kept=true;for(auto& group:groups){bool kept=true;pass_scene.materials.push_back(group.kind==native_pass::Kind::Forward?VK_NULL_HANDLE:pass_material(slot,group,&kept));all_kept&=kept;}
