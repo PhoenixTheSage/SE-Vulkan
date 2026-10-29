@@ -675,6 +675,7 @@ namespace ClientPlugin.Rendering.Scene
             profileCullTicks += Stopwatch.GetTimestamp() - cullStarted;
             if (target.WorldReady&&!nativePassActive&&!gpuActive) target.SetSpotRedraw(buildLights.SpotStatic, buildLights.SpotDynamic);
             }
+            LogPlan2Counters();
             FrameProfiler.Deposit(FrameProfiler.Section.ActorCull, profileCullTicks);
             FrameProfiler.Deposit(FrameProfiler.Section.InstancePack, profilePackTicks);
             FrameProfiler.Deposit(FrameProfiler.Section.Materials, profileMaterialTicks);

@@ -51,26 +51,45 @@ struct PendingWorldQueue {bool active{};std::vector<SevkRecipeDraw> draws;uint32
     bool has_old{},has_owners{},has_main{};std::vector<SevkOldPartOrder> old_order;std::vector<uint32_t> owners;std::vector<SevkMainDrawOrder> main_order;} pending_world;
 // Draws in the queued frame, including a deferred intake not yet built.
 size_t queued_draw_count()const{return pending_world.active?pending_world.draws.size():world.current().draws.size();}
+// Plan 2 B3. Every check runs first, serially, over the compact recipe_brief table (the same checks, in the same
+// per-draw order, as before; an invalid recipe is revalidated here). Only then are the draws built: written in
+// place into the zeroed vector (no temporary and second copy of each ~180-byte WorldDraw), and with
+// SE_VULKAN_PARALLEL_RECIPES=1 in disjoint ranges on the job pool for large frames.
+bool parallel_recipes=false;
 void build_world_recipe_draws(const SevkRecipeDraw* draws,uint32_t count,uint32_t object_bytes,uint32_t instance_bytes){
     auto queued_at=std::chrono::steady_clock::now();
-    world.current().draws.resize(count);uint64_t object_cursor=0;
+    uint64_t object_cursor=0;
     for(uint32_t i=0;i<count;i++){
         const auto& d=draws[i];uint32_t index=uint32_t(d.recipe)-1,generation=uint32_t(d.recipe>>32);
         if(index>=world.recipes.size() || !generation || d.reserved || !d.instance_count || d.instance_count>1000000)throw std::runtime_error("invalid world recipe handle/count");
-        auto& recipe=world.recipes[index];if(!recipe.alive || recipe.generation!=generation)throw std::runtime_error("stale world recipe generation");
-        validate_world_recipe(recipe);const auto& packet=recipe.packet;bool instanced=world.pipelines[packet.pipeline].type>=2;
-        if(world_blended_decal(packet.pipeline) && (d.flags&(512u|16384u))!=(512u|16384u))throw std::runtime_error("mesh decal recipe must exclude depth and forward passes");
+        if(index>=world.recipe_brief.size())throw std::runtime_error("stale world recipe generation");
+        const auto* brief=&world.recipe_brief[index];if(!brief->alive || brief->generation!=generation)throw std::runtime_error("stale world recipe generation");
+        if(!brief->valid){validate_world_recipe(world.recipes[index]);brief=&world.recipe_brief[index];}bool instanced=brief->instanced;
+        if(brief->decal && (d.flags&(512u|16384u))!=(512u|16384u))throw std::runtime_error("mesh decal recipe must exclude depth and forward passes");
         if(!instanced && d.instance_count!=1)throw std::runtime_error("rigid/skinned recipe instance count");
-        if(d.object_offset!=object_cursor || d.object_offset%world.alignment || uint64_t(d.object_offset)+packet.object_bytes>object_bytes)throw std::runtime_error("invalid recipe object span");
-        object_cursor+=world_align(packet.object_bytes);
-        WorldDraw own{};own.packet=packet;own.packet.instance_count=d.instance_count;own.packet.flags=d.flags;own.packet.reserved=d.cascade_mask;std::memcpy(own.packet.origin,d.origin,12);own.packet.radius=d.radius;own.recipe=&recipe;own.recipe_generation=generation;own.geometry=recipe.geometry;own.object_at=d.object_offset;own.object_n=packet.object_bytes;
-        if(instanced){uint64_t bytes=uint64_t(d.instance_count)*64;if(d.instance_offset%64 || uint64_t(d.instance_offset)+bytes>instance_bytes)throw std::runtime_error("invalid recipe instance span");own.instance_at=d.instance_offset;own.instance_n=uint32_t(bytes);}
+        if(d.object_offset!=object_cursor || d.object_offset%world.alignment || uint64_t(d.object_offset)+brief->object_bytes>object_bytes)throw std::runtime_error("invalid recipe object span");
+        object_cursor+=world_align(brief->object_bytes);
+        if(instanced){uint64_t bytes=uint64_t(d.instance_count)*64;if(d.instance_offset%64 || uint64_t(d.instance_offset)+bytes>instance_bytes)throw std::runtime_error("invalid recipe instance span");}
         else if(d.instance_offset!=UINT32_MAX)throw std::runtime_error("noninstanced recipe stream must be absent");
-        world.current().draws[i]=own;++world.current().validation_stats.draws;
     }
     if(object_cursor!=object_bytes)throw std::runtime_error("recipe object blob size mismatch");
+    auto& out=world.current().draws;out.clear();out.resize(count);
+    auto build=[&](uint32_t begin,uint32_t end){
+        for(uint32_t i=begin;i<end;i++){
+            const auto& d=draws[i];uint32_t index=uint32_t(d.recipe)-1;auto& recipe=world.recipes[index];const auto& packet=recipe.packet;auto& own=out[i];
+            own.packet=packet;own.packet.instance_count=d.instance_count;own.packet.flags=d.flags;own.packet.reserved=d.cascade_mask;std::memcpy(own.packet.origin,d.origin,12);own.packet.radius=d.radius;
+            own.recipe=&recipe;own.recipe_generation=uint32_t(d.recipe>>32);own.geometry=recipe.geometry;own.object_at=d.object_offset;own.object_n=packet.object_bytes;
+            if(world_recipe_instanced(index)){own.instance_at=d.instance_offset;own.instance_n=uint32_t(uint64_t(d.instance_count)*64);}
+        }
+    };
+    if(parallel_recipes && count>=2048){
+        uint32_t workers=std::min(4u,sevk_jobs::shared().worker_count()+1);world.current().queue_work.enabled=1;world.current().queue_work.workers=workers;
+        sevk_jobs::parallel_for(sevk_jobs::QueueValidate,sevk_jobs::Priority::High,workers,workers,[&](uint32_t worker){build(count*worker/workers,count*(worker+1)/workers);});
+    }else build(0,count);
+    world.current().validation_stats.draws+=count;
     world.current().queue_work.validation_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-queued_at).count());
 }
+bool world_recipe_instanced(uint32_t index)const{return world.recipe_brief[index].instanced;}
 void settle_world(){
     if(!pending_world.active)return;auto& q=pending_world;q.active=false;
     build_world_recipe_draws(q.draws.data(),uint32_t(q.draws.size()),q.object_bytes,q.instance_bytes);
@@ -78,6 +97,15 @@ void settle_world(){
     if(q.has_owners)apply_world_draw_owners(q.owners.data(),uint32_t(q.owners.size()));
     if(q.has_main)apply_world_main_order(q.main_order.data(),uint32_t(q.main_order.size()));
     q.has_old=q.has_owners=q.has_main=false;
+}
+// The arena lives in the submission the next queue will take (begin_next_submission's choice: the one not being
+// recorded). Recording holds the other one, so writing it while recording(N) runs is safe.
+int32_t arena_submission=-1;uint32_t arena_bytes=0;uint64_t arena_hits=0,arena_misses=0;
+uint8_t* world_object_arena(uint32_t bytes){
+    if(frame_open() || !bytes || bytes>256u*1024*1024)throw std::runtime_error("world object arena contract mismatch");
+    uint32_t target=overlap_from_caller()?uint32_t(world.recording_submission)^1u:world.active_submission^1u;
+    if(world.recording_submission>=0 && target==uint32_t(world.recording_submission))throw std::runtime_error("world object arena would alias the recording submission");
+    auto& objects=world.submissions[target].draw_objects;objects.resize(bytes);arena_submission=int32_t(target);arena_bytes=bytes;return objects.data();
 }
 void queue_world_recipes(const void* frame,uint32_t frame_bytes,const float* projection,const float* inverse,const SevkRecipeDraw* draws,uint32_t count,const uint8_t* objects,uint32_t object_bytes,const uint8_t* instances,uint32_t instance_bytes){settle_cells();
     critical_profile::Scope critical_queue(critical_profile::QueueOwner,true);
@@ -109,7 +137,12 @@ void queue_world_recipes(const void* frame,uint32_t frame_bytes,const float* pro
     if(deferred_world_queue&&cursor!=object_bytes)throw std::runtime_error("recipe object blob size mismatch");
     if(deferred_world_queue){auto& q=pending_world;q.draws.assign(draws,draws+count);q.object_bytes=object_bytes;q.instance_bytes=instance_bytes;q.has_old=q.has_owners=q.has_main=false;q.active=true;world.current().draws.clear();}
     else build_world_recipe_draws(draws,count,object_bytes,instance_bytes);
-    auto copy_at=std::chrono::steady_clock::now();world.current().draw_objects.clear();world.current().instances.clear();if(object_bytes)world.current().draw_objects.assign(objects,objects+object_bytes);if(instance_bytes)world.current().instances.data.assign(instances,instances+instance_bytes);
+    auto copy_at=std::chrono::steady_clock::now();
+    bool in_arena=arena_submission>=0 && objects==world.submissions[arena_submission].draw_objects.data() && object_bytes==arena_bytes;
+    if(in_arena && &world.current()==&world.submissions[arena_submission])++arena_hits; // already in place
+    else if(in_arena){++arena_misses;std::vector<uint8_t> moved(objects,objects+object_bytes);world.current().draw_objects.swap(moved);}
+    else{world.current().draw_objects.clear();if(object_bytes)world.current().draw_objects.assign(objects,objects+object_bytes);}
+    arena_submission=-1;arena_bytes=0;world.current().instances.clear();if(instance_bytes)world.current().instances.data.assign(instances,instances+instance_bytes);
     world.current().queue_work.copy_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-copy_at).count());world.current().queue_work.draws=count;
     std::memcpy(world.current().frame.data(),frame,1280);std::memcpy(world.current().projection.data(),projection,64);std::memcpy(world.current().inverse.data(),inverse,64);world.current().queued=true;
     world.current().queue_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-queued_at).count());world.current().recipe_stats.geometry_reused=count;

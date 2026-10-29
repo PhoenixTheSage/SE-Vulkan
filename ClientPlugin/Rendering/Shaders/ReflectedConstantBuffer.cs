@@ -45,6 +45,21 @@ public sealed class ReflectedConstantBuffer
         Array.Clear(rented, 0, size);
         return rented;
     }
+    // Many blocks under one lock (plan 2 D3: the frame's ~3,000 world packets are recycled at once).
+    internal static void RecycleMany(byte[][] blocks, int count)
+    {
+        lock (Pool)
+        {
+            Stack<byte[]> stack = null; int length = -1;
+            for (int i = 0; i < count; i++)
+            {
+                byte[] bytes = blocks[i]; blocks[i] = null;
+                if (bytes == null || bytes.Length == 0) continue;
+                if (bytes.Length != length) { length = bytes.Length; if (!Pool.TryGetValue(length, out stack)) Pool.Add(length, stack = new Stack<byte[]>()); }
+                if (stack.Count < 16384) stack.Push(bytes);
+            }
+        }
+    }
     public static void Recycle(byte[] bytes)
     {
         if (bytes == null || bytes.Length == 0) return;
@@ -61,6 +76,13 @@ public sealed class ReflectedConstantBuffer
         Member member = Locate(path);
         if (count * 4 != member.Size || !member.Type.StartsWith("float32", StringComparison.Ordinal)
             || member.Offset < 0 || member.Offset > Bytes.Length - member.Size)
+            throw new InvalidDataException("Reflected constant type/size mismatch: " + path);
+        return member.Offset;
+    }
+    internal int IntegerOffsetOf(string path, bool unsigned)
+    {
+        Member member = Locate(path);
+        if (member.Size != 4 || (unsigned ? member.Type != "uint32" : member.Type != "int32") || member.Offset < 0 || member.Offset > Bytes.Length - 4)
             throw new InvalidDataException("Reflected constant type/size mismatch: " + path);
         return member.Offset;
     }

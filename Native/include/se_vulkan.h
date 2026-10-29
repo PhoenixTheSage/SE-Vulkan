@@ -322,10 +322,18 @@ SEVK_API int32_t SEVK_CALL sevk_world_main_owners(void* ctx,const SevkMainOwnerO
 SEVK_API int32_t SEVK_CALL sevk_world_resident_main_owners(void* ctx,const SevkMainOwnerOrder* set,uint32_t set_count,const uint32_t* removed,uint32_t removed_count);
 SEVK_API int32_t SEVK_CALL sevk_get_model_group_stats(void* ctx,SevkModelGroupStats* stats);
 SEVK_API int32_t SEVK_CALL sevk_register_world_recipe(void* context,const SevkWorldRecipe* recipe,uint64_t* handle);
+/* Plan 2 B4: the object blob of the next world queue, owned by native. The caller writes object_bytes of
+   constants at *objects and passes that same pointer to sevk_queue_world_recipes, which then skips its copy.
+   Valid until that queue call; any other world queue in between invalidates it (the queue then copies). */
+SEVK_API int32_t SEVK_CALL sevk_world_object_arena(void* context,uint32_t object_bytes,uint8_t** objects);
 SEVK_API int32_t SEVK_CALL sevk_queue_world_recipes(void* context,const void* frame,uint32_t frame_bytes,const float* projection,const float* inverse,const SevkRecipeDraw* draws,uint32_t count,const uint8_t* objects,uint32_t object_bytes,const uint8_t* instances,uint32_t instance_bytes);
 SEVK_API int32_t SEVK_CALL sevk_get_recipe_stats(void* context,SevkRecipeStats* stats);
 typedef struct SevkQueueWorkStats {uint32_t size,abi_version,enabled,workers,draws,validation_us,copy_us,reserved;} SevkQueueWorkStats;
 SEVK_API int32_t SEVK_CALL sevk_set_parallel_world_queue(void* context,uint32_t enabled);
+/* Plan 2 B3: build large recipe frames' draws on the job pool (SE_VULKAN_PARALLEL_RECIPES=1 sets it at start). */
+SEVK_API int32_t SEVK_CALL sevk_set_parallel_recipes(void* context,uint32_t enabled);
+/* Plan 2 counters since start: [0] arena hits, [1] arena misses, [2] early cell hits, [3] early cell misses. */
+SEVK_API int32_t SEVK_CALL sevk_get_plan2_counters(void* context,uint64_t* counters,uint32_t count);
 /* Off-critical-path native work: async pass packing and deferred OLD cell emission. Output is unchanged. */
 SEVK_API int32_t SEVK_CALL sevk_set_async_policy(void* context,uint32_t packing,uint32_t cells);
 SEVK_API int32_t SEVK_CALL sevk_get_queue_work_stats(void* context,SevkQueueWorkStats* stats);

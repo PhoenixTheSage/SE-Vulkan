@@ -6,7 +6,7 @@ using VRageRender.Messages;
 
 namespace ClientPlugin.Rendering.Shaders;
 
-public static class WorldConstants
+public static partial class WorldConstants
 {
     // Member paths are built once per (prefix, name): Frame runs for the main view and every probe face.
     static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Prefix,string Name),string> MemberPaths=new();
@@ -16,7 +16,9 @@ public static class WorldConstants
         MyRenderQualityEnum.LOW=>256,MyRenderQualityEnum.NORMAL=>512,
         MyRenderQualityEnum.HIGH=>2048,MyRenderQualityEnum.EXTREME=>4096,
         _=>throw new ArgumentOutOfRangeException(nameof(quality))};
-    public static byte[] Frame(ShaderMetadata layout,MatrixD view,MatrixD projection,int width,int height,MyEnvironmentLightData light,float emission=1,MatrixD? background=null,MyRenderFogSettings? fog=null,float time=0,float delta=0,MyRenderSettings? renderSettings=null,Vector3? cameraDelta=null,MyPostprocessSettings? postprocess=null,bool specularProbes=false,float renderFraction=1,MyTextureDebugMultipliers? textureMultipliers=null)
+    // Reference builder: resolves every member by path and reads the post and texture settings by reflection.
+    // FrameWriter writes the same bytes; SE_VULKAN_FRAME_CONSTANTS_VERIFY=1 compares the two on every call.
+    internal static byte[] FrameReflected(ShaderMetadata layout,MatrixD view,MatrixD projection,int width,int height,MyEnvironmentLightData light,float emission=1,MatrixD? background=null,MyRenderFogSettings? fog=null,float time=0,float delta=0,MyRenderSettings? renderSettings=null,Vector3? cameraDelta=null,MyPostprocessSettings? postprocess=null,bool specularProbes=false,float renderFraction=1,MyTextureDebugMultipliers? textureMultipliers=null)
     {
         var result=new ReflectedConstantBuffer(layout,"Frame");
         var matrix=matrixScratch??=new float[16];

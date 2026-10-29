@@ -21,6 +21,13 @@ public sealed partial class VulkanScene
         public byte[] Template;public WorldConstants.MatrixRows Rows;public int BoneOffset;
         public Matrix[] Source;public readonly float[] Palette=new float[60*16];
     }
+    // Plan 2 gate toggle: the world queue's one-copy arena (B4) and parallel recipe build (B3) together, for the
+    // in-process lighting lane. Reads the arena flag; writing sets both.
+    public bool QueueTrimsEnabled {get=>backend.WorldArenaEnabled;set{backend.WorldArenaEnabled=value;backend.SetParallelRecipes(value);}}
+    // SE_VULKAN_PLAN2_COUNTERS=1 logs the arena and early cell hit counters every 600 Build frames.
+    static readonly bool Plan2CountersEnabled=System.Environment.GetEnvironmentVariable("SE_VULKAN_PLAN2_COUNTERS")=="1";
+    long plan2CountersFrame;
+    void LogPlan2Counters(){if(!Plan2CountersEnabled||FrameCounter-plan2CountersFrame<600)return;plan2CountersFrame=FrameCounter;var c=backend.GetPlan2Counters();if(c!=null)VRage.Utils.MyLog.Default?.WriteLine("Vulkan plan 2 counters: arena hits "+c[0]+" misses "+c[1]+", early cells hits "+c[2]+" misses "+c[3]+".");}
     public bool SkinConstantsCacheEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_SKIN_CONSTANTS_CACHE")=="1";
     // Byte-identical to WorldConstants.Object(layout,world,tint,hsv,emissive,actor.LodAlpha,palette,actor.Dithering,pooled:true,actor.RenderLod).
     unsafe byte[] SkinConstants(ActorData actor,int ordinal,VulkanModelPart part,VulkanSkinPart skin,ShaderMetadata layout,MatrixD world,Vector3 tint,Vector3 hsv,float emissive)

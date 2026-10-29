@@ -132,16 +132,26 @@ public sealed partial class VulkanScene
     }
     // Frame decision after native pass publication; group visibility uses the
     // same managed occlusion owners as the traversal and the native pass.
-    unsafe void PublishCells()
+    // Plan 2 A2 (SE_VULKAN_EARLY_CELL_PREPARE=1): start the native cell preparation with the early pass
+    // preparation, so it overlaps voxels and lighting setup. PublishCells prepares with the frame it builds then;
+    // native reuses the early result only when the two frames are byte-identical and no cell changed since.
+    public bool EarlyCellPrepareEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_EARLY_CELL_PREPARE")=="1";
+    public void BeginCellPrepare(){if(!EarlyCellPrepareEnabled||!cellsActive||ownedCells==0)return;var frame=CellFrame();backend.PrepareCellsAsync(ref frame);}
+    unsafe NativeCellFrame CellFrame()
     {
-        if(!cellsActive||ownedCells==0)return;
-        using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CellPublish);
         var frame=new NativeCellFrame{Flags=(NewActorViewsEnabled?1u:0u)|(StockFarCascadesEnabled?2u:0u)|(actorLodSettings.Global.EnableLodSelection?4u:0u)|(actorLodSettings.Global.IsUpdateEnabled?8u:0u)};
         var camera=FrameView.CameraPosition;frame.Camera[0]=camera.X;frame.Camera[1]=camera.Y;frame.Camera[2]=camera.Z;
         for(int i=0;i<6;i++){var plane=frustum[i];frame.MainPlanes[i*4]=plane.Normal.X;frame.MainPlanes[i*4+1]=plane.Normal.Y;frame.MainPlanes[i*4+2]=plane.Normal.Z;frame.MainPlanes[i*4+3]=plane.D;}
         frame.ProbeDistance=ProbeDrawDistance;frame.ShadowDistance=ShadowDrawDistance;ShadowSystem.WriteCellCascades(&frame.C0);
         var global=actorLodSettings.Global;frame.Coefficient=lodFov>0?(float)(Math.Tan(lodFov*.5)/Math.Tan(70*Math.PI/360))*1080/Math.Max(1,backend.PresentationHeight):1;frame.Delta=FrameView.LastFrameDelta;
         frame.MaximumSeconds=global.MaxTransitionInSeconds;frame.DistanceAdd=global.ObjectDistanceAdd;frame.DistanceMult=global.ObjectDistanceMult;frame.Selection=global.LodSelection;frame.MinimumLod=actorLodSettings.GBuffer.MinLod;frame.Shift=actorLodSettings.GBuffer.LodShift;
+        return frame;
+    }
+    unsafe void PublishCells()
+    {
+        if(!cellsActive||ownedCells==0)return;
+        using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CellPublish);
+        var frame=CellFrame();
         backend.PrepareCells(ref frame);bool pending=true;
         try{
             var prepared=backend.GetCellPreparation();

@@ -52,6 +52,13 @@ public sealed partial class NativeBackend
     }
     public unsafe void UpdateCellPoses(ulong[] handles,NativeCellPose[] poses,int count){fixed(ulong* h=handles)fixed(NativeCellPose* p=poses)Check(CellSymbol(ref cellsPoses,"sevk_cells_update_poses")(context,(IntPtr)h,(IntPtr)p,(uint)count),context);}
     public NativeCellLod RemoveCell(ulong handle){Check(CellSymbol(ref cellsRemove,"sevk_cells_remove")(context,handle,out var lod),context);return lod;}
+    CellsPrepareFn cellsPrepareAsync;bool cellsPrepareAsyncMissing;
+    // Plan 2 A2: the same preparation on a native background job; PrepareCells reuses it when its frame is identical.
+    public bool PrepareCellsAsync(ref NativeCellFrame frame){
+        if(cellsPrepareAsyncMissing)return false;
+        try{CellSymbol(ref cellsPrepareAsync,"sevk_cells_prepare_async");}catch(Exception){cellsPrepareAsyncMissing=true;return false;}
+        frame.Size=2000;Check(cellsPrepareAsync(context,ref frame),context);return true;
+    }
     public void PrepareCells(ref NativeCellFrame frame){CellEmissionPending=false;frame.Size=2000;Check(CellSymbol(ref cellsPrepare,"sevk_cells_prepare")(context,ref frame),context);}
     NativeCellQuery[] cellQueries=Array.Empty<NativeCellQuery>();uint[] cellVisible=Array.Empty<uint>();NativeCellChange[] cellChanges=Array.Empty<NativeCellChange>();
     public unsafe (NativeCellQuery[] Queries,int QueryCount,uint[] Visible,int VisibleCount,NativeCellChange[] Changes,int ChangeCount) GetCellPreparation()

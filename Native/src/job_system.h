@@ -28,6 +28,8 @@
 // Stage threads, outside the cap.
 #ifdef _WIN32
 extern "C" __declspec(dllimport) int __stdcall SetThreadPriority(void* thread,int priority);
+extern "C" __declspec(dllimport) unsigned long __stdcall SetThreadIdealProcessor(void* thread,unsigned long processor);
+extern "C" __declspec(dllimport) unsigned long long __stdcall SetThreadAffinityMask(void* thread,unsigned long long mask);
 #endif
 namespace sevk_jobs {
 // OS priority for pool workers (SE_VULKAN_JOB_PRIORITY): unset or "normal"
@@ -39,6 +41,25 @@ inline void raise_worker_priority(std::thread& thread,int priority){
     if(priority>0)SetThreadPriority(thread.native_handle(),priority);
 #else
     (void)thread;(void)priority;
+#endif
+}
+// Plan 2 D1, thread placement for the topology experiment (measurement only; unset changes nothing).
+// "<cpu>" sets the thread's ideal processor; "<cpu>!" pins it to that logical CPU (processor group 0).
+inline void place_thread(std::thread& thread,const char* env){
+#ifdef _WIN32
+    const char* value=std::getenv(env);if(!value||!*value)return;char* end=nullptr;unsigned long cpu=std::strtoul(value,&end,10);if(end==value||cpu>=64)return;
+    if(*end=='!')SetThreadAffinityMask(thread.native_handle(),1ull<<cpu);else SetThreadIdealProcessor(thread.native_handle(),cpu);
+#else
+    (void)thread;(void)env;
+#endif
+}
+// SE_VULKAN_JOB_AFFINITY=<hex mask>: pins every pool worker to those logical CPUs (group 0), e.g. to keep them off
+// the build and recording threads' cores.
+inline void place_worker(std::thread& thread){
+#ifdef _WIN32
+    const char* value=std::getenv("SE_VULKAN_JOB_AFFINITY");if(!value||!*value)return;unsigned long long mask=std::strtoull(value,nullptr,16);if(mask)SetThreadAffinityMask(thread.native_handle(),mask);
+#else
+    (void)thread;
 #endif
 }
 enum class Priority:uint8_t {High,Normal};
@@ -113,7 +134,7 @@ class System {
         execute(task,false);}}
 public:
     explicit System(uint32_t workers){stats.workers=workers;
-        try{int os=worker_os_priority();for(uint32_t i=0;i<workers;++i){threads.emplace_back([this]{worker();});raise_worker_priority(threads.back(),os);}}catch(...){stop();throw;}}
+        try{int os=worker_os_priority();for(uint32_t i=0;i<workers;++i){threads.emplace_back([this]{worker();});raise_worker_priority(threads.back(),os);place_worker(threads.back());}}catch(...){stop();throw;}}
     System(const System&)=delete;System& operator=(const System&)=delete;
     ~System(){stop();}
     void stop(){{std::lock_guard lock(mutex);stopping=true;}work_ready.notify_all();for(auto& thread:threads)if(thread.joinable())thread.join();threads.clear();}
@@ -190,6 +211,7 @@ class Stage {
 public:
     Stage(){thread=std::thread([this]{worker();});shared().stage_started();}
     Stage(const Stage&)=delete;Stage& operator=(const Stage&)=delete;
+    void place(const char* env){place_thread(thread,env);}
     ~Stage(){{std::lock_guard lock(mutex);stopping=true;}ready.notify_all();if(thread.joinable())thread.join();shared().stage_stopped();}
     bool pending(){std::lock_guard lock(mutex);return busy;}
     void start(std::function<void()> fn){

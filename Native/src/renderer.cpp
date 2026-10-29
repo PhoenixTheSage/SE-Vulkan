@@ -253,7 +253,10 @@ struct EnvironmentState {
 };
 struct RecipeDependency {uint32_t kind;uint64_t id;bool operator==(const RecipeDependency& b)const{return kind==b.kind&&id==b.id;}};
 struct RecipeDependencyHash {size_t operator()(const RecipeDependency& k)const noexcept{return std::hash<uint64_t>{}(k.id)^(size_t(k.kind)*0x9e3779b9u);}};
-struct WorldRecipe {uint32_t index=UINT32_MAX;std::vector<RecipeDependency> dependencies;SevkWorldDraw packet{};Mesh* geometry{};uint32_t generation{};bool alive{},valid{};uint64_t arrays[3]{},random{};std::array<VkDescriptorSet,2> materials{};std::array<uint64_t,2> material_epochs{};};
+struct WorldRecipe {uint32_t index=UINT32_MAX;std::vector<RecipeDependency> dependencies;SevkWorldDraw packet{};Mesh* geometry{};uint32_t generation{};bool alive{},valid{};uint64_t arrays[3]{},random{};
+    // Plan 2 D2: the recording thread writes the material cache per draw while Build reads packet and geometry for
+    // the next frame's draws; its own cache line keeps those writes from invalidating the lines Build reads.
+    alignas(64) std::array<VkDescriptorSet,2> materials{};std::array<uint64_t,2> material_epochs{};};
 struct ModelPart {WorldRecipe* recipe{};uint32_t generation{};std::vector<uint8_t> constants;uint32_t view_flags{};SevkOldPartOrder old_order{};};
 struct ModelDefinition {uint32_t generation{};std::vector<ModelPart> parts;};
 struct ModelGroupKey {uint64_t model;uint32_t flags,cascades,cell;int32_t x,y,z;uint32_t main_order{};bool operator==(const ModelGroupKey&)const=default;};
@@ -287,7 +290,9 @@ struct LightTileState {
 };
 // One published submission stays immutable while the next queue fills the other.
 // Queue still refuses to run during recording, so the published slot cannot move under a recorder.
-struct WorldSubmission {
+// Plan 2 D2: the two submissions sit side by side; recording bumps one's counters per draw while Build queues the
+// other, so each starts on its own cache line.
+struct alignas(64) WorldSubmission {
     std::unordered_map<uint32_t,uint32_t> main_owner_orders;
     uint32_t queue_us{};
     bool queued{};
@@ -634,7 +639,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if(present_flow.last_completed_ns)present_flow.total_interval_ns+=value.end_ns-present_flow.last_completed_ns;
         present_flow.last_completed_ns=value.end_ns;present_flow.completed_calls++;present_flow.result=uint32_t(value.result);
         if(value.result==VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT){exclusive_held=false;return;}
-        if(value.result==VK_ERROR_OUT_OF_DATE_KHR){surface_dirty=true;}
+        if(value.result==VK_ERROR_OUT_OF_DATE_KHR){surface_dirty=true;return;}
         if(value.result==VK_SUBOPTIMAL_KHR)surface_poll_due=true;
         else if(value.result!=VK_SUCCESS && value.result!=VK_SUBOPTIMAL_KHR && propagate)check_gpu(value.result,"present rendered frame");
         if(value.result==VK_SUCCESS||value.result==VK_SUBOPTIMAL_KHR)++stats.presented_frames;
@@ -989,6 +994,8 @@ struct Renderer {uint32_t recipe_generation=1;
         }
         const char* marker_env=std::getenv("SE_VULKAN_PROFILE_MARKERS");profile_markers=marker_env && std::strcmp(marker_env,"1")==0;
         if(const char* world_queue=std::getenv("SE_VULKAN_DEFERRED_WORLD_QUEUE");world_queue&&std::strcmp(world_queue,"1")==0)deferred_world_queue=true;
+        record_stage.place("SE_VULKAN_STAGE_CPU");
+        if(const char* recipes=std::getenv("SE_VULKAN_PARALLEL_RECIPES");recipes&&std::strcmp(recipes,"1")==0)parallel_recipes=true;
         if(const char* cell_publish=std::getenv("SE_VULKAN_DEFERRED_CELL_PUBLISH");cell_publish&&std::strcmp(cell_publish,"1")==0)deferred_cell_publish=true;
         if(const char* pass_spots=std::getenv("SE_VULKAN_PARALLEL_PASS_SPOTS");pass_spots&&std::strcmp(pass_spots,"0")==0)parallel_pass_spots=false;
         if(const char* reuse=std::getenv("SE_VULKAN_OFFSCREEN_REUSE");reuse&&std::strcmp(reuse,"0")==0)offscreen_reuse=false;
@@ -2206,6 +2213,7 @@ struct Renderer {uint32_t recipe_generation=1;
 #include "gpu_opaque_resident.inc"
     void cleanup() noexcept {
         critical.detach();
+        try{cells_join();}catch(...){}
         try{join_present(false);}catch(...){}
         try{end_uploads();}catch(...){}
         if (device) {
@@ -2554,8 +2562,11 @@ int32_t SEVK_CALL sevk_get_work_stats(void* ctx,SevkWorkStats* stats){if(!stats 
 int32_t SEVK_CALL sevk_get_performance_stats(void* ctx,SevkPerformanceStats* stats){return call(ctx,[&](Renderer& r){if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("performance stats ABI mismatch");*stats=r.performance;return 0;});}
 int32_t SEVK_CALL sevk_set_texture_validation_cache(void* ctx,uint32_t enabled){return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("queue policy cannot change during recording");r.world.texture_validation_cache=enabled!=0;return 0;});}
 int32_t SEVK_CALL sevk_set_async_policy(void* ctx,uint32_t packing,uint32_t cells){return call(ctx,[&](Renderer& r){if(r.recording||packing>1||cells>1)throw std::runtime_error("invalid async policy");r.pass_scene.scene.set_async_packing(packing!=0);r.settle_cells();r.deferred_cell_emission=cells!=0;return 0;});}
+int32_t SEVK_CALL sevk_get_plan2_counters(void* ctx,uint64_t* counters,uint32_t count){if(!counters||count<4)return -1;return call(ctx,[&](Renderer& r){counters[0]=r.arena_hits;counters[1]=r.arena_misses;counters[2]=r.cells_async_hits;counters[3]=r.cells_async_misses;return 0;});}
+int32_t SEVK_CALL sevk_set_parallel_recipes(void* ctx,uint32_t enabled){return call(ctx,[&](Renderer& r){r.settle_cells();r.parallel_recipes=enabled!=0;return 0;});}
 int32_t SEVK_CALL sevk_set_parallel_world_queue(void* ctx,uint32_t enabled){return call(ctx,[&](Renderer& r){if(r.recording)throw std::runtime_error("queue policy cannot change during recording");r.world.parallel_queue=enabled!=0;return 0;});}
 int32_t SEVK_CALL sevk_register_world_recipe(void* ctx,const SevkWorldRecipe* recipe,uint64_t* handle){return call(ctx,[&](Renderer& r){if(!recipe || !handle)throw std::runtime_error("missing recipe/handle");*handle=r.register_world_recipe(*recipe);return 0;});}
+int32_t SEVK_CALL sevk_world_object_arena(void* ctx,uint32_t bytes,uint8_t** objects){if(!objects)return -1;*objects=nullptr;return call_scene(ctx,[&](Renderer& r){*objects=r.world_object_arena(bytes);return 0;});}
 int32_t SEVK_CALL sevk_queue_world_recipes(void* ctx,const void* frame,uint32_t fb,const float* projection,const float* inverse,const SevkRecipeDraw* draws,uint32_t count,const uint8_t* objects,uint32_t object_bytes,const uint8_t* instances,uint32_t instance_bytes){return call_scene(ctx,[&](Renderer& r){r.queue_world_recipes(frame,fb,projection,inverse,draws,count,objects,object_bytes,instances,instance_bytes);return 0;});}
 int32_t SEVK_CALL sevk_register_model(void* ctx,const SevkModelPart* parts,uint32_t count,const uint8_t* objects,uint32_t bytes,uint64_t* handle){return call(ctx,[&](Renderer& r){if(!handle)throw std::runtime_error("model handle output missing");*handle=r.register_model(parts,count,objects,bytes);return 0;});}
 int32_t SEVK_CALL sevk_register_model_ordered(void* ctx,const SevkModelPart* parts,const SevkOldPartOrder* orders,uint32_t count,const uint8_t* objects,uint32_t bytes,uint64_t* handle){return call(ctx,[&](Renderer& r){if(!handle||!orders)throw std::runtime_error("ordered model input missing");*handle=r.register_model(parts,count,objects,bytes,orders);return 0;});}

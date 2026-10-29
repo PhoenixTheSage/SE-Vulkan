@@ -418,7 +418,7 @@ public sealed class MyVulkanRender : IMyRender
                 if(frame.ApplyBuildOrder)scene.BuildScene(backend);else scene.UpdateAndBuild(backend);
                 if(VulkanScene.OverlapPublicationEnabled){if(backend.WorldReady)using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene))scene.BeginNativePassPublication();}
                 // Start the native pass preparation now, from the probe plan; publication checks it.
-                else if(backend.WorldReady&&scene.EarlyPassPrepareEnabled){var probePlan=probes.Plan(backend,camera,light.SkipIBLevels,(float)drawTime.Seconds);scene.BeginNativePassPrepare(probePlan.Projections,backend.ProbeFaceMask(probePlan.Flags));}}
+                else if(backend.WorldReady&&scene.EarlyPassPrepareEnabled){var probePlan=probes.Plan(backend,camera,light.SkipIBLevels,(float)drawTime.Seconds);scene.BeginNativePassPrepare(probePlan.Projections,backend.ProbeFaceMask(probePlan.Flags));scene.BeginCellPrepare();}}
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.VoxelsAndBillboards)){
             if (drawScene)
             {
@@ -454,7 +454,8 @@ public sealed class MyVulkanRender : IMyRender
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene)){if(VulkanScene.OverlapPublicationEnabled)scene.FinishNativePassPublication();else scene.PublishNativePassScene();}if(scene.NativePassSceneEnabled||backend.GpuSceneEnabled)scene.AddVisible(frameVisible);
                 JoinEffects();
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.QueueWorld)){
-                backend.QueueWorld(WorldConstants.Frame(backend.WorldFrameLayout,cameraView,projection,worldResolution.X,worldResolution.Y,frameLight,scene.BloomEmissiveness,scene.BackgroundOrientation,environment.Fog,(float)drawTime.Seconds,animationDelta,renderConfiguration,haveParticleCamera?(Vector3)(camera-previousParticleCamera):Vector3.Zero,postprocess.Settings,backend.ProbesAvailableForFrame,resolution.Fraction,frame.TextureMultipliers),
+                byte[] worldFrame;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.FrameConstants))worldFrame=WorldConstants.Frame(backend.WorldFrameLayout,cameraView,projection,worldResolution.X,worldResolution.Y,frameLight,scene.BloomEmissiveness,scene.BackgroundOrientation,environment.Fog,(float)drawTime.Seconds,animationDelta,renderConfiguration,haveParticleCamera?(Vector3)(camera-previousParticleCamera):Vector3.Zero,postprocess.Settings,backend.ProbesAvailableForFrame,resolution.Fraction,frame.TextureMultipliers);
+                backend.QueueWorld(worldFrame,
                     NativeBackend.MatrixValues(reversedProjection),NativeBackend.MatrixValues(MatrixD.Invert(reversedProjection)));previousParticleCamera=camera;haveParticleCamera=true;
                 }
                 FrameProfiler.Lap(FrameProfiler.Section.Queue);

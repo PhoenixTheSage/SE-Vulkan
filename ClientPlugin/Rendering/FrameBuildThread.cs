@@ -40,6 +40,7 @@ internal sealed class FrameBuildThread : IDisposable
     }
     void Run()
     {
+        ClientPlugin.Diagnostics.ThreadPlacement.PlaceCurrent("SE_VULKAN_BUILD_CPU");
         while (true)
         {
             start.Wait();

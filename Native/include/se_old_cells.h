@@ -44,6 +44,9 @@ SEVK_API int32_t SEVK_CALL sevk_cells_commit(void* ctx,const SevkCell* cells,uin
 SEVK_API int32_t SEVK_CALL sevk_cells_update_poses(void* ctx,const uint64_t* handles,const SevkCellPose* poses,uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_cells_remove(void* ctx,uint64_t handle,SevkCellLod* lod);
 SEVK_API int32_t SEVK_CALL sevk_cells_prepare(void* ctx,const SevkCellFrame* frame);
+/* Early preparation on a background job; a later sevk_cells_prepare with a byte-identical frame and no cell
+   change in between reuses it. */
+SEVK_API int32_t SEVK_CALL sevk_cells_prepare_async(void* ctx,const SevkCellFrame* frame);
 SEVK_API int32_t SEVK_CALL sevk_cells_preparation(void* ctx,SevkCellQuery* queries,uint32_t query_capacity,uint32_t* query_count,uint32_t* visible,uint32_t visible_capacity,uint32_t* visible_count,SevkCellChange* changes,uint32_t change_capacity,uint32_t* change_count);
 SEVK_API int32_t SEVK_CALL sevk_cells_publish(void* ctx,const SevkCellResult* results,uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_cells_cancel(void* ctx);

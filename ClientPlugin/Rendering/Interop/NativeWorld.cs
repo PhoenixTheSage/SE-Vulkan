@@ -361,7 +361,8 @@ public sealed partial class NativeBackend
         }
         finally{constantPin.Free();if(instancePin.IsAllocated)instancePin.Free();}
     }
-    private void ClearWorldPackets(){ShadowExclusions=Array.Empty<NativeShadowExclusion>();if(WorldReady)QueueShadowExclusions();for(int i=0;i<worldPackets.Count;i++){ref readonly var packet=ref PacketAt(i);if(packet.RecycleConstants)ReflectedConstantBuffer.Recycle(packet.Constants);}worldPackets.Clear();if(WorldReady)QueueOcclusion(0,Array.Empty<NativeOcclusionDraw>());highlightPackets.Clear();if(WorldReady)Check(HighlightApi.Queue(context,null,0),context);if(WorldReady)Check(WorldApi.Queue(context,null,0,null,null,null,0),context);}
+    byte[][] recycleScratch=Array.Empty<byte[]>();
+    private void ClearWorldPackets(){ShadowExclusions=Array.Empty<NativeShadowExclusion>();if(WorldReady)QueueShadowExclusions();int recycled=0;if(recycleScratch.Length<worldPackets.Count)recycleScratch=new byte[worldPackets.Count][];for(int i=0;i<worldPackets.Count;i++){ref readonly var packet=ref PacketAt(i);if(packet.RecycleConstants)recycleScratch[recycled++]=packet.Constants;}ReflectedConstantBuffer.RecycleMany(recycleScratch,recycled);worldPackets.Clear();if(WorldReady)QueueOcclusion(0,Array.Empty<NativeOcclusionDraw>());highlightPackets.Clear();if(WorldReady)Check(HighlightApi.Queue(context,null,0),context);if(WorldReady)Check(WorldApi.Queue(context,null,0,null,null,null,0),context);}
     public void UploadWorldCube(ulong id,int width,int height,int format,byte[] bytes,bool srgb)
         => Check(WorldApi.Cube(context,id,(uint)width,(uint)height,TextureFormat(format),srgb?1u:0u,bytes,(ulong)bytes.Length),context);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]private delegate int CubeMipsFn(IntPtr ctx,ulong id,uint width,uint height,uint format,uint srgb,byte[] data,ulong bytes,uint mips);

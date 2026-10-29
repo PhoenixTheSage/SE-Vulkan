@@ -300,10 +300,11 @@ public:
             std::vector<std::pair<std::pair<uint32_t,uint32_t>,std::pair<uint64_t,uint64_t>>> spots;std::vector<Fallback> fallbacks;std::vector<uint32_t> visible;
             std::vector<uint32_t> ids;uint64_t misses{},entries{}; // batch cache: each local batch's stable id; computed and total view entries
         };
-        auto select_batch=[&](Chunk& out,const Actor& actor,uint64_t model_handle,const View& view,float state,bool transition){
+        // any_hidden: whether the actor has a hidden material, computed once per actor rather than per view and LOD.
+        auto select_batch=[&](Chunk& out,const Actor& actor,bool any_hidden,uint64_t model_handle,const View& view,float state,bool transition){
             auto& model=models.get(model_handle);std::vector<uint32_t> hidden_materials;
             if(model.parts.empty())return;
-            if(std::any_of(actor.appearance.begin(),actor.appearance.end(),[](const Appearance& a){return !a.visible;})){
+            if(any_hidden){
                 for(auto& part:model.parts){auto material=appearance(actor,part.material);if(material&&!material->visible)hidden_materials.push_back(part.material);}
                 std::sort(hidden_materials.begin(),hidden_materials.end());hidden_materials.erase(std::unique(hidden_materials.begin(),hidden_materials.end()),hidden_materials.end());
             }
@@ -320,7 +321,7 @@ public:
         // One scope for the whole selection; a per-call clock pair inflated emission.
         {CpuScope selection_scope(profiling,profile.emit_us);
         uint32_t total_selected=uint32_t(selected.size()),count=jobs&&parallel_selection&&total_selected>=512?std::min(jobs->worker_count()+1,(total_selected+255)/256):1u;
-        std::vector<Chunk> chunks(count);chunks[0].plain_index.reserve(retained_batches.size()+64);
+        std::vector<Chunk> chunks(count);chunks[0].plain_index.reserve(retained_batches.size()+64);for(uint32_t c=1;c<count;++c)chunks[c].plain_index.reserve(retained_batches.size()/count+64);
         auto run_chunk=[&](uint32_t c){auto& out=chunks[c];
             for(uint32_t s=uint32_t(uint64_t(total_selected)*c/count),end=uint32_t(uint64_t(total_selected)*(c+1)/count);s<end;++s){auto& selection=selected[s];
             auto& actor=actors.get(selection.handle);auto& family=families.get(actor.family);uint64_t view_mask=selection.views & ~(actor.group?hidden_views(actor.group):0);bool main=false;for(auto& view:frame.views)if(view.kind==Kind::Colour&&(view_mask&(uint64_t(1)<<view.id)))main=true;
@@ -328,12 +329,13 @@ public:
             auto ready=[&](int lod){if(lod_dedupe&&lod<64){uint64_t bit=uint64_t(1)<<lod;if(checked&bit)return true;checked|=bit;}return model_ready(family.levels[lod]);};
             for(auto& view:frame.views)if(view_mask&(uint64_t(1)<<view.id)){if(!ready(lod_for(family,view,selection,main))){missing_model=true;break;}if(view.kind==Kind::Colour&&selection.next.previous>=0&&!ready(std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift))))){missing_model=true;break;}}
             if(missing_model){out.fallbacks.push_back({selection.handle,actor.owner,actor.lod});continue;}
+            bool any_hidden=std::any_of(actor.appearance.begin(),actor.appearance.end(),[](const Appearance& a){return !a.visible;});
             for(auto& view:frame.views)if(view_mask&(uint64_t(1)<<view.id)){
                 int lod=lod_for(family,view,selection,main);bool transition=view.kind==Kind::Colour&&selection.next.previous>=0&&selection.next.transition>0;
-                select_batch(out,actor,family.levels[lod],view,transition?1-selection.next.transition:0,transition);
+                select_batch(out,actor,any_hidden,family.levels[lod],view,transition?1-selection.next.transition:0,transition);
                 if(view.id==0&&view.kind==Kind::Colour&&models.get(family.levels[lod]).glass)out.transparent.push_back({selection.handle,actor.owner,uint32_t(lod),transition?3-selection.next.transition:0});
                 if(view.id>=15&&view.only_static)out.spots.push_back({{view.id,actor.owner},{family.levels[lod],actor.depth_epoch}});
-                if(transition){int old=std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift)));select_batch(out,actor,family.levels[old],view,2+selection.next.transition,true);if(view.id==0&&models.get(family.levels[old]).glass)out.transparent.push_back({selection.handle,actor.owner,uint32_t(old),selection.next.transition});}
+                if(transition){int old=std::min(int(family.distances.size()),std::max(view.lod.minimum,selection.next.previous+(main?view.lod.visible_shift:view.lod.shift)));select_batch(out,actor,any_hidden,family.levels[old],view,2+selection.next.transition,true);if(view.id==0&&models.get(family.levels[old]).glass)out.transparent.push_back({selection.handle,actor.owner,uint32_t(old),selection.next.transition});}
             }
             // The game-facing visibility set follows the managed contract:
             // main frustum candidates are reported before occlusion rejection.
