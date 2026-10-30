@@ -785,6 +785,11 @@ SEVK_API int32_t SEVK_CALL sevk_set_gbuffer_velocity_probe(void* ctx,uint32_t mo
 SEVK_API int32_t SEVK_CALL sevk_force_jitter(void* ctx,uint32_t force);
 /* Diagnostics: 1 resets and starts the SE_VULKAN_GPU_PASS_TIMING / SE_VULKAN_RECORD_TIMING accumulators, 0 stops them. */
 SEVK_API int32_t SEVK_CALL sevk_set_timing_reports(void* ctx,uint32_t active);
+/* Census phase of the calling thread for SE_VULKAN_PIPELINE_REPORT's PhaseCallSites (0 = not counted). */
+SEVK_API int32_t SEVK_CALL sevk_set_census_phase(void* ctx,uint32_t phase);
+/* Plan 3 build capture: deferrable calls from a capturing thread queue until replayed (in issue order). */
+SEVK_API int32_t SEVK_CALL sevk_set_build_capture(void* ctx,uint32_t enable);
+SEVK_API int32_t SEVK_CALL sevk_replay_build_capture(void* ctx);
 SEVK_API int32_t SEVK_CALL sevk_get_jitter(void* ctx,float* state,uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_native_owner_capabilities(void* ctx,SevkNativeOwnerCapabilities* state);
 /* flags1 marks a stock restore: execute stock without pack-only GPU production instrumentation. */

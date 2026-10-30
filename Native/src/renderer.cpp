@@ -499,6 +499,12 @@ struct Renderer {uint32_t recipe_generation=1;
     // scene: the call touches only render-thread scene state (pass and cell commits), so a scene call may apply
     // it while an early-released recording is still running.
     struct DeferredCall {std::function<int32_t(Renderer&)> fn;bool scene{};};
+    // Build capture (Plan 3 milestone 3, SE_VULKAN_BUILD_CAPTURE): while the calling thread captures (stage A), its
+    // per-frame inputs (ordinary deferrable calls: setters and queues, plus the world queue's clear) append here in
+    // issue order instead of running or deferring; stage B replays them (sevk_replay_build_capture) through the same
+    // paths, so they reach the frame stage B finishes. Scene calls (pass and cell commits, preparation, publication)
+    // are not captured: stage A owns the scene and issues them in order, as Build does today.
+    static inline thread_local bool tl_capturing=false;std::vector<DeferredCall> captured;uint64_t captured_calls{},captured_replays{};
     std::mutex deferred_mutex;bool record_in_flight{};std::vector<DeferredCall> deferred;
     struct ReadSnapshot {SevkWorkStats work{};SevkResolutionStats resolution{};SevkShadowFeedback shadow{};uint32_t cache_mask{},cache_count{};bool cache_valid{};std::vector<SevkOcclusionResult> occlusion;uint64_t occlusion_token{};std::vector<SevkFlareResult> flares;float render_fraction=1;SevkProbeStats probe_stats{sizeof(SevkProbeStats),SEVK_ABI_VERSION};SevkProbeScheduleStats probe_schedule{sizeof(SevkProbeScheduleStats),SEVK_ABI_VERSION};};
     // Phase 4 frame split, milestone 5: the thread whose begin_frame opened the current frame. With the frame gate
@@ -559,6 +565,15 @@ struct Renderer {uint32_t recipe_generation=1;
     bool pipeline_census=std::getenv("SE_VULKAN_PIPELINE_REPORT")!=nullptr;std::map<void*,std::pair<uint64_t,uint64_t>> pipelined_wait_sites;
     // Census only: ordinary calls by return frame: calls, us, us while an async present was in flight.
     std::map<void*,std::array<uint64_t,3>> call_sites;
+    // Phase census (Plan 3 milestone 3, with SE_VULKAN_PIPELINE_REPORT): every native call, keyed by the calling
+    // thread's census phase (sevk_set_census_phase; 0 = untagged, not counted), to list what each build stage calls.
+    static inline thread_local uint32_t tl_census_phase=0;std::mutex phase_sites_mutex;std::map<std::pair<void*,uint32_t>,uint64_t> phase_sites;
+    void note_phase_call(){
+#if defined(_WIN32)
+        if(!pipeline_census||!tl_census_phase)return;void* frames[5]{};USHORT n=CaptureStackBackTrace(1,5,frames,nullptr);
+        std::lock_guard lock(phase_sites_mutex);for(USHORT i=0;i<n;++i)++phase_sites[{frames[i],tl_census_phase}];
+#endif
+    }
     // Census only: time ordinary calls spent acquiring api_mutex (held by recording for all of end_frame), by return frame.
     std::map<void*,std::array<uint64_t,2>> lock_sites;uint64_t lock_wait_us{};
     // Census only: launch->record task end, and launch->lock request for blocked calls (waits over 20 us).
@@ -2474,7 +2489,7 @@ struct Renderer {uint32_t recipe_generation=1;
 };
 template<class Fn> int32_t call(void* context, Fn&& fn) {
     if (!context) { global_error = "null Vulkan context"; return -1; }
-    auto* renderer = static_cast<Renderer*>(context);
+    auto* renderer = static_cast<Renderer*>(context);renderer->note_phase_call();
     // Guest publications can arrive on the game thread while the render thread
     // records/submits. Timeline allocation, pools and queue access share one owner.
     // A pipelined end_frame completes, and deferred calls replay, before any call.
@@ -2509,7 +2524,8 @@ template<class Fn> int32_t call(void* context, Fn&& fn) {
 template<class Fn> int32_t call_deferrable(void* context, Fn fn) {
     if (!context) { global_error = "null Vulkan context"; return -1; }
     auto* renderer = static_cast<Renderer*>(context);
-    {std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){renderer->deferred.push_back({std::move(fn),false});return 0;}}
+    if(Renderer::tl_capturing){renderer->note_phase_call();std::lock_guard queue(renderer->deferred_mutex);renderer->captured.push_back({std::move(fn),false});++renderer->captured_calls;return 0;}
+    {std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){renderer->note_phase_call();renderer->deferred.push_back({std::move(fn),false});return 0;}}
     return call(context,fn);
 }
 // Scene calls: proceed once an early-released recording has taken its snapshots (applying only scene-only
@@ -2517,7 +2533,7 @@ template<class Fn> int32_t call_deferrable(void* context, Fn fn) {
 template<class Fn> int32_t call_scene(void* context, Fn&& fn) {
     if (!context) { global_error = "null Vulkan context"; return -1; }
     auto* renderer = static_cast<Renderer*>(context);
-    renderer->check_scene_caller("call_scene");
+    renderer->check_scene_caller("call_scene");renderer->note_phase_call();
     if(!renderer->early_release)return call(context,std::forward<Fn>(fn));
     while(renderer->relock_wanted.load(std::memory_order_acquire))sevk_jobs::cpu_relax();
     auto lock_at=std::chrono::steady_clock::now();
@@ -2553,14 +2569,14 @@ template<class Fn> int32_t call_deferrable_scene(void* context, Fn fn) {
     // SE_VULKAN_DIRECT_SCENE_COMMITS=0 keeps the queue.
     static const bool direct=[]{const char* v=std::getenv("SE_VULKAN_DIRECT_SCENE_COMMITS");return !(v&&std::string(v)=="0");}();
     {std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){
-        if(!(direct&&renderer->early_release&&renderer->record_released.load(std::memory_order_acquire))){renderer->deferred.push_back({std::move(fn),true});return 0;}}}
+        if(!(direct&&renderer->early_release&&renderer->record_released.load(std::memory_order_acquire))){renderer->note_phase_call();renderer->deferred.push_back({std::move(fn),true});return 0;}}}
     if(direct&&renderer->early_release)return call_scene(context,std::move(fn));
     return call(context,fn);
 }
 // Calls whose state has its own lock: no api_mutex, no wait for recording.
 template<class Fn> int32_t call_unlocked(void* context, Fn&& fn) {
     if (!context) { global_error = "null Vulkan context"; return -1; }
-    auto* renderer = static_cast<Renderer*>(context);
+    auto* renderer = static_cast<Renderer*>(context);renderer->note_phase_call();
     try { return fn(*renderer); }
     catch (const std::exception& e) { global_error = e.what(); return -1; }
     catch (...) { global_error = "unknown native Vulkan error"; return -1; }
@@ -2681,6 +2697,19 @@ int32_t SEVK_CALL sevk_draw_lines(void* context, const SevkLineVertex* vertices,
 int32_t SEVK_CALL sevk_draw_sprites(void* context, const SevkSprite* sprites, uint32_t count) { return call(context, [&](Renderer& r) { if ((!sprites && count) || count > 1000000) throw std::runtime_error("invalid sprite batch"); r.draw_sprites(sprites,count); return 0; }); }
 int32_t SEVK_CALL sevk_end_frame(void* context) { return call(context, [&](Renderer& r) { return r.end_frame(); }); }
 // Records frame N on a worker while managed frame N+1 runs; see call_deferrable.
+// A scene mutation without outputs that a capturing thread queues instead of running (Plan 3 milestone 3).
+template<class Fn> bool capture_scene(void* context,Fn fn){
+    if(!context||!Renderer::tl_capturing)return false;auto* renderer=static_cast<Renderer*>(context);
+    std::lock_guard queue(renderer->deferred_mutex);renderer->captured.push_back({std::move(fn),true});++renderer->captured_calls;return true;}
+int32_t SEVK_CALL sevk_set_build_capture(void*,uint32_t enable){Renderer::tl_capturing=enable!=0;return 0;}
+// Replays the captured calls in issue order, each through its own path (deferred while a recording is in flight).
+int32_t SEVK_CALL sevk_replay_build_capture(void* ctx){
+    if(!ctx){global_error="null Vulkan context";return -1;}auto* renderer=static_cast<Renderer*>(ctx);if(Renderer::tl_capturing){global_error="build capture replayed while capturing";return -1;}
+    std::vector<Renderer::DeferredCall> work;{std::lock_guard queue(renderer->deferred_mutex);work.swap(renderer->captured);++renderer->captured_replays;}
+    for(auto& item:work){int32_t result=item.scene?call_deferrable_scene(ctx,std::move(item.fn)):call_deferrable(ctx,std::move(item.fn));if(result)return result;}
+    return 0;}
+// Census phase of the calling thread (Plan 3 milestone 3); no lock, no wait.
+int32_t SEVK_CALL sevk_set_census_phase(void*,uint32_t phase){Renderer::tl_census_phase=phase;return 0;}
 int32_t SEVK_CALL sevk_end_frame_async(void* context) { return call(context, [&](Renderer& r) { return r.end_frame_async(); }); }
 int32_t SEVK_CALL sevk_remove_resource(void* context, uint32_t kind, uint64_t id) { return call(context, [&](Renderer& r) { r.remove(kind,id); return 0; }); }
 int32_t SEVK_CALL sevk_get_stats(void* context, SevkStats* stats) { return call(context, [&](Renderer& r) {
@@ -2719,11 +2748,15 @@ void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) acti
             {std::map<std::string,std::array<uint64_t,2>> locks;if(symbols){alignas(SYMBOL_INFO) char lb[sizeof(SYMBOL_INFO)+256]{};auto* li=reinterpret_cast<SYMBOL_INFO*>(lb);
                 for(auto& [address,site]:r->lock_sites){li->SizeOfStruct=sizeof(SYMBOL_INFO);li->MaxNameLen=255;DWORD64 offset=0;if(SymFromAddr(process,DWORD64(address),&offset,li)&&std::strncmp(li->Name,"sevk_",5)==0){auto& e=locks[li->Name];e[0]+=site[0];e[1]+=site[1];}}}
                 std::fprintf(f,",\"LockWaitUs\":%llu,\"RecordEndSinceLaunchUs\":%llu,\"RecordEnds\":%llu,\"LockRequestSinceLaunchUs\":%llu,\"LockBlocked\":%llu,\"PostSubmitUs\":[%llu,%llu,%llu,%llu,%llu],\"SortReuses\":%llu,\"ParallelMainFrames\":%llu,\"LockSites\":[",(unsigned long long)r->lock_wait_us,(unsigned long long)r->tl_record_end_us,(unsigned long long)r->tl_record_ends,(unsigned long long)r->lock_request_since_launch_us,(unsigned long long)r->lock_blocked,(unsigned long long)r->tl_post_us[0],(unsigned long long)r->tl_post_us[1],(unsigned long long)r->tl_post_us[2],(unsigned long long)r->tl_post_us[3],(unsigned long long)r->tl_post_us[4],(unsigned long long)r->world.sort_reuses,(unsigned long long)r->world.parallel_main_frames);bool lf=true;for(auto& [name,site]:locks){std::fprintf(f,"%s{\"Export\":\"%s\",\"Waits\":%llu,\"Us\":%llu}",lf?"":",",name.c_str(),(unsigned long long)site[0],(unsigned long long)site[1]);lf=false;}std::fprintf(f,"]");}
+            {std::map<std::pair<std::string,uint32_t>,uint64_t> phases;if(symbols){alignas(SYMBOL_INFO) char pb[sizeof(SYMBOL_INFO)+256]{};auto* pi=reinterpret_cast<SYMBOL_INFO*>(pb);
+                std::lock_guard lock(r->phase_sites_mutex);for(auto& [key,count]:r->phase_sites){pi->SizeOfStruct=sizeof(SYMBOL_INFO);pi->MaxNameLen=255;DWORD64 offset=0;if(SymFromAddr(process,DWORD64(key.first),&offset,pi)&&std::strncmp(pi->Name,"sevk_",5)==0)phases[{pi->Name,key.second}]+=count;}}
+                std::fprintf(f,",\"PhaseCallSites\":[");bool pf=true;for(auto& [key,count]:phases){std::fprintf(f,"%s{\"Export\":\"%s\",\"Phase\":%u,\"Calls\":%llu}",pf?"":",",key.first.c_str(),key.second,(unsigned long long)count);pf=false;}std::fprintf(f,"]");}
             std::fprintf(f,",\"CallSites\":[");bool first=true;for(auto& [name,site]:exports){std::fprintf(f,"%s{\"Export\":\"%s\",\"Calls\":%llu,\"Us\":%llu,\"PresentUs\":%llu}",first?"":",",name.c_str(),(unsigned long long)site[0],(unsigned long long)site[1],(unsigned long long)site[2]);first=false;}std::fprintf(f,"]");}
         if(symbols)SymCleanup(process);
 #endif
         std::fprintf(f,",\"FrameGate\":%d,\"GateOffOwnerCalls\":%llu,\"GateWaits\":%llu,\"GateWaitUs\":%llu,\"OffOwnerSceneCalls\":%llu,\"OffOwnerScenePending\":%llu",int(r->frame_gate),(unsigned long long)r->gate_offowner_calls,(unsigned long long)r->gate_waits,(unsigned long long)r->gate_wait_us,(unsigned long long)r->offowner_scene_calls.load(),(unsigned long long)r->offowner_scene_pending.load());
         std::fprintf(f,",\"SceneWaits\":%llu,\"SceneWaitUs\":%llu,\"SceneLockWaits\":%llu,\"SceneLockUs\":%llu,\"OwnerWaits\":%llu,\"OwnerWaitUs\":%llu",(unsigned long long)r->scene_waits,(unsigned long long)r->scene_wait_us,(unsigned long long)r->scene_lock_waits,(unsigned long long)r->scene_lock_us,(unsigned long long)r->owner_waits,(unsigned long long)r->owner_wait_us);
+        std::fprintf(f,",\"CapturedCalls\":%llu,\"CaptureReplays\":%llu",(unsigned long long)r->captured_calls,(unsigned long long)r->captured_replays);
         std::fprintf(f,",\"UploadFlushes\":%llu,\"UploadPresentJoinUs\":%llu,\"UploadSubmitUs\":%llu",(unsigned long long)r->upload_flushes,(unsigned long long)r->upload_present_us,(unsigned long long)r->upload_submit_us);
         std::fprintf(f,",\"WaitThreads\":[");{bool wf=true;for(auto& [name,site]:r->wait_threads){std::string clean;for(char c:name)if(c!='"'&&c!='\\')clean.push_back(c);std::fprintf(f,"%s{\"Thread\":\"%s\",\"Waits\":%llu,\"WaitUs\":%llu}",wf?"":",",clean.c_str(),(unsigned long long)site.first,(unsigned long long)site.second);wf=false;}}std::fprintf(f,"]");
         std::fprintf(f,",\"LaunchLapUs\":[%llu,%llu,%llu,%llu,%llu]",(unsigned long long)r->launch_lap_us[0],(unsigned long long)r->launch_lap_us[1],(unsigned long long)r->launch_lap_us[2],(unsigned long long)r->launch_lap_us[3],(unsigned long long)r->launch_lap_us[4]);
@@ -2805,7 +2838,9 @@ int32_t SEVK_CALL sevk_set_voxel_material(void* ctx,uint64_t id,const void* cons
 int32_t SEVK_CALL sevk_queue_world(void* ctx,const void* frame,uint32_t fb,const float* projection,const float* inverse,const SevkWorldDraw* draws,uint32_t count){
     // Only the empty submission defers; populated legacy draws carry blob offsets. It is a scene call: the
     // clear must stay ordered with the QueueWorld that follows it while an early-released recording runs.
-    if(!frame&&!count)return call_deferrable_scene(ctx,[fb,projection,inverse](Renderer& r){r.queue_world(nullptr,fb,projection,inverse,nullptr,0);return 0;});
+    // A capturing stage A queues the clear for stage B, which queues the world after it.
+    if(!frame&&!count){if(capture_scene(ctx,[fb,projection,inverse](Renderer& r){r.queue_world(nullptr,fb,projection,inverse,nullptr,0);return 0;}))return 0;
+        return call_deferrable_scene(ctx,[fb,projection,inverse](Renderer& r){r.queue_world(nullptr,fb,projection,inverse,nullptr,0);return 0;});}
     return call(ctx,[&](Renderer& r){r.queue_world(frame,fb,projection,inverse,draws,count);return 0;});
 }
 int32_t SEVK_CALL sevk_queue_world_retained(void* ctx,const void* frame,uint32_t fb,const float* projection,const float* inverse,const SevkWorldDraw* draws,uint32_t count,const uint64_t* ids){return call(ctx,[&](Renderer& r){if(count && !ids)throw std::runtime_error("retained object identities missing");r.queue_world(frame,fb,projection,inverse,draws,count,ids);return 0;});}
@@ -2881,6 +2916,8 @@ int32_t SEVK_CALL sevk_get_highlight_stats(void* ctx,SevkHighlightStats* stats){
 int32_t SEVK_CALL sevk_set_render_fraction(void* ctx,float fraction){
     // A deferred fraction is what the next resolution read must observe.
     if(ctx&&std::isfinite(fraction)&&fraction>=.25f&&fraction<=1){auto* renderer=static_cast<Renderer*>(ctx);std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){std::lock_guard read(renderer->snapshot_mutex);renderer->snapshot.render_fraction=fraction;}}
+    // Never captured (Plan 3): Build reads the resolution back right after setting it.
+    struct NoCapture{bool previous=Renderer::tl_capturing;NoCapture(){Renderer::tl_capturing=false;}~NoCapture(){Renderer::tl_capturing=previous;}} no_capture;
     return call_deferrable(ctx,[fraction](Renderer& r){if(r.recording || !std::isfinite(fraction) || fraction<.25f || fraction>1)throw std::runtime_error("invalid world render fraction");r.render_fraction=fraction;return 0;});
 }
 int32_t SEVK_CALL sevk_set_view_clip(void* ctx,float far_plane){return call_deferrable(ctx,[far_plane](Renderer& r){if(!std::isfinite(far_plane)||far_plane<1)throw std::runtime_error("invalid view clip");r.view_far=far_plane;return 0;});}

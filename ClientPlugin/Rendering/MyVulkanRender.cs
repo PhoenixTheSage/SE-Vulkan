@@ -390,6 +390,9 @@ public sealed class MyVulkanRender : IMyRender
         {
             try
             {
+            // Plan 3 census phases: 1 = stage A (scene), 2 = publication, 3 = queue and launch.
+            backend.SetCensusPhase(1);
+            capturing=drawScene&&backend.WorldReady&&scene.BuildCaptureEnabled;if(capturing)backend.SetBuildCapture(true);
             // Packet collection belongs to Build; the particle and decal output Apply produced joins it here.
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.BuildPrologue)){
             backend.CameraPosition = camera;
@@ -451,8 +454,11 @@ public sealed class MyVulkanRender : IMyRender
                 // Resident topology binds uploaded shared allocation generations.
                 // Finish every scene/lighting resource consumer before publishing it.
                 if(backend.GpuSceneEnabled){using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads();uploadsOpen=false;}
+                backend.SetCensusPhase(2);
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene)){if(VulkanScene.OverlapPublicationEnabled)scene.FinishNativePassPublication();else scene.PublishNativePassScene();}if(scene.NativePassSceneEnabled||backend.GpuSceneEnabled)scene.AddVisible(frameVisible);
-                JoinEffects();
+                JoinEffects();backend.SetCensusPhase(3);
+                // Stage B starts here: stage A's captured frame inputs reach native just before the world is queued.
+                EndCapture();
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.QueueWorld)){
                 byte[] worldFrame;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.FrameConstants))worldFrame=WorldConstants.Frame(backend.WorldFrameLayout,cameraView,projection,worldResolution.X,worldResolution.Y,frameLight,scene.BloomEmissiveness,scene.BackgroundOrientation,environment.Fog,(float)drawTime.Seconds,animationDelta,renderConfiguration,haveParticleCamera?(Vector3)(camera-previousParticleCamera):Vector3.Zero,postprocess.Settings,backend.ProbesAvailableForFrame,resolution.Fraction,frame.TextureMultipliers);
                 backend.QueueWorld(worldFrame,
@@ -462,7 +468,7 @@ public sealed class MyVulkanRender : IMyRender
             }
             JoinEffects();
             }
-            finally { if(effectsJob!=null){effectsJob.Value.Join();effectsJob=null;} EndOpenUploads(); }
+            finally { if(effectsJob!=null){effectsJob.Value.Join();effectsJob=null;} EndCapture(); EndOpenUploads(); }
             backend.SetHdrQuality(renderConfiguration.User.HqTarget);
             FrameProfiler.Lap(FrameProfiler.Section.Queue);
             MatrixD reversedFrame=viewProjection;reversedFrame.M13=reversedFrame.M14-reversedFrame.M13;reversedFrame.M23=reversedFrame.M24-reversedFrame.M23;reversedFrame.M33=reversedFrame.M34-reversedFrame.M33;reversedFrame.M43=reversedFrame.M44-reversedFrame.M43;
@@ -478,6 +484,10 @@ public sealed class MyVulkanRender : IMyRender
         }
         finally{if(drawScene)scene.EndBuild();}
     }
+    // Plan 3 milestone 3: whether Build is capturing stage A's frame inputs (non-scene deferrable native calls and the
+    // world-queue clear). They replay where stage B starts (QueueWorld); a Build that leaves early still replays them.
+    bool capturing;
+    void EndCapture(){if(!capturing)return;capturing=false;backend.SetBuildCapture(false);backend.ReplayBuildCapture();}
     // The probe plan inputs of the frame being built (the plan provider is created once and reads these).
     Vector3D buildCamera;MyEnvironmentLightData buildLight;MyTimeSpan buildDrawTime;float lastViewClip;
     public void Present()
@@ -501,7 +511,7 @@ public sealed class MyVulkanRender : IMyRender
         GuestBridge.Bind(backend, scene);
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GuestFrame))BackendRuntime.RaiseFrame();
         if(renderThread&&backend.PipelinedRecordingEnabled)SampleDiagnostics();
-        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeRecord)){if(backend.PipelinedRecordingEnabled)backend.EndFrameAsync();else backend.EndFrame();} frameOpen = false;
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeRecord)){if(backend.PipelinedRecordingEnabled)backend.EndFrameAsync();else backend.EndFrame();} frameOpen = false;backend.SetCensusPhase(0);
         shadows.CommitPreparedFrame();
         if(renderThread)RendererCpuProfiler.EndFrame();
         FrameProfiler.Since(FrameProfiler.Section.NativeRecord, nativeStart);

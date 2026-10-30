@@ -43,5 +43,17 @@ public sealed partial class NativeBackend
     // packet collection starts on the other emission. Output must be identical; a difference is per-frame state that
     // lives outside the emission. Takes effect at the next BeginPacketCollection; the camera, set just before it, carries over.
     public bool EmissionRotateEnabled {get;set;}=Environment.GetEnvironmentVariable("SE_VULKAN_EMISSION_ROTATE")=="1";
+    // Census phase of the calling thread (Plan 3 milestone 3; read by SE_VULKAN_PIPELINE_REPORT's PhaseCallSites).
+    // Only with the census on; a native library without the export ignores it.
+    [System.Runtime.InteropServices.UnmanagedFunctionPointer(System.Runtime.InteropServices.CallingConvention.Cdecl)]delegate int CensusPhaseFn(IntPtr ctx,uint phase);
+    static CensusPhaseFn censusPhase;static readonly bool CensusEnabled=Environment.GetEnvironmentVariable("SE_VULKAN_PIPELINE_REPORT")!=null;static bool censusMissing;
+    public void SetCensusPhase(uint phase){if(!CensusEnabled||censusMissing)return;if(censusPhase==null){try{censusPhase=(CensusPhaseFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_set_census_phase"),typeof(CensusPhaseFn));}catch(Exception){censusMissing=true;return;}}censusPhase(context,phase);}
+    // Build capture (Plan 3 milestone 3): stage A's deferrable native calls queue in issue order until stage B
+    // replays them, so they reach the frame stage B finishes.
+    [System.Runtime.InteropServices.UnmanagedFunctionPointer(System.Runtime.InteropServices.CallingConvention.Cdecl)]delegate int ContextToggleFn(IntPtr ctx,uint value);
+    [System.Runtime.InteropServices.UnmanagedFunctionPointer(System.Runtime.InteropServices.CallingConvention.Cdecl)]delegate int ContextOnlyFn(IntPtr ctx);
+    ContextToggleFn buildCapture;ContextOnlyFn replayCapture;
+    public void SetBuildCapture(bool enable){buildCapture??=(ContextToggleFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_set_build_capture"),typeof(ContextToggleFn));Check(buildCapture(context,enable?1u:0u),context);}
+    public void ReplayBuildCapture(){replayCapture??=(ContextOnlyFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_replay_build_capture"),typeof(ContextOnlyFn));Check(replayCapture(context),context);}
     void RotateEmission(){if(!EmissionRotateEnabled||boundEmission!=null)return;var camera=current.CameraPosition;current=ReferenceEquals(current,rotation[0])?rotation[1]:rotation[0];current.CameraPosition=camera;BindAliases();}
 }

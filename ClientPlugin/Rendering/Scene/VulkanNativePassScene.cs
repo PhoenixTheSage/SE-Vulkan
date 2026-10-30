@@ -42,6 +42,9 @@ public sealed partial class VulkanScene
     // Same-process toggle for the frozen-light lane: GPU tiled point-light selection (native default on).
     bool lightTiles=System.Environment.GetEnvironmentVariable("SE_VULKAN_LIGHT_TILES")!="0";
     public bool LightTilesEnabled {get=>lightTiles;set{lightTiles=value;backend.SetLightTiles(value);}}
+    // Plan 3 milestone 3 (SE_VULKAN_BUILD_CAPTURE=1, or this property for the same-process lane): Build captures stage A's
+    // frame inputs (non-scene deferrable native calls) and replays them where stage B starts (QueueWorld).
+    public bool BuildCaptureEnabled {get;set;}=System.Environment.GetEnvironmentVariable("SE_VULKAN_BUILD_CAPTURE")=="1";
     // Same-process toggle for the Plan 3 milestone 1 gate: alternate two frame emissions every frame.
     public bool EmissionRotateEnabled {get=>backend.EmissionRotateEnabled;set=>backend.EmissionRotateEnabled=value;}
     public bool VoxelEmitAheadEnabled {get=>VulkanVoxels.EmitAheadEnabled;set=>VulkanVoxels.EmitAheadEnabled=value;}
