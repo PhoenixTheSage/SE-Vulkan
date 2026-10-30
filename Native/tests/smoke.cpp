@@ -167,6 +167,16 @@ int main(int argc, char** argv) {
             ok(sevk_set_async_present(context,0),context);ok(sevk_get_present_flow_stats(context,&flow),context);
             require(flow.completed_calls==28&&flow.pending==0&&flow.enabled==0&&flow.total_interval_ns>0&&flow.total_call_ns>0,"completed presentation calls counted after explicit worker join");
             stats.size=sizeof(stats);ok(sevk_get_stats(context,&stats),context);require(stats.presented_frames==28&&stats.validation_errors==0,"async present resize/suspend-restore/mode switch has clean validation and actual presentation coverage");
+            // Display bit 64 (low latency) leaves the decoupled present for the direct one and returns when cleared.
+            ok(sevk_set_async_present(context,1),context);
+            for(uint32_t flags: {64u,0u,64u,0u}){
+                ok(sevk_set_display_flags(context,flags),context);
+                for(unsigned i=0;i<3;++i){ok(sevk_begin_frame(context,&frame),context);ok(sevk_request_readback(context),context);ok(sevk_end_frame(context),context);
+                    std::vector<uint8_t> pixels(stats.width*stats.height*4);ok(sevk_readback(context,pixels.data(),pixels.size()),context);
+                    require(pixels[0]>240&&pixels[1]<10,"low-latency present switch keeps the composed frame");}
+            }
+            ok(sevk_set_async_present(context,0),context);
+            stats.size=sizeof(stats);ok(sevk_get_stats(context,&stats),context);require(stats.presented_frames==40&&stats.validation_errors==0,"low-latency present switch presents every frame with clean validation");
             require(GetModuleHandleW(L"d3d11.dll")==nullptr,"native presentation must not load D3D11");
             sevk_destroy(context);context=nullptr;DestroyWindow(window);UnregisterClassW(cls.lpszClassName,cls.hInstance);
             std::cout<<"Native HWND presentation, pre-present capture, and no-D3D11 smoke passed\n";return 0;

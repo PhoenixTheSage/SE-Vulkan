@@ -654,7 +654,9 @@ struct Renderer {uint32_t recipe_generation=1;
         for(auto& r:done)accept_present(r,propagate);}
     void stop_decoupled(){open_present_gate();watchdog_stop=true;if(present_watchdog.joinable())present_watchdog.join();if(!decoupled.thread.joinable())return;{std::lock_guard lock(decoupled.mutex);decoupled.stopping=true;}decoupled.cv.notify_all();decoupled.thread.join();decoupled.results.clear();}
     void wait_decoupled_copies(){if(decoupled.timeline&&decoupled.value){VkSemaphoreWaitInfo w{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};w.semaphoreCount=1;w.pSemaphores=&decoupled.timeline;w.pValues=&decoupled.value;vkWaitSemaphores(device,&w,UINT64_MAX);}}
-    bool decoupled_ready()const{return decoupled_present_enabled&&swapchain&&present_queue&&swap_transfer&&async_present&&decoupled.output[0].handle&&!(display_flags&2);}
+    // Frame generation (bit 2) presents its own extra frame; low latency (bit 64, DX11 MaximumFrameLatency 1) cannot
+    // leave up to two copy-and-present tasks queued on the worker. Both present directly.
+    bool decoupled_ready()const{return decoupled_present_enabled&&swapchain&&present_queue&&swap_transfer&&async_present&&decoupled.output[0].handle&&!(display_flags&(2|64));}
     bool async_present=!std::getenv("SE_VULKAN_ASYNC_PRESENT") || std::strcmp(std::getenv("SE_VULKAN_ASYNC_PRESENT"),"0")!=0;
     // Deferred acquire (SE_VULKAN_DEFERRED_ACQUIRE=0 restores acquiring in begin_frame): the swapchain image
     // is acquired at the start of end_frame, so begin_frame no longer joins the previous async present
