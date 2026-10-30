@@ -200,7 +200,10 @@ public sealed class MyVulkanRender : IMyRender
                     // Stage B needs stage A's captured inputs and its own emission; native snapshots the pass scene at
                     // QueueWorld and opens upload batches on demand.
                     scene.BuildCaptureEnabled = true; backend.EmissionRotateEnabled = true; backend.SetBuildStages(true);
-                    launchThread = new FrameBuildThread("Vulkan frame launch");
+                    // Model batches and bulk models keep per-frame state on the backend that stage B's QueueWorld reads.
+                    backend.ModelBatchingEnabled = false; backend.BulkModelsEnabled = false;
+                    backend.StageReportHook = () => { var launch = reportingLaunch; if (launch != null) ReportQueued(launch); };
+                    launchThread = new FrameBuildThread("Vulkan frame launch", "SE_VULKAN_LAUNCH_CPU");
                     sessionLog?.Write("Build stages: stage B (launch) runs on its own thread (SE_VULKAN_BUILD_STAGES=2).");
                 }
             }
@@ -272,11 +275,25 @@ public sealed class MyVulkanRender : IMyRender
     bool presentHere;
     // Plan 3 milestone 5: SE_VULKAN_BUILD_STAGES=2 (with the split) splits Build in two. The build thread runs stage A
     // (BuildFrame through publication and the world constants) of frame N+1 while the launch thread runs stage B
-    // (LaunchFrame, SubmitFrame) of frame N. Stage A starts once stage B(N) has queued its world (worldQueued): native
-    // takes the recording's pass snapshot there, and stage A clears and prepares the pass scene again.
+    // (LaunchFrame, SubmitFrame) of frame N. Stage A(N+1) runs alongside stage B(N)'s QueueWorld: native holds stage
+    // A's first scene-changing call (and its pass-frame clear) until stage B reports the world queued (stage gate), since
+    // queue_world takes the recording's pass snapshot and emits the cells. A frame that captures nothing, or follows
+    // one, waits for the report here instead (launchedStages/queuedStages).
     static readonly bool BuildStages=FrameSplit&&Environment.GetEnvironmentVariable("SE_VULKAN_BUILD_STAGES")=="2";
     FrameBuildThread launchThread;
-    readonly ManualResetEventSlim worldQueued=new(true);
+    // SE_VULKAN_STAGE_GATE=1: the native stage gate above, so stage A overlaps stage B's QueueWorld. Off by default:
+    // waiting for stage B's report at stage A's start measured faster (4.32-4.36 against 4.50 ms, batch 118); the
+    // overlap adds CPU contention and moves stage A's waits to its feedback reads.
+    static readonly bool StageGateEnabled=Environment.GetEnvironmentVariable("SE_VULKAN_STAGE_GATE")=="1";
+    readonly object stageHandoff=new();long launchedStages,queuedStages;bool lastLaunchCaptured;LaunchRecord reportingLaunch;
+    void WaitStageQueued(){lock(stageHandoff){while(queuedStages<launchedStages)Monitor.Wait(stageHandoff);}}
+    // Once per record, right after QueueWorld (or wherever stage B ends first).
+    void ReportQueued(LaunchRecord launch)
+    {
+        if(launch.Reported)return;launch.Reported=true;
+        try{if(launch.Captured)backend.StageQueued();}
+        finally{if(launch.Launched)lock(stageHandoff){queuedStages++;Monitor.PulseAll(stageHandoff);}}
+    }
     // Guest frames: stage A's scene and preparation callbacks and stage B's open frame (BeginFrame through
     // EndFrameAsync, which raises the frame callback) exclude each other. A guest callback in stage A that holds its own
     // lock and calls native would otherwise wait at the frame gate for stage B, whose frame callback waits for that lock.
@@ -345,11 +362,10 @@ public sealed class MyVulkanRender : IMyRender
     // Uploads need no BeginUploads: native opens a batch on the first upload, and stage B's EndUploads submits it.
     void BuildStaged(FramePacket frame)
     {
-        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.StageGate))worldQueued.Wait();
-        worldQueued.Reset();
-        LaunchRecord record;
-        try{record=StageA(frame);JoinLaunch();}
-        catch{worldQueued.Set();throw;}
+        bool nativeGate=StageGateEnabled&&lastLaunchCaptured&&frame.DrawScene&&backend.WorldReady&&scene.BuildCaptureEnabled;
+        if(!nativeGate)using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.StageGate))WaitStageQueued();
+        var record=StageA(frame);JoinLaunch();
+        record.Launched=true;lastLaunchCaptured=record.Captured;lock(stageHandoff)launchedStages++;
         var laps=FrameProfiler.Current;FrameProfiler.Detach();
         launchThread.Launch(()=>LaunchOnThread(record,laps));
     }
@@ -357,9 +373,9 @@ public sealed class MyVulkanRender : IMyRender
     {
         FrameProfiler.Adopt(laps);
         // SubmitFrame (guest frame callback, recording) also reads the record's emission: stage A has moved on.
-        // LaunchFrame sets worldQueued once, right after QueueWorld; a second Set here would release stage A(N+2) early.
+        // LaunchFrame reports the world queued right after QueueWorld; the report here only covers an earlier failure.
         try{using(backend.BindEmission(record.Emission)){LaunchFrame(record);SubmitFrame(record.DrawScene,false);}}
-        finally{ReleaseGuestFrames();FrameProfiler.Detach();}
+        finally{try{ReportQueued(record);}finally{ReleaseGuestFrames();FrameProfiler.Detach();}}
     }
     public void Draw(bool draw = true)
     {
@@ -521,14 +537,14 @@ public sealed class MyVulkanRender : IMyRender
             launch.ViewProjection=reversedFrame;launch.Camera=camera;launch.Light=light;launch.HqTarget=renderConfiguration.User.HqTarget;
             launch.SpriteCount=sprites.MainPacketsInto(ref launch.Sprites,backBuffer.X,backBuffer.Y);
             debugLines.Prepare(camera,launch.Lines);
-            launch.ShadowUpdateMask=shadows.UpdateMask;launch.Emission=backend.CurrentEmission;
+            launch.ShadowUpdateMask=shadows.UpdateMask;launch.Emission=backend.CurrentEmission;backend.SealFrameEmission();
             previousDraw = drawTime;
             }
             catch { if(effectsJob!=null){effectsJob.Value.Join();effectsJob=null;} throw; }
         }
         catch{
             // A stage A that leaves early still delivers its captured calls, in order, and closes its uploads.
-            try{if(drawScene)scene.EndBuild();}finally{try{SealCapture();if(launch.Captured)backend.ReplayBuildCapture();}finally{EndOpenUploads();}}
+            try{if(drawScene)scene.EndBuild();}finally{try{SealCapture();if(launch.Captured){backend.ReplayBuildCapture();launch.Reported=true;backend.StageQueued();}}finally{EndOpenUploads();}}
             throw;
         }
         if(drawScene)scene.EndBuild();
@@ -537,7 +553,7 @@ public sealed class MyVulkanRender : IMyRender
     }
     // Plan 3 milestone 4: two launch records alternate between stage A (filling) and stage B (launching).
     readonly LaunchRecord[] launchRecords={new LaunchRecord(),new LaunchRecord()};int launchIndex;uint launchedShadowMask;
-    LaunchRecord NextLaunch(){launchIndex^=1;var record=launchRecords[launchIndex];record.WorldQueued=false;record.Captured=false;record.SpriteCount=0;record.Emission=null;return record;}
+    LaunchRecord NextLaunch(){launchIndex^=1;var record=launchRecords[launchIndex];record.WorldQueued=false;record.Captured=false;record.Launched=record.Reported=false;record.SpriteCount=0;record.Emission=null;return record;}
     // Stage B ("launch"): the frame's tail, from stage A's record and emission only. It binds the emission, replays stage
     // A's captured frame inputs, queues the world, closes the upload batch, opens the frame slot and adds the sprites and
     // debug lines; SubmitFrame then raises the guest frame callback and launches the recording.
@@ -548,10 +564,11 @@ public sealed class MyVulkanRender : IMyRender
             backend.SetCensusPhase(3);
             // Stage A's captured frame inputs reach native just before the world is queued.
             if(launch.Captured)backend.ReplayBuildCapture();
+            reportingLaunch=launch;
             if(launch.WorldQueued){using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.QueueWorld))backend.QueueWorld(launch.WorldFrame,launch.Projection,launch.Inverse);FrameProfiler.Lap(FrameProfiler.Section.Queue);}
         }
         finally{
-            worldQueued.Set();
+            reportingLaunch=null;ReportQueued(launch);
             // Two stages: the batch stage A opened (lazily, on its first upload) closes here.
             if(BuildStages){using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads();uploadsOpen=false;}
             else EndOpenUploads();}

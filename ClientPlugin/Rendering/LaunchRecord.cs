@@ -12,6 +12,8 @@ namespace ClientPlugin.Rendering;
 internal sealed class LaunchRecord
 {
     public bool DrawScene,WorldQueued,Captured;
+    // Stage gate: launched on the launch thread (counted by the managed hand-off); queued reported (managed and native).
+    public bool Launched,Reported;
     public byte[] WorldFrame;public float[] Projection,Inverse;
     public MatrixD ViewProjection;public Vector3D Camera;public MyEnvironmentLightData Light;
     public bool HqTarget;

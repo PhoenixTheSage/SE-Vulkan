@@ -11,17 +11,20 @@ namespace ClientPlugin.Rendering;
 internal sealed class FrameBuildThread : IDisposable
 {
     readonly Thread thread;
+    // The placement variable this thread reads (ThreadPlacement): the build and launch threads are placed separately.
+    readonly string placementVariable;
     readonly SemaphoreSlim start = new(0, 1), done = new(0, 1);
     Action work;
     Exception failure;
     volatile bool stopping;
     bool inFlight;
 
-    public FrameBuildThread(string name = "Vulkan frame build")
+    public FrameBuildThread(string name = "Vulkan frame build", string placement = "SE_VULKAN_BUILD_CPU")
     {
         // Build is the frame's critical path under the split (the render thread waits for it), so it runs Highest:
         // it keeps its core against job workers and game threads. SE_VULKAN_BUILD_PRIORITY=above restores AboveNormal.
         var priority = Environment.GetEnvironmentVariable("SE_VULKAN_BUILD_PRIORITY") == "above" ? ThreadPriority.AboveNormal : ThreadPriority.Highest;
+        placementVariable = placement;
         thread = new Thread(Run) { IsBackground = true, Name = name, Priority = priority };
         thread.Start();
     }
@@ -40,7 +43,7 @@ internal sealed class FrameBuildThread : IDisposable
     }
     void Run()
     {
-        ClientPlugin.Diagnostics.ThreadPlacement.PlaceCurrent("SE_VULKAN_BUILD_CPU");
+        ClientPlugin.Diagnostics.ThreadPlacement.PlaceCurrent(placementVariable);
         while (true)
         {
             start.Wait();

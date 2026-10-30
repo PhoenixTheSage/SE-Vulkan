@@ -30,7 +30,6 @@ public sealed partial class NativeBackend
     // pooling about 3,000 blocks reads each array's header, mostly cache misses, about 0.16 ms on the build thread.
     // The build thread only copies the references out. The pool is locked; a block rented before the worker
     // returns it is simply allocated fresh.
-    private byte[][] recycleSpare=Array.Empty<byte[]>();
     // The .NET pool, not the game scheduler: WaitOrExecute ran the recycle inline whenever game workers were busy.
     private System.Threading.Tasks.Task recycleJob;
     static readonly bool AsyncPacketRecycle=Environment.GetEnvironmentVariable("SE_VULKAN_ASYNC_PACKET_RECYCLE")!="0";
@@ -371,22 +370,21 @@ public sealed partial class NativeBackend
         }
         finally{constantPin.Free();if(instancePin.IsAllocated)instancePin.Free();}
     }
-    byte[][] recycleScratch=Array.Empty<byte[]>();
-    int CollectRecycled(List<WorldPacket> packets){int recycled=0;if(recycleScratch.Length<packets.Count)recycleScratch=new byte[packets.Count][];
+    int CollectRecycled(List<WorldPacket> packets){int recycled=0;if(E.RecycleBlocks.Length<packets.Count)E.RecycleBlocks=new byte[packets.Count][];
 #if NETCOREAPP
-        var span=CollectionsMarshal.AsSpan(packets);for(int i=0;i<span.Length;i++){ref readonly var packet=ref span[i];if(packet.RecycleConstants)recycleScratch[recycled++]=packet.Constants;}
+        var span=CollectionsMarshal.AsSpan(packets);for(int i=0;i<span.Length;i++){ref readonly var packet=ref span[i];if(packet.RecycleConstants)E.RecycleBlocks[recycled++]=packet.Constants;}
 #else
-        for(int i=0;i<packets.Count;i++){var packet=packets[i];if(packet.RecycleConstants)recycleScratch[recycled++]=packet.Constants;}
+        for(int i=0;i<packets.Count;i++){var packet=packets[i];if(packet.RecycleConstants)E.RecycleBlocks[recycled++]=packet.Constants;}
 #endif
         return recycled;}
     private void ClearWorldPackets(){
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearExclusions)){ShadowExclusions=Array.Empty<NativeShadowExclusion>();if(WorldReady)QueueShadowExclusions();}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearRecycle)){
             // The blob pack already collected this frame's blocks while they were hot, unless packets changed since.
-            if(AsyncPacketRecycle){recycleJob?.GetAwaiter().GetResult();recycleJob=null;int count=E.PrecollectedFor==E.WorldPackets.Count?E.Precollected:CollectRecycled(E.WorldPackets);E.PrecollectedFor=-1;E.WorldPackets.Clear();
-                if(count>0){var blocks=recycleScratch;recycleJob=System.Threading.Tasks.Task.Run(()=>ReflectedConstantBuffer.RecycleMany(blocks,count));}
-                (recycleScratch,recycleSpare)=(recycleSpare,recycleScratch);}
-            else{ReflectedConstantBuffer.RecycleMany(recycleScratch,CollectRecycled(E.WorldPackets));E.WorldPackets.Clear();}}
+            if(AsyncPacketRecycle){recycleJob?.GetAwaiter().GetResult();recycleJob=null;var e=E;int count=e.PrecollectedFor==e.WorldPackets.Count?e.Precollected:CollectRecycled(e.WorldPackets);e.PrecollectedFor=-1;e.WorldPackets.Clear();
+                if(count>0){var blocks=e.RecycleBlocks;recycleJob=System.Threading.Tasks.Task.Run(()=>ReflectedConstantBuffer.RecycleMany(blocks,count));}
+                (e.RecycleBlocks,e.RecycleSpare)=(e.RecycleSpare,e.RecycleBlocks);}
+            else{ReflectedConstantBuffer.RecycleMany(E.RecycleBlocks,CollectRecycled(E.WorldPackets));E.WorldPackets.Clear();}}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearOcclusion))if(WorldReady)QueueOcclusion(0,Array.Empty<NativeOcclusionDraw>());
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearHighlights)){E.HighlightPackets.Clear();if(WorldReady)Check(HighlightApi.Queue(context,null,0),context);}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearWorldQueue))if(WorldReady)Check(WorldApi.Queue(context,null,0,null,null,null,0),context);}

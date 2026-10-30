@@ -35,10 +35,14 @@ public sealed partial class NativeBackend
     internal void ClearResidentMainOwners(){foreach(uint owner in residentOwners.Keys)residentRemovals.Add(owner);residentOwners.Clear();residentSets.Clear();}
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int ResidentOwnersFn(IntPtr context,IntPtr set,uint setCount,IntPtr removed,uint removedCount);
     ResidentOwnersFn residentOwnersApi;MainOwnerOrder[] residentSetScratch=Array.Empty<MainOwnerOrder>();uint[] residentRemoveScratch=Array.Empty<uint>();
+    // QueueMainOrder: the changes stage A sealed into this frame's emission (SealFrameEmission), then any made since
+    // on this timeline (single thread, or a frame launched without a seal).
     unsafe void FlushResidentMainOwners(){
-        if(residentSets.Count==0&&residentRemovals.Count==0)return;
-        if(residentSetScratch.Length<residentSets.Count)residentSetScratch=new MainOwnerOrder[residentSets.Count*2];if(residentRemoveScratch.Length<residentRemovals.Count)residentRemoveScratch=new uint[residentRemovals.Count*2];
-        int sets=0,removals=0;foreach(var entry in residentSets)residentSetScratch[sets++]=new MainOwnerOrder{Owner=entry.Key,Group=entry.Value};foreach(uint owner in residentRemovals)residentRemoveScratch[removals++]=owner;
+        var e=E;if(residentSets.Count==0&&residentRemovals.Count==0&&e.ResidentSets.Count==0&&e.ResidentRemovals.Count==0)return;
+        int setTotal=e.ResidentSets.Count+residentSets.Count,removeTotal=e.ResidentRemovals.Count+residentRemovals.Count;
+        if(residentSetScratch.Length<setTotal)residentSetScratch=new MainOwnerOrder[setTotal*2];if(residentRemoveScratch.Length<removeTotal)residentRemoveScratch=new uint[removeTotal*2];
+        int sets=0,removals=0;foreach(var entry in e.ResidentSets)residentSetScratch[sets++]=entry;foreach(uint owner in e.ResidentRemovals)residentRemoveScratch[removals++]=owner;e.ResidentSets.Clear();e.ResidentRemovals.Clear();
+        foreach(var entry in residentSets)residentSetScratch[sets++]=new MainOwnerOrder{Owner=entry.Key,Group=entry.Value};foreach(uint owner in residentRemovals)residentRemoveScratch[removals++]=owner;
         residentOwnersApi??=(ResidentOwnersFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_world_resident_main_owners"),typeof(ResidentOwnersFn));
         fixed(MainOwnerOrder* set=residentSetScratch)fixed(uint* removed=residentRemoveScratch)Check(residentOwnersApi(context,(IntPtr)set,(uint)sets,(IntPtr)removed,(uint)removals),context);
         residentSets.Clear();residentRemovals.Clear();
@@ -56,7 +60,7 @@ public sealed partial class NativeBackend
     [StructLayout(LayoutKind.Sequential,Pack=4)]struct MainDrawOrder {public uint Group,Part;}
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int MainOrderFn(IntPtr context,IntPtr orders,uint count);
     MainOrderFn mainOrderApi;MainDrawOrder[] mainOrderScratch=Array.Empty<MainDrawOrder>();
-    [StructLayout(LayoutKind.Sequential,Pack=4)]struct MainOwnerOrder {public uint Owner,Group;}
+    [StructLayout(LayoutKind.Sequential,Pack=4)]internal struct MainOwnerOrder {public uint Owner,Group;}
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int MainOwnersFn(IntPtr context,IntPtr owners,uint count);
     MainOwnersFn mainOwnersApi;MainOwnerOrder[] mainOwnerScratch=Array.Empty<MainOwnerOrder>();
     unsafe void QueueMainOrder(){

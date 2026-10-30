@@ -29,7 +29,7 @@ public sealed partial class NativeBackend
         else if(drawScratch.Length<E.WorldPackets.Count)drawScratch=new NativeWorldDraw[E.WorldPackets.Count];
         instanceOffsets.Clear();int objectUsed=0,instanceUsed=0;byte* arena=null;
         // Collect the blocks to recycle at the next prologue while the packets are in cache (see ClearWorldPackets).
-        bool collect=AsyncPacketRecycle;int collected=0;if(collect&&recycleScratch.Length<E.WorldPackets.Count)recycleScratch=new byte[E.WorldPackets.Count][];
+        bool collect=AsyncPacketRecycle;int collected=0;if(collect&&E.RecycleBlocks.Length<E.WorldPackets.Count)E.RecycleBlocks=new byte[E.WorldPackets.Count][];
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.BlobPack)){
         if(recipes && WorldArenaEnabled){
             long total=0;for(int i=0;i<E.WorldPackets.Count;++i){var constants=PacketAt(i).Constants;if(constants==null)throw new ArgumentException("World object/instance data mismatch.");total+=(constants.Length+objectAlignment-1)/objectAlignment*objectAlignment;}
@@ -38,7 +38,7 @@ public sealed partial class NativeBackend
         }
         for(int i=0;i<E.WorldPackets.Count;++i)
         {
-            ref readonly var packet=ref PacketAt(i);int bytes=checked((int)(packet.Count*64L));if(collect&&packet.RecycleConstants)recycleScratch[collected++]=packet.Constants;
+            ref readonly var packet=ref PacketAt(i);int bytes=checked((int)(packet.Count*64L));if(collect&&packet.RecycleConstants)E.RecycleBlocks[collected++]=packet.Constants;
             if(packet.Constants==null || packet.Instances!=null && (packet.InstanceCapacity?packet.Instances.Length<bytes:packet.Instances.Length!=bytes))throw new ArgumentException("World object/instance data mismatch.");
             int aligned=checked((packet.Constants.Length+objectAlignment-1)/objectAlignment*objectAlignment);
             if((long)objectUsed+aligned>256*1024*1024 || (long)instanceUsed+bytes>256*1024*1024)throw new ArgumentException("World blob exceeds bounded upload budget.");
@@ -63,6 +63,9 @@ public sealed partial class NativeBackend
         if(PacketProfilingEnabled){long now=System.Diagnostics.Stopwatch.GetTimestamp();nativeQueueTicks+=now-started;started=now;}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.MainOrderQueue))QueueMainOrder();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeModelQueue))QueueNativeModels();
+        // Two stages: the next stage A's scene calls wait for the world queue and the cell emission only (the main order
+        // must precede the cells: it matches the managed draw count). The rest queues into this frame's own submission.
+        if(StageReportHook!=null){using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CellEmit))EmitCells();StageReportHook();}
         QueueTransparency();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.DecalQueue))QueueDecals();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.HighlightQueue))QueueHighlights();

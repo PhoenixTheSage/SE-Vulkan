@@ -32,6 +32,12 @@ public sealed partial class NativeBackend
         internal readonly List<(WorldPacket Geometry,byte[] Material,float? OldDecalDistance)> GlassPackets=new();
         internal readonly List<NativeBillboardDraw> BillboardPackets=new();
         internal NativeShadowExclusion[] ShadowExclusions=Array.Empty<NativeShadowExclusion>();
+        // Stage gate (Plan 3): what QueueWorld reads that stage A used to keep on the backend. The model batches this
+        // frame touched; the recycle blocks its pack collected (and their spare); the resident owner changes stage A
+        // sealed at its end, which stage B flushes with this frame's main order.
+        internal readonly List<ModelBatch> ActiveModelBatches=new();
+        internal byte[][] RecycleBlocks=Array.Empty<byte[]>(),RecycleSpare=Array.Empty<byte[]>();
+        internal readonly List<MainOwnerOrder> ResidentSets=new();internal readonly List<uint> ResidentRemovals=new();
     }
     [ThreadStatic]static FrameEmission boundEmission;
     // Stage B binds the emission stage A filled (Plan 3); the scope restores the previous binding.
@@ -59,6 +65,17 @@ public sealed partial class NativeBackend
     ContextToggleFn buildCapture,buildStages;ContextOnlyFn replayCapture,sealCapture;
     public void SetBuildCapture(bool enable){buildCapture??=(ContextToggleFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_set_build_capture"),typeof(ContextToggleFn));Check(buildCapture(context,enable?1u:0u),context);}
     public void ReplayBuildCapture(){replayCapture??=(ContextOnlyFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_replay_build_capture"),typeof(ContextOnlyFn));Check(replayCapture(context),context);}
+    // Stage B reports its captured frame's world queued; the next stage A's first scene-changing call waits for it.
+    public void StageQueued(){stageQueued??=(ContextOnlyFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_stage_queued"),typeof(ContextOnlyFn));Check(stageQueued(context),context);}
+    ContextOnlyFn stageQueued;
+    // Two stages: called by QueueWorld once the world queue and the cell emission are done (the stage gate's point).
+    internal Action StageReportHook;
+    // End of stage A: the frame's resident owner changes move into its emission, so stage B flushes exactly them while
+    // the next stage A records new ones.
+    internal void SealFrameEmission(){
+        var e=E;e.ResidentSets.Clear();e.ResidentRemovals.Clear();
+        foreach(var entry in residentSets)e.ResidentSets.Add(new MainOwnerOrder{Owner=entry.Key,Group=entry.Value});
+        foreach(uint owner in residentRemovals)e.ResidentRemovals.Add(owner);residentSets.Clear();residentRemovals.Clear();}
     // Ends stage A's capture: its calls wait, in frame order, for that frame's stage B to replay them.
     public void SealBuildCapture(){sealCapture??=(ContextOnlyFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_seal_build_capture"),typeof(ContextOnlyFn));Check(sealCapture(context),context);}
     // Two build stages (Plan 3 milestone 5): queue-time pass snapshots per submission and lazily opened upload batches.

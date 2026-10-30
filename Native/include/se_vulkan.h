@@ -790,6 +790,8 @@ SEVK_API int32_t SEVK_CALL sevk_set_census_phase(void* ctx,uint32_t phase);
 /* Plan 3 build capture: deferrable calls from a capturing thread queue until replayed (in issue order). */
 SEVK_API int32_t SEVK_CALL sevk_set_build_capture(void* ctx,uint32_t enable);
 SEVK_API int32_t SEVK_CALL sevk_seal_build_capture(void* ctx);
+/* Plan 3 stage gate: stage B reports its captured frame's world queued. */
+SEVK_API int32_t SEVK_CALL sevk_stage_queued(void* ctx);
 SEVK_API int32_t SEVK_CALL sevk_replay_build_capture(void* ctx);
 /* Plan 3 two build stages: queue-time pass snapshots per submission and lazily opened upload batches. */
 SEVK_API int32_t SEVK_CALL sevk_set_build_stages(void* ctx,uint32_t enable);

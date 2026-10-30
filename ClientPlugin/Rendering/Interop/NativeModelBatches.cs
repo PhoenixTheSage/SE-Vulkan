@@ -8,7 +8,7 @@ public sealed partial class NativeBackend
     public bool ModelBatchingEnabled {get;set;}=Environment.GetEnvironmentVariable("SE_VULKAN_MODEL_BATCHING")=="1";
     ModelBatchStats modelBatchStats;
     public ModelBatchStats GetModelBatchStats()=>modelBatchStats;
-    private sealed class ModelTemplate
+    internal sealed class ModelTemplate
     {
         public PreparedPart[] Parts;public int Hash,Id;public ulong NativeHandle;public uint NativeEpoch,NativeResourceRevision;public WorldRecipe[] NativeRecipes;
         public bool Same(PreparedPart[] parts){if(parts.Length!=Parts.Length)return false;for(int i=0;i<parts.Length;i++){var a=Parts[i];var b=parts[i];if(!a.OldOrder.Equals(b.OldOrder)||a.ViewFlags!=b.ViewFlags||a.Pipeline!=b.Pipeline||a.Lod!=b.Lod||a.Mesh!=b.Mesh||a.Color!=b.Color||a.Normal!=b.Normal||a.Extensions!=b.Extensions||a.Alpha!=b.Alpha||a.Tint!=b.Tint||a.Emissive!=b.Emissive||a.Dither!=b.Dither)return false;}return true;}
@@ -22,8 +22,8 @@ public sealed partial class NativeBackend
         public override bool Equals(object value)=>value is ModelBatchKey key&&Equals(key);
         public override int GetHashCode(){unchecked{int h=Template;h=h*31+(int)Flags;h=h*31+(int)Cascades;h=h*31+(int)MainGroup;h=h*31+Cell;h=h*31+X;h=h*31+Y;return h*31+Z;}}
     }
-    private sealed class ModelBatch {public ModelTemplate Template;public int Frame=-1,Slot;public uint Count;public byte[] Instances=new byte[256];public int[] Packets;public byte[][] Constants;public WorldRecipe[] Recipes;public Vector3 Origin;public float Radius;}
-    readonly Dictionary<int,List<ModelTemplate>> modelTemplates=new();readonly List<ModelTemplate> modelTemplateSlots=new();readonly Dictionary<ModelBatchKey,ModelBatch> modelBatches=new();readonly List<ModelBatch> modelBatchSlots=new(),activeModelBatches=new();uint modelBatchEpoch;
+    internal sealed class ModelBatch {public ModelTemplate Template;public int Frame=-1,Slot;public uint Count;public byte[] Instances=new byte[256];public int[] Packets;public byte[][] Constants;public WorldRecipe[] Recipes;public Vector3 Origin;public float Radius;}
+    readonly Dictionary<int,List<ModelTemplate>> modelTemplates=new();readonly List<ModelTemplate> modelTemplateSlots=new();readonly Dictionary<ModelBatchKey,ModelBatch> modelBatches=new();readonly List<ModelBatch> modelBatchSlots=new();List<ModelBatch> activeModelBatches=>E.ActiveModelBatches;uint modelBatchEpoch;
     void BeginModelBatches(){modelBatchStats=new ModelBatchStats{Enabled=ModelBatchingEnabled?1u:0u};activeModelBatches.Clear();if(modelBatches.Count>32768 || modelTemplateSlots.Count>32768){modelBatches.Clear();modelBatchSlots.Clear();modelTemplates.Clear();modelTemplateSlots.Clear();modelBatchEpoch++;}}
     ModelTemplate TemplateFor(PreparedActor actor){
         var hint=actor.ModelHint;if(ReferenceEquals(hint.Owner,this)&&hint.Epoch==modelBatchEpoch&&hint.Template>=0&&hint.Template<modelTemplateSlots.Count)return modelTemplateSlots[hint.Template];

@@ -3783,3 +3783,87 @@ reads while A runs:
 - transparency, decals, highlights, exclusions;
 - the cell emission.
 
+### Stage A alongside stage B's `QueueWorld`, batches 114–118 (2026-10-30)
+
+**Goal.** Run stage A(N+1) alongside stage B(N)'s replay and `QueueWorld`,
+instead of starting after them.
+
+**Native stage gate (opt-in, `SE_VULKAN_STAGE_GATE=1`).**
+- **Ticket and report.** A capturing stage A takes a ticket. Its first
+  scene call that needs a result waits until stage B reports its world
+  queued (`sevk_stage_queued`).
+- **Held calls.** Until then, stage A's deferrable scene calls (the pass
+  clear, pass and cell commits) are held in order and run when the gate
+  opens.
+- **Which calls wait.** The ordinary pass and cell exports that change what
+  `queue_world` reads (register, remove, bind level, cell commit and remove,
+  clear models, selectors) use `call_gated`.
+- **Earlier report.** Stage B reports right after the native queue, the main
+  order and the cell emission. The main order must precede the cells, since
+  it checks the managed draw count. Transparency, decals, highlights and
+  exclusions then queue into its own submission.
+
+**Shared state moved per frame (the audit).** Each was racy once A overlaps
+`QueueWorld`:
+- **Packet recycle arrays** (`RecycleBlocks`): A's recycle job could reuse
+  blocks B was still copying.
+- **Active model batches:** A's `BeginModelBatches` cleared the list B's
+  `FinalizeModelBatches` iterates.
+- **Resident owner changes:** A seals them into its emission at its end, and
+  B flushes exactly those (`SealFrameEmission`).
+- **Model batching and bulk models** are forced off under two stages.
+
+**Race fixed (in every mode).** `call` and `call_scene` checked the frame
+gate before waiting for the recording, but not after.
+- **How it struck.** A call waiting on recording N−1's end could lose
+  `api_mutex` to stage B's `begin_frame`, then run inside frame N.
+- **What it caused.** The failures in batch 116: "invalid offscreen render
+  arguments" and "invalid world recipe registration".
+- **Fix.** Both now re-check the gate after every recording wait.
+
+**Snapshot reads.** Under two stages, `call_snapshot` reads always come from
+the latest launch snapshot: occlusion, shadow feedback, flares, resolution,
+probes. Starting earlier, stage A otherwise waited out B's open frame and
+collected them fresh.
+
+**Results, orbit.** Same session (batch 118) unless noted.
+
+| Lane | Interval ms | P95 ms | Notes |
+|---|---|---|---|
+| DX11 | 4.23 / 4.23 | 4.77 / 4.70 | |
+| Split | 4.55 / 4.50 | 7.45 / 7.44 | |
+| Two stages, native gate | 4.50 / 4.50 | 7.61 / 7.23 | gate waits 0.07 s in all (batch 115); build thread 3.89 ms; the waits moved to feedback reads, and every phase slowed slightly |
+| **Two stages, wait at start** | **4.32 / 4.36** | **5.56 / 5.72** | the earlier report, snapshot reads and race fix |
+
+- **Interior is inconclusive.** Gate: 4.61 / 4.26. Wait at start:
+  4.65 / 4.71.
+- **The overlap exists but buys no speed.** It adds CPU contention, so
+  waiting at the start is the default.
+
+### Contention knobs, batch 119 (2026-10-30)
+
+**Setup.** Base: two stages, wait at start, orbit. Each knob ran twice,
+interleaved with three base runs. Machine: i9-9900K, 8 cores and 16
+threads. Placement is by ideal processor: build on CPU 2, launch on 4,
+recording on 6, present on 8 (new `SE_VULKAN_LAUNCH_CPU` and
+`SE_VULKAN_PRESENT_CPU`).
+
+| Knob | Intervals ms | Mean | Mean P95 |
+|---|---|---|---|
+| Base | 4.44, 4.32, 4.43 | 4.40 | 5.74 |
+| Placement | 4.31, 4.29 | **4.30** | **5.44** |
+| No stage spin (`SE_VULKAN_STAGE_SPIN_US=0`) | 4.30, 4.36 | 4.33 | 5.54 |
+| Build and launch AboveNormal | 4.35, 4.37 | 4.36 | 5.62 |
+| 5 pool workers | 4.42, 4.33 | 4.38 | 5.67 |
+| Placement + pool affinity `FC03` | 4.43, 4.31 | 4.37 | 5.60 |
+| 3 pool workers | 4.40, 4.38 | 4.39 | 5.70 |
+
+**Contention is real but small.**
+- **Placement** is the only consistent gain: about 0.1 ms, and the best P95.
+- **No stage spin** comes next.
+- **The rest are inside the base's spread** (±0.06 ms).
+
+**What a governor could buy.** At most about 0.1 ms, by placing the
+frame-chain threads and dropping spin under load. It would not close the
+gap to DX11's 4.23 alone.
+
