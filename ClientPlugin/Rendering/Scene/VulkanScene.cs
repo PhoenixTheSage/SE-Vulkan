@@ -33,7 +33,7 @@ namespace ClientPlugin.Rendering.Scene
             public MyActor Actor;
             // The game actor id, cached at creation: Build never reads the MyActor (frame split, milestone 2).
             public uint Id;
-            public readonly ActorFrame[] Frames={new ActorFrame(),new ActorFrame()};
+            public readonly ActorFrame[] Frames={new ActorFrame(),new ActorFrame(),new ActorFrame()};
             public uint CandidateStamp;
             // Dirty marks made during Apply, folded into the Build flags at the latch (VulkanSceneHandoff).
             public byte ApplyDirtyBits;
