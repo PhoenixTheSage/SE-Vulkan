@@ -675,7 +675,9 @@ struct Renderer {uint32_t recipe_generation=1;
     bool spot_grid=env_flag("SE_VULKAN_SPOT_GRID",true);
     // Spot lighting passes run the stock spot shader as a full-screen triangle; scissor each to its projected cone (C2).
     bool spot_scissor_enabled=env_flag("SE_VULKAN_SPOT_SCISSOR",true);uint64_t spot_scissor_pixels{},spot_full_pixels{};
-    bool pass_material_reuse=env_flag("SE_VULKAN_PASS_MATERIAL_REUSE",false);uint64_t world_mesh_revision{},pass_mesh_checked_revision{UINT64_MAX};
+    bool pass_material_reuse=env_flag("SE_VULKAN_PASS_MATERIAL_REUSE",false);
+    // SE_VULKAN_PASS_STREAM_PARALLEL_KB: the stream copy goes to the pool from this size (default 2048 KB).
+    uint64_t pass_stream_parallel_bytes=[]{const char* v=std::getenv("SE_VULKAN_PASS_STREAM_PARALLEL_KB");return (v?std::strtoull(v,nullptr,10):2048ull)*1024;}();uint64_t world_mesh_revision{},pass_mesh_checked_revision{UINT64_MAX};
     bool parallel_main=env_flag("SE_VULKAN_PARALLEL_MAIN",true);
     std::atomic<bool> record_released{false};std::unique_lock<std::mutex>* record_lock{};std::unique_lock<std::mutex>* scene_lock{};
     uint64_t early_releases{};
@@ -2395,7 +2397,7 @@ struct Renderer {uint32_t recipe_generation=1;
         critical.detach();
         try{join_present(false);}catch(...){}stop_submits();stop_decoupled();
         try{join_cells_emit();}catch(...){}
-        retire_job.join();csm_job.join();csm_copy_pending=false;
+        retire_job.join();csm_job.join();csm_copy_pending=false;try{new_main_job.wait();}catch(...){}new_main_pending=false;
         try{cells_join();}catch(...){}
         try{join_present(false);}catch(...){}
         try{end_uploads();}catch(...){}

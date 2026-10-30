@@ -58,7 +58,9 @@ void prepare_pass_gpu(WorldSlot& slot){
     // Large frames copy the streams on the pool; every stream lands at the offset computed above.
     auto* stream_base=static_cast<uint8_t*>(pass_scene.instances[slot_index].mapped);
     auto copy_stream=[&](uint32_t i){const auto& data=streams[i]->instances;if(!data.empty())std::memcpy(stream_base+stream_offsets[i],data.data(),data.size());};
-    cpu_lap("pass stream copy");if(bytes>=32*1024&&streams.size()>1)sevk_jobs::parallel_for(sevk_jobs::Upload,sevk_jobs::Priority::High,4,uint32_t(streams.size()),copy_stream);
+    // About 210 KB in about 1,300 small streams on Pertam: fanning those out cost 0.28 ms of scheduling and joins
+    // (C1), so only multi-megabyte frames go to the pool.
+    cpu_lap("pass stream copy");if(bytes>=pass_stream_parallel_bytes&&streams.size()>1)sevk_jobs::parallel_for(sevk_jobs::Upload,sevk_jobs::Priority::High,4,uint32_t(streams.size()),copy_stream);
     else for(uint32_t i=0;i<streams.size();++i)copy_stream(i);
     for(auto& group:groups)pass_scene.offsets.push_back(stream_offsets.at(group.stream->index));
     record_count("pass stream bytes",double(bytes));record_count("pass streams",double(streams.size()));record_count("pass groups",double(groups.size()));record_count("pass material reuse",same?1.0:0.0);

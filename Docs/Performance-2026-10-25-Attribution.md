@@ -3691,3 +3691,27 @@ Build's own work is about 3.9 ms (`BuildThread` 4.81 minus 0.89 waiting).
 slower that session; DX11 can't show it, capped at the refresh. The
 recording chain (laps 4.06, submit 0.16, lock 0.09, gap 0.45) still paces
 the frame.
+
+### Recording trims: stream copy and NEW main entries, batches 87–90 (2026-10-29)
+
+- **Pass stream copy.** About 210 KB a frame in about 1,330 streams. The
+  pool fan-out (from 32 KB) cost 0.28 ms in scheduling and joins; the copy
+  now goes to the pool only from 2 MB (`SE_VULKAN_PASS_STREAM_PARALLEL_KB`):
+  0.285 → 0.18 ms. What remains is pointer-chasing the stream objects.
+- **NEW main entries.** Building the NEW main entry list (owner-order hash
+  lookups for about 2,900 pass groups plus a stable sort) took 0.23–0.27 ms
+  on the recording thread. It now runs on a worker started after spot
+  recording (starting it before spots slowed the spot workers), with each
+  stream's owner order looked up once (`SE_VULKAN_EARLY_MAIN_ENTRIES=0`
+  reverts). The lap is 0.005 ms.
+- **Pass material reuse** (`SE_VULKAN_PASS_MATERIAL_REUSE=1`) hits only 26%
+  of frames on Pertam and saves nothing; it stays off.
+
+Same-session A/B (batch 90, two rounds): recording laps 4.00 / 3.80 →
+3.45 / 3.64 ms, but cadence 5.04 / 4.75 → 4.72 / 4.74 ms. The launch gap
+(+0.1 ms) and the blocked submit (+0.08 ms) grew: the build thread and the
+GPU + present chain (GPU 2.55, present 1.45 ms) are now as long as the
+recording. All three chains have to come down together.
+
+The disk filled (T: 0 bytes free, harness run copies 454 GB); old runs were
+trimmed to their reports and logs with the user's approval.
