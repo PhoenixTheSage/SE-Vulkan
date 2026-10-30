@@ -1,6 +1,6 @@
 # Attribution, LCD spikes and allocation
 
-This implements the first session of `planning/PLAN-2026-10-25-MEET-DX11.md`:
+This implements the first session of `planning/PLAN-2026-10-25-MEET-DX11.md` (its pre-2026-10-30 text is in `planning/PLAN-2026-10-25-MEET-DX11-history.md`):
 instrumentation (0.1–0.3), the gap outside Draw→Present (0.5), the object
 motion gate (0.4) and the first allocation pass (1.1).
 
