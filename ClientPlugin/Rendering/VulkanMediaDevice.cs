@@ -18,6 +18,7 @@ internal interface IVulkanMediaDevice : IDisposable
     void Upload(ulong texture, NativeMediaFrame frame);
     void Remove(ulong texture);
     void FlushRemovals();
+    bool HasRemovals { get; }
     void ReleaseProxy(uint id);
     void Draw(MyRenderMessageDrawVideo draw, ulong texture, int width, int height);
 }
@@ -45,6 +46,7 @@ internal sealed class VulkanMediaDevice : IVulkanMediaDevice
     // removed at the hand-off (FlushRemovals), once the batch Build may still draw no longer names it.
     readonly System.Collections.Generic.List<ulong> pendingRemovals = new();
     public void Remove(ulong texture) { sprites.RemoveVideoTexture(texture); pendingRemovals.Add(texture); }
+    public bool HasRemovals => pendingRemovals.Count > 0;
     public void FlushRemovals() { foreach (ulong texture in pendingRemovals) backend.RemoveResource(0, texture); pendingRemovals.Clear(); }
     public void ReleaseProxy(uint id)
     {

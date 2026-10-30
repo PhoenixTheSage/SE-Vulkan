@@ -789,7 +789,10 @@ SEVK_API int32_t SEVK_CALL sevk_set_timing_reports(void* ctx,uint32_t active);
 SEVK_API int32_t SEVK_CALL sevk_set_census_phase(void* ctx,uint32_t phase);
 /* Plan 3 build capture: deferrable calls from a capturing thread queue until replayed (in issue order). */
 SEVK_API int32_t SEVK_CALL sevk_set_build_capture(void* ctx,uint32_t enable);
+SEVK_API int32_t SEVK_CALL sevk_seal_build_capture(void* ctx);
 SEVK_API int32_t SEVK_CALL sevk_replay_build_capture(void* ctx);
+/* Plan 3 two build stages: queue-time pass snapshots per submission and lazily opened upload batches. */
+SEVK_API int32_t SEVK_CALL sevk_set_build_stages(void* ctx,uint32_t enable);
 SEVK_API int32_t SEVK_CALL sevk_get_jitter(void* ctx,float* state,uint32_t count);
 SEVK_API int32_t SEVK_CALL sevk_native_owner_capabilities(void* ctx,SevkNativeOwnerCapabilities* state);
 /* flags1 marks a stock restore: execute stock without pack-only GPU production instrumentation. */

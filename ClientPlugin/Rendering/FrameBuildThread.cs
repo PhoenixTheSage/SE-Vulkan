@@ -17,12 +17,12 @@ internal sealed class FrameBuildThread : IDisposable
     volatile bool stopping;
     bool inFlight;
 
-    public FrameBuildThread()
+    public FrameBuildThread(string name = "Vulkan frame build")
     {
         // Build is the frame's critical path under the split (the render thread waits for it), so it runs Highest:
         // it keeps its core against job workers and game threads. SE_VULKAN_BUILD_PRIORITY=above restores AboveNormal.
         var priority = Environment.GetEnvironmentVariable("SE_VULKAN_BUILD_PRIORITY") == "above" ? ThreadPriority.AboveNormal : ThreadPriority.Highest;
-        thread = new Thread(Run) { IsBackground = true, Name = "Vulkan frame build", Priority = priority };
+        thread = new Thread(Run) { IsBackground = true, Name = name, Priority = priority };
         thread.Start();
     }
     public bool InFlight => inFlight;

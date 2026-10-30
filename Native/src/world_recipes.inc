@@ -145,7 +145,7 @@ void queue_world_recipes(const void* frame,uint32_t frame_bytes,const float* pro
     else{world.current().draw_objects.clear();if(object_bytes)world.current().draw_objects.assign(objects,objects+object_bytes);}
     arena_submission=-1;arena_bytes=0;world.current().instances.clear();if(instance_bytes)world.current().instances.data.assign(instances,instances+instance_bytes);
     world.current().queue_work.copy_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-copy_at).count());world.current().queue_work.draws=count;
-    std::memcpy(world.current().frame.data(),frame,1280);std::memcpy(world.current().projection.data(),projection,64);std::memcpy(world.current().inverse.data(),inverse,64);world.current().queued=true;
+    std::memcpy(world.current().frame.data(),frame,1280);std::memcpy(world.current().projection.data(),projection,64);std::memcpy(world.current().inverse.data(),inverse,64);world.current().queued=true;capture_queued_view();
     world.current().queue_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-queued_at).count());world.current().recipe_stats.geometry_reused=count;
 }
 VkDescriptorSet world_recipe_material(WorldSlot& slot,const WorldDraw& draw){

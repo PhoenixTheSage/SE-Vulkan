@@ -56,8 +56,12 @@ public sealed partial class NativeBackend
     // replays them, so they reach the frame stage B finishes.
     [System.Runtime.InteropServices.UnmanagedFunctionPointer(System.Runtime.InteropServices.CallingConvention.Cdecl)]delegate int ContextToggleFn(IntPtr ctx,uint value);
     [System.Runtime.InteropServices.UnmanagedFunctionPointer(System.Runtime.InteropServices.CallingConvention.Cdecl)]delegate int ContextOnlyFn(IntPtr ctx);
-    ContextToggleFn buildCapture;ContextOnlyFn replayCapture;
+    ContextToggleFn buildCapture,buildStages;ContextOnlyFn replayCapture,sealCapture;
     public void SetBuildCapture(bool enable){buildCapture??=(ContextToggleFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_set_build_capture"),typeof(ContextToggleFn));Check(buildCapture(context,enable?1u:0u),context);}
     public void ReplayBuildCapture(){replayCapture??=(ContextOnlyFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_replay_build_capture"),typeof(ContextOnlyFn));Check(replayCapture(context),context);}
+    // Ends stage A's capture: its calls wait, in frame order, for that frame's stage B to replay them.
+    public void SealBuildCapture(){sealCapture??=(ContextOnlyFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_seal_build_capture"),typeof(ContextOnlyFn));Check(sealCapture(context),context);}
+    // Two build stages (Plan 3 milestone 5): queue-time pass snapshots per submission and lazily opened upload batches.
+    public void SetBuildStages(bool enable){buildStages??=(ContextToggleFn)System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_set_build_stages"),typeof(ContextToggleFn));Check(buildStages(context,enable?1u:0u),context);}
     void RotateEmission(){if(!EmissionRotateEnabled||boundEmission!=null)return;var camera=current.CameraPosition;current=ReferenceEquals(current,rotation[0])?rotation[1]:rotation[0];current.CameraPosition=camera;BindAliases();}
 }

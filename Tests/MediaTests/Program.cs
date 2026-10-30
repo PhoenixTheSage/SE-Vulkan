@@ -117,6 +117,7 @@ sealed class FakeMedia : IVulkanMediaDevice
     public void Upload(ulong texture, NativeMediaFrame frame) { ++Uploads; Log.Add("upload"); }
     public void Remove(ulong texture) { ++Removes; Log.Add("remove"); }
     public void FlushRemovals() { }
+    public bool HasRemovals => false;
     public void ReleaseProxy(uint id) { ++Releases; Log.Add("release"); }
     public void Draw(MyRenderMessageDrawVideo draw, ulong texture, int width, int height) { ++Draws; }
     public void Dispose() { Available = false; Log.Add("dispose"); }

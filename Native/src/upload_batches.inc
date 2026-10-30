@@ -1,4 +1,5 @@
 void begin_uploads() {
+    if(build_stages&&batching_uploads&&!recording)return; // a lazily opened batch (two build stages) is already collecting
     if(recording || batching_uploads)throw std::runtime_error("upload collection requires a closed frame and no nested batch");
     batching_uploads=true;
 }

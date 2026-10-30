@@ -504,7 +504,7 @@ struct Renderer {uint32_t recipe_generation=1;
     // issue order instead of running or deferring; stage B replays them (sevk_replay_build_capture) through the same
     // paths, so they reach the frame stage B finishes. Scene calls (pass and cell commits, preparation, publication)
     // are not captured: stage A owns the scene and issues them in order, as Build does today.
-    static inline thread_local bool tl_capturing=false;std::vector<DeferredCall> captured;uint64_t captured_calls{},captured_replays{};
+    static inline thread_local bool tl_capturing=false;std::vector<DeferredCall> captured;std::deque<std::vector<DeferredCall>> sealed;uint64_t captured_calls{},captured_replays{};
     std::mutex deferred_mutex;bool record_in_flight{};std::vector<DeferredCall> deferred;
     struct ReadSnapshot {SevkWorkStats work{};SevkResolutionStats resolution{};SevkShadowFeedback shadow{};uint32_t cache_mask{},cache_count{};bool cache_valid{};std::vector<SevkOcclusionResult> occlusion;uint64_t occlusion_token{};std::vector<SevkFlareResult> flares;float render_fraction=1;SevkProbeStats probe_stats{sizeof(SevkProbeStats),SEVK_ABI_VERSION};SevkProbeScheduleStats probe_schedule{sizeof(SevkProbeScheduleStats),SEVK_ABI_VERSION};};
     // Phase 4 frame split, milestone 5: the thread whose begin_frame opened the current frame. With the frame gate
@@ -513,17 +513,27 @@ struct Renderer {uint32_t recipe_generation=1;
     // one thread already keeps the order, and the census counts calls that would have waited.
     bool frame_gate=env_flag("SE_VULKAN_FRAME_GATE",env_flag("SE_VULKAN_FRAME_SPLIT",false));
     std::thread::id frame_owner{};uint32_t gate_waiters{};uint64_t gate_offowner_calls{},gate_waits{},gate_wait_us{};
-    bool frame_gated()const{return recording&&frame_owner!=std::thread::id{}&&frame_owner!=std::this_thread::get_id()&&!tl_recording_thread;}
+    // Two build stages: `recording` stays set until the recording thread ends the command buffer, but once stage B's
+    // end_frame_async hands the frame over, stage A runs as the single build thread did during a recording.
+    bool frame_gated()const{return recording&&frame_owner!=std::thread::id{}&&frame_owner!=std::this_thread::get_id()&&!tl_recording_thread&&!(build_stages&&(record_pending||record_running));}
     // Holds api_mutex. Census: an off-owner call meeting an open frame. Gate: wait until no frame is open or recording.
     void pass_frame_gate(std::unique_lock<std::mutex>& lock){
         if(!frame_gated())return;++gate_offowner_calls;if(!frame_gate)return;
         auto at=std::chrono::steady_clock::now();++gate_waiters;struct Leave{uint32_t& n;~Leave(){--n;}} leave{gate_waiters};
-        record_cv.wait(lock,[&]{return !frame_gated()&&!record_pending&&!record_running;});
+        // Two build stages: only stage B's open frame is waited out. The recording it launches is then handled as on
+        // one build thread (deferred calls, read snapshots, scene calls after the early release, ordinary calls wait).
+        if(build_stages)record_cv.wait(lock,[&]{return !frame_gated();});
+        else record_cv.wait(lock,[&]{return !frame_gated()&&!record_pending&&!record_running;});
         uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-at).count());++gate_waits;gate_wait_us+=us;
 #if defined(_WIN32)
         if(pipeline_census){void* frames[4]{};CaptureStackBackTrace(0,4,frames,nullptr);for(void* frame:frames){auto& site=gate_sites[frame];++site.first;site.second+=us;}}
 #endif
     }
+    // Two build stages: the deferrable, snapshot and deferrable-scene wrappers wait out stage B's open frame first, so
+    // that once it closes they see the recording in flight and take their deferred or snapshot paths.
+    void wait_open_frame(){
+        if(!build_stages)return;std::unique_lock lock(api_mutex);if(!frame_gated())return;
+        struct Notify{Renderer* r;~Notify(){if(r->gate_waiters)r->record_cv.notify_all();}} notify{this};pass_frame_gate(lock);}
     // Census only: exports whose calls waited at the frame gate, and scene calls made off the frame owner.
     std::map<void*,std::pair<uint64_t,uint64_t>> gate_sites,offowner_scene_sites;std::mutex offowner_sites_mutex;
     // Census (milestone 6 diagnosis): scene calls (call_scene) that waited for a recording to release or finish, and
@@ -719,11 +729,23 @@ struct Renderer {uint32_t recipe_generation=1;
     uint64_t pass_static_dirty()const{return rec_view_active()?rec_view.static_dirty:pass_scene.static_dirty;}
     // A scene call that needs the full recording to finish first (rare paths).
     void wait_for_recording_end(){if(!overlap_from_caller()||!scene_lock)return;record_cv.wait(*scene_lock,[&]{return !record_running;});if(record_failed){record_failed=false;throw std::runtime_error(record_error);}flush_deferred();}
+    // Plan 3 milestone 5 (build stages): the pass snapshot a recording uses is taken when its world is queued, per
+    // submission, because the next frame's stage A clears, prepares and commits the pass scene before this recording
+    // starts. Off, the recording snapshots the live pass scene when it releases the lock, as before.
+    bool build_stages{};std::array<RecordingView,2> queued_views;
+    void capture_queued_view(){
+        if(!build_stages)return;auto& view=queued_views[world.active_submission];
+        view.groups=pass_scene.scene.render_groups();view.streams=pass_scene.scene.instance_streams();view.pass_ready=pass_scene.ready;
+        view.spot_views=pass_scene.spot_views;view.static_dirty=pass_scene.static_dirty;pass_scene.static_dirty=0;view.valid=true;}
     // Recording thread, after settle_cells: snapshot, plan probes, release api_mutex.
     void release_recording_lock(){
         if(!early_release||!tl_recording_thread||!record_lock||!record_lock->owns_lock()||pending_world.active)return;
-        rec_view.groups=pass_scene.scene.render_groups();rec_view.streams=pass_scene.scene.instance_streams();rec_view.pass_ready=pass_scene.ready;
-        rec_view.spot_views=pass_scene.spot_views;rec_view.static_dirty=pass_scene.static_dirty;pass_scene.static_dirty=0;rec_view.valid=true;
+        auto& queued=queued_views[uint32_t(std::max(world.recording_submission,0))&1u];
+        if(build_stages&&queued.valid){rec_view.groups.swap(queued.groups);rec_view.streams.swap(queued.streams);rec_view.pass_ready=queued.pass_ready;
+            rec_view.spot_views=queued.spot_views;rec_view.static_dirty=queued.static_dirty;queued.valid=false;queued.groups.clear();queued.streams.clear();}
+        else{rec_view.groups=pass_scene.scene.render_groups();rec_view.streams=pass_scene.scene.instance_streams();rec_view.pass_ready=pass_scene.ready;
+        rec_view.spot_views=pass_scene.spot_views;rec_view.static_dirty=pass_scene.static_dirty;pass_scene.static_dirty=0;}
+        rec_view.valid=true;
         if(!probe_planned)plan_probes();++early_releases;
         record_released.store(true,std::memory_order_release);record_lock->unlock();record_cv.notify_all();
     }
@@ -804,6 +826,9 @@ struct Renderer {uint32_t recipe_generation=1;
     EnvironmentState environment;
     std::array<UploadSlot,2> upload_slots{}; uint32_t upload_index{};
     bool batching_uploads{}; VkCommandBuffer batch_command{}; uint64_t upload_fence{};
+    // Build stages (Plan 3 milestone 5): stage A uploads while stage B closes the batch, so an upload outside a batch
+    // opens one (stage B's next EndUploads submits it) and BeginUploads inside one is a no-op.
+    bool lazy_batch_open()const{return build_stages&&!batching_uploads&&!recording;}
     struct GpuMark { const char* name; uint64_t value; };
     std::array<GpuMark,8192> gpu_marks{}; uint32_t gpu_mark_head{}; bool gpu_checkpoints{}, gpu_fault{};
     void gpu_mark(VkCommandBuffer cmd,const char* name,uint64_t value){if(!gpu_checkpoints || !cmd)return;auto& m=gpu_marks[gpu_mark_head++%gpu_marks.size()];m={name,value};vkCmdSetCheckpointNV(cmd,&m);}
@@ -1011,6 +1036,7 @@ struct Renderer {uint32_t recipe_generation=1;
         }
     }
     Buffer make_buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, bool host, bool cpu_read=false,bool device_local=false) {
+        if(lazy_batch_open())batching_uploads=true;
         if(batching_uploads && host && usage==VK_BUFFER_USAGE_TRANSFER_SRC_BIT) {
             if(batch_command){uint64_t pending=0;for(const auto& b:upload_slots[upload_index].pending)if(b.usage==VK_BUFFER_USAGE_TRANSFER_SRC_BIT)pending+=b.bytes;
                 if(pending+bytes>64*1024*1024)flush_uploads();}
@@ -1059,6 +1085,7 @@ struct Renderer {uint32_t recipe_generation=1;
         vkCmdPipelineBarrier2(cmd, &dependency);
     }
     template<class Record> void immediate(Record&& record) {
+        if(lazy_batch_open())batching_uploads=true;
         if(batching_uploads){ensure_upload_command();record(batch_command);return;}
         VkCommandBufferAllocateInfo allocate{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO }; allocate.commandPool = upload_pool;
         allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; allocate.commandBufferCount = 1;
@@ -1942,7 +1969,7 @@ struct Renderer {uint32_t recipe_generation=1;
         std::memcpy(slot.uniform.mapped, &constants, sizeof(constants)); check(vmaFlushAllocation(allocator, slot.uniform.memory, 0, sizeof(constants)), "flush frame constants");
         VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }; begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check(vkBeginCommandBuffer(slot.command, &begin), "begin frame command"); frame_mark("frame begin");
-        frame_meshes.clear(); frame_sprites.clear(); frame_lines[0].clear(); frame_lines[1].clear(); recording=true; frame_owner=std::this_thread::get_id(); scene_owner.store(frame_owner,std::memory_order_relaxed); guest.resources_open=true; lap(7); return 0;
+        frame_meshes.clear(); frame_sprites.clear(); frame_lines[0].clear(); frame_lines[1].clear(); recording=true; frame_owner=std::this_thread::get_id(); if(!build_stages)scene_owner.store(frame_owner,std::memory_order_relaxed); /* two build stages: the launch thread opens frames, stage A owns the scene */ guest.resources_open=true; lap(7); return 0;
     }
     // Acquires the slot's swapchain image. begin_frame (can_resize) recreates the swapchain on
     // OUT_OF_DATE and retries once; end_frame cannot resize an open frame, so it marks the surface
@@ -2525,6 +2552,7 @@ template<class Fn> int32_t call_deferrable(void* context, Fn fn) {
     if (!context) { global_error = "null Vulkan context"; return -1; }
     auto* renderer = static_cast<Renderer*>(context);
     if(Renderer::tl_capturing){renderer->note_phase_call();std::lock_guard queue(renderer->deferred_mutex);renderer->captured.push_back({std::move(fn),false});++renderer->captured_calls;return 0;}
+    renderer->wait_open_frame();
     {std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){renderer->note_phase_call();renderer->deferred.push_back({std::move(fn),false});return 0;}}
     return call(context,fn);
 }
@@ -2562,7 +2590,7 @@ template<class Fn> int32_t call_scene(void* context, Fn&& fn) {
 template<class Fn> int32_t call_deferrable_scene(void* context, Fn fn) {
     if (!context) { global_error = "null Vulkan context"; return -1; }
     auto* renderer = static_cast<Renderer*>(context);
-    renderer->check_scene_caller("call_deferrable_scene");
+    renderer->check_scene_caller("call_deferrable_scene");renderer->wait_open_frame();
     // Once an early-released recording has taken its snapshots, run the call as a scene call (call_scene replays the
     // queued scene calls first, so order holds) instead of copying, queuing and replaying it. Under the frame split
     // Build runs almost entirely while the previous frame records, so every commit took the queue before.
@@ -2585,7 +2613,7 @@ template<class Fn> int32_t call_unlocked(void* context, Fn&& fn) {
 // function returning nullopt falls back to the ordinary (waiting) call.
 template<class Snapshot,class Fn> int32_t call_snapshot(void* context,Snapshot&& snapshot,Fn&& fn){
     if (!context) { global_error = "null Vulkan context"; return -1; }
-    auto* renderer = static_cast<Renderer*>(context);
+    auto* renderer = static_cast<Renderer*>(context);renderer->wait_open_frame();
     {std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){std::lock_guard read(renderer->snapshot_mutex);std::optional<int32_t> result=snapshot(*renderer);if(result)return *result;}}
     return call(context,fn);
 }
@@ -2702,10 +2730,17 @@ template<class Fn> bool capture_scene(void* context,Fn fn){
     if(!context||!Renderer::tl_capturing)return false;auto* renderer=static_cast<Renderer*>(context);
     std::lock_guard queue(renderer->deferred_mutex);renderer->captured.push_back({std::move(fn),true});++renderer->captured_calls;return true;}
 int32_t SEVK_CALL sevk_set_build_capture(void*,uint32_t enable){Renderer::tl_capturing=enable!=0;return 0;}
-// Replays the captured calls in issue order, each through its own path (deferred while a recording is in flight).
+// Plan 3 milestone 5: queue-time pass snapshots and lazy upload batching for two build stages.
+int32_t SEVK_CALL sevk_set_build_stages(void* ctx,uint32_t enable){return call(ctx,[&](Renderer& r){r.build_stages=enable!=0;if(!r.build_stages)for(auto& v:r.queued_views){v.valid=false;v.groups.clear();v.streams.clear();}return 0;});}
+// Ends a frame's capture (stage A): its calls move to the sealed queue, in frame order, for stage B to replay.
+int32_t SEVK_CALL sevk_seal_build_capture(void* ctx){
+    if(!ctx){global_error="null Vulkan context";return -1;}auto* renderer=static_cast<Renderer*>(ctx);
+    std::lock_guard queue(renderer->deferred_mutex);renderer->sealed.push_back({});renderer->sealed.back().swap(renderer->captured);return 0;}
+// Replays the oldest sealed frame's calls in issue order, each through its own path (deferred while a recording is in
+// flight). Calls captured but not yet sealed (the next frame's stage A) stay put.
 int32_t SEVK_CALL sevk_replay_build_capture(void* ctx){
     if(!ctx){global_error="null Vulkan context";return -1;}auto* renderer=static_cast<Renderer*>(ctx);if(Renderer::tl_capturing){global_error="build capture replayed while capturing";return -1;}
-    std::vector<Renderer::DeferredCall> work;{std::lock_guard queue(renderer->deferred_mutex);work.swap(renderer->captured);++renderer->captured_replays;}
+    std::vector<Renderer::DeferredCall> work;{std::lock_guard queue(renderer->deferred_mutex);if(renderer->sealed.empty())return 0;work.swap(renderer->sealed.front());renderer->sealed.pop_front();++renderer->captured_replays;}
     for(auto& item:work){int32_t result=item.scene?call_deferrable_scene(ctx,std::move(item.fn)):call_deferrable(ctx,std::move(item.fn));if(result)return result;}
     return 0;}
 // Census phase of the calling thread (Plan 3 milestone 3); no lock, no wait.

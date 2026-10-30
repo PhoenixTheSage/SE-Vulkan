@@ -5,9 +5,11 @@ template<class Build> void hdr_pipeline_pair(VkPipeline& current,VkPipeline& oth
     if(current)vkDestroyPipeline(device,current,nullptr);if(other)vkDestroyPipeline(device,other,nullptr);current=a;other=b;
 }
 void set_hdr_quality(uint32_t high){
-    if(recording || batching_uploads || high>1)throw std::runtime_error("invalid HDR quality change/state");
+    if(high>1)throw std::runtime_error("invalid HDR quality change/state");
     VkFormat format=high?VK_FORMAT_R16G16B16A16_SFLOAT:VK_FORMAT_B10G11R11_UFLOAT_PACK32;
-    if(format==world.hdr_format)return;require_probe_format();wait(next_completion);
+    // Unchanged (nearly every frame): nothing to do, even while another build stage's upload batch is open.
+    if(format==world.hdr_format)return;
+    if(recording || batching_uploads)throw std::runtime_error("invalid HDR quality change/state");require_probe_format();wait(next_completion);
     for(uint32_t i=0;i<4;++i)std::swap(world.lights[i],world.other_hdr_lights[i]);
     for(uint32_t i=1;i<3;++i)std::swap(environment.pipelines[i],environment.other_hdr[i]);
     std::swap(transparency.resolve,transparency.other_hdr_resolve);
@@ -166,7 +168,7 @@ void queue_world(const void* frame,uint32_t frame_bytes,const float* projection,
         own.packet.object_constants=nullptr;own.packet.instances=nullptr;world.current().draws.push_back(own);}
     }
     world.current().queue_work.draws=count;world.current().queue_work.validation_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-validate_at).count());
-    std::memcpy(world.current().frame.data(),frame,1280);std::memcpy(world.current().projection.data(),projection,64);std::memcpy(world.current().inverse.data(),inverse,64);world.current().queued=true;world.current().queue_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-queued_at).count());
+    std::memcpy(world.current().frame.data(),frame,1280);std::memcpy(world.current().projection.data(),projection,64);std::memcpy(world.current().inverse.data(),inverse,64);world.current().queued=true;capture_queued_view();world.current().queue_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-queued_at).count());
 }
 VkDescriptorSet world_set(WorldSlot& s,VkDescriptorSetLayout layout,VkDescriptorPool private_pool=nullptr){std::unique_lock<std::mutex> owner(world_descriptor_mutex,std::defer_lock);if(!private_pool)owner.lock();VkDescriptorSetAllocateInfo a{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};a.descriptorPool=private_pool?private_pool:s.pool;a.descriptorSetCount=1;a.pSetLayouts=&layout;VkDescriptorSet result{};check(vkAllocateDescriptorSets(device,&a,&result),"allocate world frame descriptors");return result;}
 VkDescriptorSet world_cached_set(WorldSlot& s,VkDescriptorSetLayout layout,bool& keep){VkDescriptorSetAllocateInfo a{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};a.descriptorPool=s.material_pool;a.descriptorSetCount=1;a.pSetLayouts=&layout;VkDescriptorSet result{};if(vkAllocateDescriptorSets(device,&a,&result)==VK_SUCCESS){keep=true;return result;}keep=false;a.descriptorPool=s.pool;check(vkAllocateDescriptorSets(device,&a,&result),"allocate world material descriptors");return result;}

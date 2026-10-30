@@ -360,6 +360,7 @@ namespace ClientPlugin.Rendering.Content
         // assembling, so its native meshes are released at the hand-off, once that Build has joined.
         public bool DeferReleases;
         private readonly List<VulkanModel> pendingReleases = new List<VulkanModel>();
+        public bool HasReleases => pendingReleases.Count > 0;
         public void FlushReleases() { foreach (var model in pendingReleases) Release(model); pendingReleases.Clear(); }
         public void Dispose() => Clear();
     }

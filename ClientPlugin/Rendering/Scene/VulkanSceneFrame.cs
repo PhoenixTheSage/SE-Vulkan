@@ -97,6 +97,7 @@ public sealed partial class VulkanScene
     // the hand-off (FlushModelReleases), after the Build that may still draw them has joined.
     public bool FrameSplit{get=>models.DeferReleases;set=>models.DeferReleases=value;}
     public void FlushModelReleases()=>models.FlushReleases();
+    public bool HasModelReleases=>models.HasReleases;
     // Build prologue: the native light and spot submission of the latched frame.
     void CommitLights(NativeBackend target)
     {

@@ -11,7 +11,7 @@ namespace ClientPlugin.Rendering;
 // hand-off rewrites. Two records alternate, so stage A can fill frame N+1's while stage B launches frame N.
 internal sealed class LaunchRecord
 {
-    public bool DrawScene,WorldQueued;
+    public bool DrawScene,WorldQueued,Captured;
     public byte[] WorldFrame;public float[] Projection,Inverse;
     public MatrixD ViewProjection;public Vector3D Camera;public MyEnvironmentLightData Light;
     public bool HqTarget;
