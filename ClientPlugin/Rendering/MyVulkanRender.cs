@@ -203,7 +203,7 @@ public sealed class MyVulkanRender : IMyRender
                     // Model batches and bulk models keep per-frame state on the backend that stage B's QueueWorld reads.
                     backend.ModelBatchingEnabled = false; backend.BulkModelsEnabled = false;
                     backend.StageReportHook = () => { var launch = reportingLaunch; if (launch != null) ReportQueued(launch); };
-                    launchThread = new FrameBuildThread("Vulkan frame launch", "SE_VULKAN_LAUNCH_CPU");
+                    launchThread = new FrameBuildThread("Vulkan frame launch", "SE_VULKAN_LAUNCH_CPU", 2);
                     sessionLog?.Write("Build stages: stage B (launch) runs on its own thread (SE_VULKAN_BUILD_STAGES=2).");
                 }
             }

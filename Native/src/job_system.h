@@ -43,14 +43,17 @@ inline void raise_worker_priority(std::thread& thread,int priority){
     (void)thread;(void)priority;
 #endif
 }
-// Plan 2 D1, thread placement for the topology experiment (measurement only; unset changes nothing).
-// "<cpu>" sets the thread's ideal processor; "<cpu>!" pins it to that logical CPU (processor group 0).
-inline void place_thread(std::thread& thread,const char* env){
+// Thread placement (Plan 2 D1; default under the split since Plan 3 batch 121). "<cpu>" sets the thread's ideal
+// processor; "<cpu>!" pins it to that logical CPU (processor group 0). Unset, a fallback CPU >= 0 (renderer.cpp's
+// default_thread_cpu) becomes the ideal processor.
+inline void place_thread(std::thread& thread,const char* env,int fallback=-1){
 #ifdef _WIN32
-    const char* value=std::getenv(env);if(!value||!*value)return;char* end=nullptr;unsigned long cpu=std::strtoul(value,&end,10);if(end==value||cpu>=64)return;
+    const char* value=std::getenv(env);
+    if(!value||!*value){if(fallback>=0&&fallback<64)SetThreadIdealProcessor(thread.native_handle(),static_cast<unsigned long>(fallback));return;}
+    char* end=nullptr;unsigned long cpu=std::strtoul(value,&end,10);if(end==value||cpu>=64)return;
     if(*end=='!')SetThreadAffinityMask(thread.native_handle(),1ull<<cpu);else SetThreadIdealProcessor(thread.native_handle(),cpu);
 #else
-    (void)thread;(void)env;
+    (void)thread;(void)env;(void)fallback;
 #endif
 }
 // SE_VULKAN_JOB_AFFINITY=<hex mask>: pins every pool worker to those logical CPUs (group 0), e.g. to keep them off
@@ -211,7 +214,7 @@ class Stage {
 public:
     Stage(){thread=std::thread([this]{worker();});shared().stage_started();}
     Stage(const Stage&)=delete;Stage& operator=(const Stage&)=delete;
-    void place(const char* env){place_thread(thread,env);}
+    void place(const char* env,int fallback=-1){place_thread(thread,env,fallback);}
     ~Stage(){{std::lock_guard lock(mutex);stopping=true;}ready.notify_all();if(thread.joinable())thread.join();shared().stage_stopped();}
     bool pending(){std::lock_guard lock(mutex);return busy;}
     void start(std::function<void()> fn){

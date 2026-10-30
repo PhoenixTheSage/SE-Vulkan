@@ -3867,3 +3867,67 @@ recording on 6, present on 8 (new `SE_VULKAN_LAUNCH_CPU` and
 frame-chain threads and dropping spin under load. It would not close the
 gap to DX11's 4.23 alone.
 
+### Default placement, batches 120–125 (2026-10-30)
+
+**Pinning plus no stage spin (batches 120–121).**
+- **Batch 120 is void.** Every lane slowed by about 0.8 ms, DX11 included,
+  under outside load.
+- **Batch 121** ran Vulkan 4.8–5.0 ms while DX11 held 4.23. Comparing
+  neighbouring runs:
+  - placement beat the base by about 0.1 ms;
+  - placement plus no spin (4.83, 4.89) matched placement alone.
+- **Decision.** Stage spin stays on; placement becomes the default.
+
+**The default.** Under `SE_VULKAN_FRAME_SPLIT=1`, with no `SE_VULKAN_*_CPU`
+variable set, each frame-chain thread takes physical core k's first logical
+CPU as its ideal processor (a hint, not a pin). Core 0 is skipped.
+
+| Slot | Thread |
+|---|---|
+| 1 | build |
+| 2 | launch |
+| 3 | recording stage |
+| 4 | present worker |
+
+- **Source.** The cores come from `GetLogicalProcessorInformationEx`:
+  native `default_thread_cpu` and managed `ThreadPlacement.DefaultCpu`.
+- **On this machine** that is CPUs 2, 4, 6 and 8, as in batch 119.
+- **Limits.** Only with six or more physical cores. `SE_VULKAN_THREAD_PLACEMENT=0`
+  turns it off; an explicit variable overrides it.
+
+**Default vs off.**
+
+| Batch | Default (ms) | Off (ms) |
+|---|---|---|
+| 122 | 4.59, 4.58 | 4.93, 4.52, 4.60 |
+| 125 | 4.40, 4.74, 4.67, 4.51 (mean **4.58**, P95 6.28) | 4.55, 4.80, 4.54, 4.75 (mean 4.66, P95 6.36) |
+
+Batch 122 ran a stale native DLL (see below), so only the build and launch
+threads were placed. Batch 125 placed all four.
+
+**Across batches 119, 121, 122 and 125:** about −0.1 ms, the same sign every
+time, and near the noise each time.
+
+**Harness pitfall.** The harness loads
+`Assets/Native/win-x64/se_vulkan_native.dll`, which only
+`scripts/build-native.ps1 -Deploy` refreshes. A plain CMake build tests the
+previous native code.
+
+**New VUID, from the Steam overlay.**
+- **What fired.** `VUID-VkWriteDescriptorSet-descriptorType-00339`, 3–4
+  times at startup in every validation run since 17:00. The image was a
+  storage image without `STORAGE` usage, with swapchain usage flags.
+- **Its source.** A stack dump added to the validation callback (first four
+  errors, nearest exports) puts it inside `vkQueuePresentKHR`, in
+  `SteamOverlayVulkanLayer64.dll` → `gameoverlayrenderer64.dll`. The overlay
+  binds our swapchain image as a storage image.
+- **Why it is not ours.** Validation runs up to 11:16 were clean. The likely
+  trigger is a Steam client update this afternoon, which may also explain the
+  Vulkan-only slowdown from batch 120 on. Overlays are out of scope.
+
+**Open: an intermittent render stall.** "Too few rendered frames" means
+fewer than 10 frames in the harness's 30 s sampling window.
+- **Seen 4 times:** twice on 10-28, before build stages existed; in batch
+  121 (placement plus no spin); and in batch 122 (default placement).
+- **Evidence so far.** The world loads and unloads normally, and no renderer
+  error is logged.

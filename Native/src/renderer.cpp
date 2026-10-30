@@ -61,6 +61,32 @@ static bool env_flag(const char* name,bool fallback){const char* v=std::getenv(n
 #else
 #include <dlfcn.h>
 #endif
+// Default thread placement under the frame split (Plan 3, batches 119 and 121: about 0.1 ms off the present cadence).
+// With no SE_VULKAN_*_CPU variable set, the frame's pacing threads take distinct physical cores as their ideal
+// processor (a hint, not a pin), skipping core 0: slot 1 the build thread, 2 the launch thread, 3 the recording stage,
+// 4 the present worker. Only with SE_VULKAN_FRAME_SPLIT=1 and six or more physical cores; SE_VULKAN_THREAD_PLACEMENT=0
+// turns it off. ClientPlugin's ThreadPlacement.DefaultCpu applies the same rule to the managed build and launch threads.
+int default_thread_cpu(int slot){
+#if defined(_WIN32)
+    static const std::vector<int> cores=[]{
+        std::vector<int> first;
+        const char* split=std::getenv("SE_VULKAN_FRAME_SPLIT");const char* off=std::getenv("SE_VULKAN_THREAD_PLACEMENT");
+        if(!split||std::strcmp(split,"1")!=0||(off&&std::strcmp(off,"0")==0))return first;
+        DWORD length=0;GetLogicalProcessorInformationEx(RelationProcessorCore,nullptr,&length);
+        std::vector<char> buffer(length);
+        if(!length||!GetLogicalProcessorInformationEx(RelationProcessorCore,reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()),&length))return first;
+        for(DWORD offset=0;offset<length;){
+            auto* info=reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()+offset);if(!info->Size)break;
+            const GROUP_AFFINITY& group=info->Processor.GroupMask[0];
+            if(group.Group==0&&group.Mask)first.push_back(std::countr_zero(uint64_t(group.Mask)));
+            offset+=info->Size;}
+        std::sort(first.begin(),first.end());if(first.size()<6)first.clear();
+        return first;}();
+    return slot>0&&size_t(slot)<cores.size()?cores[size_t(slot)]:-1;
+#else
+    (void)slot;return -1;
+#endif
+}
 // Diagnostic wrappers preserve the exact Vulkan calls and return values.
 // Only sampled frames bind a thread-local collector; recording workers own
 // separate lanes and are joined before the owner reduces their counters.
@@ -679,7 +705,7 @@ struct Renderer {uint32_t recipe_generation=1;
             VkResult result=vkQueueSubmit2(queue,1,&submit,VK_NULL_HANDLE);if(result!=VK_SUCCESS){submit_error.store(result);return;}
             if(present)enqueue_decoupled(std::move(present));});}
     void enqueue_decoupled(std::function<PresentResult()> task){
-        if(!decoupled.thread.joinable()){decoupled.stopping=false;decoupled.thread=std::thread([this]{decoupled_worker();});sevk_jobs::place_thread(decoupled.thread,"SE_VULKAN_PRESENT_CPU");start_present_watchdog();}
+        if(!decoupled.thread.joinable()){decoupled.stopping=false;decoupled.thread=std::thread([this]{decoupled_worker();});sevk_jobs::place_thread(decoupled.thread,"SE_VULKAN_PRESENT_CPU",default_thread_cpu(4));start_present_watchdog();}
         render_wait_stage=2;std::unique_lock lock(decoupled.mutex);decoupled.cv.wait(lock,[&]{return decoupled.tasks.size()<2;});render_wait_stage=0;decoupled.tasks.push_back(std::move(task));decoupled.cv.notify_all();}
     // Applies finished presents on the calling (frame) thread; all=true waits for every queued one first.
     void drain_decoupled(bool all,bool propagate=true){std::vector<PresentResult> done;
@@ -925,6 +951,23 @@ struct Renderer {uint32_t recipe_generation=1;
                 ++r->stats.validation_errors;
                 r->last_validation_error=data && data->pMessage?std::string(data->pMessage).substr(0,500):"Vulkan validation error";
                 if(r->stats.validation_errors<=16 && data && data->pMessage) std::fprintf(stderr,"SE-Vulkan validation: %s\n",data->pMessage);
+#if defined(_WIN32)
+                // The first errors name their caller: each native frame's nearest export (no PDB ships), so the outermost
+                // sevk_ frame is the API call that triggered it.
+                if(r->stats.validation_errors<=4){
+                    static std::mutex symbols_mutex;std::lock_guard symbols_lock(symbols_mutex);
+                    HANDLE process=GetCurrentProcess();static bool symbols=SymInitialize(process,nullptr,TRUE);
+                    void* frames[48]{};USHORT count=CaptureStackBackTrace(1,48,frames,nullptr);
+                    alignas(SYMBOL_INFO) char storage[sizeof(SYMBOL_INFO)+256]{};auto* info=reinterpret_cast<SYMBOL_INFO*>(storage);
+                    for(USHORT i=0;i<count;++i){
+                        info->SizeOfStruct=sizeof(SYMBOL_INFO);info->MaxNameLen=255;DWORD64 offset=0;
+                        HMODULE module{};char path[MAX_PATH]{};
+                        if(GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,static_cast<LPCSTR>(frames[i]),&module))GetModuleFileNameA(module,path,MAX_PATH);
+                        const char* name=std::strrchr(path,'\\');name=name?name+1:path;
+                        bool resolved=symbols&&SymFromAddr(process,DWORD64(frames[i]),&offset,info);
+                        std::fprintf(stderr,"  #%u %s!%s+0x%llx (rva 0x%llx)\n",unsigned(i),name,resolved?info->Name:"?",static_cast<unsigned long long>(offset),static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i])-reinterpret_cast<uintptr_t>(module)));}
+                    std::fflush(stderr);}
+#endif
                 if(active_buffer_destroy)std::fprintf(stderr,"SE-Vulkan buffer destruction owner: %s:%u (%s), bytes=%llu usage=0x%x\n",active_buffer_destroy_source.file_name(),active_buffer_destroy_source.line(),active_buffer_destroy_source.function_name(),static_cast<unsigned long long>(active_buffer_destroy->bytes),active_buffer_destroy->usage);
             }
             r->recent_validation = data && data->pMessage ? std::string(data->pMessage).substr(0, 500) : "Vulkan validation message";
@@ -1154,7 +1197,7 @@ struct Renderer {uint32_t recipe_generation=1;
         }
         const char* marker_env=std::getenv("SE_VULKAN_PROFILE_MARKERS");profile_markers=marker_env && std::strcmp(marker_env,"1")==0;
         if(const char* world_queue=std::getenv("SE_VULKAN_DEFERRED_WORLD_QUEUE");world_queue&&std::strcmp(world_queue,"1")==0)deferred_world_queue=true;
-        record_stage.place("SE_VULKAN_STAGE_CPU");
+        record_stage.place("SE_VULKAN_STAGE_CPU",default_thread_cpu(3));
         if(const char* recipes=std::getenv("SE_VULKAN_PARALLEL_RECIPES");recipes&&std::strcmp(recipes,"0")==0)parallel_recipes=false;
         if(const char* cell_publish=std::getenv("SE_VULKAN_DEFERRED_CELL_PUBLISH");cell_publish&&std::strcmp(cell_publish,"1")==0)deferred_cell_publish=true;
         if(const char* pass_spots=std::getenv("SE_VULKAN_PARALLEL_PASS_SPOTS");pass_spots&&std::strcmp(pass_spots,"0")==0)parallel_pass_spots=false;

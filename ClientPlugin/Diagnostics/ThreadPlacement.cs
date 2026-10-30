@@ -5,10 +5,11 @@ using System.Text;
 
 namespace ClientPlugin.Diagnostics;
 
-// Plan 2 D1, the topology experiment (measurement only; with the variables unset nothing changes).
+// Thread placement (Plan 2 D1; default under the split since Plan 3 batch 121).
 // SE_VULKAN_BUILD_CPU on the frame build thread, like SE_VULKAN_STAGE_CPU on the native recording stage:
 // "<cpu>" sets the ideal processor, "<cpu>!" pins the thread to that logical CPU (processor group 0).
-// The first placement, or SE_VULKAN_TOPOLOGY_LOG=1, logs which logical CPUs share a core (SMT) and an L3.
+// Unset, the thread's default slot applies (DefaultCpu). The first placement, or SE_VULKAN_TOPOLOGY_LOG=1, logs which
+// logical CPUs share a core (SMT) and an L3.
 internal static class ThreadPlacement
 {
     [DllImport("kernel32.dll")] static extern IntPtr GetCurrentThread();
@@ -16,18 +17,40 @@ internal static class ThreadPlacement
     [DllImport("kernel32.dll")] static extern UIntPtr SetThreadAffinityMask(IntPtr thread, UIntPtr mask);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetLogicalProcessorInformationEx(int relationship, IntPtr buffer, ref uint length);
     static bool logged;
+    static int[] coreFirsts;
 
-    // Applies the placement named by the variable to the calling thread.
-    public static void PlaceCurrent(string variable)
+    // Applies the placement named by the variable to the calling thread; unset, the default for its slot (DefaultCpu).
+    public static void PlaceCurrent(string variable, int slot = 0)
     {
         string value = Environment.GetEnvironmentVariable(variable);
         if (Environment.GetEnvironmentVariable("SE_VULKAN_TOPOLOGY_LOG") == "1" || !string.IsNullOrEmpty(value)) LogTopology();
-        if (string.IsNullOrEmpty(value)) return;
+        if (string.IsNullOrEmpty(value))
+        {
+            int fallback = DefaultCpu(slot);
+            if (fallback >= 0) { SetThreadIdealProcessor(GetCurrentThread(), (uint)fallback); Log("Default placement: ideal CPU " + fallback + " for " + System.Threading.Thread.CurrentThread.Name + "."); }
+            return;
+        }
         bool pin = value.EndsWith("!", StringComparison.Ordinal);
         if (!uint.TryParse(pin ? value.Substring(0, value.Length - 1) : value, out uint cpu) || cpu >= 64) return;
         if (pin) SetThreadAffinityMask(GetCurrentThread(), (UIntPtr)(1UL << (int)cpu));
         else SetThreadIdealProcessor(GetCurrentThread(), cpu);
         Log(variable + "=" + value + " applied to " + System.Threading.Thread.CurrentThread.Name + ".");
+    }
+    // The same rule as native default_thread_cpu (renderer.cpp): under SE_VULKAN_FRAME_SPLIT=1, slot k (1 build, 2 launch,
+    // 3 recording stage, 4 present worker) takes the first logical CPU of physical core k, skipping core 0, as its ideal
+    // processor. Only with six or more physical cores; SE_VULKAN_THREAD_PLACEMENT=0 turns it off. -1 means no default.
+    public static int DefaultCpu(int slot)
+    {
+        if (slot <= 0 || Environment.GetEnvironmentVariable("SE_VULKAN_FRAME_SPLIT") != "1" || Environment.GetEnvironmentVariable("SE_VULKAN_THREAD_PLACEMENT") == "0") return -1;
+        if (coreFirsts == null)
+        {
+            var firsts = new List<int>();
+            try { foreach (var (kind, mask, _) in Relations()) if (kind == "core" && mask != 0) { int first = 0; while ((mask >> first & 1) == 0) first++; firsts.Add(first); } }
+            catch { firsts.Clear(); }
+            firsts.Sort();
+            coreFirsts = firsts.Count >= 6 ? firsts.ToArray() : Array.Empty<int>();
+        }
+        return slot < coreFirsts.Length ? coreFirsts[slot] : -1;
     }
     static void LogTopology()
     {
