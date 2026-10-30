@@ -385,6 +385,7 @@ public sealed class MyVulkanRender : IMyRender
         bool drawScene=frame.DrawScene;var camera=frame.Camera;var cameraView=frame.CameraView;var cameraProjection=frame.CameraProjection;var viewProjection=frame.ViewProjection;
         var light=frame.Light;var renderConfiguration=frame.RenderConfiguration;float animationDelta=frame.AnimationDelta;var drawTime=frame.DrawTime;var backBuffer=frame.BackBuffer;
         if(frame.ResetParticleCamera)haveParticleCamera=false;
+        var launch=NextLaunch();launch.DrawScene=drawScene;
         if(drawScene)scene.BeginBuild();
         try
         {
@@ -456,33 +457,53 @@ public sealed class MyVulkanRender : IMyRender
                 if(backend.GpuSceneEnabled){using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads();uploadsOpen=false;}
                 backend.SetCensusPhase(2);
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene)){if(VulkanScene.OverlapPublicationEnabled)scene.FinishNativePassPublication();else scene.PublishNativePassScene();}if(scene.NativePassSceneEnabled||backend.GpuSceneEnabled)scene.AddVisible(frameVisible);
-                JoinEffects();backend.SetCensusPhase(3);
-                // Stage B starts here: stage A's captured frame inputs reach native just before the world is queued.
-                EndCapture();
-                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.QueueWorld)){
-                byte[] worldFrame;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.FrameConstants))worldFrame=WorldConstants.Frame(backend.WorldFrameLayout,cameraView,projection,worldResolution.X,worldResolution.Y,frameLight,scene.BloomEmissiveness,scene.BackgroundOrientation,environment.Fog,(float)drawTime.Seconds,animationDelta,renderConfiguration,haveParticleCamera?(Vector3)(camera-previousParticleCamera):Vector3.Zero,postprocess.Settings,backend.ProbesAvailableForFrame,resolution.Fraction,frame.TextureMultipliers);
-                backend.QueueWorld(worldFrame,
-                    NativeBackend.MatrixValues(reversedProjection),NativeBackend.MatrixValues(MatrixD.Invert(reversedProjection)));previousParticleCamera=camera;haveParticleCamera=true;
-                }
-                FrameProfiler.Lap(FrameProfiler.Section.Queue);
+                JoinEffects();
+                // Stage B's inputs (Plan 3 milestone 4): the world constants from stage A's state, and the projections.
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.FrameConstants))launch.WorldFrame=WorldConstants.Frame(backend.WorldFrameLayout,cameraView,projection,worldResolution.X,worldResolution.Y,frameLight,scene.BloomEmissiveness,scene.BackgroundOrientation,environment.Fog,(float)drawTime.Seconds,animationDelta,renderConfiguration,haveParticleCamera?(Vector3)(camera-previousParticleCamera):Vector3.Zero,postprocess.Settings,backend.ProbesAvailableForFrame,resolution.Fraction,frame.TextureMultipliers);
+                launch.Projection=NativeBackend.MatrixValues(reversedProjection);launch.Inverse=NativeBackend.MatrixValues(MatrixD.Invert(reversedProjection));launch.WorldQueued=true;
+                previousParticleCamera=camera;haveParticleCamera=true;
             }
             JoinEffects();
-            }
-            finally { if(effectsJob!=null){effectsJob.Value.Join();effectsJob=null;} EndCapture(); EndOpenUploads(); }
-            backend.SetHdrQuality(renderConfiguration.User.HqTarget);
-            FrameProfiler.Lap(FrameProfiler.Section.Queue);
             MatrixD reversedFrame=viewProjection;reversedFrame.M13=reversedFrame.M14-reversedFrame.M13;reversedFrame.M23=reversedFrame.M24-reversedFrame.M23;reversedFrame.M33=reversedFrame.M34-reversedFrame.M33;reversedFrame.M43=reversedFrame.M44-reversedFrame.M43;
-            GuestBridge.SetFrameInputs(camera, light.SunColorRaw, light.SunLightDirection, light.SunDiffuseFactor, light.AmbientDiffuseFactor);
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.FrameSlot))frameOpen = backend.BeginFrame(reversedFrame, light.SunLightDirection, light.SunColorRaw * light.SunDiffuseFactor,
-                new Vector3(0.06f * Math.Max(0.1f, light.AmbientDiffuseFactor)), new Color(3, 5, 12));
-            FrameProfiler.Lap(FrameProfiler.Section.FrameSlot);
-            if (!frameOpen) { shadows.CancelPreparedFrame();FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); return; }
-            using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Sprites)){int spriteCount=sprites.MainPacketsInto(ref mainSprites,backBuffer.X,backBuffer.Y);backend.DrawSprites(mainSprites,spriteCount);}
-            debugLines.Submit(backend, camera);
-            FrameProfiler.Lap(FrameProfiler.Section.Sprites);
+            launch.ViewProjection=reversedFrame;launch.Camera=camera;launch.Light=light;launch.HqTarget=renderConfiguration.User.HqTarget;
+            launch.SpriteCount=sprites.MainPacketsInto(ref launch.Sprites,backBuffer.X,backBuffer.Y);
+            debugLines.Prepare(camera,launch.Lines);
+            launch.ShadowUpdateMask=shadows.UpdateMask;launch.Emission=backend.CurrentEmission;
             previousDraw = drawTime;
+            }
+            catch { if(effectsJob!=null){effectsJob.Value.Join();effectsJob=null;} EndCapture(); EndOpenUploads(); throw; }
         }
         finally{if(drawScene)scene.EndBuild();}
+        LaunchFrame(launch);
+    }
+    // Plan 3 milestone 4: two launch records alternate between stage A (filling) and stage B (launching).
+    readonly LaunchRecord[] launchRecords={new LaunchRecord(),new LaunchRecord()};int launchIndex;uint launchedShadowMask;
+    LaunchRecord NextLaunch(){launchIndex^=1;var record=launchRecords[launchIndex];record.WorldQueued=false;record.SpriteCount=0;record.Emission=null;return record;}
+    // Stage B ("launch"): the frame's tail, from stage A's record and emission only. It binds the emission, replays stage
+    // A's captured frame inputs, queues the world, closes the upload batch, opens the frame slot and adds the sprites and
+    // debug lines; SubmitFrame then raises the guest frame callback and launches the recording.
+    void LaunchFrame(LaunchRecord launch)
+    {
+        using var bound=backend.BindEmission(launch.Emission);
+        backend.SetCensusPhase(3);
+        try{
+            // Stage A's captured frame inputs reach native just before the world is queued.
+            EndCapture();
+            if(launch.WorldQueued){using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.QueueWorld))backend.QueueWorld(launch.WorldFrame,launch.Projection,launch.Inverse);FrameProfiler.Lap(FrameProfiler.Section.Queue);}
+        }
+        finally{EndOpenUploads();}
+        backend.SetHdrQuality(launch.HqTarget);
+        FrameProfiler.Lap(FrameProfiler.Section.Queue);
+        var light=launch.Light;
+        GuestBridge.SetFrameInputs(launch.Camera, light.SunColorRaw, light.SunLightDirection, light.SunDiffuseFactor, light.AmbientDiffuseFactor);
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.FrameSlot))frameOpen = backend.BeginFrame(launch.ViewProjection, light.SunLightDirection, light.SunColorRaw * light.SunDiffuseFactor,
+            new Vector3(0.06f * Math.Max(0.1f, light.AmbientDiffuseFactor)), new Color(3, 5, 12));
+        FrameProfiler.Lap(FrameProfiler.Section.FrameSlot);
+        launchedShadowMask=launch.ShadowUpdateMask;
+        if (!frameOpen) { shadows.CancelPreparedFrame();FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); return; }
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Sprites))backend.DrawSprites(launch.Sprites,launch.SpriteCount);
+        VulkanDebugLines.Draw(backend,launch.Lines);
+        FrameProfiler.Lap(FrameProfiler.Section.Sprites);
     }
     // Plan 3 milestone 3: whether Build is capturing stage A's frame inputs (non-scene deferrable native calls and the
     // world-queue clear). They replay where stage B starts (QueueWorld); a Build that leaves early still replays them.
@@ -512,7 +533,7 @@ public sealed class MyVulkanRender : IMyRender
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GuestFrame))BackendRuntime.RaiseFrame();
         if(renderThread&&backend.PipelinedRecordingEnabled)SampleDiagnostics();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeRecord)){if(backend.PipelinedRecordingEnabled)backend.EndFrameAsync();else backend.EndFrame();} frameOpen = false;backend.SetCensusPhase(0);
-        shadows.CommitPreparedFrame();
+        shadows.CommitLaunchedFrame(launchedShadowMask);
         if(renderThread)RendererCpuProfiler.EndFrame();
         FrameProfiler.Since(FrameProfiler.Section.NativeRecord, nativeStart);
         var profiled = backend.GetWorkStats();

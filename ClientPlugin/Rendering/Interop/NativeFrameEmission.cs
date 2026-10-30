@@ -34,6 +34,10 @@ public sealed partial class NativeBackend
         internal NativeShadowExclusion[] ShadowExclusions=Array.Empty<NativeShadowExclusion>();
     }
     [ThreadStatic]static FrameEmission boundEmission;
+    // Stage B binds the emission stage A filled (Plan 3); the scope restores the previous binding.
+    internal FrameEmission CurrentEmission=>current;
+    internal readonly struct EmissionScope:IDisposable {readonly FrameEmission previous;readonly bool bound;internal EmissionScope(FrameEmission emission){previous=boundEmission;boundEmission=emission;bound=true;}public void Dispose(){if(bound)boundEmission=previous;}}
+    internal EmissionScope BindEmission(FrameEmission emission)=>new(emission);
     FrameEmission current;readonly FrameEmission[] rotation=new FrameEmission[2];int batchFrameCounter;
     // The calling thread's emission: the bound one, otherwise the current one.
     FrameEmission E{get{var bound=boundEmission;return bound!=null&&ReferenceEquals(bound.Owner,this)?bound:current;}}

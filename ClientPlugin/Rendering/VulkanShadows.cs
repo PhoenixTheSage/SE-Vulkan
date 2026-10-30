@@ -44,6 +44,10 @@ internal sealed class VulkanShadows
     private readonly Vector4[] beforeScales=new Vector4[8];private readonly Vector3D[] beforePositions=new Vector3D[8];private readonly float[] beforeFactors=new float[8];
     private bool pending,beforeScheduling,beforeFitting;private int beforeResolution,beforeCount,beforeActive;private uint retryUpdates;
     public void CommitPreparedFrame(){pending=false;retryUpdates&=~UpdateMask;}
+    // Plan 3: stage B commits the frame it launched with that frame's update mask (the next frame may already be fitted).
+    public void CommitLaunchedFrame(uint mask){pending=false;retryUpdates&=~mask;}
+    // A launch that could not open its frame while the next frame is already fitted: retry its cascades without rolling back.
+    public void RetryLaunchedFrame(uint mask){retryUpdates|=mask;}
     public void CancelPreparedFrame(){
         if(!pending)return;retryUpdates|=UpdateMask;System.Array.Copy(beforeWorld,worldMatrices,8);System.Array.Copy(beforeExtruded,extrudedWorldMatrices,8);System.Array.Copy(beforeFitted,fitted,8);System.Array.Copy(beforeScales,cascadeScales,8);System.Array.Copy(beforePositions,updatePositions,8);System.Array.Copy(beforeFactors,ProjectionFactors,8);
         System.Array.Copy(beforeOrigins,ViewOrigins,8);lastResolution=beforeResolution;lastScheduling=beforeScheduling;lastFitting=beforeFitting;activeCascades=beforeActive;if(splits.Length!=beforeCount){splits=new float[beforeCount];matrices=new float[beforeCount*16];}
