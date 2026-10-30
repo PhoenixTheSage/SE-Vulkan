@@ -40,10 +40,10 @@ public sealed partial class NativeBackend
     {
         if(emitter==null||!ReferenceEquals(emitter.Owner,this))throw new ArgumentException("Emitter belongs to another backend.");
         if(boundEmitter!=null)throw new InvalidOperationException("Emitters splice on the render thread.");
-        if(mainGroup!=null||MainPart!=0||packetOwner!=0||(captureLogicalSelection&&logicalOwner!=uint.MaxValue))throw new InvalidOperationException("Emitter splice inside a main-group, owner or logical scope.");
-        if(worldPackets.Count+emitter.Packets.Count>65536)throw new InvalidOperationException("World packet batch exceeds 65536 draws.");
+        if(E.MainGroup!=null||MainPart!=0||E.PacketOwner!=0||(captureLogicalSelection&&logicalOwner!=uint.MaxValue))throw new InvalidOperationException("Emitter splice inside a main-group, owner or logical scope.");
+        if(E.WorldPackets.Count+emitter.Packets.Count>65536)throw new InvalidOperationException("World packet batch exceeds 65536 draws.");
         uint baseOrder=modelSubmissionOrder;
-        foreach(var source in emitter.Packets){var packet=source;packet.Order+=baseOrder;worldPackets.Add(packet);}
+        foreach(var source in emitter.Packets){var packet=source;packet.Order+=baseOrder;E.WorldPackets.Add(packet);}
         modelSubmissionOrder+=emitter.Orders;
         if(captureLogicalSelection)logicalDraws.AddRange(emitter.Logical);
         emitter.Packets.Clear();emitter.Logical.Clear();emitter.Orders=0;
@@ -67,8 +67,8 @@ public sealed partial class NativeBackend
     ulong ComputePacketSignature()
     {
         ulong hash=14695981039346656037UL;
-        for(int i=0;i<worldPackets.Count;i++){
-            var p=worldPackets[i];
+        for(int i=0;i<E.WorldPackets.Count;i++){
+            var p=E.WorldPackets[i];
             hash=Mix(hash,p.Order);hash=Mix(hash,p.MainGroup?.Order??0);hash=Mix(hash,p.MainPart);hash=Mix(hash,p.Recipe?.Handle??0);
             var old=p.OldOrder;hash=Mix(hash,old.Key);hash=Mix(hash,old.Resource);hash=Mix(hash,old.Material);hash=Mix(hash,old.Layout);hash=Mix(hash,old.Proxy);hash=Mix(hash,old.Valid);
             hash=Mix(hash,p.Pipeline);hash=Mix(hash,p.Count);hash=Mix(hash,p.Flags);hash=Mix(hash,p.CascadeMask);hash=Mix(hash,p.Owner);
@@ -93,13 +93,13 @@ public sealed partial class NativeBackend
     public int LastGlassSignatureCount {get;private set;}
     ulong ComputeGlassSignature()
     {
-        ulong hash=Mix(14695981039346656037UL,(ulong)glassPackets.Count);
-        foreach(var (p,material,distance) in glassPackets){
+        ulong hash=Mix(14695981039346656037UL,(ulong)E.GlassPackets.Count);
+        foreach(var (p,material,distance) in E.GlassPackets){
             hash=Mix(hash,p.Pipeline);hash=Mix(hash,p.Mesh);hash=Mix(hash,p.Color);hash=Mix(hash,p.Normal);hash=Mix(hash,p.Count);hash=Mix(hash,p.Flags);
             hash=MixFloat(hash,distance??-1);hash=MixBytes(hash,p.Constants,p.Constants?.Length??0);hash=MixBytes(hash,material,material?.Length??0);
             hash=MixBytes(hash,p.Instances,p.Instances==null?0:(int)Math.Min(p.Instances.LongLength,p.Count*64L));
         }
         return hash;
     }
-    void NotePacketSignature(){if(!PacketSignatureEnabled)return;LastPacketSignature=ComputePacketSignature();LastPacketSignatureCount=worldPackets.Count;LastBillboardSignature=BillboardSignature(BillboardPackets);LastGlassSignature=ComputeGlassSignature();LastGlassSignatureCount=glassPackets.Count;}
+    void NotePacketSignature(){if(!PacketSignatureEnabled)return;LastPacketSignature=ComputePacketSignature();LastPacketSignatureCount=E.WorldPackets.Count;LastBillboardSignature=BillboardSignature(BillboardPackets);LastGlassSignature=ComputeGlassSignature();LastGlassSignatureCount=E.GlassPackets.Count;}
 }

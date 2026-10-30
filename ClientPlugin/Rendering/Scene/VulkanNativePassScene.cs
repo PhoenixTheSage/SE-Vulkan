@@ -42,6 +42,8 @@ public sealed partial class VulkanScene
     // Same-process toggle for the frozen-light lane: GPU tiled point-light selection (native default on).
     bool lightTiles=System.Environment.GetEnvironmentVariable("SE_VULKAN_LIGHT_TILES")!="0";
     public bool LightTilesEnabled {get=>lightTiles;set{lightTiles=value;backend.SetLightTiles(value);}}
+    // Same-process toggle for the Plan 3 milestone 1 gate: alternate two frame emissions every frame.
+    public bool EmissionRotateEnabled {get=>backend.EmissionRotateEnabled;set=>backend.EmissionRotateEnabled=value;}
     public bool VoxelEmitAheadEnabled {get=>VulkanVoxels.EmitAheadEnabled;set=>VulkanVoxels.EmitAheadEnabled=value;}
     public bool ProbeStatsSnapshot {get=>NativeBackend.ProbeStatsSnapshotEnabled;set=>NativeBackend.ProbeStatsSnapshotEnabled=value;}
     public bool IndexExcludesOwnedActors {get=>IndexExcludesOwned;set{if(value==IndexExcludesOwned)return;IndexExcludesOwned=value;foreach(var actor in actors.Values)SyncIndexMembership(actor);}}

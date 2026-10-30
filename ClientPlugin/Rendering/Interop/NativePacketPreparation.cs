@@ -26,7 +26,7 @@ public sealed partial class NativeBackend
         double scale=1000.0/Stopwatch.Frequency;
         return new PacketPreparationStats{Enabled=PacketProfilingEnabled,RigidLookupMs=rigidLookupTicks*scale,RigidAppendMs=rigidAppendTicks*scale,
             ManagedPackMs=managedPackTicks*scale,NativeQueueMs=nativeQueueTicks*scale,AuxiliaryQueuesMs=auxiliaryQueueTicks*scale,UploadEndMs=uploadEndTicks*scale,
-            PartCacheHits=partCacheHits,PartCacheRefreshes=partCacheRefreshes,SkinnedParts=skinnedParts,CreatedBatches=createdBatches,BatchHintHits=batchHintHits,ResidentBatches=(uint)rigidBatches.Count,
+            PartCacheHits=partCacheHits,PartCacheRefreshes=partCacheRefreshes,SkinnedParts=skinnedParts,CreatedBatches=createdBatches,BatchHintHits=batchHintHits,ResidentBatches=(uint)E.RigidBatches.Count,
             ObjectBytes=packetObjectBytes,InstanceBytes=packetInstanceBytes};
     }
 }

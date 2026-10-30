@@ -10,7 +10,8 @@ public sealed partial class NativeBackend
     private TransparencyFunctions transparencyApi;
     private TransparencyFunctions TransparencyApi=>transparencyApi??(transparencyApi=new TransparencyFunctions(GetSymbol));
     public readonly Dictionary<uint,ShaderMetadata> GlassLayouts=new Dictionary<uint,ShaderMetadata>();
-    private readonly List<(WorldPacket Geometry,byte[] Material,float? OldDecalDistance)> glassPackets=new List<(WorldPacket,byte[],float?)>();
+    // Alias of the default emission's glass list for tests that reflect on it; code uses E.GlassPackets.
+    private List<(WorldPacket Geometry,byte[] Material,float? OldDecalDistance)> glassPackets;
     public void ConfigureTransparency(VulkanShaderLibrary library)
     {
         foreach(var spec in TransparencyShaderVariants.Glass){var v=library.Load(spec.Vertex);var p=library.Load(spec.Pixel);var vs=SpirvRuntimeModule.FromArtifact(v);var ps=SpirvRuntimeModule.FromArtifact(p);Check(TransparencyApi.Init(context,spec.Id,vs,(ulong)vs.Length,ps,(ulong)ps.Length),context);GlassLayouts[spec.Id]=v.Layout;}
@@ -27,16 +28,16 @@ public sealed partial class NativeBackend
     }
     public void AddGlassPacket(uint type,ulong mesh,ulong color,ulong normal,byte[] objects,byte[] material,byte[] instances=null,uint count=1,bool triangleFaceCulling=false,float? oldDecalDistanceSquared=null)
     {
-        if(!GlassLayouts.ContainsKey(type)||glassPackets.Count>=8192||material==null||material.Length!=96)throw new ArgumentException("Invalid glass pipeline/material batch.");
+        if(!GlassLayouts.ContainsKey(type)||E.GlassPackets.Count>=8192||material==null||material.Length!=96)throw new ArgumentException("Invalid glass pipeline/material batch.");
         if(oldDecalDistanceSquared.HasValue && (float.IsNaN(oldDecalDistanceSquared.Value)||oldDecalDistanceSquared.Value<0))throw new ArgumentException("Invalid old glass decal distance.");
-        glassPackets.Add((new WorldPacket{Pipeline=type,Mesh=mesh,Color=color,Normal=normal,Constants=objects,Instances=instances,Count=count,Flags=(triangleFaceCulling?1u:0u)|(oldDecalDistanceSquared.HasValue?2u:0u)},(byte[])material.Clone(),oldDecalDistanceSquared));
+        E.GlassPackets.Add((new WorldPacket{Pipeline=type,Mesh=mesh,Color=color,Normal=normal,Constants=objects,Instances=instances,Count=count,Flags=(triangleFaceCulling?1u:0u)|(oldDecalDistanceSquared.HasValue?2u:0u)},(byte[])material.Clone(),oldDecalDistanceSquared));
     }
     private uint[] GlassDecalDepthFlags()
     {
-        var flags=new uint[glassPackets.Count];var old=new List<int>();
-        for(int i=0;i<glassPackets.Count;i++)if(glassPackets[i].OldDecalDistance is float distance && distance<10000)old.Add(i);
-        old.Sort((a,b)=>glassPackets[a].OldDecalDistance.Value.CompareTo(glassPackets[b].OldDecalDistance.Value));
-        int below=0;while(below<old.Count&&glassPackets[old[below]].OldDecalDistance.Value<2.25f)below++;
+        var flags=new uint[E.GlassPackets.Count];var old=new List<int>();
+        for(int i=0;i<E.GlassPackets.Count;i++)if(E.GlassPackets[i].OldDecalDistance is float distance && distance<10000)old.Add(i);
+        old.Sort((a,b)=>E.GlassPackets[a].OldDecalDistance.Value.CompareTo(E.GlassPackets[b].OldDecalDistance.Value));
+        int below=0;while(below<old.Count&&E.GlassPackets[old[below]].OldDecalDistance.Value<2.25f)below++;
         int far=old.Count-below;
         // Installed MyTransparentModelRenderer.RenderDepthOnly loops j=below;
         // j<count, not j<below+count. Preserve that observable source bound.
@@ -45,20 +46,20 @@ public sealed partial class NativeBackend
         return flags;
     }
     public void SetBillboardProjections(float[] values){if(values==null || values.Length!=512)throw new ArgumentException("Expected 32 copied billboard matrices.");Check(TransparencyApi.Projections(context,values),context);}
-    public readonly List<NativeBillboardDraw> BillboardPackets=new List<NativeBillboardDraw>();
+    public List<NativeBillboardDraw> BillboardPackets=>E.BillboardPackets;
     private void QueueTransparency()
     {
         var pins=new List<GCHandle>();IntPtr Pin(byte[] data){var p=GCHandle.Alloc(data,GCHandleType.Pinned);pins.Add(p);return p.AddrOfPinnedObject();}
         try{
             NativeTransparentDraw[] draws;
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.TransparencyPack)){
-                var depthFlags=GlassDecalDepthFlags();draws=new NativeTransparentDraw[glassPackets.Count];for(int i=0;i<draws.Length;++i){var p=glassPackets[i];if(p.Geometry.Constants==null || p.Geometry.Instances!=null && p.Geometry.Instances.LongLength!=p.Geometry.Count*64L)throw new ArgumentException("Invalid copied glass geometry.");draws[i]=new NativeTransparentDraw{Geometry=new NativeWorldDraw{Size=(uint)Marshal.SizeOf(typeof(NativeTransparentDraw)),Pipeline=p.Geometry.Pipeline,Count=p.Geometry.Count,Mesh=p.Geometry.Mesh,Color=p.Geometry.Color,Normal=p.Geometry.Normal,Flags=p.Geometry.Flags|depthFlags[i],Constants=Pin(p.Geometry.Constants),ConstantBytes=(uint)p.Geometry.Constants.Length,Instances=p.Geometry.Instances==null?IntPtr.Zero:Pin(p.Geometry.Instances)},Material=p.Material};}
+                var depthFlags=GlassDecalDepthFlags();draws=new NativeTransparentDraw[E.GlassPackets.Count];for(int i=0;i<draws.Length;++i){var p=E.GlassPackets[i];if(p.Geometry.Constants==null || p.Geometry.Instances!=null && p.Geometry.Instances.LongLength!=p.Geometry.Count*64L)throw new ArgumentException("Invalid copied glass geometry.");draws[i]=new NativeTransparentDraw{Geometry=new NativeWorldDraw{Size=(uint)Marshal.SizeOf(typeof(NativeTransparentDraw)),Pipeline=p.Geometry.Pipeline,Count=p.Geometry.Count,Mesh=p.Geometry.Mesh,Color=p.Geometry.Color,Normal=p.Geometry.Normal,Flags=p.Geometry.Flags|depthFlags[i],Constants=Pin(p.Geometry.Constants),ConstantBytes=(uint)p.Geometry.Constants.Length,Instances=p.Geometry.Instances==null?IntPtr.Zero:Pin(p.Geometry.Instances)},Material=p.Material};}
             }
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeTransparencyQueue))Check(TransparencyApi.Queue(context,draws,(uint)draws.Length),context);
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeBillboardQueue))Check(TransparencyApi.Billboards(context,BillboardPackets.ToArray(),(uint)BillboardPackets.Count),context);
         }finally{foreach(var p in pins)p.Free();}
     }
-    private void ClearTransparencyPackets(){glassPackets.Clear();BillboardPackets.Clear();if(WorldReady){Check(TransparencyApi.Queue(context,null,0),context);Check(TransparencyApi.Billboards(context,null,0),context);}}
+    private void ClearTransparencyPackets(){E.GlassPackets.Clear();BillboardPackets.Clear();if(WorldReady){Check(TransparencyApi.Queue(context,null,0),context);Check(TransparencyApi.Billboards(context,null,0),context);}}
     public NativeTransparencyStats GetTransparencyStats(){var s=new NativeTransparencyStats{Size=(uint)Marshal.SizeOf(typeof(NativeTransparencyStats)),AbiVersion=AbiVersion};Check(TransparencyApi.Stats(context,ref s),context);return s;}
 }
 [StructLayout(LayoutKind.Sequential,Pack=8)] internal struct NativeTransparentDraw{public NativeWorldDraw Geometry;[MarshalAs(UnmanagedType.ByValArray,SizeConst=96)]public byte[] Material;}

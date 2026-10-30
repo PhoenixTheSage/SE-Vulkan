@@ -25,18 +25,18 @@ public sealed partial class NativeBackend
         long started=PacketProfilingEnabled?System.Diagnostics.Stopwatch.GetTimestamp():0;
         if(blobQueue==null){blobQueue=(BlobQueueFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_queue_world_blob"),typeof(BlobQueueFn));var get=(AlignmentFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_world_object_alignment"),typeof(AlignmentFn));Check(get(context,out uint alignment),context);if(alignment==0 || alignment>65536)throw new InvalidOperationException("Invalid world object alignment.");objectAlignment=(int)alignment;}
         bool recipes=WorldRecipesEnabled;
-        if(recipes){if(recipeScratch.Length<worldPackets.Count)recipeScratch=new NativeRecipeDraw[worldPackets.Count];if(queueRecipes==null)queueRecipes=(QueueRecipesFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_queue_world_recipes"),typeof(QueueRecipesFn));}
-        else if(drawScratch.Length<worldPackets.Count)drawScratch=new NativeWorldDraw[worldPackets.Count];
+        if(recipes){if(recipeScratch.Length<E.WorldPackets.Count)recipeScratch=new NativeRecipeDraw[E.WorldPackets.Count];if(queueRecipes==null)queueRecipes=(QueueRecipesFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_queue_world_recipes"),typeof(QueueRecipesFn));}
+        else if(drawScratch.Length<E.WorldPackets.Count)drawScratch=new NativeWorldDraw[E.WorldPackets.Count];
         instanceOffsets.Clear();int objectUsed=0,instanceUsed=0;byte* arena=null;
         // Collect the blocks to recycle at the next prologue while the packets are in cache (see ClearWorldPackets).
-        bool collect=AsyncPacketRecycle;int collected=0;if(collect&&recycleScratch.Length<worldPackets.Count)recycleScratch=new byte[worldPackets.Count][];
+        bool collect=AsyncPacketRecycle;int collected=0;if(collect&&recycleScratch.Length<E.WorldPackets.Count)recycleScratch=new byte[E.WorldPackets.Count][];
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.BlobPack)){
         if(recipes && WorldArenaEnabled){
-            long total=0;for(int i=0;i<worldPackets.Count;++i){var constants=PacketAt(i).Constants;if(constants==null)throw new ArgumentException("World object/instance data mismatch.");total+=(constants.Length+objectAlignment-1)/objectAlignment*objectAlignment;}
+            long total=0;for(int i=0;i<E.WorldPackets.Count;++i){var constants=PacketAt(i).Constants;if(constants==null)throw new ArgumentException("World object/instance data mismatch.");total+=(constants.Length+objectAlignment-1)/objectAlignment*objectAlignment;}
             if(total>256*1024*1024)throw new ArgumentException("World blob exceeds bounded upload budget.");
             arena=AcquireObjectArena((int)total);
         }
-        for(int i=0;i<worldPackets.Count;++i)
+        for(int i=0;i<E.WorldPackets.Count;++i)
         {
             ref readonly var packet=ref PacketAt(i);int bytes=checked((int)(packet.Count*64L));if(collect&&packet.RecycleConstants)recycleScratch[collected++]=packet.Constants;
             if(packet.Constants==null || packet.Instances!=null && (packet.InstanceCapacity?packet.Instances.Length<bytes:packet.Instances.Length!=bytes))throw new ArgumentException("World object/instance data mismatch.");
@@ -50,15 +50,15 @@ public sealed partial class NativeBackend
             objectUsed=checked(objectUsed+aligned);
             if(objectUsed>256*1024*1024 || instanceUsed>256*1024*1024)throw new ArgumentException("World blob exceeds bounded upload budget.");
         }
-        if(collect){precollected=collected;precollectedFor=worldPackets.Count;}
-        submissionStats.ObjectBlobBytes=(ulong)objectUsed;submissionStats.InstanceBlobBytes=(ulong)instanceUsed;
+        if(collect){E.Precollected=collected;E.PrecollectedFor=E.WorldPackets.Count;}
+        E.SubmissionStats.ObjectBlobBytes=(ulong)objectUsed;E.SubmissionStats.InstanceBlobBytes=(ulong)instanceUsed;
         }
         if(PacketProfilingEnabled){packetObjectBytes=objectUsed;packetInstanceBytes=instanceUsed;long now=System.Diagnostics.Stopwatch.GetTimestamp();managedPackTicks+=now-started;started=now;}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.NativeWorldQueue)){
         if(recipes){fixed(NativeRecipeDraw* draws=recipeScratch)fixed(byte* objects=constantArena)fixed(byte* instances=instanceArena)
-            Check(queueRecipes(context,frame,(uint)frame.Length,projection,inverse,(IntPtr)draws,(uint)worldPackets.Count,arena!=null?(IntPtr)arena:(IntPtr)objects,(uint)objectUsed,(IntPtr)instances,(uint)instanceUsed),context);}
+            Check(queueRecipes(context,frame,(uint)frame.Length,projection,inverse,(IntPtr)draws,(uint)E.WorldPackets.Count,arena!=null?(IntPtr)arena:(IntPtr)objects,(uint)objectUsed,(IntPtr)instances,(uint)instanceUsed),context);}
         else {fixed(NativeWorldDraw* draws=drawScratch)fixed(byte* objects=constantArena)fixed(byte* instances=instanceArena)
-            Check(blobQueue(context,frame,(uint)frame.Length,projection,inverse,(IntPtr)draws,(uint)worldPackets.Count,(IntPtr)objects,(uint)objectUsed,(IntPtr)instances,(uint)instanceUsed),context);}
+            Check(blobQueue(context,frame,(uint)frame.Length,projection,inverse,(IntPtr)draws,(uint)E.WorldPackets.Count,(IntPtr)objects,(uint)objectUsed,(IntPtr)instances,(uint)instanceUsed),context);}
         }
         if(PacketProfilingEnabled){long now=System.Diagnostics.Stopwatch.GetTimestamp();nativeQueueTicks+=now-started;started=now;}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.MainOrderQueue))QueueMainOrder();

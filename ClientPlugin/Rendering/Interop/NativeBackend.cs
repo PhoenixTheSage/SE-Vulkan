@@ -22,16 +22,14 @@ public sealed partial class NativeBackend : IDisposable
     private readonly VulkanWindowHost host;
     private readonly List<IntPtr> ownedStrings = new();
     private VulkanWindowHost.SurfaceFactory surfaceFactory;
-    private readonly List<NativeMeshDraw> frameMeshes = new();
-    private bool collectingPackets;
-    public Vector3D CameraPosition { get; set; }
+    public Vector3D CameraPosition { get=>E.CameraPosition; set=>E.CameraPosition=value; }
     public bool IsCreated => context != IntPtr.Zero;
     static long nextGuestEpoch;
     internal long GuestEpoch {get;private set;}
     public static string LibraryPath { get; private set; }
     public static string AssetsRoot { get; private set; }
 
-    public NativeBackend(VulkanWindowHost host) { this.host = host; }
+    public NativeBackend(VulkanWindowHost host) { this.host = host; InitializeEmissions(); }
 
     public static NativeProbe Probe()
     {
@@ -136,22 +134,23 @@ public sealed partial class NativeBackend : IDisposable
         var draw = new NativeMeshDraw { Mesh = mesh, Texture = texture, NormalTexture = normal, ExtensionsTexture = extensions, AlphaTexture = alpha,
             World = MatrixValues(world), Tint = (flags & 1024) != 0 ? RawColorValues(tint) : ColorValues(tint), ColorMaskHsv = new[] { mask.X, mask.Y, mask.Z, 0f },
             Emissivity = emissivity, Dithering = dithering, Flags = flags };
-        if (collectingPackets) frameMeshes.Add(draw);
+        if (E.Collecting) E.FrameMeshes.Add(draw);
         else Check(api.DrawMesh(context, ref draw), context);
     }
 
     public void BeginPacketCollection() {
+        RotateEmission();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PrologueClearPass))if(NativePassReady)ClearPassFrame();
-        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PrologueClearWorld)){frameMeshes.Clear(); ClearWorldPackets();}
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PrologueClearWorld)){E.FrameMeshes.Clear(); ClearWorldPackets();}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PrologueClearRigid))BeginRigidBatches();
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PrologueClearOther)){ClearEnvironmentPackets(); ClearFoliagePackets(); ClearTransparencyPackets(); ClearDecalPackets();}
-        collectingPackets = true; }
+        E.Collecting = true; }
     public void DrawMesh(ulong mesh, MatrixD world, Vector4 linearTint, ulong texture, uint flags = 0)
     {
         world.Translation -= CameraPosition;
         var draw = new NativeMeshDraw { Mesh = mesh, Texture = texture, World = MatrixValues(world),
             Tint = new[] { linearTint.X, linearTint.Y, linearTint.Z, linearTint.W }, ColorMaskHsv = new float[4], Flags = flags };
-        if (collectingPackets) frameMeshes.Add(draw); else Check(api.DrawMesh(context, ref draw), context);
+        if (E.Collecting) E.FrameMeshes.Add(draw); else Check(api.DrawMesh(context, ref draw), context);
     }
 
     public bool BeginFrame(MatrixD viewProjection, Vector3 sunDirection, Vector3 sunColor, Vector3 ambient, Color clear)
@@ -163,10 +162,10 @@ public sealed partial class NativeBackend : IDisposable
         var status = api.BeginFrame(context, ref frame);
         Check(status, context);
         ProbeConfigurationApplied();
-        collectingPackets = false;
+        E.Collecting = false;
         if (status == 0)
-            foreach (var packet in frameMeshes) { var draw = packet; Check(api.DrawMesh(context, ref draw), context); }
-        frameMeshes.Clear();
+            foreach (var packet in E.FrameMeshes) { var draw = packet; Check(api.DrawMesh(context, ref draw), context); }
+        E.FrameMeshes.Clear();
         return status == 0;
     }
 

@@ -40,9 +40,9 @@ public sealed partial class NativeBackend
         else{var key=new ModelBatchKey(template.Id,flags,cascades,cell,x,y,z,MainGroupToken);if(!modelBatches.TryGetValue(key,out batch)){batch=new ModelBatch{Template=template,Slot=modelBatchSlots.Count,Packets=new int[template.Parts.Length],Constants=new byte[template.Parts.Length][],Recipes=new WorldRecipe[template.Parts.Length]};
                 for(int i=0;i<template.Parts.Length;i++){var p=template.Parts[i];batch.Constants[i]=WorldConstants.Object(WorldLayouts[p.Pipeline+2],MatrixD.Identity,p.Tint,Vector3.Zero,p.Emissive,0,null,p.Dither,lod:p.Lod);}modelBatches.Add(key,batch);modelBatchSlots.Add(batch);}
             hint.Slot=batch.Slot;hint.Flags=flags;hint.Cascades=cascades;hint.MainGroup=MainGroupToken;hint.Cell=cell;hint.X=x;hint.Y=y;hint.Z=z;}
-        if(batch.Frame!=batchFrame){using var sharedOwner=WithPacketOwner(0);batch.Frame=batchFrame;batch.Count=0;batch.Origin=origin;batch.Radius=radius;activeModelBatches.Add(batch);modelBatchStats.Batches++;
+        if(batch.Frame!=E.BatchFrame){using var sharedOwner=WithPacketOwner(0);batch.Frame=E.BatchFrame;batch.Count=0;batch.Origin=origin;batch.Radius=radius;activeModelBatches.Add(batch);modelBatchStats.Batches++;
             for(int i=0;i<template.Parts.Length;i++){var p=template.Parts[i];if(WorldRecipesEnabled)EnsureWorldRecipe(ref batch.Recipes[i],p.Pipeline+2,p.Mesh,p.Color,p.Normal,p.Extensions,p.Alpha,batch.Constants[i].Length);
-                using var oldOrderScope=WithOldOrder(p.OldOrder);MainPart=(uint)i;batch.Packets[i]=(int)AddWorldPacket(p.Pipeline+2,p.Mesh,p.Color,p.Normal,p.Extensions,p.Alpha,batch.Constants[i],batch.Instances,1,flags|p.ViewFlags,cascades,origin,radius,false,batch.Recipes[i],false);modelBatchStats.Packets++;rigidBatchPackets++;}}
+                using var oldOrderScope=WithOldOrder(p.OldOrder);MainPart=(uint)i;batch.Packets[i]=(int)AddWorldPacket(p.Pipeline+2,p.Mesh,p.Color,p.Normal,p.Extensions,p.Alpha,batch.Constants[i],batch.Instances,1,flags|p.ViewFlags,cascades,origin,radius,false,batch.Recipes[i],false);modelBatchStats.Packets++;E.RigidBatchPackets++;}}
         int at=checked((int)batch.Count*64);if(batch.Count>=1000000)throw new InvalidOperationException("Model instance budget exceeded.");Grow(ref batch.Instances,at,64);
         // Actor.Instance carries its current camera-relative transform; HSV varies
         // by actor while immutable material state belongs to each model part.
@@ -51,6 +51,6 @@ public sealed partial class NativeBackend
         batch.Count++;modelBatchStats.Actors++;modelBatchStats.Parts+=(uint)actor.Parts.Length;modelBatchStats.InstanceBytes+=64;
         if(captureLogicalSelection)foreach(var p in template.Parts)NoteLogicalDraw(p.Pipeline+2,p.Mesh,1,flags|p.ViewFlags,cascades);LogicalRigidDraws+=(uint)actor.Parts.Length;return true;
     }
-    void FinalizeModelBatches(){foreach(var batch in activeModelBatches)for(int i=0;i<batch.Packets.Length;i++){var p=worldPackets[batch.Packets[i]];p.Instances=batch.Instances;p.Count=batch.Count;p.Origin=batch.Origin;p.Radius=batch.Radius;p.InstanceCapacity=true;worldPackets[batch.Packets[i]]=p;}}
+    void FinalizeModelBatches(){foreach(var batch in activeModelBatches)for(int i=0;i<batch.Packets.Length;i++){var p=E.WorldPackets[batch.Packets[i]];p.Instances=batch.Instances;p.Count=batch.Count;p.Origin=batch.Origin;p.Radius=batch.Radius;p.InstanceCapacity=true;E.WorldPackets[batch.Packets[i]]=p;}}
 }
 public struct ModelBatchStats {public uint Enabled,Actors,Parts,Batches,Packets;public ulong InstanceBytes;}

@@ -6,7 +6,7 @@ namespace ClientPlugin.Rendering.Interop;
 public sealed partial class NativeBackend
 {
     private DecalFunctions decalApi;private DecalFunctions DecalApi=>decalApi??(decalApi=new DecalFunctions(GetSymbol));
-    public readonly List<NativeDecalDraw> DecalPackets=new List<NativeDecalDraw>();
+    public List<NativeDecalDraw> DecalPackets=>E.DecalPackets;
     public void ConfigureDecals(VulkanShaderLibrary library){foreach(var spec in TransparencyShaderVariants.Decals){var v=SpirvRuntimeModule.FromArtifact(library.Load(spec.Vertex));var p=SpirvRuntimeModule.FromArtifact(library.Load(spec.Pixel));Check(DecalApi.Init(context,spec.Id,v,(ulong)v.Length,p,(ulong)p.Length),context);}}
     private void QueueDecals()=>Check(DecalApi.Queue(context,DecalPackets.ToArray(),(uint)DecalPackets.Count),context);
     private void ClearDecalPackets(){DecalPackets.Clear();if(WorldReady)Check(DecalApi.Queue(context,null,0),context);}

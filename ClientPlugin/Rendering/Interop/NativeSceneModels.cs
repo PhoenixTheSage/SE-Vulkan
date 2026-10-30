@@ -64,18 +64,18 @@ public sealed partial class NativeBackend
     {
         if(nativeModelCount==0)return;
         if(modelIndicesRemapped)throw new InvalidOperationException("Bulk model frame was published twice.");
-        if(modelLegacyOrder.Length<worldPackets.Count){Array.Resize(ref modelLegacyOrder,worldPackets.Count);Array.Resize(ref modelLegacyRemap,worldPackets.Count);}
-        for(int i=0;i<worldPackets.Count;i++)modelLegacyOrder[i]=worldPackets[i].Order;
+        if(modelLegacyOrder.Length<E.WorldPackets.Count){Array.Resize(ref modelLegacyOrder,E.WorldPackets.Count);Array.Resize(ref modelLegacyRemap,E.WorldPackets.Count);}
+        for(int i=0;i<E.WorldPackets.Count;i++)modelLegacyOrder[i]=E.WorldPackets[i].Order;
         fixed(NativeModelInstance* instances=modelInstances)fixed(uint* order=modelLegacyOrder)fixed(uint* remap=modelLegacyRemap)
-            Check(appendModels(context,(IntPtr)instances,(uint)nativeModelCount,(IntPtr)order,(uint)worldPackets.Count,(IntPtr)remap),context);
+            Check(appendModels(context,(IntPtr)instances,(uint)nativeModelCount,(IntPtr)order,(uint)E.WorldPackets.Count,(IntPtr)remap),context);
         var stats=new NativeModelGroupStats{Size=48,AbiVersion=AbiVersion};Check(modelStats(context,ref stats),context);completedModelGroups=stats;nativeModelPackets=stats.Packets;
-        submissionStats.ObjectBlobBytes+=stats.ObjectBytes;submissionStats.InstanceBlobBytes+=stats.InstanceBytes;
+        E.SubmissionStats.ObjectBlobBytes+=stats.ObjectBytes;E.SubmissionStats.InstanceBlobBytes+=stats.InstanceBytes;
         // Logical ordering is preserved; downstream consumers require the new
         // physical index after native model groups are merged before legacy draws.
         modelIndicesRemapped=true;
 
     }
-    uint SceneDrawIndex(uint draw){if(!modelIndicesRemapped)return draw;if(draw>=(uint)worldPackets.Count)throw new InvalidOperationException("Identity consumer outside legacy scene frame.");return modelLegacyRemap[draw];}
+    uint SceneDrawIndex(uint draw){if(!modelIndicesRemapped)return draw;if(draw>=(uint)E.WorldPackets.Count)throw new InvalidOperationException("Identity consumer outside legacy scene frame.");return modelLegacyRemap[draw];}
 
 }
 [StructLayout(LayoutKind.Sequential,Pack=8)]internal struct NativeModelPart {public ulong Recipe;public uint ObjectOffset,Reserved;}

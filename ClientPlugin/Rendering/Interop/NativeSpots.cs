@@ -9,7 +9,7 @@ public sealed partial class NativeBackend
     public void ConfigureSpots(VulkanShaderLibrary library){var module=SpirvRuntimeModule.FromArtifact(library.Load("7e7f8a00e6cfc94f5e7f149a9a4df82ce433557cf56c91d2a08dfaa598952493"));Check(WorldApi.InitLighting(context,4,module,(ulong)module.Length),context);}
     public void SetSpots(uint resolution,NativeSpot[] spots)=>Check(SpotApi.Set(context,resolution,spots,(uint)spots.Length),context);
     public void SetSpotRedraw(ulong staticMask,ulong dynamicMask)=>Check(SpotApi.Redraw(context,staticMask,dynamicMask),context);
-    public NativeShadowExclusion[] ShadowExclusions=Array.Empty<NativeShadowExclusion>();
+    public NativeShadowExclusion[] ShadowExclusions {get=>E.ShadowExclusions;set=>E.ShadowExclusions=value;}
     private void QueueShadowExclusions(){var draws=ShadowExclusions;if(modelIndicesRemapped&&draws.Length>0){draws=(NativeShadowExclusion[])draws.Clone();for(int i=0;i<draws.Length;i++)draws[i].Draw=SceneDrawIndex(draws[i].Draw);}Check(SpotApi.Exclusions(context,draws,(uint)draws.Length),context);}
     NativeShadowScheduleReadFn spotRead;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int NativeShadowScheduleReadFn(IntPtr ctx,uint light,[Out]float[] data,ulong bytes);

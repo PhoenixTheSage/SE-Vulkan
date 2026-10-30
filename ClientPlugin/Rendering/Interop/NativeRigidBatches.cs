@@ -10,12 +10,7 @@ public sealed partial class NativeBackend
     public bool RigidBatchingEnabled {get;set;}=true;
     public bool RigidBatchHintsEnabled {get;set;}=true;
     public bool WideRigidBatchesEnabled {get;set;}=Environment.GetEnvironmentVariable("SE_VULKAN_WIDE_RIGID_BATCHES")!="0";
-    private readonly Dictionary<RigidBatchKey,RigidBatch> rigidBatches=new Dictionary<RigidBatchKey,RigidBatch>();
-    private readonly List<RigidBatch> rigidBatchSlots=new List<RigidBatch>();
-    private int batchFrame;
-    private uint rigidBatchPackets;
-    private uint rigidCacheEpoch;
-    public uint LogicalRigidDraws { get; private set; }
+    public uint LogicalRigidDraws { get=>E.LogicalRigidDraws; private set=>E.LogicalRigidDraws=value; }
     internal readonly struct RigidBatchKey : IEquatable<RigidBatchKey>
     {
         public readonly uint Pipeline,Flags,Cascades,Lod,MainGroup;
@@ -38,19 +33,19 @@ public sealed partial class NativeBackend
     }
     public sealed class RigidBatchHint
     {
-        internal NativeBackend Owner;
+        internal object Owner;
         internal uint Epoch;
         internal RigidBatchKey Key;
         internal int Slot=-1;
     }
     private void BeginRigidBatches()
     {
-        submissionStats=new SceneSubmissionStats{Enabled=RetainedSubmissionEnabled?1u:0u};
+        E.SubmissionStats=new SceneSubmissionStats{Enabled=RetainedSubmissionEnabled?1u:0u};
         if(PacketProfilingEnabled)ResetPacketPreparation();
-        batchFrame++;BeginModelBatches();BeginNativeModels();BeginMainGroups();LogicalRigidDraws=0;rigidBatchPackets=0;
+        E.BatchFrame=++batchFrameCounter;BeginModelBatches();BeginNativeModels();BeginMainGroups();LogicalRigidDraws=0;E.RigidBatchPackets=0;
         // Bound CPU residency across travel/world reloads; every entry can be
         // reconstructed from this frame's authoritative material parameters.
-        if(rigidBatches.Count>32768){rigidBatches.Clear();rigidBatchSlots.Clear();rigidCacheEpoch++;}
+        if(E.RigidBatches.Count>32768){E.RigidBatches.Clear();E.RigidBatchSlots.Clear();E.RigidCacheEpoch++;}
     }
     // Only the scene's stock opaque rigid path calls this. When highlights or
     // shadow exclusions consume individual draw IDs, it uses AddWorldPacket.
@@ -64,27 +59,27 @@ public sealed partial class NativeBackend
             return AddWorldPacket(pipeline,mesh,color,normal,extensions,alpha,
                 WorldConstants.Object(WorldLayouts[pipeline],world,tint,hsv,emissive,0,null,dither,true,lod),
                 null,1,flags,cascades,origin,radius);
-        var key=new RigidBatchKey(pipeline,mesh,color,normal,extensions,alpha,tint,emissive,dither,flags,cascades,origin,WideRigidBatchesEnabled?64:16,lod,MainGroupToken,oldPartOrder);
+        var key=new RigidBatchKey(pipeline,mesh,color,normal,extensions,alpha,tint,emissive,dither,flags,cascades,origin,WideRigidBatchesEnabled?64:16,lod,MainGroupToken,E.OldPartOrder);
         RigidBatch batch;
-        if(RigidBatchHintsEnabled && hint!=null && ReferenceEquals(hint.Owner,this) && hint.Epoch==rigidCacheEpoch && hint.Slot>=0 && hint.Slot<rigidBatchSlots.Count && hint.Key.Equals(key))
+        if(RigidBatchHintsEnabled && hint!=null && ReferenceEquals(hint.Owner,E) && hint.Epoch==E.RigidCacheEpoch && hint.Slot>=0 && hint.Slot<E.RigidBatchSlots.Count && hint.Key.Equals(key))
         {
-            batch=rigidBatchSlots[hint.Slot];
+            batch=E.RigidBatchSlots[hint.Slot];
             if(PacketProfilingEnabled)batchHintHits++;
         }
-        else if(!rigidBatches.TryGetValue(key,out batch))
+        else if(!E.RigidBatches.TryGetValue(key,out batch))
         {
-            batch=new RigidBatch{Frame=-1,CacheIndex=rigidBatchSlots.Count,Constants=WorldConstants.Object(WorldLayouts[pipeline+2],MatrixD.Identity,tint,Vector3.Zero,emissive,0,null,dither,lod:lod)};
-            rigidBatches.Add(key,batch);
-            rigidBatchSlots.Add(batch);
+            batch=new RigidBatch{Frame=-1,CacheIndex=E.RigidBatchSlots.Count,Constants=WorldConstants.Object(WorldLayouts[pipeline+2],MatrixD.Identity,tint,Vector3.Zero,emissive,0,null,dither,lod:lod)};
+            E.RigidBatches.Add(key,batch);
+            E.RigidBatchSlots.Add(batch);
             if(PacketProfilingEnabled)createdBatches++;
         }
-        if(RigidBatchHintsEnabled && hint!=null){hint.Owner=this;hint.Epoch=rigidCacheEpoch;hint.Key=key;hint.Slot=batch.CacheIndex;}
+        if(RigidBatchHintsEnabled && hint!=null){hint.Owner=E;hint.Epoch=E.RigidCacheEpoch;hint.Key=key;hint.Slot=batch.CacheIndex;}
         if(PacketProfilingEnabled){long now=System.Diagnostics.Stopwatch.GetTimestamp();rigidLookupTicks+=now-detailAt;detailAt=now;}
-        if(batch.Frame!=batchFrame)
+        if(batch.Frame!=E.BatchFrame)
         {
             if(WorldRecipesEnabled)EnsureWorldRecipe(ref batch.Recipe,pipeline+2,mesh,color,normal,extensions,alpha,batch.Constants.Length);
-            batch.Frame=batchFrame;
-            rigidBatchPackets++;
+            batch.Frame=E.BatchFrame;
+            E.RigidBatchPackets++;
             using var sharedOwner=WithPacketOwner(0);batch.PacketIndex=(int)AddWorldPacket(pipeline+2,mesh,color,normal,extensions,alpha,batch.Constants,batch.Instances,1,flags,cascades,origin,radius,false,batch.Recipe,false);
             ref var first=ref PacketAt(batch.PacketIndex);first.Count=0;first.InstanceCapacity=true;
         }

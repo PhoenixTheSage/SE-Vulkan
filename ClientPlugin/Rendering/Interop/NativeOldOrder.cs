@@ -15,23 +15,21 @@ public struct NativeOldPartOrder:IEquatable<NativeOldPartOrder>
 
 public sealed partial class NativeBackend
 {
-    NativeOldPartOrder oldPartOrder;
     public readonly struct OldOrderScope:IDisposable
     {
         readonly NativeBackend backend;readonly NativeOldPartOrder previous;
-        internal OldOrderScope(NativeBackend backend,NativeOldPartOrder order){this.backend=backend;previous=backend.oldPartOrder;backend.oldPartOrder=order;}
-        public void Dispose(){if(backend!=null)backend.oldPartOrder=previous;}
+        internal OldOrderScope(NativeBackend backend,NativeOldPartOrder order){this.backend=backend;previous=backend.E.OldPartOrder;backend.E.OldPartOrder=order;}
+        public void Dispose(){if(backend!=null)backend.E.OldPartOrder=previous;}
     }
     public OldOrderScope WithOldOrder(NativeOldPartOrder order)=>new(this,order);
     // Logical owner of new packets; equal stock OLD keys order by owner, then
     // submission. Shared batches keep owner zero.
-    uint packetOwner;
     public bool OldOwnerOrderEnabled {get;set;}=Environment.GetEnvironmentVariable("SE_VULKAN_OLD_OWNER_ORDER")!="0";
     public readonly struct PacketOwnerScope:IDisposable
     {
         readonly NativeBackend backend;readonly uint previous;
-        internal PacketOwnerScope(NativeBackend backend,uint owner){this.backend=backend;previous=backend.packetOwner;backend.packetOwner=owner;}
-        public void Dispose(){if(backend!=null)backend.packetOwner=previous;}
+        internal PacketOwnerScope(NativeBackend backend,uint owner){this.backend=backend;previous=backend.E.PacketOwner;backend.E.PacketOwner=owner;}
+        public void Dispose(){if(backend!=null)backend.E.PacketOwner=previous;}
     }
     public PacketOwnerScope WithPacketOwner(uint owner)=>new(this,owner);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]delegate int DrawOwnersFn(IntPtr context,IntPtr owners,uint count);
@@ -40,7 +38,7 @@ public sealed partial class NativeBackend
     OldOrderFn oldOrderApi;NativeOldPartOrder[] oldOrderScratch=Array.Empty<NativeOldPartOrder>();
     unsafe void QueueOldOrder()
     {
-        int count=worldPackets.Count;if(count==0)return;bool any=false;for(int i=0;i<count;i++)any|=PacketAt(i).OldOrder.Valid!=0;
+        int count=E.WorldPackets.Count;if(count==0)return;bool any=false;for(int i=0;i<count;i++)any|=PacketAt(i).OldOrder.Valid!=0;
         if(!any&&oldOrderApi==null)return;
         if(oldOrderScratch.Length<count)Array.Resize(ref oldOrderScratch,count);for(int i=0;i<count;i++)oldOrderScratch[i]=PacketAt(i).OldOrder;
         oldOrderApi??=(OldOrderFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_world_old_order"),typeof(OldOrderFn));

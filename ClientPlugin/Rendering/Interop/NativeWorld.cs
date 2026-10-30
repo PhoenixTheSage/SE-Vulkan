@@ -24,27 +24,27 @@ public sealed partial class NativeBackend
     public void SetHdrQuality(bool highQuality){hdrQuality??=(HdrQualityFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_set_hdr_quality"),typeof(HdrQualityFn));Check(hdrQuality(context,highQuality?1u:0u),context);}
     private readonly HashSet<uint> tintedGenericPipelines=new();
     public readonly Dictionary<uint, ShaderMetadata> WorldLayouts = new Dictionary<uint, ShaderMetadata>();
-    private readonly List<WorldPacket> worldPackets = new List<WorldPacket>();
+    // Alias of the default emission's packet list for tests that reflect on it; code uses E.WorldPackets.
+    private List<WorldPacket> worldPackets;
     // Last frame's constant blocks return to the pool on a worker (SE_VULKAN_ASYNC_PACKET_RECYCLE, default on):
     // pooling about 3,000 blocks reads each array's header, mostly cache misses, about 0.16 ms on the build thread.
     // The build thread only copies the references out. The pool is locked; a block rented before the worker
     // returns it is simply allocated fresh.
     private byte[][] recycleSpare=Array.Empty<byte[]>();
-    private int precollected,precollectedFor=-1;
     // The .NET pool, not the game scheduler: WaitOrExecute ran the recycle inline whenever game workers were busy.
     private System.Threading.Tasks.Task recycleJob;
     static readonly bool AsyncPacketRecycle=Environment.GetEnvironmentVariable("SE_VULKAN_ASYNC_PACKET_RECYCLE")!="0";
     // In-place packet access. WorldPacket is a large struct with references;
     // copying it out and back per appended instance dominated batch appends.
-    // The reference is valid only until the next Add to worldPackets.
+    // The reference is valid only until the next Add to E.WorldPackets.
 #if NETCOREAPP
-    private ref WorldPacket PacketAt(int index)=>ref CollectionsMarshal.AsSpan(worldPackets)[index];
+    private ref WorldPacket PacketAt(int index)=>ref CollectionsMarshal.AsSpan(E.WorldPackets)[index];
 #else
     private static readonly Func<List<WorldPacket>,WorldPacket[]> packetItems=CreatePacketItems();
     private static Func<List<WorldPacket>,WorldPacket[]> CreatePacketItems(){var list=System.Linq.Expressions.Expression.Parameter(typeof(List<WorldPacket>));
         var items=typeof(List<WorldPacket>).GetField("_items",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)??throw new MissingFieldException("List<T>._items");
         return System.Linq.Expressions.Expression.Lambda<Func<List<WorldPacket>,WorldPacket[]>>(System.Linq.Expressions.Expression.Field(list,items),list).Compile();}
-    private ref WorldPacket PacketAt(int index){if((uint)index>=(uint)worldPackets.Count)throw new ArgumentOutOfRangeException(nameof(index));return ref packetItems(worldPackets)[index];}
+    private ref WorldPacket PacketAt(int index){if((uint)index>=(uint)E.WorldPackets.Count)throw new ArgumentOutOfRangeException(nameof(index));return ref packetItems(E.WorldPackets)[index];}
 #endif
     private readonly Dictionary<byte[], int> instanceOffsets = new Dictionary<byte[], int>(ByteIdentity.Instance);
     private byte[] constantArena = Array.Empty<byte>(), instanceArena = Array.Empty<byte>();
@@ -168,7 +168,7 @@ public sealed partial class NativeBackend
     public NativePerformanceStats GetPerformanceStats()
     {
         if(performanceStats==null)performanceStats=(PerformanceStatsFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_get_performance_stats"),typeof(PerformanceStatsFn));
-        var result=new NativePerformanceStats{Size=84,AbiVersion=AbiVersion};Check(performanceStats(context,ref result),context);result.LogicalDraws+=LogicalRigidDraws-rigidBatchPackets-nativeModelPackets;return result;
+        var result=new NativePerformanceStats{Size=84,AbiVersion=AbiVersion};Check(performanceStats(context,ref result),context);result.LogicalDraws+=LogicalRigidDraws-E.RigidBatchPackets-nativeModelPackets;return result;
     }
     public void ConfigureWorld(VulkanShaderLibrary library,string shaderContent)
     {
@@ -306,33 +306,33 @@ public sealed partial class NativeBackend
         if(WorldShaderVariants.IsMeshDecal(pipeline))flags|=512u|16384u; // Stock mesh decals do not enter depth/forward passes.
         if(!WorldReady || !WorldLayouts.ContainsKey(pipeline))throw new InvalidOperationException("The stock world pipeline is not ready.");
         var emitter=boundEmitter;if(emitter!=null&&ReferenceEquals(emitter.Owner,this))return AddEmitterPacket(emitter,pipeline,mesh,color,normal,extensions,alpha,constants,instances,instanceCount,flags,cascadeMask,origin,radius,recycleConstants,recipe,recordLogical);
-        if(worldPackets.Count>=65536)throw new InvalidOperationException("World packet batch exceeds 65536 draws.");
+        if(E.WorldPackets.Count>=65536)throw new InvalidOperationException("World packet batch exceeds 65536 draws.");
         if(recordLogical)NoteLogicalDraw(pipeline,mesh,instanceCount,flags,cascadeMask);
         uint order=++modelSubmissionOrder;NoteMainGroupOrder(flags,order);
 #if NET8_0_OR_GREATER
         // Fill the new slot in place: a temporary plus List.Add copies the
         // whole reference-bearing struct through the write-barrier helper.
-        int index=worldPackets.Count;CollectionsMarshal.SetCount(worldPackets,index+1);ref var packet=ref CollectionsMarshal.AsSpan(worldPackets)[index];
-        packet.Order=order;packet.MainGroup=mainGroup;packet.MainPart=MainPart;packet.OldOrder=(flags&OldGeometryOrder)!=0?oldPartOrder:default;packet.Recipe=recipe;packet.Pipeline=pipeline;packet.Mesh=mesh;packet.Color=color;packet.Normal=normal;packet.Extensions=extensions;packet.Alpha=alpha;
-        packet.Constants=constants;packet.Instances=instances;packet.Count=instanceCount;packet.Flags=flags;packet.CascadeMask=cascadeMask;packet.Origin=origin;packet.Radius=radius;packet.RecycleConstants=recycleConstants;packet.InstanceCapacity=false;packet.Owner=packetOwner;
+        int index=E.WorldPackets.Count;CollectionsMarshal.SetCount(E.WorldPackets,index+1);ref var packet=ref CollectionsMarshal.AsSpan(E.WorldPackets)[index];
+        packet.Order=order;packet.MainGroup=E.MainGroup;packet.MainPart=MainPart;packet.OldOrder=(flags&OldGeometryOrder)!=0?E.OldPartOrder:default;packet.Recipe=recipe;packet.Pipeline=pipeline;packet.Mesh=mesh;packet.Color=color;packet.Normal=normal;packet.Extensions=extensions;packet.Alpha=alpha;
+        packet.Constants=constants;packet.Instances=instances;packet.Count=instanceCount;packet.Flags=flags;packet.CascadeMask=cascadeMask;packet.Origin=origin;packet.Radius=radius;packet.RecycleConstants=recycleConstants;packet.InstanceCapacity=false;packet.Owner=E.PacketOwner;
         return (uint)index;
 #else
-        worldPackets.Add(new WorldPacket{Order=order,MainGroup=mainGroup,MainPart=MainPart,OldOrder=(flags&OldGeometryOrder)!=0?oldPartOrder:default,Recipe=recipe,Pipeline=pipeline,Mesh=mesh,Color=color,Normal=normal,Extensions=extensions,Alpha=alpha,Constants=constants,Instances=instances,Count=instanceCount,Flags=flags,CascadeMask=cascadeMask,Origin=origin,Radius=radius,RecycleConstants=recycleConstants,Owner=packetOwner});return (uint)worldPackets.Count-1;
+        E.WorldPackets.Add(new WorldPacket{Order=order,MainGroup=E.MainGroup,MainPart=MainPart,OldOrder=(flags&OldGeometryOrder)!=0?E.OldPartOrder:default,Recipe=recipe,Pipeline=pipeline,Mesh=mesh,Color=color,Normal=normal,Extensions=extensions,Alpha=alpha,Constants=constants,Instances=instances,Count=instanceCount,Flags=flags,CascadeMask=cascadeMask,Origin=origin,Radius=radius,RecycleConstants=recycleConstants,Owner=E.PacketOwner});return (uint)E.WorldPackets.Count-1;
 #endif
     }
     public void QueueWorld(byte[] frame,float[] projection,float[] inverse)
     {
         if(frame==null || frame.Length!=1280 || projection==null || projection.Length!=16 || inverse==null || inverse.Length!=16)throw new ArgumentException("Invalid stock frame matrices/constants.");
         FinalizeModelBatches();NotePacketSignature();
-        if(worldPackets.Count==0){Check(WorldApi.Queue(context,frame,(uint)frame.Length,projection,inverse,null,0),context);QueueMainOrder();QueueNativeModels();QueueTransparency();QueueDecals();QueueHighlights();QueueShadowExclusions();return;}
+        if(E.WorldPackets.Count==0){Check(WorldApi.Queue(context,frame,(uint)frame.Length,projection,inverse,null,0),context);QueueMainOrder();QueueNativeModels();QueueTransparency();QueueDecals();QueueHighlights();QueueShadowExclusions();return;}
         if(RetainedSubmissionEnabled && !ObjectRetentionEnabled){QueueWorldBlob(frame,projection,inverse);return;}
         long packedAt=PacketProfilingEnabled?System.Diagnostics.Stopwatch.GetTimestamp():0;
-        if(drawScratch.Length<worldPackets.Count)drawScratch=new NativeWorldDraw[worldPackets.Count];
-        if(ObjectRetentionEnabled && objectIdentityScratch.Length<worldPackets.Count)objectIdentityScratch=new ulong[worldPackets.Count];
+        if(drawScratch.Length<E.WorldPackets.Count)drawScratch=new NativeWorldDraw[E.WorldPackets.Count];
+        if(ObjectRetentionEnabled && objectIdentityScratch.Length<E.WorldPackets.Count)objectIdentityScratch=new ulong[E.WorldPackets.Count];
         instanceOffsets.Clear();int constantUsed=0,instanceUsed=0;
-        for(int i=0;i<worldPackets.Count;++i)
+        for(int i=0;i<E.WorldPackets.Count;++i)
         {
-            var packet=worldPackets[i];long instanceBytes=packet.Count*64L;if(packet.Constants==null || packet.Instances!=null && (packet.InstanceCapacity?packet.Instances.LongLength<instanceBytes:packet.Instances.LongLength!=instanceBytes))throw new ArgumentException("World object/instance data mismatch.");
+            var packet=E.WorldPackets[i];long instanceBytes=packet.Count*64L;if(packet.Constants==null || packet.Instances!=null && (packet.InstanceCapacity?packet.Instances.LongLength<instanceBytes:packet.Instances.LongLength!=instanceBytes))throw new ArgumentException("World object/instance data mismatch.");
             if(ObjectRetentionEnabled){
                 // Recyclable frame constants have no persistent ownership. Give
                 // their layout/packet position a reusable storage identity; native
@@ -352,7 +352,7 @@ public sealed partial class NativeBackend
         try
         {
             IntPtr constants=constantPin.AddrOfPinnedObject(),instances=instanceUsed>0?instancePin.AddrOfPinnedObject():IntPtr.Zero;
-            for(int i=0;i<worldPackets.Count;++i)
+            for(int i=0;i<E.WorldPackets.Count;++i)
             {
                 // The first pass stored bounded offsets. Resolve them in place
                 // after pinning, without re-reading packets or hashing arrays.
@@ -363,8 +363,8 @@ public sealed partial class NativeBackend
             if(PacketProfilingEnabled){packetObjectBytes=constantUsed;packetInstanceBytes=instanceUsed;long now=System.Diagnostics.Stopwatch.GetTimestamp();managedPackTicks+=now-packedAt;packedAt=now;}
             if(ObjectRetentionEnabled){
                 if(retainedQueue==null)retainedQueue=(RetainedQueueFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_queue_world_retained"),typeof(RetainedQueueFn));
-                Check(retainedQueue(context,frame,(uint)frame.Length,projection,inverse,drawScratch,(uint)worldPackets.Count,objectIdentityScratch),context);
-            }else Check(WorldApi.Queue(context,frame,(uint)frame.Length,projection,inverse,drawScratch,(uint)worldPackets.Count),context);
+                Check(retainedQueue(context,frame,(uint)frame.Length,projection,inverse,drawScratch,(uint)E.WorldPackets.Count,objectIdentityScratch),context);
+            }else Check(WorldApi.Queue(context,frame,(uint)frame.Length,projection,inverse,drawScratch,(uint)E.WorldPackets.Count),context);
             if(PacketProfilingEnabled){long now=System.Diagnostics.Stopwatch.GetTimestamp();nativeQueueTicks+=now-packedAt;packedAt=now;}
             QueueMainOrder();QueueTransparency();QueueDecals();QueueHighlights();QueueShadowExclusions();
             if(PacketProfilingEnabled)auxiliaryQueueTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-packedAt;
@@ -383,12 +383,12 @@ public sealed partial class NativeBackend
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearExclusions)){ShadowExclusions=Array.Empty<NativeShadowExclusion>();if(WorldReady)QueueShadowExclusions();}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearRecycle)){
             // The blob pack already collected this frame's blocks while they were hot, unless packets changed since.
-            if(AsyncPacketRecycle){recycleJob?.GetAwaiter().GetResult();recycleJob=null;int count=precollectedFor==worldPackets.Count?precollected:CollectRecycled(worldPackets);precollectedFor=-1;worldPackets.Clear();
+            if(AsyncPacketRecycle){recycleJob?.GetAwaiter().GetResult();recycleJob=null;int count=E.PrecollectedFor==E.WorldPackets.Count?E.Precollected:CollectRecycled(E.WorldPackets);E.PrecollectedFor=-1;E.WorldPackets.Clear();
                 if(count>0){var blocks=recycleScratch;recycleJob=System.Threading.Tasks.Task.Run(()=>ReflectedConstantBuffer.RecycleMany(blocks,count));}
                 (recycleScratch,recycleSpare)=(recycleSpare,recycleScratch);}
-            else{ReflectedConstantBuffer.RecycleMany(recycleScratch,CollectRecycled(worldPackets));worldPackets.Clear();}}
+            else{ReflectedConstantBuffer.RecycleMany(recycleScratch,CollectRecycled(E.WorldPackets));E.WorldPackets.Clear();}}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearOcclusion))if(WorldReady)QueueOcclusion(0,Array.Empty<NativeOcclusionDraw>());
-        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearHighlights)){highlightPackets.Clear();if(WorldReady)Check(HighlightApi.Queue(context,null,0),context);}
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearHighlights)){E.HighlightPackets.Clear();if(WorldReady)Check(HighlightApi.Queue(context,null,0),context);}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearWorldQueue))if(WorldReady)Check(WorldApi.Queue(context,null,0,null,null,null,0),context);}
     public void UploadWorldCube(ulong id,int width,int height,int format,byte[] bytes,bool srgb)
         => Check(WorldApi.Cube(context,id,(uint)width,(uint)height,TextureFormat(format),srgb?1u:0u,bytes,(ulong)bytes.Length),context);

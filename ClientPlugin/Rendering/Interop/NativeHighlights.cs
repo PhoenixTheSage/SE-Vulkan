@@ -8,10 +8,9 @@ public sealed partial class NativeBackend
 {
     private HighlightFunctions highlightApi;
     private HighlightFunctions HighlightApi=>highlightApi??(highlightApi=new HighlightFunctions(GetSymbol));
-    private readonly List<NativeHighlightDraw> highlightPackets=new();
     public void ConfigureHighlights(VulkanShaderLibrary library){foreach(var spec in HighlightShaderVariants.Extra){var vs=SpirvRuntimeModule.FromArtifact(library.LoadExtra(spec.Id,spec.Material,"Vertex",spec.Defines));var ps=SpirvRuntimeModule.FromArtifact(library.LoadExtra(spec.Id,spec.Material,"Pixel",spec.Defines));Check(WorldApi.InitPipeline(context,spec.Id-416,vs,(ulong)vs.Length,ps,(ulong)ps.Length),context);}}
-    public void AddHighlightPacket(uint draw,uint first,uint count,uint instance,uint instances,Vector4 color,float thickness,bool overlap=false)=>highlightPackets.Add(new NativeHighlightDraw{Draw=draw,FirstIndex=first,IndexCount=count,FirstInstance=instance,InstanceCount=instances,Flags=overlap?1u:0u,Color=new[]{color.X,color.Y,color.Z,color.W},Thickness=thickness});
-    private void QueueHighlights(){var draws=highlightPackets.ToArray();if(modelIndicesRemapped)for(int i=0;i<draws.Length;i++)draws[i].Draw=SceneDrawIndex(draws[i].Draw);Check(HighlightApi.Queue(context,draws,(uint)draws.Length),context);}
+    public void AddHighlightPacket(uint draw,uint first,uint count,uint instance,uint instances,Vector4 color,float thickness,bool overlap=false)=>E.HighlightPackets.Add(new NativeHighlightDraw{Draw=draw,FirstIndex=first,IndexCount=count,FirstInstance=instance,InstanceCount=instances,Flags=overlap?1u:0u,Color=new[]{color.X,color.Y,color.Z,color.W},Thickness=thickness});
+    private void QueueHighlights(){var draws=E.HighlightPackets.ToArray();if(modelIndicesRemapped)for(int i=0;i<draws.Length;i++)draws[i].Draw=SceneDrawIndex(draws[i].Draw);Check(HighlightApi.Queue(context,draws,(uint)draws.Length),context);}
     public NativeHighlightStats GetHighlightStats(){var s=new NativeHighlightStats{Size=40,AbiVersion=AbiVersion};Check(HighlightApi.Stats(context,ref s),context);return s;}
 }
 [StructLayout(LayoutKind.Sequential,Pack=4)]

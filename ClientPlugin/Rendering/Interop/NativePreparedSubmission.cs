@@ -7,9 +7,8 @@ namespace ClientPlugin.Rendering.Interop;
 public sealed partial class NativeBackend
 {
     public bool RetainedSubmissionEnabled {get;set;}=Environment.GetEnvironmentVariable("SE_VULKAN_RETAINED_SUBMISSION")!="0";
-    private SceneSubmissionStats submissionStats;
-    public SceneSubmissionStats GetSubmissionStats()=>submissionStats;
-    public void NoteSubmissionRebuild(){submissionStats.RebuiltActors++;}
+    public SceneSubmissionStats GetSubmissionStats()=>E.SubmissionStats;
+    public void NoteSubmissionRebuild(){E.SubmissionStats.RebuiltActors++;}
     public sealed class PreparedPart
     {
         public readonly uint Pipeline,Lod;
@@ -40,7 +39,7 @@ public sealed partial class NativeBackend
     }
     public unsafe void SubmitPreparedActor(PreparedActor actor,MatrixD world,byte[] stream,uint count,uint flags,uint cascades,Vector3 origin,float radius,float lodAlpha=0)
     {
-        submissionStats.Actors++;submissionStats.Parts+=(uint)actor.Parts.Length;
+        E.SubmissionStats.Actors++;E.SubmissionStats.Parts+=(uint)actor.Parts.Length;
         bool changed=!actor.HavePose||actor.Pose!=world||actor.UsedModelBatch;actor.UsedModelBatch=false;
         bool alphaChanged=actor.LodAlpha!=lodAlpha;actor.LodAlpha=lodAlpha;
         if(changed){actor.Pose=world;actor.HavePose=true;fixed(byte* bytes=actor.Instance){float* f=(float*)bytes;
@@ -65,13 +64,13 @@ public sealed partial class NativeBackend
     private void AppendPreparedRigid(PreparedPart part,byte[] instance,uint flags,uint cascades,Vector3 origin,float radius,int cell,int x,int y,int z)
     {
         var hint=part.Hint;RigidBatch batch;
-        if(RigidBatchHintsEnabled&&ReferenceEquals(hint.Owner,this)&&hint.Epoch==rigidCacheEpoch&&hint.Slot>=0&&hint.Slot<rigidBatchSlots.Count&&hint.Key.Flags==flags&&hint.Key.Cascades==cascades&&hint.Key.MainGroup==MainGroupToken&&hint.Key.OldOrder.Equals(part.OldOrder)&&hint.Key.Cell==cell&&hint.Key.X==x&&hint.Key.Y==y&&hint.Key.Z==z)batch=rigidBatchSlots[hint.Slot];
+        if(RigidBatchHintsEnabled&&ReferenceEquals(hint.Owner,E)&&hint.Epoch==E.RigidCacheEpoch&&hint.Slot>=0&&hint.Slot<E.RigidBatchSlots.Count&&hint.Key.Flags==flags&&hint.Key.Cascades==cascades&&hint.Key.MainGroup==MainGroupToken&&hint.Key.OldOrder.Equals(part.OldOrder)&&hint.Key.Cell==cell&&hint.Key.X==x&&hint.Key.Y==y&&hint.Key.Z==z)batch=E.RigidBatchSlots[hint.Slot];
         else{
             var key=new RigidBatchKey(part.Pipeline,part.Mesh,part.Color,part.Normal,part.Extensions,part.Alpha,part.Tint,part.Emissive,part.Dither,flags,cascades,origin,cell,part.Lod,MainGroupToken,part.OldOrder);
-            if(!rigidBatches.TryGetValue(key,out batch)){batch=new RigidBatch{Frame=-1,CacheIndex=rigidBatchSlots.Count,Constants=WorldConstants.Object(WorldLayouts[part.Pipeline+2],MatrixD.Identity,part.Tint,Vector3.Zero,part.Emissive,0,null,part.Dither,lod:part.Lod)};rigidBatches.Add(key,batch);rigidBatchSlots.Add(batch);}
-            hint.Owner=this;hint.Epoch=rigidCacheEpoch;hint.Slot=batch.CacheIndex;hint.Key=key;
+            if(!E.RigidBatches.TryGetValue(key,out batch)){batch=new RigidBatch{Frame=-1,CacheIndex=E.RigidBatchSlots.Count,Constants=WorldConstants.Object(WorldLayouts[part.Pipeline+2],MatrixD.Identity,part.Tint,Vector3.Zero,part.Emissive,0,null,part.Dither,lod:part.Lod)};E.RigidBatches.Add(key,batch);E.RigidBatchSlots.Add(batch);}
+            hint.Owner=E;hint.Epoch=E.RigidCacheEpoch;hint.Slot=batch.CacheIndex;hint.Key=key;
         }
-        if(batch.Frame!=batchFrame){using var sharedOwner=WithPacketOwner(0);if(WorldRecipesEnabled)EnsureWorldRecipe(ref batch.Recipe,part.Pipeline+2,part.Mesh,part.Color,part.Normal,part.Extensions,part.Alpha,batch.Constants.Length);batch.Frame=batchFrame;rigidBatchPackets++;batch.PacketIndex=(int)AddWorldPacket(part.Pipeline+2,part.Mesh,part.Color,part.Normal,part.Extensions,part.Alpha,batch.Constants,batch.Instances,1,flags,cascades,origin,radius,false,batch.Recipe,false);ref var first=ref PacketAt(batch.PacketIndex);first.Count=0;first.InstanceCapacity=true;}
+        if(batch.Frame!=E.BatchFrame){using var sharedOwner=WithPacketOwner(0);if(WorldRecipesEnabled)EnsureWorldRecipe(ref batch.Recipe,part.Pipeline+2,part.Mesh,part.Color,part.Normal,part.Extensions,part.Alpha,batch.Constants.Length);batch.Frame=E.BatchFrame;E.RigidBatchPackets++;batch.PacketIndex=(int)AddWorldPacket(part.Pipeline+2,part.Mesh,part.Color,part.Normal,part.Extensions,part.Alpha,batch.Constants,batch.Instances,1,flags,cascades,origin,radius,false,batch.Recipe,false);ref var first=ref PacketAt(batch.PacketIndex);first.Count=0;first.InstanceCapacity=true;}
         ref var packet=ref PacketAt(batch.PacketIndex);int at=checked((int)packet.Count*64);if(packet.Count>=1000000)throw new InvalidOperationException("Prepared instance budget exceeded.");Grow(ref batch.Instances,at,64);Buffer.BlockCopy(instance,0,batch.Instances,at,64);
         if(packet.Count!=0){if(packet.Radius<0||radius<0)packet.Radius=-1;else{Vector3 shift=origin-packet.Origin;float distance=shift.Length();if(distance+radius>packet.Radius){if(distance+packet.Radius<=radius){packet.Origin=origin;packet.Radius=radius;}else{float combined=(distance+packet.Radius+radius)*.5f;if(distance>0)packet.Origin+=shift*((combined-packet.Radius)/distance);packet.Radius=combined;}}}}
         NoteLogicalDraw(part.Pipeline+2,part.Mesh,1,flags,cascades);
