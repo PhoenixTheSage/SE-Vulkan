@@ -3715,3 +3715,71 @@ recording. All three chains have to come down together.
 
 The disk filled (T: 0 bytes free, harness run copies 454 GB); old runs were
 trimmed to their reports and logs with the user's approval.
+
+## Plan 3: two build stages, milestones 5 and 6 (2026-10-30)
+
+`SE_VULKAN_BUILD_STAGES=2` (with the split). Stage A (scene through
+publication) of frame N+1 runs on the build thread; stage B (replay,
+`QueueWorld`, `EndUploads`, frame slot, sprites, `RaiseFrame`,
+`EndFrameAsync`) of frame N runs on the launch thread. Design and as-built
+notes are in the plan.
+
+### Bring-up, batches 106–110
+
+| Batch | Lane | Result | Cause and fix |
+|---|---|---|---|
+| 106 | NPXLS | crash at load: `FinalizeModelBatches` "collection was modified" | `worldQueued` was set twice (after `QueueWorld` and at B's end), so the second Set released A(N+2) mid-pack. Set once only. |
+| 107 | NPXLS / INXS | 6.21 / 5.96 ms | frame gate: 11,284 waits, 27 s over 10,814 frames (about 2.4 ms each). A's calls met B's open frame, then waited for the whole recording too. |
+| 108 | NPXL / NPXLS | 4.47 / 6.16 ms | gating only on the open frame changed nothing: `recording` stays set until the recording thread ends the command buffer. |
+| 108b | NPXL / NPXLS | **4.50 / 4.31 ms** | under two stages, the frame counts as closed once `end_frame_async` hands it over. Gate waits 0.59 s in all, about 57 µs each. |
+| 109 | VALXS, INXS, GPU suites | clean, 4.32 ms, 8/8 | — |
+| 109–112 | NPXUS (user plugins) | no result | first two froze about 10 s after session load (before the guest-frame exclusion); later runs, including NPXU without stages, stall in Pulsar's `git ls-files` before the game starts |
+| 109 | VAL (single thread) | access violation in `GetResolutionStats` at load | did not recur in two reruns (batch 110); cause unknown |
+
+### Milestone 6: interleaved measurement, batch 113
+
+Same session, private Pertam, product defaults. Order DX, NPX, NPXS, NPXS,
+NPX, DX, INX, INXS, INXS, INX, then NPXCS (CPU detail).
+
+| Lane | Present interval ms | Interval P95 ms | GPU ms | Render thread mean ms |
+|---|---|---|---|---|
+| DX11 | 4.22 / 4.21 | 4.70 / 4.66 | — | 3.41 / 3.42 |
+| NPX (split, orbit) | 4.53 / 4.62 | 8.00 / 8.21 | 2.43 / 2.30 | 3.41 / 3.52 |
+| **NPXS (two stages, orbit)** | **4.40 / 4.34** | **5.77 / 5.62** | 2.48 / 2.55 | 1.77 / 1.76 |
+| INX (split, interior) | 4.54 / 4.69 | 8.04 / 7.74 | 2.48 / 2.41 | 3.28 / 3.67 |
+| **INXS (two stages, interior)** | **4.35 / 4.37** | **5.68 / 5.77** | 2.50 / 2.43 | 1.83 / 1.80 |
+| NPXCS (CPU detail) | 4.37 | 5.44 | 2.39 | 1.45 |
+
+- **Two stages beat the split by 0.21 ms (orbit) and 0.25 ms (interior)**,
+  and the interval P95 drops about 2.4 ms.
+- **The gap to DX11 is 0.13–0.18 ms.** The 4.17 ms goal is not met.
+- The render thread now waits for Build for 3.1 ms of its 4.25 ms frame, so
+  Apply is not the limit.
+
+**What paces now (NPXCS, per frame).**
+- **The build thread spends 4.19 ms**: about 3.2 ms of stage A and 1.0 ms in
+  `StageGate`, waiting for stage B(N) to queue its world.
+- **The chain is still A(N), B(N)'s replay and `QueueWorld`, then A(N+1).**
+  Only B's tail after `QueueWorld` (uploads, frame slot, sprites, frame
+  callback, launch) overlaps.
+
+**Latency and visible set (not measured).**
+- **Latency, by construction:** B(N) starts as soon as A(N) ends, as Build's
+  tail did in the split, so two stages add no frame of latency.
+- **Visible set:** Build still publishes it at the hand-off, so its lag is
+  unchanged from the split.
+
+### Next
+
+**Move the stage gate from A's start to A's first scene-changing native
+call.** Today that is `ClearPassFrame` in `BeginPacketCollection`. A
+native-side gate on the scene call wrappers would let A's traversal, voxels
+and shadow fit overlap B's `QueueWorld`; the ceiling is about 1.0 ms.
+
+First audit the non-emission backend state that `QueueWorld` (blob path)
+reads while A runs:
+- main order: `stableOrders`, `residentOwners`;
+- native models;
+- transparency, decals, highlights, exclusions;
+- the cell emission.
+
