@@ -83,12 +83,20 @@ void cells_emit(){
         // on. Every later native call and the recording's settle join it first (join_cells_emit), so nothing reads or
         // grows the submission meanwhile. It cost the recording thread about 0.45 ms a frame (C1).
         if(async_cell_emission){WorldSubmission* target=&world.current();cells_emit_async=true;
-            sevk_jobs::shared().submit(cells_emit_job,sevk_jobs::Upload,sevk_jobs::Priority::High,[this,target]{emit_cells_into(*target);});return;}
+            auto queued=std::chrono::steady_clock::now();cells_emit_queued=queued;
+            sevk_jobs::shared().submit(cells_emit_job,sevk_jobs::Upload,sevk_jobs::Priority::High,[this,target,queued]{auto start=std::chrono::steady_clock::now();emit_cells_into(*target);
+                cells_emit_delay_us=std::chrono::duration<double,std::micro>(start-queued).count();cells_emit_run_us=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count();});return;}
         cells_emit_pending=true;return;}
     emit_cells_now();
 }
 // Joins an async emission and applies its frame counters on the thread that owns them.
-void join_cells_emit(){if(!cells_emit_async)return;cells_emit_async=false;cells_emit_job.wait();}
+// Diagnostics (C1): queue delay and run time of the async emission, and the join's wait; the recording thread
+// reports them (record_count is single-threaded).
+std::chrono::steady_clock::time_point cells_emit_queued{};std::atomic<double> cells_emit_delay_us{0},cells_emit_run_us{0},cells_emit_wait_sum{0},cells_emit_span_sum{0};
+void join_cells_emit(){if(!cells_emit_async)return;cells_emit_async=false;auto at=std::chrono::steady_clock::now();cells_emit_job.wait();
+    cells_emit_wait_sum.fetch_add(std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-at).count());cells_emit_span_sum.fetch_add(std::chrono::duration<double,std::micro>(at-cells_emit_queued).count());}
+void report_cells_emit(){record_count("cells emit delay us",cells_emit_delay_us.exchange(0));record_count("cells emit run us",cells_emit_run_us.exchange(0));
+    record_count("cells emit join wait us",cells_emit_wait_sum.exchange(0));record_count("cells emit queued to join us",cells_emit_span_sum.exchange(0));}
 void apply_cells_emit_counts(){performance.logical_draws+=cells_emit_uncounted;performance.submitted_draws+=cells_emit_uncounted;cells_emit_uncounted=0;}
 // The deferred world intake settles first: cell draws append after the queued world draws.
 // Opt-in (SE_VULKAN_DEFERRED_CELL_PUBLISH=1), like the deferred world intake.

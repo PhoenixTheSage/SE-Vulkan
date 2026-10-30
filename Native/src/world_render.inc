@@ -555,8 +555,17 @@ void render_world(){
     if(guest.depth_configured)for(uint32_t i=0;i<guest.depth_count;i++)
         std::memcpy(static_cast<uint8_t*>(slot.projections.mapped)+world_align(64)*(73+i),guest.depth_matrices[i],64);
     cpu_lap("prepare geometry");auto& object_offsets=world.current().object_offsets;auto& instance_offsets=world.current().instance_offsets;object_offsets.clear();instance_offsets.clear();uint64_t object_bytes=world.retained_objects?world.object_records.data.size():world.current().draw_objects.size(),instance_bytes=world.current().instances.data.size();
-    object_offsets.reserve(world.current().draws.size());instance_offsets.reserve(world.current().draws.size());
-    for(auto& draw:world.current().draws){draw.gpu_object_at=draw.object_at;if(draw.recipe){if(!draw.recipe->alive || draw.recipe->generation!=draw.recipe_generation)throw std::runtime_error("retired queued recipe");validate_world_recipe(*draw.recipe);draw.geometry=draw.recipe->geometry;}else draw.geometry=&world.meshes.at(draw.packet.mesh);object_offsets.push_back(draw.gpu_object_at);instance_offsets.push_back(draw.instance_at);}
+    // SE_VULKAN_PARALLEL_PREPARE (default on, C1): the per-draw prepare loops write only their own draw's slots, so
+    // large frames split them in four. Recipe validation writes the shared recipe: draws whose recipe is not yet
+    // valid are listed and validated serially afterwards, in order.
+    {auto& draws=world.current().draws;const uint32_t n=uint32_t(draws.size());object_offsets.resize(n);instance_offsets.resize(n);
+        auto geometry_range=[&](uint32_t begin,uint32_t end,std::vector<uint32_t>& invalid){for(uint32_t i=begin;i<end;++i){auto& draw=draws[i];draw.gpu_object_at=draw.object_at;
+            if(draw.recipe){if(!draw.recipe->alive || draw.recipe->generation!=draw.recipe_generation)throw std::runtime_error("retired queued recipe");if(draw.recipe->valid)draw.geometry=draw.recipe->geometry;else invalid.push_back(i);}
+            else draw.geometry=&world.meshes.at(draw.packet.mesh);object_offsets[i]=draw.gpu_object_at;instance_offsets[i]=draw.instance_at;}};
+        std::array<std::vector<uint32_t>,4> invalid;
+        if(parallel_prepare&&n>=1024)sevk_jobs::parallel_for(sevk_jobs::Upload,sevk_jobs::Priority::High,4,4,[&](uint32_t k){geometry_range(uint32_t(uint64_t(n)*k/4),uint32_t(uint64_t(n)*(k+1)/4),invalid[k]);});
+        else geometry_range(0,n,invalid[0]);
+        for(auto& list:invalid)for(uint32_t i:list){validate_world_recipe(*draws[i].recipe);draws[i].geometry=draws[i].recipe->geometry;}}
     cpu_lap("prepare upload");auto perf_prepare_stamp=std::chrono::steady_clock::now();performance.geometry_us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(perf_prepare_stamp-profile_stamp).count());
     auto perf_prepare_take=[&](){auto now=std::chrono::steady_clock::now();auto us=uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(now-perf_prepare_stamp).count());perf_prepare_stamp=now;return us;};
     bool material_buffers_moved=!slot.objects.handle || slot.objects.bytes<object_bytes || !slot.instances.handle || slot.instances.bytes<std::max(instance_bytes,uint64_t(64)) || !slot.frame.handle || !slot.projections.handle;
@@ -596,7 +605,10 @@ void render_world(){
     // touching the large WorldDraw records on each comparison.
     struct SortKey{uint64_t old_key,mesh;VkDescriptorSet material;uint32_t phase,main_order,main_part,pipeline,technique,old_valid,owner;bool mesh_decal,old_flag;bool operator==(const SortKey&)const=default;};
     static thread_local std::vector<SortKey> keys;keys.resize(order.size());
-    for(uint32_t n=0;n<order.size();++n){const auto& d=world.current().draws[n];const auto& p=d.packet;keys[n]={d.old_order.key,p.mesh,materials[n],world_main_phase(p.pipeline,p.flags),d.main_order?d.main_order:n+1,d.main_part,p.pipeline,world_decal_technique_order(p.pipeline),d.old_order.valid,d.owner,world_mesh_decal(p.pipeline),(p.flags&0x04000000u)!=0};}
+    // Workers see neither this thread's thread_local keys nor its world.current(): take plain references here.
+    auto& key_store=keys;const auto& key_draws=world.current().draws;
+    auto key_range=[&](uint32_t begin,uint32_t end){for(uint32_t n=begin;n<end;++n){const auto& d=key_draws[n];const auto& p=d.packet;key_store[n]={d.old_order.key,p.mesh,materials[n],world_main_phase(p.pipeline,p.flags),d.main_order?d.main_order:n+1,d.main_part,p.pipeline,world_decal_technique_order(p.pipeline),d.old_order.valid,d.owner,world_mesh_decal(p.pipeline),(p.flags&0x04000000u)!=0};}};
+    {const uint32_t n=uint32_t(order.size());if(parallel_prepare&&n>=1024)sevk_jobs::parallel_for(sevk_jobs::Upload,sevk_jobs::Priority::High,4,4,[&](uint32_t k){key_range(uint32_t(uint64_t(n)*k/4),uint32_t(uint64_t(n)*(k+1)/4));});else key_range(0,n);}
     // Sort reuse (SE_VULKAN_SORT_REUSE=0 sorts every frame): identical keys give an identical order, so when every
     // key equals this slot's previous frame (materials are per slot), its order is reused.
     static thread_local std::array<std::vector<SortKey>,2> previous_keys;static thread_local std::array<std::vector<uint32_t>,2> previous_order;
@@ -624,7 +636,12 @@ void render_world(){
     check(vmaFlushAllocation(allocator,slot.instances.memory,0,VK_WHOLE_SIZE),"flush batched world uniforms/instances");if(!world.retained_objects)check(vmaFlushAllocation(allocator,slot.objects.memory,0,VK_WHOLE_SIZE),"flush legacy world objects");
     cpu_lap("prepare cascade casters");for(auto& casters:world.current().cascade_casters)casters.clear();
     if(scheduled_shadows)shadow_update_mask|=((1u<<shadow_count)-1)&~shadow_image_mask;
-    for(uint32_t i:order){const auto& packet=world.current().draws[i].packet;if(packet.flags&(512|8192))continue;for(uint32_t c=0;c<shadow_count;c++)if((packet.reserved&(1u<<c)) && (!scheduled_shadows || (shadow_update_mask&(1u<<c))))world.current().cascade_casters[c].push_back(i);}
+    // Each cascade's list is independent: large frames fill them in parallel, each in draw order.
+    auto& caster_lists=world.current().cascade_casters;const auto& caster_draws=world.current().draws;
+    auto casters_for=[&](uint32_t c){if(c>=shadow_count||(scheduled_shadows&&!(shadow_update_mask&(1u<<c))))return;auto& list=caster_lists[c];
+        for(uint32_t i:order){const auto& packet=caster_draws[i].packet;if(!(packet.flags&(512|8192))&&(packet.reserved&(1u<<c)))list.push_back(i);}};
+    if(parallel_prepare&&order.size()>=1024&&shadow_count>1)sevk_jobs::parallel_for(sevk_jobs::Upload,sevk_jobs::Priority::High,shadow_count,shadow_count,casters_for);
+    else for(uint32_t c=0;c<shadow_count;c++)casters_for(c);
     cpu_lap("prepare indirect");prepare_world_indirect();
     // CPU fade dependencies must reach GPU conditional view flags before the
     // selector dispatch. Both paths now observe this frame's immutable inputs.

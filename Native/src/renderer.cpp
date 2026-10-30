@@ -676,6 +676,7 @@ struct Renderer {uint32_t recipe_generation=1;
     // Spot lighting passes run the stock spot shader as a full-screen triangle; scissor each to its projected cone (C2).
     bool spot_scissor_enabled=env_flag("SE_VULKAN_SPOT_SCISSOR",true);uint64_t spot_scissor_pixels{},spot_full_pixels{};
     bool pass_material_reuse=env_flag("SE_VULKAN_PASS_MATERIAL_REUSE",false);
+    bool parallel_prepare=env_flag("SE_VULKAN_PARALLEL_PREPARE",true);
     // SE_VULKAN_PASS_STREAM_PARALLEL_KB: the stream copy goes to the pool from this size (default 2048 KB).
     uint64_t pass_stream_parallel_bytes=[]{const char* v=std::getenv("SE_VULKAN_PASS_STREAM_PARALLEL_KB");return (v?std::strtoull(v,nullptr,10):2048ull)*1024;}();uint64_t world_mesh_revision{},pass_mesh_checked_revision{UINT64_MAX};
     bool parallel_main=env_flag("SE_VULKAN_PARALLEL_MAIN",true);
@@ -973,7 +974,7 @@ struct Renderer {uint32_t recipe_generation=1;
             // finished recording waits for it. Scene calls see relock_wanted and yield (call_scene) until it is in.
             if(!lock.owns_lock()){auto relock=std::chrono::steady_clock::now();relock_wanted.store(true,std::memory_order_release);lock.lock();relock_wanted.store(false,std::memory_order_release);launch_lap_us[4]+=tl_since(relock);}
             auto cleanup=std::chrono::steady_clock::now();record_lock=nullptr;world.recording_submission=-1;tl_recording_thread=false;rec_view.valid=false;retire_recording_view();record_released.store(false,std::memory_order_release);
-            record_count("off-lap view cleanup us",std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-cleanup).count());
+            report_cells_emit();record_count("off-lap view cleanup us",std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-cleanup).count());
             {std::lock_guard s(snapshot_mutex);snapshot.work=work;}
             {std::lock_guard q(deferred_mutex);record_in_flight=false;}record_running=false;tl_post(4);last_record_end=std::chrono::steady_clock::now();gap_open=true;tl_pipelined=false;tl_record_end_us+=tl_since(tl_launch);++tl_record_ends;lock.unlock();record_cv.notify_all();});
         return 0;
