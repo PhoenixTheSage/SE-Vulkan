@@ -28,6 +28,8 @@ public sealed partial class NativeBackend
         if(recipes){if(recipeScratch.Length<worldPackets.Count)recipeScratch=new NativeRecipeDraw[worldPackets.Count];if(queueRecipes==null)queueRecipes=(QueueRecipesFn)Marshal.GetDelegateForFunctionPointer(GetSymbol("sevk_queue_world_recipes"),typeof(QueueRecipesFn));}
         else if(drawScratch.Length<worldPackets.Count)drawScratch=new NativeWorldDraw[worldPackets.Count];
         instanceOffsets.Clear();int objectUsed=0,instanceUsed=0;byte* arena=null;
+        // Collect the blocks to recycle at the next prologue while the packets are in cache (see ClearWorldPackets).
+        bool collect=AsyncPacketRecycle;int collected=0;if(collect&&recycleScratch.Length<worldPackets.Count)recycleScratch=new byte[worldPackets.Count][];
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.BlobPack)){
         if(recipes && WorldArenaEnabled){
             long total=0;for(int i=0;i<worldPackets.Count;++i){var constants=PacketAt(i).Constants;if(constants==null)throw new ArgumentException("World object/instance data mismatch.");total+=(constants.Length+objectAlignment-1)/objectAlignment*objectAlignment;}
@@ -36,7 +38,7 @@ public sealed partial class NativeBackend
         }
         for(int i=0;i<worldPackets.Count;++i)
         {
-            ref readonly var packet=ref PacketAt(i);int bytes=checked((int)(packet.Count*64L));
+            ref readonly var packet=ref PacketAt(i);int bytes=checked((int)(packet.Count*64L));if(collect&&packet.RecycleConstants)recycleScratch[collected++]=packet.Constants;
             if(packet.Constants==null || packet.Instances!=null && (packet.InstanceCapacity?packet.Instances.Length<bytes:packet.Instances.Length!=bytes))throw new ArgumentException("World object/instance data mismatch.");
             int aligned=checked((packet.Constants.Length+objectAlignment-1)/objectAlignment*objectAlignment);
             if((long)objectUsed+aligned>256*1024*1024 || (long)instanceUsed+bytes>256*1024*1024)throw new ArgumentException("World blob exceeds bounded upload budget.");
@@ -48,6 +50,7 @@ public sealed partial class NativeBackend
             objectUsed=checked(objectUsed+aligned);
             if(objectUsed>256*1024*1024 || instanceUsed>256*1024*1024)throw new ArgumentException("World blob exceeds bounded upload budget.");
         }
+        if(collect){precollected=collected;precollectedFor=worldPackets.Count;}
         submissionStats.ObjectBlobBytes=(ulong)objectUsed;submissionStats.InstanceBlobBytes=(ulong)instanceUsed;
         }
         if(PacketProfilingEnabled){packetObjectBytes=objectUsed;packetInstanceBytes=instanceUsed;long now=System.Diagnostics.Stopwatch.GetTimestamp();managedPackTicks+=now-started;started=now;}

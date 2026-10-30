@@ -30,7 +30,9 @@ public sealed partial class NativeBackend
     // The build thread only copies the references out. The pool is locked; a block rented before the worker
     // returns it is simply allocated fresh.
     private byte[][] recycleSpare=Array.Empty<byte[]>();
-    private RenderJobs.Job? recycleJob;
+    private int precollected,precollectedFor=-1;
+    // The .NET pool, not the game scheduler: WaitOrExecute ran the recycle inline whenever game workers were busy.
+    private System.Threading.Tasks.Task recycleJob;
     static readonly bool AsyncPacketRecycle=Environment.GetEnvironmentVariable("SE_VULKAN_ASYNC_PACKET_RECYCLE")!="0";
     // In-place packet access. WorldPacket is a large struct with references;
     // copying it out and back per appended instance dominated batch appends.
@@ -380,8 +382,10 @@ public sealed partial class NativeBackend
     private void ClearWorldPackets(){
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearExclusions)){ShadowExclusions=Array.Empty<NativeShadowExclusion>();if(WorldReady)QueueShadowExclusions();}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearRecycle)){
-            if(AsyncPacketRecycle){recycleJob?.Wait();recycleJob=null;(recycleScratch,recycleSpare)=(recycleSpare,recycleScratch);int count=CollectRecycled(worldPackets);worldPackets.Clear();
-                if(count>0){var blocks=recycleScratch;recycleJob=RenderJobs.Start(()=>ReflectedConstantBuffer.RecycleMany(blocks,count));}}
+            // The blob pack already collected this frame's blocks while they were hot, unless packets changed since.
+            if(AsyncPacketRecycle){recycleJob?.GetAwaiter().GetResult();recycleJob=null;int count=precollectedFor==worldPackets.Count?precollected:CollectRecycled(worldPackets);precollectedFor=-1;worldPackets.Clear();
+                if(count>0){var blocks=recycleScratch;recycleJob=System.Threading.Tasks.Task.Run(()=>ReflectedConstantBuffer.RecycleMany(blocks,count));}
+                (recycleScratch,recycleSpare)=(recycleSpare,recycleScratch);}
             else{ReflectedConstantBuffer.RecycleMany(recycleScratch,CollectRecycled(worldPackets));worldPackets.Clear();}}
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearOcclusion))if(WorldReady)QueueOcclusion(0,Array.Empty<NativeOcclusionDraw>());
         using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ClearHighlights)){highlightPackets.Clear();if(WorldReady)Check(HighlightApi.Queue(context,null,0),context);}
