@@ -10,16 +10,16 @@ bool prepare_indexed_motion(WorldSlot& world_slot){
     auto& state=indexed_motion;auto previous=std::move(state.actors);state.actors.clear();auto previous_sources=state.sources;
     if(state.frame==UINT64_MAX || state.frame+1!=stats.submitted_frames)previous.clear();state.frame=stats.submitted_frames;
     auto& r=opaque_reference;
-    if(!state.pipelines[0] || !opaque_stock.ready || !r.frame_ready || r.actors.empty())return false;
+    if(!state.pipelines[0] || !opaque_stock.ready || !r.frame_ready || r.rec_actors.empty())return false;
     if(!state.sources || state.source_epoch!=opaque_source_epoch){state.sources=std::make_shared<const std::vector<uint8_t>>(r.source_inputs);state.source_epoch=opaque_source_epoch;}
     if(previous.empty())previous_sources.reset();
     struct Header {float rows[12];uint32_t source_first,source_count,valid;float fade;};static_assert(sizeof(Header)==64);
-    std::vector<Header> headers(r.actors.size());std::vector<uint32_t> family_type(r.family_inputs.size(),UINT32_MAX);std::vector<bool> family_fade(r.family_inputs.size());
+    std::vector<Header> headers(r.rec_actors.size());std::vector<uint32_t> family_type(r.family_inputs.size(),UINT32_MAX);std::vector<bool> family_fade(r.family_inputs.size());
     for(uint32_t family=0;family<r.family_inputs.size();++family){const auto& f=r.family_inputs[family];for(uint32_t p=f.first_part;p<f.first_part+f.part_count;++p){const auto& part=r.part_inputs[p];if(!(part.flags&2))continue;const auto& batch=opaque_stock.batches.at(part.reserved).input;
         if(family_type[family]==UINT32_MAX)family_type[family]=batch.old?world.pipelines.at(batch.main_pipeline).type:5u;family_fade[family]=family_fade[family]||(batch.old&&batch.main_pipeline>=2560);
     }}
     uint32_t main_view=gpu_resident.published?gpu_resident.view_map[0]:0;
-    for(uint32_t i=0;i<r.actors.size();++i){const auto& a=r.actors[i];uint64_t key=(uint64_t(a.owner)<<32)|a.generation;IndexedMotionState::Actor current{};
+    for(uint32_t i=0;i<r.rec_actors.size();++i){const auto& a=r.rec_actors[i];uint64_t key=(uint64_t(a.owner)<<32)|a.generation;IndexedMotionState::Actor current{};
         for(uint32_t row=0;row<3;++row){for(uint32_t column=0;column<3;++column)current.rows[row*4+column]=a.basis[row*3+column];current.rows[row*4+3]=float(a.translation[row]-r.frame.camera[row]);}
         current.source_first=a.source_first;current.source_count=a.source_count;current.type=family_type.at(a.family);current.fade=family_fade.at(a.family)?motion_distance_fade(world_slot,2560):0.f;
         current.active=(a.flags&1)&&main_view<r.view_count&&(r.views[main_view].flags&1)&&!(a.hidden_views[main_view/32]&(1u<<(main_view%32)));

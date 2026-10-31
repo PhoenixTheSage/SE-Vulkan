@@ -406,7 +406,11 @@ void build_new_main_entries(std::vector<NewMainEntry>& entries,bool with_stock){
     auto& r=opaque_reference;
     if(with_stock&&opaque_stock.ready&&r.frame_ready){
         uint32_t view=gpu_resident.published?gpu_resident.view_map[0]:0;if(view<r.view_count&&(r.views[view].flags&1)){
-            std::vector<uint32_t> family_order(r.family_inputs.size(),UINT32_MAX);for(auto& actor:r.actors)if(!(actor.flags&2))family_order.at(actor.family)=std::min(family_order.at(actor.family),owner_order(actor.owner));
+            // The recording's actor rows (Build writes the live ones alongside it), in four chunks: owner lookups are reads.
+            const auto& actors=r.rec_actors;const uint32_t n=uint32_t(actors.size());std::array<std::vector<uint32_t>,4> orders;
+            auto chunk=[&](uint32_t k){auto& order=orders[k];order.assign(r.family_inputs.size(),UINT32_MAX);for(uint32_t i=uint32_t(uint64_t(n)*k/4);i<uint32_t(uint64_t(n)*(k+1)/4);++i){const auto& actor=actors[i];if(!(actor.flags&2))order.at(actor.family)=std::min(order.at(actor.family),owner_order(actor.owner));}};
+            if(parallel_prepare&&n>=1024)sevk_jobs::parallel_for(sevk_jobs::Upload,sevk_jobs::Priority::High,4,4,chunk);else for(uint32_t k=0;k<4;k++)chunk(k);
+            auto& family_order=orders[0];for(uint32_t k=1;k<4;k++)for(size_t f=0;f<family_order.size();f++)family_order[f]=std::min(family_order[f],orders[k][f]);cpu_lap("new main family order");
             uint32_t count=r.view_batches?uint32_t(r.recording_batches.at(view).size()):uint32_t(opaque_stock.batches.size());
             for(uint32_t n=0;n<count;++n){uint32_t b=r.view_batches?r.recording_batches[view][n]:n;if(opaque_stock.batches[b].input.old)continue;uint32_t order=UINT32_MAX,part=0;
                 if(gpu_resident.published){const auto& key=gpu_resident.upload.source.batches.at(b);if(!key.group)throw std::runtime_error("NEW batch lost its family order identity");order=family_order.at(key.group-1);part=key.part;}
@@ -414,13 +418,16 @@ void build_new_main_entries(std::vector<NewMainEntry>& entries,bool with_stock){
                 // Unmapped/raw producers still draw in their original order.
                 entries.push_back({order==UINT32_MAX?UINT32_MAX-2:order,order==UINT32_MAX?b:part,1,b});}
         }
+        cpu_lap("new main stock entries");
     }
     // A stream's owner order is shared by every group drawing it: look its owners up once per stream.
     if(pass_ready_now()){const auto& groups=pass_groups();const native_pass::InstanceStream* cached_stream=nullptr;uint32_t cached_order=UINT32_MAX;
         for(uint32_t i=0;i<groups.size();++i){const auto& group=groups[i];if(group.key.view!=0||group.kind!=native_pass::Kind::Colour)continue;
             if(group.stream.get()!=cached_stream){cached_stream=group.stream.get();cached_order=UINT32_MAX;for(uint32_t owner:group.stream->owners)cached_order=std::min(cached_order,owner_order(owner));}
             uint32_t order=cached_order;entries.push_back({order==UINT32_MAX?UINT32_MAX-1:order,order==UINT32_MAX?i:group.main_part,2,i});}}
+    if(with_stock)cpu_lap("new main pass entries");
     std::stable_sort(entries.begin(),entries.end(),[](const NewMainEntry& a,const NewMainEntry& b){return std::tie(a.order,a.part)<std::tie(b.order,b.part);});
+    if(with_stock)cpu_lap("new main sort");
 }
 // Starts the entry build on a worker at the end of prepare; record_new_main joins it.
 void start_new_main_entries(){

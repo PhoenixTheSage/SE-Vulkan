@@ -33,11 +33,13 @@ inline std::vector<FamilyBatches> recording_family_batches(std::span<const SevkO
     for(auto& f:output)for(auto& role:f){std::sort(role.begin(),role.end());role.erase(std::unique(role.begin(),role.end()),role.end());}
     return output;
 }
-inline std::vector<std::vector<uint32_t>> recording_batches(std::span<const SevkOpaqueActor> actors,
-    std::span<const FamilyBatches> families,std::span<const SevkOpaqueView> views,uint32_t batches){
-    std::vector<uint64_t> family_views(families.size());
+// The view mask of each family over a range of actors; ranges OR together, so callers may split the actors.
+inline void recording_family_views(std::span<const SevkOpaqueActor> actors,std::span<const SevkOpaqueView> views,std::vector<uint64_t>& family_views){
     for(auto& a:actors)for(uint32_t v=0;v<views.size();v++)
         if(!(family_views[a.family]&(uint64_t(1)<<v))&&recording_member(a,views[v],v))family_views[a.family]|=uint64_t(1)<<v;
+}
+inline std::vector<std::vector<uint32_t>> recording_batches(std::span<const uint64_t> family_views,
+    std::span<const FamilyBatches> families,std::span<const SevkOpaqueView> views,uint32_t batches){
     std::vector<std::vector<uint32_t>> output(views.size());std::vector<uint8_t> admitted(batches);
     for(uint32_t v=0;v<views.size();v++){
         std::fill(admitted.begin(),admitted.end(),0);uint32_t role=(views[v].flags&2)?1:(views[v].flags&32)?2:0;
@@ -45,5 +47,10 @@ inline std::vector<std::vector<uint32_t>> recording_batches(std::span<const Sevk
         for(uint32_t b=0;b<batches;b++)if(admitted[b])output[v].push_back(b);
     }
     return output;
+}
+inline std::vector<std::vector<uint32_t>> recording_batches(std::span<const SevkOpaqueActor> actors,
+    std::span<const FamilyBatches> families,std::span<const SevkOpaqueView> views,uint32_t batches){
+    std::vector<uint64_t> family_views(families.size());recording_family_views(actors,views,family_views);
+    return recording_batches(std::span<const uint64_t>(family_views),families,views,batches);
 }
 }

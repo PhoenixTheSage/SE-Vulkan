@@ -103,7 +103,12 @@ void set_opaque_stock_inputs(uint64_t mesh,const void* objects,uint32_t bytes,ui
 void prepare_opaque_stock(WorldSlot& world_slot){
     auto& reference=opaque_reference;
     {GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::RecordingMembership);
-    if(reference.view_batches)reference.recording_batches=gpu_opaque::recording_batches(reference.rec_actors,reference.recording_families,reference.views,reference.batch_count);}
+    // The family view masks in four chunks on the pool (each actor is independent; masks OR together).
+    if(reference.view_batches){const auto& actors=reference.rec_actors;const uint32_t n=uint32_t(actors.size());std::array<std::vector<uint64_t>,4> masks;
+        auto chunk=[&](uint32_t k){masks[k].assign(reference.recording_families.size(),0);gpu_opaque::recording_family_views(std::span(actors).subspan(uint64_t(n)*k/4,uint64_t(n)*(k+1)/4-uint64_t(n)*k/4),reference.views,masks[k]);};
+        if(parallel_prepare&&n>=1024)sevk_jobs::parallel_for(sevk_jobs::Upload,sevk_jobs::Priority::High,4,4,chunk);else for(uint32_t k=0;k<4;k++)chunk(k);
+        for(uint32_t k=1;k<4;k++)for(size_t f=0;f<masks[0].size();f++)masks[0][f]|=masks[k][f];
+        reference.recording_batches=gpu_opaque::recording_batches(std::span<const uint64_t>(masks[0]),reference.recording_families,reference.views,reference.batch_count);}}
     auto& s=opaque_stock;auto& r=opaque_reference;if(!s.ready)return;validate_opaque_stock_geometry();
     if(!s.pool){VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,16},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,gpu_opaque::texture_capacity*8}};VkDescriptorPoolCreateInfo create{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};create.maxSets=4;create.poolSizeCount=2;create.pPoolSizes=sizes;check(vkCreateDescriptorPool(device,&create,nullptr,&s.pool),"create fenced stock indexed descriptor pool");}
     auto& slot=r.slots[slot_index];bool dirty=s.materials_dirty[slot_index];

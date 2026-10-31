@@ -223,6 +223,79 @@ is stage B's `EndUploads` on the launch thread, as on the CPU path.
   every GPU-owned actor for the game's visible set. The plan's answer is the
   one-frame-late GPU visibility readback (milestone 2).
 
+## Milestone 2, step 2: index, latch at queue time, recording (2026-10-31)
+
+**Changes** (`c6b12de` and the commit after it):
+- **Traversal.** GPU-owned actors leave the spatial index and the per-frame
+  main-owner declarations, like pass-owned ones. Their main-owner orders are
+  resident, set on commit. Their main-view visible set is the same frustum
+  test in one flat pass (`GpuOwnedVisible`, about 1.15 ms; still a
+  candidate for the GPU readback).
+- **Latch at queue time.** Under two build stages, frame N's GPU-scene
+  inputs latch when stage B queues its world (`capture_queued_view`):
+  - into a per-submission queued frame;
+  - Build's committed rows into a latched mirror.
+
+  `begin_frame` copies the mirror into the slot, and the recording applies
+  its queued frame when it starts.
+- **Recording.**
+  - The per-view batch lists are computed in four chunks on the pool.
+  - The new-main family order is computed in four chunks on the pool.
+  - Two data races are fixed: the new-main ordering and the indexed motion
+    vectors read Build's live actor rows during the recording; both now read
+    `rec_actors`.
+
+**Results** (plain runs, interleaved pairs):
+
+| | Present cadence |
+|---|---|
+| CPU path | 4.28–4.32 ms |
+| GPU, step 1 | 9.2 ms |
+| GPU, after the index change | 7.6 ms |
+| GPU, after the latch change | 7.5 ms |
+| GPU, after the recording changes | 6.98–7.00 ms |
+
+The build thread no longer paces: `GpuResidentQueue` 3.36 → 0.24 ms, and
+its scene work 7.2 → 3.85 ms. **The recording thread paces now:**
+
+| Recording lap | CPU path | GPU path |
+|---|---|---|
+| Total | 2.87 ms | 6.25 ms |
+| `new main record` (recording the entry list) | 0.23 ms | 2.25 ms |
+| `prepare pass gpu` (batch lists) | — | 0.96 ms (was 1.40) |
+| `spot shadows` | about 0.45 ms (all spot laps) | 0.67 ms |
+| `prepare opaque reference` | — | 0.41 ms |
+
+**The next structural step: batch granularity.** The GPU path's main view
+records **5,850 entries a frame** (CPU path 1,890). Stock batches are keyed
+per mesh, so each mesh is its own pipeline bind, descriptor setup and
+indirect-count draw. Part offsets are already absolute within the shared
+geometry buffers (`set_opaque_stock_batches`), so batches that share
+pipelines and buffers can merge into one indirect draw each. That changes:
+- the compute layout (per-batch argument ranges);
+- draw order within a batch, which affects coplanar parts, cutout and decal
+  order, and the "NEW group parts remain contiguous" contract.
+
+So it needs its own parity gate.
+
+**Gates** for this step:
+- in-game validation: zero errors;
+- `Compare-GpuOwnership.ps1 -Split`: GPU-on 83 px against 482 off/off;
+- reference fixture: 136,700 checks;
+- `GpuSceneLiveTests`: all modes pass except one pre-existing failure.
+
+**Open issues found, not caused by this work:**
+- **`GpuSceneLiveTests --new-group-only` fails** ("NEW group parts remain
+  contiguous in channel 0: managed"). The DLL from before milestone 2
+  (`3837b6a`) fails identically, with the index exclusion off too.
+- **"invalid highlight draw N/0" at world unload.** It crashes about 4 s
+  after the results are written, on the CPU path too (three runs on 10-29
+  and 10-30). It now hits most GPU-path runs, because stage A runs alongside
+  stage B more often. Results are unaffected; files written at shutdown
+  (recording laps) are lost. Native validates highlight draws against
+  `world.current()`, which depends on the calling thread and on whether a
+  recording is running.
+
 ## Milestones
 
 Each milestone keeps the CPU path as the default and fallback until its gate
