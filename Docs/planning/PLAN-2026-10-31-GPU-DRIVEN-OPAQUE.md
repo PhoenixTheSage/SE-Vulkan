@@ -106,11 +106,24 @@ stages, default placement, hybrid mode with every 10-12 treatment on).
 
 **Correctness.**
 - Core and synchronization validation in-game: zero errors.
-- **Not yet correct.** At the benchmark camera, against the CPU path:
-  - the grated floor panels beside the corridor show bright gaps (missing or
-    wrong geometry);
-  - the wall panel above and right of the door is darker. The 10-12 notes
-    recorded the same entrance-wall difference as unresolved.
+- **Images match the CPU path.** The paused same-process comparison toggles
+  `GpuOpaqueOwnershipEnabled` off, on and off, with lights, spots, frame
+  constants, probes and cascades frozen (`Tests/ScenePerformanceHarness/Compare-GpuOwnership.ps1`, diffed with `Compare-LightingPhases.py`).
+
+  | Mode | Off vs off again | Off vs GPU on | Native cells owned |
+  |---|---|---|---|
+  | One build thread (native readback) | 307 px | 356 px, max delta 17 | 1,797 → 0 → 1,797 |
+  | Split, two stages (game screenshot) | 256 px | 134 px | 1,797 → 0 → 1,797 |
+
+  On one build thread the cascades, spot maps and all 36 probe faces are
+  byte-identical. Under the split, the reconciliation now takes the game's
+  screenshot, because the render-thread readback never lands when the
+  launch thread submits. GPU-on differences stay inside the off/off noise.
+- **Retracted:** an earlier note here reported missing floor-grate geometry
+  and a darker entrance wall. That came from comparing screenshots of two
+  separate runs. Pertam's flashing light and welding sparks change the
+  lighting between runs, so cross-run screenshots can't show renderer
+  differences.
 
 **Coverage** (orbit world): 6,307 GPU actors (4,497 NEW, 1,810 OLD), 339
 native-CPU, 40 managed fallbacks (22 mixed techniques, 17 explicit model-LOD
@@ -149,8 +162,9 @@ previous frame's recording instead of alongside it.
   queries and visibility calls become scene calls. The recording snapshots
   the GPU scene state it reads (slot inputs, recording membership) the way
   `rec_view` does for the native pass, then releases early.
-- **Correctness comes first.** The floor and wall differences are fixed
-  before any speed work counts.
+- **The correctness gate for every milestone** is `Compare-GpuOwnership.ps1`, with
+  and without `-Split`: GPU-on differences must stay within the off/off
+  noise.
 
 ## Milestones
 

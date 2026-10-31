@@ -56,7 +56,7 @@ public sealed partial class Plugin {
     static void LightingSetProbes(ref NativeProbeConfig config){if(lightingActive<0)return;if(lightingHaveFrozenProbe){config.Frames=(byte[])lightingFrozenProbe.Frames.Clone();config.Projections=(float[])lightingFrozenProbe.Projections.Clone();config.Brdf=lightingFrozenProbe.Brdf;}lightingProbe=config;lightingProbe.Frames=(byte[])config.Frames.Clone();lightingProbe.Projections=(float[])config.Projections.Clone();}
     static void LightingSetPostprocess(ref NativePostprocessConfig config){if(lightingActive<0)return;if(lightingHaveFrozenPost)config=lightingFrozenPost;lightingPost=config;}
     static void LightingQueueWorld(NativeBackend __instance,ref byte[] frame){if(lightingActive<0)return;if(lightingFrozenFrame!=null)frame=(byte[])lightingFrozenFrame.Clone();lightingFrame=(byte[])frame.Clone();if(!lightingRetainedSpots)__instance.SetSpotRedraw(ulong.MaxValue,ulong.MaxValue);}
-    static void LightingPresent(object __instance){if(!lightingReadRequested)return;var backend=(NativeBackend)BackendField.GetValue(__instance);lightingBeforePresent=backend.GetStats().SubmittedFrames;backend.RequestReadback();}
+    static void LightingPresent(object __instance){if(!lightingReadRequested||SplitFrames)return;var backend=(NativeBackend)BackendField.GetValue(__instance);lightingBeforePresent=backend.GetStats().SubmittedFrames;backend.RequestReadback();}
     // Separate and not inlined: pinned baseline plugins predate the packet signatures.
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     static void EnableSignatures(object renderer)=>((NativeBackend)BackendField.GetValue(renderer)).PacketSignatureEnabled=true;
@@ -76,8 +76,21 @@ public sealed partial class Plugin {
         var shadows=Member(renderer,"shadows");((MyShadowsSettings)Member(shadows,"Settings")).Data.UpdateCascadesEveryFrame=true;
         lightingReadRequested=lightingFrames>=40&&Stopwatch.GetTimestamp()/(double)Stopwatch.Frequency-lightingStarted>=2&&lightingCaptured!=lightingActive;
     }
+    // Under the frame split the launch thread submits the frame, so the render-thread readback below never lands. The
+    // game's screenshot path (captures joined by the renderer) works there: view.png only, no probe or shadow dumps.
+    static int lightingShotFrame=-1;
+    static bool LightingSplitShot(object renderer){
+        string path=Path.Combine(lightingReports,"Lighting",lightingNames[lightingActive]),png=Path.Combine(path,"view.png");
+        if(lightingShotFrame<0){Directory.CreateDirectory(path);MyRenderProxy.TakeScreenshot(VRageMath.Vector2.One,png,debug:false,ignoreSprites:false,showNotification:false);lightingShotFrame=lightingFrames;return false;}
+        if(lightingFrames-lightingShotFrame<10||!File.Exists(png))return false;
+        var scene=SceneField.GetValue(renderer);var cellCount=AccessTools.Property(scene.GetType(),"NativeCellCount");
+        File.WriteAllText(Path.Combine(path,"state.json"),JsonSerializer.Serialize(new{Phase=lightingNames[lightingActive],SameProcess=true,Split=true,Paused=MySandboxGame.IsPaused,Frames=lightingFrames,NativeCellsOwned=cellCount?.GetValue(scene),Scope="Split-mode screenshot only: lights frozen through the same SetLights/SetSpots/QueueWorld hooks; no probe, cascade or spot readback."},new JsonSerializerOptions{WriteIndented=true}));
+        if(lightingActive==0){lightingFrozenLights=CloneLights(lightingLights);lightingFrozenSpots=CloneSpots(lightingSpots);lightingFrozenFrame=(byte[])lightingFrame.Clone();lightingFrozenProbe=lightingProbe;lightingHaveFrozenProbe=true;lightingFrozenPost=lightingPost;lightingHaveFrozenPost=true;}
+        lightingShotFrame=-1;return true;
+    }
     static void LightingAfterPresent(object renderer){
         if(!lightingReconciliation||lightingActive<0||renderer is not MyVulkanRender)return;lightingFrames++;if(!lightingReadRequested)return;
+        if(SplitFrames){if(LightingSplitShot(renderer)){lightingReadRequested=false;lightingCaptured=lightingActive;}return;}
         var backend=(NativeBackend)BackendField.GetValue(renderer);var schedule=backend.GetProbeScheduleStats();if(schedule.Busy!=0||schedule.Stage!=0)throw new Exception("Lighting snapshot lacks a completed all-face probe cycle.");
         if(backend.GetStats().SubmittedFrames==lightingBeforePresent)return;
         string path=Path.Combine(lightingReports,"Lighting",lightingNames[lightingActive]);Directory.CreateDirectory(path);
