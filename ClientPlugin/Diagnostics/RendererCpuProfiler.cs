@@ -28,7 +28,7 @@ public static class RendererCpuProfiler
         NativePassPrepare, NativePassResources, NativePassQueries,
         NativePassPublish, NativePassFallbacks, NativePassEndVisibility,
         GpuFrameInputs, GpuTopologyPublication, GpuResidentQueue, GpuRootQueries,
-        GpuVisibilityPublication,
+        GpuVisibilityPublication,GpuOwnedVisible,
         MainOwnerDeclare, NewViewSpots, NewViewSelect, DrawWorldSetup, PreparedAppend, CandidatePlan, CellCommits, CellPublish, OffscreenTargets, OffscreenNative, VoxelCull, VoxelMaterials, VoxelEmit, Flares, Billboards, ParticleDraw, DecalDraw, EnvironmentDraw, GuestPreparation, PostprocessConfigure, ProbesConfigure, ProbeAmbient, ProbeFaceFrames, ProbeNative, GuestFrame, OcclusionBounds, OcclusionResults, PublicationJoin, ActorSnapshot, LightSnapshot, Handoff, BuildPrologue, BuildOps, HandoffFields, HandoffSceneState, HandoffDirty, HandoffLatches, PrologueCollection, PrologueSubmit, BuildJoin, BuildThread, SplitSerial, MainOrderQueue, NativeModelQueue, CellEmit, FrameConstants, PrologueClearPass, PrologueClearWorld, PrologueClearRigid, PrologueClearOther, ClearExclusions, ClearRecycle, ClearOcclusion, ClearHighlights, ClearWorldQueue, VoxelPlanWait, VoxelSplice, StageGate, LaunchJoin, Count
     }
     public static bool Enabled {get;}=Environment.GetEnvironmentVariable("SE_VULKAN_CPU_DETAIL")=="1";

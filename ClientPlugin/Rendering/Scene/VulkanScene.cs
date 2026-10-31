@@ -604,7 +604,7 @@ namespace ClientPlugin.Rendering.Scene
             {
                 // Stable main order: pass-owned actors' orders are resident in native, and cell-owned (OLD)
                 // actors take no main order, so neither needs the per-frame declaration.
-                if(stableOrder&&(data.PassOwned||data.CellOwned)){candidateIndex++;continue;}
+                if(stableOrder&&(data.PassOwned||data.CellOwned||data.GpuOwned&&GpuOwnedOutOfIndex)){candidateIndex++;continue;}
                 bool ancestorsVisible;object ownerKey;
                 if(planned){var plan=candidatePlans[candidateIndex++];ancestorsVisible=plan.Visible;ownerKey=plan.Key;}
                 else{ancestorsVisible=data.Model!=null&&BuildFrameOf(data).Visible;ownerKey=ancestorsVisible&&(data.Flags&RenderFlags.SkipInMainView)==0?MainGroupKey(data,true):null;}
@@ -670,6 +670,11 @@ namespace ClientPlugin.Rendering.Scene
                     DrawModel(target, data, world, null, data.SkinnedMeshes);
                 }
             }
+            // GPU-owned actors are out of the index and skipped above: the same main-view test, in one pass.
+            if(stableOrder&&GpuOwnedOutOfIndex&&gpuOwnedActors.Count!=0)using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GpuOwnedVisible)){
+                foreach(var data in gpuOwnedActors){var frame=BuildFrameOf(data);if(frame.Destroyed||!data.GpuOwned){gpuOwnedStale.Add(data);continue;}
+                    if((data.Flags&RenderFlags.SkipInMainView)==0&&(frustum==null||frustum.Contains(frame.Bounds)!=ContainmentType.Disjoint))visible.Add(data.Id);}
+                foreach(var data in gpuOwnedStale)gpuOwnedActors.Remove(data);gpuOwnedStale.Clear();}
             cullStarted = Stopwatch.GetTimestamp();
             if(target.WorldReady&&!nativePassActive&&!gpuActive){EndOcclusion();EndShadowGroupOcclusion();target.ShadowExclusions=frameShadowExclusions.ToArray();}
             profileCullTicks += Stopwatch.GetTimestamp() - cullStarted;

@@ -246,29 +246,41 @@ OpaqueReferenceControl opaque_reference_control(){
     uint32_t distance_fade=needs_distance_fade?world_distance_fade_bits():0u;
     return {s.frame,uint32_t(s.actors.size()),uint32_t(s.family_inputs.size()),s.part_count,s.view_count,s.reference_capacity,s.draw_capacity,0,s.batch_count,distance_fade,0};
 }
-// Plan 4 milestone 2: begin_frame, with no recording in flight, latches the frame inputs Build queued and copies
-// Build's committed actor rows into this slot, so Build's next frame (scene calls alongside the recording) only
-// writes the pending inputs and the host rows. The recording reads frame/views/view_count, the slot and rec_actors.
-void latch_opaque_reference_frame(){
-    auto& s=opaque_reference;if(!s.next_ready)return;
-    s.frame=s.next_frame;s.view_count=s.next_view_count;s.views.swap(s.next_views);s.frame_ready=true;s.next_ready=false;gpu_resident.view_map=gpu_resident.next_view_map;
-    if(s.rec_actors.size()!=s.actors.size()){s.rec_actors=s.actors;s.rec_versions=s.versions;}
-    else for(size_t a=0;a<s.actors.size();a++)if(s.rec_versions[a]!=s.versions[a]){s.rec_actors[a]=s.actors[a];s.rec_versions[a]=s.versions[a];}
-    record_cv.notify_all();
+// Plan 4 milestone 2. Build writes the pending frame inputs and its host rows (scene calls, alongside a recording).
+// latch_opaque_reference_queued moves frame N's inputs into queued[submission] and brings the latched mirror up to
+// Build's committed rows; begin_frame copies the mirror into the slot (latch_opaque_reference_slot), and the recording
+// applies its queued frame (frame/views/view_count/view_map, rec_actors for the batch lists). Two build stages latch
+// at the world queue (capture_queued_view) and apply when the recording starts; one build thread does both at
+// begin_frame, where no recording is in flight.
+void latch_opaque_reference_queued(uint32_t submission){
+    auto& s=opaque_reference;if(!s.next_ready)return;auto& q=s.queued[submission&1u];
+    q.frame=s.next_frame;q.view_count=s.next_view_count;q.views.swap(s.next_views);q.view_map=gpu_resident.next_view_map;q.ready=true;s.next_ready=false;
+    // Appearance commits move spans (the arena revision): copy it whole. Otherwise only changed actor rows and headers.
+    if(s.latched_actors.size()!=s.actors.size()||s.latched_objects.revision!=s.object_inputs.revision||s.latched_objects.bytes.size()!=s.object_inputs.bytes.size()){s.latched_actors=s.actors;s.latched_versions=s.versions;s.latched_objects=s.object_inputs;}
+    else for(size_t a=0;a<s.actors.size();a++)if(s.latched_versions[a]!=s.versions[a]){s.latched_actors[a]=s.actors[a];s.latched_versions[a]=s.versions[a];
+        std::memcpy(s.latched_objects.bytes.data()+a*gpu_opaque::appearance_header_stride,s.object_inputs.bytes.data()+a*gpu_opaque::appearance_header_stride,128);}
+    if(q.actors.size()!=s.latched_actors.size()){q.actors=s.latched_actors;q.versions=s.latched_versions;}
+    else for(size_t a=0;a<q.actors.size();a++)if(q.versions[a]!=s.latched_versions[a]){q.actors[a]=s.latched_actors[a];q.versions[a]=s.latched_versions[a];}
+    s.latched=true;s.latch_unbegun=true;record_cv.notify_all();
 }
+void apply_opaque_reference_queued(uint32_t submission){
+    auto& s=opaque_reference;auto& q=s.queued[submission&1u];if(!q.ready)return;
+    s.frame=q.frame;s.view_count=q.view_count;s.views.swap(q.views);gpu_resident.view_map=q.view_map;s.frame_ready=true;s.rec_actors.swap(q.actors);s.rec_versions.swap(q.versions);q.ready=false;
+}
+void latch_opaque_reference_frame(){if(build_stages)return;latch_opaque_reference_queued(0);apply_opaque_reference_queued(0);}
 void latch_opaque_reference_slot(){
-    auto& s=opaque_reference;if(!s.initialized||!s.frame_ready)return;auto& slot=s.slots[slot_index];
+    auto& s=opaque_reference;if(!s.initialized||!s.latched)return;auto& slot=s.slots[slot_index];s.latch_unbegun=false;
     // begin_frame has waited THIS slot. Descriptors never change while in use.
     if(gpu_owned_inputs){for(auto [first,count]:slot.pending_parts){auto at=uint64_t(first)*sizeof(SevkOpaquePart),bytes=uint64_t(count)*sizeof(SevkOpaquePart);std::memcpy(static_cast<uint8_t*>(slot.parts.mapped)+at,s.gpu_part_inputs.data()+first,bytes);check(vmaFlushAllocation(allocator,slot.parts.memory,at,bytes),"flush fenced resident part bindings");}slot.pending_parts.clear();}
-    bool rebuilt=slot.object_inputs.bytes<s.object_inputs.bytes.size();
-    if(rebuilt){auto replacement=opaque_reference_buffer(s.object_inputs.bytes.size(),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);destroy_buffer(slot.object_inputs);slot.object_inputs=replacement;
+    bool rebuilt=slot.object_inputs.bytes<s.latched_objects.bytes.size();
+    if(rebuilt){auto replacement=opaque_reference_buffer(s.latched_objects.bytes.size(),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);destroy_buffer(slot.object_inputs);slot.object_inputs=replacement;
         VkDescriptorBufferInfo info{replacement.handle,0,replacement.bytes};VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=slot.set;write.dstBinding=17;write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;write.descriptorCount=1;write.pBufferInfo=&info;vkUpdateDescriptorSets(device,1,&write,0,nullptr);
-        std::memcpy(slot.object_inputs.mapped,s.object_inputs.bytes.data(),s.object_inputs.bytes.size());}
-    for(uint32_t a=0;a<s.actors.size();a++){
-        if(slot.versions[a]!=s.versions[a]){std::memcpy(static_cast<uint8_t*>(slot.actors.mapped)+a*sizeof(SevkOpaqueActor),&s.actors[a],sizeof(SevkOpaqueActor));if(!rebuilt)std::memcpy(static_cast<uint8_t*>(slot.object_inputs.mapped)+uint64_t(a)*gpu_opaque::appearance_header_stride,s.object_inputs.bytes.data()+uint64_t(a)*gpu_opaque::appearance_header_stride,128);slot.versions[a]=s.versions[a];}
-        if(rebuilt||slot.appearance_versions[a]!=s.object_inputs.versions[a]){auto& range=s.object_inputs.ranges[a];
-            if(!rebuilt){std::memcpy(static_cast<uint8_t*>(slot.object_inputs.mapped)+uint64_t(a)*gpu_opaque::appearance_header_stride+128,&range.first,4);if(range.count)std::memcpy(static_cast<uint8_t*>(slot.object_inputs.mapped)+range.first,s.object_inputs.bytes.data()+range.first,range.count*sizeof(SevkOpaqueAppearance));}
-            slot.appearance_versions[a]=s.object_inputs.versions[a];}
+        std::memcpy(slot.object_inputs.mapped,s.latched_objects.bytes.data(),s.latched_objects.bytes.size());}
+    for(uint32_t a=0;a<s.latched_actors.size();a++){
+        if(slot.versions[a]!=s.latched_versions[a]){std::memcpy(static_cast<uint8_t*>(slot.actors.mapped)+a*sizeof(SevkOpaqueActor),&s.latched_actors[a],sizeof(SevkOpaqueActor));if(!rebuilt)std::memcpy(static_cast<uint8_t*>(slot.object_inputs.mapped)+uint64_t(a)*gpu_opaque::appearance_header_stride,s.latched_objects.bytes.data()+uint64_t(a)*gpu_opaque::appearance_header_stride,128);slot.versions[a]=s.latched_versions[a];}
+        if(rebuilt||slot.appearance_versions[a]!=s.latched_objects.versions[a]){auto& range=s.latched_objects.ranges[a];
+            if(!rebuilt){std::memcpy(static_cast<uint8_t*>(slot.object_inputs.mapped)+uint64_t(a)*gpu_opaque::appearance_header_stride+128,&range.first,4);if(range.count)std::memcpy(static_cast<uint8_t*>(slot.object_inputs.mapped)+range.first,s.latched_objects.bytes.data()+range.first,range.count*sizeof(SevkOpaqueAppearance));}
+            slot.appearance_versions[a]=s.latched_objects.versions[a];}
     }
     check(vmaFlushAllocation(allocator,slot.actors.memory,0,slot.actors.bytes),"flush committed opaque actors");check(vmaFlushAllocation(allocator,slot.object_inputs.memory,0,slot.object_inputs.bytes),"flush fenced stock object commits");
 }

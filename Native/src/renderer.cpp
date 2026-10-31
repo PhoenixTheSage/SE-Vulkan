@@ -231,6 +231,11 @@ struct OpaqueReferenceState {
     // latches them into frame/views/view_count, and copies the actor rows the recording's batch lists read.
     SevkOpaqueFrame next_frame{};std::vector<SevkOpaqueView> next_views;uint32_t next_view_count{};bool next_ready{};
     std::vector<SevkOpaqueActor> rec_actors;std::vector<uint64_t> rec_versions;
+    // Two build stages: frame N latches at its world queue into queued[submission] (the recording applies it when it
+    // starts), and Build's committed rows into the latched mirror that begin_frame copies into the slot. One build
+    // thread latches and applies at begin_frame.
+    struct Queued {bool ready{};SevkOpaqueFrame frame{};std::vector<SevkOpaqueView> views;uint32_t view_count{};std::array<uint32_t,64> view_map{};std::vector<SevkOpaqueActor> actors;std::vector<uint64_t> versions;};
+    std::array<Queued,2> queued;std::vector<SevkOpaqueActor> latched_actors;std::vector<uint64_t> latched_versions;gpu_opaque::AppearanceArena latched_objects;bool latched{},latch_unbegun{};
     std::vector<gpu_opaque::FamilyBatches> recording_families;
 };
 struct OpaqueStockState {
@@ -775,7 +780,7 @@ struct Renderer {uint32_t recipe_generation=1;
     // A scene call that replaces tables an open, pending or recording frame uses (GPU-scene rebind or publication,
     // rare): wait until there is none. Frame-closing calls notify record_cv while gate_waiters is set.
     void wait_scene_idle(){if(!scene_lock)return;++gate_waiters;struct Leave{uint32_t& n;~Leave(){--n;}} leave{gate_waiters};
-        gpu_scene_wait("idle",[&]{return !record_pending&&!record_running&&!(recording&&frame_owner!=std::this_thread::get_id());});
+        gpu_scene_wait("idle",[&]{return !record_pending&&!record_running&&!opaque_reference.latch_unbegun&&!(recording&&frame_owner!=std::this_thread::get_id());});
         if(record_failed){record_failed=false;throw std::runtime_error(record_error);}flush_deferred();}
     // A scene call that needs the full recording to finish first (rare paths).
     void wait_for_recording_end(){if(!overlap_from_caller()||!scene_lock)return;record_cv.wait(*scene_lock,[&]{return !record_running;});if(record_failed){record_failed=false;throw std::runtime_error(record_error);}flush_deferred();}
@@ -784,7 +789,7 @@ struct Renderer {uint32_t recipe_generation=1;
     // starts. Off, the recording snapshots the live pass scene when it releases the lock, as before.
     bool build_stages{};std::array<RecordingView,2> queued_views;
     void capture_queued_view(){
-        if(!build_stages)return;auto& view=queued_views[world.active_submission];
+        if(!build_stages)return;latch_opaque_reference_queued(world.active_submission);auto& view=queued_views[world.active_submission];
         view.groups=pass_scene.scene.render_groups();view.streams=pass_scene.scene.instance_streams();view.pass_ready=pass_scene.ready;
         view.spot_views=pass_scene.spot_views;view.static_dirty=pass_scene.static_dirty;pass_scene.static_dirty=0;view.valid=true;}
     // Recording thread, after settle_cells: snapshot, plan probes, release api_mutex.
@@ -1079,6 +1084,7 @@ struct Renderer {uint32_t recipe_generation=1;
             auto entered=std::chrono::steady_clock::now();launch_lap_us[0]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(entered-tl_launch).count());
             std::unique_lock lock(api_mutex);record_pending=false;record_running=true;launch_lap_us[1]+=tl_since(entered);
             tl_recording_thread=true;sevk_jobs::tl_pacing_stage=true;record_lock=&lock;if(early_release)world.recording_submission=int32_t(world.active_submission);
+            if(build_stages)apply_opaque_reference_queued(world.active_submission);
             try{end_frame();tl_post(3);++pipelined_frames;if(checked&&(shadow_image_mask&((1u<<shadow_count)-1))!=predicted)++pipelined_mask_mismatches;}
             catch(const std::exception& e){record_error=e.what();record_failed=true;}catch(...){record_error="unknown native Vulkan error";record_failed=true;}
             // std::mutex is not fair: the next frame's back-to-back scene calls could keep winning api_mutex while the
@@ -2012,7 +2018,7 @@ struct Renderer {uint32_t recipe_generation=1;
         end_uploads();lap(1);
         // Plan 4: no recording is in flight here; frame N takes the GPU-scene inputs Build queued for it.
         latch_opaque_reference_frame();
-        if (suspended) return 1;
+        if (suspended) {opaque_reference.latch_unbegun=false;return 1;}
         performance=SevkPerformanceStats{sizeof(SevkPerformanceStats),SEVK_ABI_VERSION};
         performance.queue_us=world.current().queue_us;performance.logical_draws=performance.submitted_draws=uint32_t(queued_draw_count()+(cells_emit_pending&&cells.scene.ready()&&!cells.scene.building()?cells.scene.emitted().size():0));
         auto& slot = slots[slot_index];lap(2);

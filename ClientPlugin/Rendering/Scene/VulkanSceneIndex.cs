@@ -94,7 +94,10 @@ public sealed partial class VulkanScene
     // Under stable main order the traversal skips native-owned actors (pass or cell), so the managed candidate
     // index leaves them out and the per-frame query stops returning them (SE_VULKAN_INDEX_OWNED=1 keeps them).
     public static bool IndexExcludesOwned=System.Environment.GetEnvironmentVariable("SE_VULKAN_INDEX_OWNED")!="1";
-    bool InManagedIndex(ActorData data)=>!(IndexExcludesOwned&&backend.StableMainOrderEnabled&&(data.PassOwned||data.CellOwned));
+    bool InManagedIndex(ActorData data)=>!(IndexExcludesOwned&&backend.StableMainOrderEnabled&&(data.PassOwned||data.CellOwned||data.GpuOwned));
+    // GPU-owned actors leave the index like pass-owned ones: resident main orders, and their main-view visible set from
+    // one flat frustum pass (gpuOwnedActors) instead of the per-candidate traversal.
+    bool GpuOwnedOutOfIndex=>IndexExcludesOwned&&backend.StableMainOrderEnabled;
     // Ownership changed after this frame's index refresh: bring the actor in or out of the index now.
     void SyncIndexMembership(ActorData data)
     {
