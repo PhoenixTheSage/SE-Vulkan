@@ -385,11 +385,11 @@ void record_old_main(VkCommandBuffer cmd,WorldSlot& slot,uint32_t phase){
             entries.push_back({gpu_resident.published?gpu_resident.upload.source.batches.at(b).old_order:SevkOldPartOrder{},1,b});}
     }}
     std::stable_sort(entries.begin(),entries.end(),[](const Entry& a,const Entry& b){if(a.order.valid!=b.order.valid)return a.order.valid<b.order.valid;return a.order.valid&&a.order.key<b.order.key;});
-    VkDescriptorSet indexed_set{};
-    for(uint32_t i=0;i<entries.size();){const auto& entry=entries[i];if(entry.kind==0){uint32_t end=i+1;while(end<entries.size()&&entries[end].kind==0&&entries[end].index==entries[end-1].index+1)end++;
+    VkDescriptorSet indexed_set{};StockBinding bound;
+    for(uint32_t i=0;i<entries.size();){const auto& entry=entries[i];if(entry.kind==0){bound={};uint32_t end=i+1;while(end<entries.size()&&entries[end].kind==0&&entries[end].index==entries[end-1].index+1)end++;
             auto count=plan?record_world_selection(cmd,slot,selection,-1,plan,world.current().indirect_bases[0],false,int(phase),entry.index,entries[end-1].index+1):record_world_selection(cmd,slot,std::span(selection).subspan(entry.index,end-i),-1,nullptr,0,false,int(phase));
             performance.main_commands+=count.commands;world.indirect_stats.main_groups+=count.groups;world.indirect_stats.grouped_draws+=count.packets;i=end;
-        }else{performance.main_commands+=record_opaque_stock_view(cmd,slot,0,false,nullptr,nullptr,0,nullptr,int(phase),entry.index,&indexed_set);i++;}}
+        }else{performance.main_commands+=record_opaque_stock_view(cmd,slot,0,false,nullptr,nullptr,0,nullptr,int(phase),entry.index,&indexed_set,&bound);i++;}}
 }
 // NEW main entries: managed draws, GPU-opaque stock batches and native pass groups in stock owner order. Reads only
 // prepared frame state (selection, indirect plan, the recording's pass snapshot, owner orders), so frames without
@@ -445,16 +445,22 @@ void record_new_main(VkCommandBuffer cmd,WorldSlot& slot,const VkRenderingInfo* 
     // a run at a range boundary records the same draws in the same order.
     struct Counts{uint64_t commands{},groups{},packets{};};
     auto record_range=[&](VkCommandBuffer target,uint32_t begin,uint32_t end_entry,VkDescriptorSet* indexed_set,Counts& counts){
-        for(uint32_t i=begin;i<end_entry;){const auto& entry=entries[i];if(entry.kind==0){uint32_t end=i+1;while(end<end_entry&&entries[end].kind==0&&entries[end].index==entries[end-1].index+1)++end;
+        StockBinding bound;
+        for(uint32_t i=begin;i<end_entry;){const auto& entry=entries[i];if(entry.kind==0){bound={};uint32_t end=i+1;while(end<end_entry&&entries[end].kind==0&&entries[end].index==entries[end-1].index+1)++end;
                 auto count=plan?record_world_selection(target,slot,selection,-1,plan,world.current().indirect_bases[0],false,4,entry.index,entries[end-1].index+1):record_world_selection(target,slot,std::span(selection).subspan(entry.index,end-i),-1,nullptr,0,false,4);
                 counts.commands+=count.commands;counts.groups+=count.groups;counts.packets+=count.packets;i=end;
-            }else{counts.commands+=entry.kind==1?record_opaque_stock_view(target,slot,0,false,nullptr,nullptr,0,nullptr,4,entry.index,indexed_set):record_pass_view(target,slot,0,false,nullptr,nullptr,0,nullptr,4,entry.index,false);++i;}
+            }else{if(entry.kind!=1)bound={};counts.commands+=entry.kind==1?record_opaque_stock_view(target,slot,0,false,nullptr,nullptr,0,nullptr,4,entry.index,indexed_set,&bound):record_pass_view(target,slot,0,false,nullptr,nullptr,0,nullptr,4,entry.index,false);++i;}
         }
     };
     // SE_VULKAN_PARALLEL_MAIN=1: contiguous entry ranges record into secondaries on the job pool and execute in
     // order inside a resumed rendering instance (load ops). GPU-opaque stock entries allocate shared descriptors,
     // so those frames stay serial, as do small ones.
-    cpu_lap("new main record");record_count("new main entries",double(entries.size()));bool stock_entries=std::any_of(entries.begin(),entries.end(),[](const Entry& e){return e.kind==1;});
+    cpu_lap("new main record");record_count("new main entries",double(entries.size()));
+    // Merge payoff: runs of consecutive stock entries sharing pipeline and buffers (one indirect draw each if merged).
+    if(record_laps.enabled&&opaque_stock.ready){uint32_t stock=0,pass=0,runs=0;const OpaqueStockState::Batch* last=nullptr;
+        for(auto& e:entries){if(e.kind!=1){last=nullptr;if(e.kind==2)++pass;continue;}++stock;const auto& b=opaque_stock.batches[e.index];
+            if(!last||last->input.old!=b.input.old||last->input.main_pipeline!=b.input.main_pipeline||last->vertices!=b.vertices||last->indices!=b.indices||((last->input.flags^b.input.flags)&1))++runs;last=&b;}
+        record_count("new main stock entries",double(stock));record_count("new main pass entries",double(pass));record_count("new main stock runs",double(runs));}bool stock_entries=std::any_of(entries.begin(),entries.end(),[](const Entry& e){return e.kind==1;});
     uint32_t workers=parallel_main&&resume&&!stock_entries&&entries.size()>=384?std::min<uint32_t>(4,std::min<uint32_t>(uint32_t(entries.size()/192),sevk_jobs::shared().worker_count()+1)):0u;
     world.main_tasks=0;
     if(workers<2){Counts counts;VkDescriptorSet indexed_set{};record_range(cmd,0,uint32_t(entries.size()),&indexed_set,counts);

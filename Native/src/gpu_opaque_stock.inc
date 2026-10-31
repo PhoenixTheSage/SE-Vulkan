@@ -117,7 +117,10 @@ void prepare_opaque_stock(WorldSlot& world_slot){
         if(dirty){std::vector<VkDescriptorImageInfo> images(r.material_ids.size());for(uint32_t t=0;t<images.size();t++)images[t]={VK_NULL_HANDLE,textures.at(r.material_ids[t]).image.view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};VkWriteDescriptorSet writes[2]{};for(uint32_t b=0;b<2;b++){writes[b]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[b].dstSet=set;writes[b].dstBinding=132+b;writes[b].descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;writes[b].descriptorCount=uint32_t(images.size());writes[b].pImageInfo=images.data();}vkUpdateDescriptorSets(device,2,writes,0,nullptr);}}
     s.materials_dirty[slot_index]=false;
 }
-uint32_t record_opaque_stock_view(VkCommandBuffer cmd,WorldSlot& slot,uint32_t view,bool spot,Buffer* probe_frame,Buffer* probe_projection,uint32_t light,VkDescriptorPool descriptors=nullptr,int main_phase=-1,uint32_t only_batch=UINT32_MAX,VkDescriptorSet* shared_set=nullptr){
+// State bound by the previous stock entry of a main list, so consecutive entries skip identical binds. The caller
+// resets it whenever anything else records in between.
+struct StockBinding {VkPipeline pipeline{};VkPipelineLayout layout{};VkBuffer vertices{},indices{};};
+uint32_t record_opaque_stock_view(VkCommandBuffer cmd,WorldSlot& slot,uint32_t view,bool spot,Buffer* probe_frame,Buffer* probe_projection,uint32_t light,VkDescriptorPool descriptors=nullptr,int main_phase=-1,uint32_t only_batch=UINT32_MAX,VkDescriptorSet* shared_set=nullptr,StockBinding* carried=nullptr){
     auto& s=opaque_stock;auto& r=opaque_reference;uint32_t original_view=view;if(gpu_resident.published){if(view>=64)return 0;view=gpu_resident.view_map[view];}if(!s.ready||!r.frame_ready||view>=r.view_count||!(r.views[view].flags&1))return 0;
     bool depth=(r.views[view].flags&2)!=0,forward=probe_frame!=nullptr;
     if(r.view_batches&&r.recording_batches.at(view).empty())return 0;
@@ -130,16 +133,16 @@ uint32_t record_opaque_stock_view(VkCommandBuffer cmd,WorldSlot& slot,uint32_t v
     if(forward){world_write_buffer(set,4,transparency.shadow_constants[slot_index],1200,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,7,probes.forward_projection[slot_index][probes.work_face],64,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_image(set,144,transparency.csm.view);world_write_image(set,271,{},shadow_sampler,true);}
     if(shared_set)*shared_set=set;}
     uint32_t offsets[]{depth?uint32_t(world_align(64)*(spot?9+light:original_view)):0,0};VkDescriptorSet sets[]{set,s.indexed_sets[slot_index][depth?1:0]};uint32_t commands=0;
-    VkPipeline bound_pipeline{};VkPipelineLayout bound_layout{};VkBuffer bound_vertices{},bound_indices{};
+    StockBinding local;auto& bound=carried?*carried:local;bool track=r.view_batches||carried;
     uint32_t size=r.view_batches?uint32_t(r.recording_batches.at(view).size()):uint32_t(s.batches.size());
     // Main callers supply shared group/part order; depth/probe keep their view path.
     for(uint32_t phase=0;phase<(depth||forward||main_phase>=0?1u:2u);++phase)
     for(uint32_t n=0;n<(only_batch==UINT32_MAX?size:1u);n++){uint32_t b=only_batch!=UINT32_MAX?only_batch:r.view_batches?r.recording_batches[view][n]:n;auto& batch=s.batches[b];auto& input=batch.input;if(forward&&input.forward_pipeline==UINT32_MAX)continue;bool decal=input.old?world_cutout(input.main_pipeline):input.main_pipeline>=12;if(!depth&&!forward&&(main_phase>=0?main_geometry_phase(input.old!=0,decal,decal&&input.old?world_decal_technique_order(input.main_pipeline):0u)!=uint32_t(main_phase):decal!=(phase!=0)))continue;auto range=r.ranges[b];if(!range.capacity)continue;uint32_t id=depth?input.depth_pipeline:forward?input.forward_pipeline:input.main_pipeline;
         if(id>=(input.old?2656u:28u) || (input.old && world_unfade(id)>=96))throw std::runtime_error("stock batch forward shader unavailable");auto& pipeline=input.old?s.older[id]:s.newer[id];if(!pipeline.back)throw std::runtime_error("stock batch pipeline unavailable");
         auto handle=spot||(!depth&&(input.flags&1))?pipeline.no_cull:pipeline.back;
-        if(!r.view_batches||handle!=bound_pipeline){vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,handle);bound_pipeline=handle;}
-        if(!r.view_batches||pipeline.layout!=bound_layout){vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline.layout,0,2,sets,2,offsets);if(pipeline.velocity)gbuffer_velocity_bind_gpu(cmd,pipeline.layout);bound_layout=pipeline.layout;}
-        VkDeviceSize vertex_offset=0;if(!r.view_batches||batch.vertices!=bound_vertices){vkCmdBindVertexBuffers(cmd,0,1,&batch.vertices,&vertex_offset);bound_vertices=batch.vertices;}if(!r.view_batches||batch.indices!=bound_indices){vkCmdBindIndexBuffer(cmd,batch.indices,0,VK_INDEX_TYPE_UINT32);bound_indices=batch.indices;}
+        if(!track||handle!=bound.pipeline){vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,handle);bound.pipeline=handle;}
+        if(!track||pipeline.layout!=bound.layout){vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline.layout,0,2,sets,2,offsets);if(pipeline.velocity)gbuffer_velocity_bind_gpu(cmd,pipeline.layout);bound.layout=pipeline.layout;}
+        VkDeviceSize vertex_offset=0;if(!track||batch.vertices!=bound.vertices){vkCmdBindVertexBuffers(cmd,0,1,&batch.vertices,&vertex_offset);bound.vertices=batch.vertices;}if(!track||batch.indices!=bound.indices){vkCmdBindIndexBuffer(cmd,batch.indices,0,VK_INDEX_TYPE_UINT32);bound.indices=batch.indices;}
         uint32_t batch_view=b*r.view_count+view,base=view*r.draw_capacity+range.first;vkCmdPushConstants(cmd,pipeline.layout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,4,&base);
         vkCmdDrawIndexedIndirectCount(cmd,r.slots[slot_index].args.handle,uint64_t(base)*sizeof(SevkOpaqueIndirect),r.slots[slot_index].counts.handle,batch_view*4,range.capacity,sizeof(SevkOpaqueIndirect));gpu_owner_record((input.old?49153u:32769u)+2*id,batch_view,base,range.capacity);commands++;
     }return commands;

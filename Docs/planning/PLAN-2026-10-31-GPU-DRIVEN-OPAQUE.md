@@ -303,6 +303,32 @@ So it needs its own parity gate.
     GPU, one CPU) exit cleanly and write their shutdown files. Four of the
     five GPU-path runs before the fix had crashed.
 
+## Milestone 2, step 3: stock bindings carried across entries (2026-10-31)
+
+Each main-list stock entry was its own `record_opaque_stock_view` call with
+local bound-state tracking, so all 5,554 stock entries rebound the pipeline,
+both descriptor sets, the velocity set and the buffers. Consecutive stock
+entries now carry `StockBinding` and skip identical binds; any managed or
+pass-group entry in between resets it. The draws and their order are
+unchanged.
+
+| | Before | After |
+|---|---|---|
+| `new main record` | 2.25 ms | 1.40 ms |
+| Recording total | 6.25 ms | 5.17 ms |
+| GPU path cadence | 6.98–7.00 ms | 6.17–6.28 ms |
+| CPU path cadence | 4.3 ms | 4.36 ms |
+
+Gates pass: split image gate (GPU-on 357 px, off/off 427 px), in-game
+validation with zero errors, reference fixture, and every live-test mode
+except the pre-existing `--new-group-only` failure.
+
+**Merge payoff** (new counters): the main list has 5,850 entries, 5,554 of
+them stock batches (266 pass groups). Consecutive stock entries that share
+pipeline, buffers and cull mode form **1,779 runs**. One indirect draw per
+run, with the run's arguments compacted on the GPU in order, would cut the
+stock draws about threefold without changing draw order.
+
 ## Milestones
 
 Each milestone keeps the CPU path as the default and fallback until its gate
