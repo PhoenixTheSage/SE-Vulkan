@@ -210,7 +210,7 @@ public sealed partial class Plugin : IPlugin
             var submit=AccessTools.Method(renderer,"SubmitFrame");if(submit!=null)harmony.Patch(submit,prefix:new HarmonyMethod(typeof(Plugin),nameof(BeforeSubmit)));
         }
         else if(SweepIsolation)harmony.Patch(AccessTools.Method(renderer, "Draw", new[] { typeof(bool) }),prefix:new HarmonyMethod(typeof(Plugin),nameof(ApplySweepPolicy)));
-        if(!CameraSweepEnabled)InstallFrameGapCensus();
+        if(!CameraSweepEnabled){InstallFrameGapCensus();InstallSampleCensus();}
         nativeCriticalEnabled=Environment.GetEnvironmentVariable("SE_VULKAN_CRITICAL_PROFILE")=="1";haveCritical=false;InstallFrameStateAudit();InstallSystemParityAudit();InstallLightingReconciliation();
     }
     // Render-thread time outside Draw..Present-prefix, split by owner. Pipelined Vulkan samples in the
@@ -288,9 +288,44 @@ public sealed partial class Plugin : IPlugin
         if(native==null)return;
         var flow=native.GetPresentFlowStats();PresentFlows.Add(flow);if(lastPresentSample==0)lastPresentSample=flow.CompletedCalls;int count=native.GetPresentSamples(lastPresentSample,PresentSampleBuffer,out ulong oldest);if(oldest>lastPresentSample+1)lostPresentSamples=true;for(int i=0;i<count;i++){var row=PresentSampleBuffer[i];if(row.Sequence!=lastPresentSample+1)lostPresentSamples=true;PresentSamples.Add(row);lastPresentSample=row.Sequence;}BulkModelFrames.Add(native.GetModelGroupStats());
     }
+    // Sample census: why SampleFrame dropped frames during the window, and every game pause change (sample-census.json).
+    // Written on every run; "Too few rendered frames" quotes it. Counters are read only after sampling stops.
+    static long sampleCalls,samplePaused,sampleFlagMismatch,sampleNoDraw,sampleNoPrevious,sampleNativeMismatch;
+    static readonly List<string> PauseEvents=new List<string>();static bool pausedAtSampleStart;
+    static void CountSampleCall(long previous)
+    {
+        Interlocked.Increment(ref sampleCalls);
+        if(Sandbox.MySandboxGame.IsPaused)Interlocked.Increment(ref samplePaused);
+        else if(frameBatching!=batchingEnabled||frameHints!=hintsEnabled||frameWide!=wideEnabled||frameVoxelLookup!=voxelLookupEnabled||frameVoxelObject!=voxelObjectEnabled||frameTextureValidation!=textureValidationEnabled)Interlocked.Increment(ref sampleFlagMismatch);
+        else if(drawStarted==0)Interlocked.Increment(ref sampleNoDraw);
+        else if(previous==0)Interlocked.Increment(ref sampleNoPrevious);
+    }
+    static readonly Stopwatch censusClock=Stopwatch.StartNew();
+    static void RecordPause(string what){
+        var stack=string.Join(" < ",new StackTrace(2,false).GetFrames().Take(8).Select(f=>f.GetMethod()).Where(m=>m!=null).Select(m=>m.DeclaringType?.Name+"."+m.Name));
+        lock(PauseEvents)if(PauseEvents.Count<64)PauseEvents.Add($"{censusClock.Elapsed.TotalSeconds:F3}s thread {Environment.CurrentManagedThreadId} sampling={sampling} {what}: {stack}");
+    }
+    static void PauseSetPrefix(out bool __state)=>__state=Sandbox.MySandboxGame.IsPaused;
+    static void PauseSetPostfix(bool __state){if(Sandbox.MySandboxGame.IsPaused!=__state)RecordPause("IsPaused "+__state+" -> "+Sandbox.MySandboxGame.IsPaused);}
+    static void OverlayPrefix(bool isActive)=>RecordPause("Steam overlay activated="+isActive);
+    void InstallSampleCensus(){
+        var setter=AccessTools.PropertySetter(typeof(Sandbox.MySandboxGame),"IsPaused");
+        if(setter!=null)harmony.Patch(setter,prefix:new HarmonyMethod(typeof(Plugin),nameof(PauseSetPrefix)),postfix:new HarmonyMethod(typeof(Plugin),nameof(PauseSetPostfix)));
+        var overlay=AccessTools.Method(typeof(Sandbox.MySandboxGame),"OverlayActivated");
+        if(overlay!=null)harmony.Patch(overlay,prefix:new HarmonyMethod(typeof(Plugin),nameof(OverlayPrefix)));
+    }
+    string WriteSampleCensus(int accepted){
+        string[] events;lock(PauseEvents)events=PauseEvents.ToArray();
+        var census=new{Accepted=accepted,Calls=Interlocked.Read(ref sampleCalls),Paused=Interlocked.Read(ref samplePaused),FlagMismatch=Interlocked.Read(ref sampleFlagMismatch),NoDraw=Interlocked.Read(ref sampleNoDraw),NoPrevious=Interlocked.Read(ref sampleNoPrevious),NativeMismatch=Interlocked.Read(ref sampleNativeMismatch),SkippedTelemetry=skippedTelemetryFrames,PausedAtSampleStart=pausedAtSampleStart,PausedAtFinish=Sandbox.MySandboxGame.IsPaused,PauseEvents=events,
+            Scope="SampleFrame calls during the sampled window. Paused, FlagMismatch, NoDraw and NoPrevious are the first-gate rejections in that order; NativeMismatch is the native-state check; the rest are accepted or skipped telemetry frames. PauseEvents covers the whole process (seconds since harness start)."};
+        string json=JsonSerializer.Serialize(census,new JsonSerializerOptions{WriteIndented=true});
+        File.WriteAllText(Path.Combine(reports,"sample-census.json"),json);
+        return $"calls {census.Calls}, paused {census.Paused}, flag mismatch {census.FlagMismatch}, no draw {census.NoDraw}, no previous {census.NoPrevious}, native mismatch {census.NativeMismatch}, paused at start {pausedAtSampleStart}, pause events {events.Length}";
+    }
     static void SampleFrame(object __instance)
     {
         long now = Stopwatch.GetTimestamp(), previous = previousPresent;previousPresent = now;RenderFrameEvents.Log.End(profileFrameSequence,(now-drawStarted)*1000.0/Stopwatch.Frequency);
+        if(sampling)CountSampleCall(previous);
         if (!sampling || frameBatching!=batchingEnabled || frameHints!=hintsEnabled || frameWide!=wideEnabled || frameVoxelLookup!=voxelLookupEnabled || frameVoxelObject!=voxelObjectEnabled || frameTextureValidation!=textureValidationEnabled || Sandbox.MySandboxGame.IsPaused || drawStarted == 0 || previous == 0) return;
         if(__instance is MyVulkanRender&&jobStatsAvailable)try{SampleJobStats(__instance);}catch(MissingMethodException){jobStatsAvailable=false;}catch(EntryPointNotFoundException){jobStatsAvailable=false;}
         if(gpuSceneSnapshot==null&&__instance is MyVulkanRender)gpuSceneSnapshot=((VulkanScene)SceneField.GetValue(__instance)).GetGpuSceneStats();
@@ -312,7 +347,7 @@ public sealed partial class Plugin : IPlugin
         var objects=native!=null?native.GetObjectRecordStats():default;
         var geometry=native!=null?native.GetGeometryArenaStats():default;
         var actualPresentation=native!=null?native.GetPresentationStats():default;
-        if(native!=null && ((validation.Enabled!=0)!=frameTextureValidation || (indirect.Enabled!=0)!=frameIndirect || (geometry.Enabled!=0)!=geometryArenaEnabled || (objects.Enabled!=0)!=frameRetained || (cascade.Enabled!=0)!=frameParallel || (lightTiles.Enabled!=0)!=frameLightTiles))return;
+        if(native!=null && ((validation.Enabled!=0)!=frameTextureValidation || (indirect.Enabled!=0)!=frameIndirect || (geometry.Enabled!=0)!=geometryArenaEnabled || (objects.Enabled!=0)!=frameRetained || (cascade.Enabled!=0)!=frameParallel || (lightTiles.Enabled!=0)!=frameLightTiles)){Interlocked.Increment(ref sampleNativeMismatch);return;}
         lock (Gate) {
             // Update can finish/switch a phase while metadata is being read.
             // Keep every row correlated with the same accepted completed frame.
@@ -339,7 +374,7 @@ public sealed partial class Plugin : IPlugin
                 MySessionLoader.LoadSingleplayerSession(world);
             }
             if (!loadRequested || MySession.Static == null || !MySession.Static.Ready) return;
-            if(transitionUntil>=0){if(lifetime.Elapsed.TotalSeconds<transitionUntil)return;transitionUntil=-1;sampleAt=lifetime.Elapsed.TotalSeconds;BeginGcWindow();sampling=true;MyRenderProxy.TakeScreenshot(Vector2.One,Path.Combine(reports,"view.png"),debug:false,ignoreSprites:false,showNotification:false);}
+            if(transitionUntil>=0){if(lifetime.Elapsed.TotalSeconds<transitionUntil)return;transitionUntil=-1;sampleAt=lifetime.Elapsed.TotalSeconds;BeginGcWindow();pausedAtSampleStart=Sandbox.MySandboxGame.IsPaused;sampling=true;MyRenderProxy.TakeScreenshot(Vector2.One,Path.Combine(reports,"view.png"),debug:false,ignoreSprites:false,showNotification:false);}
             if (readyAt < 0) { readyAt = lifetime.Elapsed.TotalSeconds;File.WriteAllText(Path.Combine(reports,"ready.txt"),MySession.Static.Name); }
             double seconds = lifetime.Elapsed.TotalSeconds-readyAt;
             if(HudAuditEnabled && seconds>=10){AuditRichHud(seconds);return;}
@@ -349,7 +384,7 @@ public sealed partial class Plugin : IPlugin
             if (sampleAt < 0 && seconds >= 45)
             {
                 MyRenderProxy.TakeScreenshot(Vector2.One,Path.Combine(reports,"view.png"),debug:false,ignoreSprites:false,showNotification:false);
-                sampleAt = lifetime.Elapsed.TotalSeconds;BeginGcWindow();sampling = true;
+                sampleAt = lifetime.Elapsed.TotalSeconds;BeginGcWindow();pausedAtSampleStart=Sandbox.MySandboxGame.IsPaused;sampling = true;
                 File.WriteAllText(Path.Combine(reports,"sampling.txt"),DateTime.UtcNow.ToString("O"));
             }
             if (sampleAt >= 0 && lifetime.Elapsed.TotalSeconds-sampleAt >= 30) Finish();
@@ -376,7 +411,8 @@ public sealed partial class Plugin : IPlugin
         if(gpuSceneSnapshot!=null)File.WriteAllText(Path.Combine(reports,"gpu-scene-ownership.json"),JsonSerializer.Serialize(gpuSceneSnapshot,new JsonSerializerOptions{WriteIndented=true}));
         if(gpuAdmissionSnapshot!=null)File.WriteAllText(Path.Combine(reports,"gpu-admission-audit.json"),JsonSerializer.Serialize(gpuAdmissionSnapshot,new JsonSerializerOptions{WriteIndented=true}));
         (double Cpu,double Interval)[] samples;lock(Gate) samples=Frames.ToArray();
-        if(samples.Length<10) throw new Exception("Too few rendered frames.");
+        string census=WriteSampleCensus(samples.Length);
+        if(samples.Length<10) throw new Exception("Too few rendered frames ("+census+").");
         var cpu=samples.Select(f=>f.Cpu).OrderBy(x=>x).ToArray();var interval=samples.Select(f=>f.Interval).OrderBy(x=>x).ToArray();
         double P(double[] a,double quantile)=>a[(int)Math.Min(a.Length-1,Math.Ceiling(a.Length*quantile)-1)];
         File.WriteAllText(Path.Combine(reports,"result.json"),JsonSerializer.Serialize(new{

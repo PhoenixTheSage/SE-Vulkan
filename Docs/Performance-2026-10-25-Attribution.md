@@ -3925,9 +3925,29 @@ previous native code.
   trigger is a Steam client update this afternoon, which may also explain the
   Vulkan-only slowdown from batch 120 on. Overlays are out of scope.
 
-**Open: an intermittent render stall.** "Too few rendered frames" means
-fewer than 10 frames in the harness's 30 s sampling window.
-- **Seen 4 times:** twice on 10-28, before build stages existed; in batch
-  121 (placement plus no spin); and in batch 122 (default placement).
-- **Evidence so far.** The world loads and unloads normally, and no renderer
-  error is logged.
+**"Too few rendered frames" is a harness rejection, not a render stall
+(2026-10-31).** The message means fewer than 10 accepted frames in the
+harness's 30 s sampling window.
+- **Seen 4 times:** twice on 10-28 (PS0 on the pre-split binaries, and a
+  validation run); in batch 121 (placement plus no spin); and in batch 122
+  (default placement).
+- **The renderer kept drawing.** In the batch 121 and 122 failures, the
+  sampling screenshot was written 0.27 s after sampling began, the same as a
+  healthy run. Their game and renderer logs match a healthy run line for line,
+  and their GC activity over the window (allocations, collections, pause time)
+  is the same.
+- **Every frame failed the sampler's first check.** Those runs lack the files
+  the sampler writes on its first accepted frame (`gpu-scene-ownership.json`,
+  `gpu-topology-counters.json`). That check rejects a frame when the game is
+  paused, when a feature flag changed mid-frame, or before the first Draw.
+  Only the pause can last a whole benchmark run. Single-player SE pauses when
+  the Steam overlay activates (`MySandboxGame.OverlayActivated` →
+  `PausePush`), and the screenshot excludes the overlay. That is the leading
+  suspect, not yet proven.
+- **The PS0 failure differs.** It passed the first check at least once, so it
+  stopped later in the sampler.
+- **Diagnostics.** The harness now writes `sample-census.json` on every run:
+  sampler calls, rejections by reason, the pause state at the start and end of
+  the window, and every pause change and Steam-overlay callback with its stack.
+  The failure message quotes the counts, so the next occurrence names its
+  cause.
