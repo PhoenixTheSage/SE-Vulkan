@@ -65,8 +65,8 @@ void validate_opaque_stock_geometry(){
 void set_opaque_stock_batches(const SevkOpaqueStockBatch* inputs,uint32_t count,const uint64_t* meshes,uint32_t parts,const void* objects,uint32_t bytes){
     GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::StockPublication);
     auto& s=opaque_stock;auto& r=opaque_reference;
-    if(recording||batching_uploads||!r.initialized||!inputs||count!=r.batch_count||!meshes||parts!=r.part_count||!objects||bytes!=r.actors.size()*128)
-        throw std::runtime_error(std::string("invalid immutable stock batches:")+(recording?" recording":"")+(batching_uploads?" uploads open":"")+(!r.initialized?" registry uninitialized":"")
+    if(frame_open()||batching_uploads||!r.initialized||!inputs||count!=r.batch_count||!meshes||parts!=r.part_count||!objects||bytes!=r.actors.size()*128)
+        throw std::runtime_error(std::string("invalid immutable stock batches:")+(frame_open()?" recording":"")+(batching_uploads?" uploads open":"")+(!r.initialized?" registry uninitialized":"")
             +(count!=r.batch_count?" batches "+std::to_string(count)+"/"+std::to_string(r.batch_count):"")+(parts!=r.part_count?" parts "+std::to_string(parts)+"/"+std::to_string(r.part_count):"")
             +(bytes!=r.actors.size()*128?" object bytes "+std::to_string(bytes)+"/"+std::to_string(r.actors.size()*128):"")+(!inputs||!meshes||!objects?" null input":""));
     std::vector<OpaqueStockState::Batch> batches;std::vector<OpaqueStockState::Geometry> geometry;std::unordered_set<uint64_t> geometry_ids;auto derived=r.part_inputs;std::vector<int> family_kind(r.family_inputs.size(),-1);
@@ -103,7 +103,7 @@ void set_opaque_stock_inputs(uint64_t mesh,const void* objects,uint32_t bytes,ui
 void prepare_opaque_stock(WorldSlot& world_slot){
     auto& reference=opaque_reference;
     {GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::RecordingMembership);
-    if(reference.view_batches)reference.recording_batches=gpu_opaque::recording_batches(reference.actors,reference.recording_families,reference.views,reference.batch_count);}
+    if(reference.view_batches)reference.recording_batches=gpu_opaque::recording_batches(reference.rec_actors,reference.recording_families,reference.views,reference.batch_count);}
     auto& s=opaque_stock;auto& r=opaque_reference;if(!s.ready)return;validate_opaque_stock_geometry();
     if(!s.pool){VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,16},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,gpu_opaque::texture_capacity*8}};VkDescriptorPoolCreateInfo create{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};create.maxSets=4;create.poolSizeCount=2;create.pPoolSizes=sizes;check(vkCreateDescriptorPool(device,&create,nullptr,&s.pool),"create fenced stock indexed descriptor pool");}
     auto& slot=r.slots[slot_index];bool dirty=s.materials_dirty[slot_index];

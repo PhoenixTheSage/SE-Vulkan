@@ -227,6 +227,10 @@ struct OpaqueReferenceState {
     SevkOpaqueFrame frame{};uint32_t part_count{},view_count{},view_capacity{},reference_capacity{},draw_capacity{},source_count{},last_slot{};
     uint64_t revision{};uint32_t batch_count=1;bool initialized{},frame_ready{},published{};
     bool view_batches{},role_streams{},stock_geometry{};std::vector<std::vector<uint32_t>> recording_batches;
+    // Plan 4 milestone 2: Build queues the next frame's inputs here (scene calls, alongside a recording); begin_frame
+    // latches them into frame/views/view_count, and copies the actor rows the recording's batch lists read.
+    SevkOpaqueFrame next_frame{};std::vector<SevkOpaqueView> next_views;uint32_t next_view_count{};bool next_ready{};
+    std::vector<SevkOpaqueActor> rec_actors;std::vector<uint64_t> rec_versions;
     std::vector<gpu_opaque::FamilyBatches> recording_families;
 };
 struct OpaqueStockState {
@@ -247,7 +251,7 @@ struct IndexedMotionState {
     Buffer previous_rows[2]{},previous_sources[2]{};VkPipeline pipelines[5]{};
     uint64_t frame=UINT64_MAX,source_epoch=UINT64_MAX;
 };
-struct GpuResidentState {uint64_t publications{},frames{};gpu_scene::Registry registry;gpu_scene::Upload upload;uint64_t topology{},revision{};bool published{};std::array<uint32_t,64> view_map{};std::vector<SevkPassQuery> queries;std::unordered_map<uint64_t,std::vector<uint32_t>> group_actors;
+struct GpuResidentState {uint64_t publications{},frames{};gpu_scene::Registry registry;gpu_scene::Upload upload;uint64_t topology{},revision{};bool published{};std::array<uint32_t,64> view_map{},next_view_map{};std::vector<SevkPassQuery> queries;std::unordered_map<uint64_t,std::vector<uint32_t>> group_actors;
     std::array<uint64_t,5> topology_counts{};
     std::unordered_map<uint64_t,uint32_t> actor_indices;
     std::map<std::shared_ptr<const gpu_scene::Family>,uint32_t> family_indices;
@@ -761,6 +765,18 @@ struct Renderer {uint32_t recipe_generation=1;
     bool pass_ready_now()const{return rec_view_active()?rec_view.pass_ready:pass_scene.ready;}
     uint32_t pass_spot_view(uint32_t light)const{return rec_view_active()?rec_view.spot_views[light]:pass_scene.spot_views[light];}
     uint64_t pass_static_dirty()const{return rec_view_active()?rec_view.static_dirty:pass_scene.static_dirty;}
+    // Plan 4: the caller itself has a frame open. Build's GPU-scene writes are fine while another thread holds a
+    // latched frame open (stage B) or a released recording runs; they touch only pending inputs and host rows.
+    // GPU-scene waits on record_cv, reporting their state to stderr every 2 s they last (hang diagnosis).
+    template<class Ready> void gpu_scene_wait(const char* what,Ready ready){
+        while(!record_cv.wait_for(*scene_lock,std::chrono::seconds(2),ready)){std::fprintf(stderr,"GPU-scene %s wait: next_ready=%d recording=%d owner_is_me=%d pending=%d running=%d released=%d build_stages=%d\n",what,
+            int(opaque_reference.next_ready),int(recording),int(frame_owner==std::this_thread::get_id()),int(record_pending),int(record_running),int(record_released.load()),int(build_stages));std::fflush(stderr);}}
+    bool own_frame_open()const{return recording&&frame_owner==std::this_thread::get_id()&&!overlap_from_caller();}
+    // A scene call that replaces tables an open, pending or recording frame uses (GPU-scene rebind or publication,
+    // rare): wait until there is none. Frame-closing calls notify record_cv while gate_waiters is set.
+    void wait_scene_idle(){if(!scene_lock)return;++gate_waiters;struct Leave{uint32_t& n;~Leave(){--n;}} leave{gate_waiters};
+        gpu_scene_wait("idle",[&]{return !record_pending&&!record_running&&!(recording&&frame_owner!=std::this_thread::get_id());});
+        if(record_failed){record_failed=false;throw std::runtime_error(record_error);}flush_deferred();}
     // A scene call that needs the full recording to finish first (rare paths).
     void wait_for_recording_end(){if(!overlap_from_caller()||!scene_lock)return;record_cv.wait(*scene_lock,[&]{return !record_running;});if(record_failed){record_failed=false;throw std::runtime_error(record_error);}flush_deferred();}
     // Plan 3 milestone 5 (build stages): the pass snapshot a recording uses is taken when its world is queued, per
@@ -1994,6 +2010,8 @@ struct Renderer {uint32_t recipe_generation=1;
         if(swapchain&&extent.width&&extent.height&&(want_hdr||drop_hdr||want_immediate)){uint32_t logical_w=sprite_w?sprite_w:extent.width,logical_h=sprite_h?sprite_h:extent.height;resize_output(extent.width,extent.height,logical_w,logical_h,vsync);}
         if(surface_dirty){surface_dirty=false;uint32_t logical_w=sprite_w?sprite_w:extent.width,logical_h=sprite_h?sprite_h:extent.height;if(extent.width&&extent.height)resize_output(extent.width,extent.height,logical_w,logical_h,vsync);}
         end_uploads();lap(1);
+        // Plan 4: no recording is in flight here; frame N takes the GPU-scene inputs Build queued for it.
+        latch_opaque_reference_frame();
         if (suspended) return 1;
         performance=SevkPerformanceStats{sizeof(SevkPerformanceStats),SEVK_ABI_VERSION};
         performance.queue_us=world.current().queue_us;performance.logical_draws=performance.submitted_draws=uint32_t(queued_draw_count()+(cells_emit_pending&&cells.scene.ready()&&!cells.scene.building()?cells.scene.emitted().size():0));
@@ -2002,6 +2020,7 @@ struct Renderer {uint32_t recipe_generation=1;
         auto slot_take=[&](){auto now=std::chrono::steady_clock::now();uint32_t elapsed=(uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(now-slot_stamp).count();slot_stamp=now;return elapsed;};
         if(slot.completion&&tl_submit[slot_index].time_since_epoch().count()){uint64_t done{};vkGetSemaphoreCounterValue(device,timeline,&done);tl_us[3]+=tl_since(tl_submit[slot_index]);if(done<slot.completion)++tl_waited;}
         {auto fence_at=std::chrono::steady_clock::now();render_wait_stage=3;wait(slot.completion);render_wait_stage=0;tl_us[4]+=tl_since(fence_at);}
+        latch_opaque_reference_slot();
         // Display bit 64 (HdrRender LowLatencyMode): DX11 sets MaximumFrameLatency 1, so also drain the previous frame.
         if(display_flags&64)wait(slots[(slot_index+1)%slots.size()].completion);
         work.wait_us=slot_take();lap(3); collect();lap(4);sample_light_tiles(slot_index);lap(5);

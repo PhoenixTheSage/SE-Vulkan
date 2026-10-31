@@ -18,7 +18,9 @@ gpu_scene::Actor gpu_scene_actor_input(const SevkGpuSceneActor& input,const Sevk
 }
 void publish_gpu_scene(uint32_t views,uint32_t references,uint32_t draws){
     critical_profile::Scope profile(critical_profile::PassPublish,true);
-    if(recording||batching_uploads||!opaque_caps.enabled)throw std::runtime_error("resident publication outside owner epoch");auto& resident=gpu_resident;
+    // Two build stages: stage A's lazily opened upload batch is submitted here, before the topology binds its meshes.
+    if(build_stages&&batching_uploads&&!frame_open())end_uploads();
+    if(frame_open()||batching_uploads||!opaque_caps.enabled)throw std::runtime_error("resident publication outside owner epoch");auto& resident=gpu_resident;
     lazy_batch_suppressed=true;struct Unsuppress{bool& flag;~Unsuppress(){flag=false;}} unsuppress{lazy_batch_suppressed};
     if(resident.published&&opaque_reference.initialized){wait(next_completion);check(vmaInvalidateAllocation(allocator,opaque_reference.selectors.memory,0,opaque_reference.selectors.bytes),"capture completed selectors for topology replacement");auto states=static_cast<const SevkOpaqueSelector*>(opaque_reference.selectors.mapped);for(uint32_t i=0;i<resident.upload.handles.size();i++)if(resident.registry.contains(resident.upload.handles[i]))resident.registry.selector_handoff(resident.upload.handles[i],states[i]);}
     gpu_scene::Upload upload;{GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::Snapshot);upload=resident.registry.upload();}if(upload.actors.empty())throw std::runtime_error("empty resident GPU publication");
@@ -96,6 +98,11 @@ void gpu_scene_rebind_root(uint32_t index,const gpu_scene::ResidentActor& actor)
 void queue_gpu_scene_frame(const SevkOpaqueFrame& frame,const SevkOpaqueView* views,uint32_t count){
     critical_profile::Scope profile(critical_profile::PassPrepare,true);
     auto& resident=gpu_resident;++resident.frames;if(!resident.published)throw std::runtime_error("resident topology has not been published");
+    // Two build stages: stage A(N+1) can queue before stage B(N) has latched frame N in begin_frame; wait for it.
+    if(build_stages&&scene_lock&&opaque_reference.next_ready)gpu_scene_wait("latch",[&]{return !opaque_reference.next_ready;});
+    // Rebinding and publication replace tables the in-flight recording reads (materials, parts, buffers): rare, so
+    // they wait for it to end.
+    if(resident.topology!=resident.registry.topology())wait_scene_idle();
     auto changed=resident.registry.changed(resident.revision);
     if(resident.topology!=resident.registry.topology()&&(!gpu_resident_deltas||!gpu_scene_can_rebind(changed))){publish_gpu_scene(opaque_reference.view_capacity,0,0);changed=resident.registry.changed(resident.revision);}
     if(!changed.empty()){
@@ -109,17 +116,17 @@ void queue_gpu_scene_frame(const SevkOpaqueFrame& frame,const SevkOpaqueView* vi
         update_opaque_reference_actors(ids.data(),actors.data(),uint32_t(ids.size()),objects.data(),uint32_t(objects.size()),gpu_resident_deltas);update_opaque_reference_appearances(appearance_updates.data(),uint32_t(appearance_updates.size()),appearances.data(),uint32_t(appearances.size()));
         if(gpu_resident_deltas)for(uint32_t i=0;i<changed.size();i++){gpu_scene_rebind_root(ids[i],changed[i]);resident.upload.source.actors[ids[i]]=changed[i];resident.upload.actors[ids[i]]=actors[i];}
         resident.topology=resident.registry.topology();resident.topology_counts=resident.registry.topology_counts();resident.revision=resident.registry.revision();resident.registry.acknowledge(resident.revision);
-    }resident.view_map.fill(UINT32_MAX);for(uint32_t i=0;i<count;i++){if(views[i].id>=64||resident.view_map[views[i].id]!=UINT32_MAX)throw std::runtime_error("duplicate resident view identity");resident.view_map[views[i].id]=i;}queue_opaque_reference_frame(frame,views,count);
+    }resident.next_view_map.fill(UINT32_MAX);for(uint32_t i=0;i<count;i++){if(views[i].id>=64||resident.next_view_map[views[i].id]!=UINT32_MAX)throw std::runtime_error("duplicate resident view identity");resident.next_view_map[views[i].id]=i;}queue_opaque_reference_frame(frame,views,count);
 }
 void gpu_scene_queries(const SevkOpaqueView* views,uint32_t count,SevkPassQuery* queries,uint32_t capacity,uint32_t& total){
-    auto& resident=gpu_resident;if(recording||!resident.published||!views||!count||count>opaque_reference.view_capacity)throw std::runtime_error("invalid resident root-query frame");uint64_t mask=0;for(uint32_t v=0;v<count;v++)if((views[v].flags&1)&&views[v].id<9)mask|=uint64_t(1)<<views[v].id;
+    auto& resident=gpu_resident;if(own_frame_open()||!resident.published||!views||!count||count>opaque_reference.view_capacity)throw std::runtime_error("invalid resident root-query frame");uint64_t mask=0;for(uint32_t v=0;v<count;v++)if((views[v].flags&1)&&views[v].id<9)mask|=uint64_t(1)<<views[v].id;
     std::vector<SevkPassQuery> needed;for(auto& q:resident.queries){bool visible=false;for(uint32_t index:resident.group_actors.at(q.group))visible|=(opaque_reference.actors[index].flags&1)!=0;if(visible){auto entry=q;entry.views=mask;needed.push_back(entry);}}
     total=uint32_t(needed.size());if(queries){if(capacity<total)throw std::runtime_error("resident query capacity");std::copy(needed.begin(),needed.end(),queries);}
 
 }
 void gpu_scene_visibility(const SevkPassQueryResult* results,uint32_t count){
-    auto& resident=gpu_resident;if(recording||!resident.published||(!results&&count))throw std::runtime_error("invalid resident root visibility");std::unordered_map<uint64_t,uint64_t> hidden;for(uint32_t i=0;i<count;i++)hidden[results[i].group]=results[i].hidden_views;
-    for(auto& [group,members]:resident.group_actors){uint64_t mask=hidden[group],packed=0;for(uint32_t id=0;id<64;id++)if((mask&(uint64_t(1)<<id))&&resident.view_map[id]<opaque_reference.view_count)packed|=uint64_t(1)<<resident.view_map[id];for(uint32_t index:members){auto& a=opaque_reference.actors[index];if(a.hidden_views[0]!=uint32_t(packed)||a.hidden_views[1]!=uint32_t(packed>>32)){a.hidden_views[0]=uint32_t(packed);a.hidden_views[1]=uint32_t(packed>>32);opaque_reference.versions[index]=++opaque_reference.revision;}}}
+    auto& resident=gpu_resident;if(own_frame_open()||!resident.published||(!results&&count))throw std::runtime_error("invalid resident root visibility");std::unordered_map<uint64_t,uint64_t> hidden;for(uint32_t i=0;i<count;i++)hidden[results[i].group]=results[i].hidden_views;
+    for(auto& [group,members]:resident.group_actors){uint64_t mask=hidden[group],packed=0;for(uint32_t id=0;id<64;id++)if((mask&(uint64_t(1)<<id))&&resident.next_view_map[id]<opaque_reference.next_view_count)packed|=uint64_t(1)<<resident.next_view_map[id];for(uint32_t index:members){auto& a=opaque_reference.actors[index];if(a.hidden_views[0]!=uint32_t(packed)||a.hidden_views[1]!=uint32_t(packed>>32)){a.hidden_views[0]=uint32_t(packed);a.hidden_views[1]=uint32_t(packed>>32);opaque_reference.versions[index]=++opaque_reference.revision;}}}
 }
 void gpu_scene_selector(uint64_t handle,SevkOpaqueSelector& selector){
     if(recording)throw std::runtime_error("selector handoff during recording");auto& resident=gpu_resident;selector=resident.registry.actor(handle).input.selector;

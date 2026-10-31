@@ -166,6 +166,63 @@ previous frame's recording instead of alongside it.
   and without `-Split`: GPU-on differences must stay within the off/off
   noise.
 
+## Milestone 2, step 1: the recording wait (2026-10-31)
+
+**What changed.**
+- **Frame latch.** Build queues each frame's GPU-scene inputs (frame block,
+  views, view map) into a pending set. `begin_frame` runs with no recording
+  in flight and its slot fence waited. There it:
+  - moves the pending set into the fields the recording reads;
+  - copies Build's committed actor rows, appearances and part bindings into
+    the slot (this used to run on the recording thread);
+  - copies the actor rows the recording's batch lists read (`rec_actors`).
+- **Scene calls.** The registry and per-frame GPU-scene exports (model,
+  family, source, actor, updates, remove, frame, queries, visibility) are
+  scene calls now, so Build runs them alongside an early-released recording.
+  Their checks refuse only a frame open on the caller's own thread
+  (`own_frame_open`). Publication, clear and selector handoff still wait.
+- **Two build stages.**
+  - Stage A(N+1) can queue before stage B(N) has latched frame N, so a
+    second queue waits for that latch.
+  - Rebinding or publication replaces tables an open or recording frame
+    uses, so it waits until none is open, pending or recording
+    (`wait_scene_idle`, rare).
+  - Stage A no longer closes the upload batch before publishing; a topology
+    publication flushes the lazily opened batch itself.
+- **Hang diagnostics.** Both new waits report their state to stderr every
+  2 s they last. One validation run hung during world load before they were
+  added; three validation runs since completed and none reported a wait.
+
+**Gates.** All pass:
+- the native reference fixture: 136,700 checks;
+- `GpuSceneLiveTests`: 180 checks;
+- in-game validation under the split: zero errors;
+- `Compare-GpuOwnership.ps1`, with and without `-Split`: GPU-on differences
+  within the off/off noise; cascades and spot maps identical.
+
+**Cost** (CPU-detail runs, same pipeline):
+
+| | CPU path | GPU before | GPU now |
+|---|---|---|---|
+| Present cadence | 6.14 ms | 13.53 ms | 9.03 ms |
+| Build thread | 5.84 ms | 13.17 ms | 8.67 ms |
+| `NativePassCommits` | 0.34 ms | 7.43 ms | 0.78 ms |
+| `GpuResidentQueue` | — | 0.46 ms | 2.38 ms |
+| Actor traversal | 0.59 ms | 2.17 ms | 2.55 ms |
+
+The pipeline census shows the build thread waiting for the recording on 30
+frames out of 7,057, against 4,110 of 4,277 before. The remaining plain wait
+is stage B's `EndUploads` on the launch thread, as on the CPU path.
+
+**What still keeps the GPU path behind:**
+- **`GpuResidentQueue`, 2.38 ms, is mostly the latch wait.** Stage A(N+1)
+  waits for `begin_frame(N)`, which comes after stage B(N)'s `EndUploads`
+  wait for recording N-1. Removing it needs the recording-side copies
+  double-buffered per slot, so frame N can latch at its world queue instead.
+- **Actor traversal, 2.55 ms against 0.59.** The build thread frustum-tests
+  every GPU-owned actor for the game's visible set. The plan's answer is the
+  one-frame-late GPU visibility readback (milestone 2).
+
 ## Milestones
 
 Each milestone keeps the CPU path as the default and fallback until its gate

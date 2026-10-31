@@ -522,8 +522,10 @@ public sealed class MyVulkanRender : IMyRender
                 FrameProfiler.Lap(FrameProfiler.Section.Setup);
                 }
                 // Resident topology binds uploaded shared allocation generations.
-                // Finish every scene/lighting resource consumer before publishing it.
-                if(backend.GpuSceneEnabled){using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads();uploadsOpen=false;}
+                // Finish every scene/lighting resource consumer before publishing it. Two build stages: stage B closes
+                // the batch, and a (rare) topology publication flushes the open one itself; closing it here waited
+                // out the previous frame's recording every frame.
+                if(backend.GpuSceneEnabled&&!BuildStages){using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads();uploadsOpen=false;}
                 backend.SetCensusPhase(2);
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Scene)){if(VulkanScene.OverlapPublicationEnabled)scene.FinishNativePassPublication();else scene.PublishNativePassScene();}if(scene.NativePassSceneEnabled||backend.GpuSceneEnabled)scene.AddVisible(frameVisible);
                 JoinEffects();

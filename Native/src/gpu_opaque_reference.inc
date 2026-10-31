@@ -74,7 +74,7 @@ VkShaderModule opaque_reference_shader(const char* name){
 }
 void init_opaque_reference(const SevkOpaqueReferenceConfig& c,bool shared_geometry=false){
     GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::Initialize);
-    if(recording||batching_uploads||!opaque_caps.enabled||c.size!=sizeof(c)||c.abi_version!=SEVK_ABI_VERSION||
+    if(frame_open()||batching_uploads||!opaque_caps.enabled||c.size!=sizeof(c)||c.abi_version!=SEVK_ABI_VERSION||
         !c.actor_count||c.actor_count>8192||!c.family_count||c.family_count>8192||!c.part_count||c.part_count>gpu_opaque::max_parts||!c.view_count||c.view_count>64||
         !c.actors||!c.families||!c.parts||(!shared_geometry&&(!c.vertex_count||!c.index_count||!c.vertices||!c.indices))||
         (!shared_geometry&&c.draw_capacity>opaque_caps.draw_capacity)||!c.draw_capacity||!c.reference_capacity||(c.source_count&&!c.source_instances)||c.material_count>gpu_opaque::texture_capacity||(c.material_count&&!c.material_textures)||c.reserved>gpu_opaque::max_batches||c.material_reserved||
@@ -186,7 +186,7 @@ void init_opaque_reference(const SevkOpaqueReferenceConfig& c,bool shared_geomet
 }
 void update_opaque_reference_actors(const uint32_t* indices,const SevkOpaqueActor* actors,uint32_t count,const void* objects,uint32_t bytes,bool resident_rebind=false){
     GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::DeltaInputs);
-    auto& s=opaque_reference;if(recording||!s.initialized||count>s.actors.size()||(!indices&&count)||(!actors&&count)||(objects?uint64_t(count)*128!=bytes:bytes!=0))throw std::runtime_error("invalid opaque batched commit");
+    auto& s=opaque_reference;if(own_frame_open()||!s.initialized||count>s.actors.size()||(!indices&&count)||(!actors&&count)||(objects?uint64_t(count)*128!=bytes:bytes!=0))throw std::runtime_error("invalid opaque batched commit");
     std::vector<SevkOpaqueActor> next;if(gpu_resident_deltas)next.resize(count);else next=s.actors;std::unordered_set<uint32_t> unique;bool capacity_changed=false;
     // Only the resident registry supplies the committed_pose path: its batch
     // already validated pose values and distinct generation-checked handles.
@@ -209,7 +209,7 @@ void update_opaque_reference_actors(const uint32_t* indices,const SevkOpaqueActo
 }
 void update_opaque_reference_appearances(const SevkOpaqueAppearanceUpdate* updates,uint32_t count,const SevkOpaqueAppearance* entries,uint32_t total){
     GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::DeltaAppearance);
-    auto& s=opaque_reference;if(recording||!s.initialized||count>s.actors.size()||(!updates&&count)||(!entries&&total))throw std::runtime_error("invalid appearance batch");std::unordered_set<uint32_t> unique;
+    auto& s=opaque_reference;if(own_frame_open()||!s.initialized||count>s.actors.size()||(!updates&&count)||(!entries&&total))throw std::runtime_error("invalid appearance batch");std::unordered_set<uint32_t> unique;
     std::vector<gpu_opaque::AppearanceArena::Update> staged;staged.reserve(count);
     for(uint32_t i=0;i<count;i++){auto& u=updates[i];if(u.actor>=s.actors.size()||u.reserved||u.count>gpu_opaque::appearance_limit||u.first>total||u.count>total-u.first||!unique.insert(u.actor).second)throw std::runtime_error("invalid appearance update range");std::unordered_set<uint32_t> materials;
         for(uint32_t j=0;j<u.count;j++){auto& e=entries[u.first+j];if(e.visible>1||!materials.insert(e.material).second)throw std::runtime_error("ambiguous material appearance");for(float f:e.old_colour)if(!std::isfinite(f))throw std::runtime_error("OLD material appearance nonfinite");}
@@ -221,7 +221,7 @@ void update_opaque_reference_appearances(const SevkOpaqueAppearanceUpdate* updat
 void update_opaque_reference_actor(uint32_t index,const SevkOpaqueActor& actor){update_opaque_reference_actors(&index,&actor,1,nullptr,0);}
 void queue_opaque_reference_frame(const SevkOpaqueFrame& frame,const SevkOpaqueView* views,uint32_t count){
     GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::FrameValidation);
-    auto& s=opaque_reference;if(recording||!s.initialized||!views||(!count||count>s.view_capacity)||!frame.epoch||(frame.flags&~3u))throw std::runtime_error("invalid opaque frame");
+    auto& s=opaque_reference;if(own_frame_open()||!s.initialized||!views||(!count||count>s.view_capacity)||!frame.epoch||(frame.flags&~3u))throw std::runtime_error("invalid opaque frame");
     for(uint64_t id:s.material_ids)if(textures.find(id)==textures.end())throw std::runtime_error("opaque material resource missing; ownership requires re-registration/fallback");
     for(auto value:frame.camera)if(!std::isfinite(value)||std::abs(value)>1e12)throw std::runtime_error("opaque camera outside admitted precision domain");
     if(!std::isfinite(frame.smooth_camera_distance)||frame.smooth_camera_distance<0)throw std::runtime_error("opaque jump distance");
@@ -231,7 +231,7 @@ void queue_opaque_reference_frame(const SevkOpaqueFrame& frame,const SevkOpaqueV
         if(!std::isfinite(views[v].minimum_size_squared)||views[v].minimum_size_squared<0||!std::isfinite(views[v].maximum_distance)||views[v].maximum_distance<0)throw std::runtime_error("opaque pruning nonfinite");}
     uint64_t needed=0;for(uint32_t v=0;v<count;v++)if(views[v].flags&1)needed+=(views[v].flags&2)?s.reference_depth_bound:(views[v].flags&32)?s.reference_forward_bound:s.reference_colour_bound;
     if(needed>s.reference_capacity)throw std::runtime_error("current resident views exceed reference capacity");
-    s.frame=frame;s.view_count=count;s.views.assign(views,views+count);s.frame_ready=true;
+    s.next_frame=frame;s.next_view_count=count;s.next_views.assign(views,views+count);s.next_ready=true;
 }
 void opaque_reference_dependency(VkCommandBuffer cmd,VkPipelineStageFlags2 source,VkAccessFlags2 src,VkPipelineStageFlags2 destination,VkAccessFlags2 dst){
     VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};barrier.srcStageMask=source;barrier.srcAccessMask=src;barrier.dstStageMask=destination;barrier.dstAccessMask=dst;
@@ -246,14 +246,20 @@ OpaqueReferenceControl opaque_reference_control(){
     uint32_t distance_fade=needs_distance_fade?world_distance_fade_bits():0u;
     return {s.frame,uint32_t(s.actors.size()),uint32_t(s.family_inputs.size()),s.part_count,s.view_count,s.reference_capacity,s.draw_capacity,0,s.batch_count,distance_fade,0};
 }
-void prepare_opaque_reference(VkCommandBuffer cmd){
+// Plan 4 milestone 2: begin_frame, with no recording in flight, latches the frame inputs Build queued and copies
+// Build's committed actor rows into this slot, so Build's next frame (scene calls alongside the recording) only
+// writes the pending inputs and the host rows. The recording reads frame/views/view_count, the slot and rec_actors.
+void latch_opaque_reference_frame(){
+    auto& s=opaque_reference;if(!s.next_ready)return;
+    s.frame=s.next_frame;s.view_count=s.next_view_count;s.views.swap(s.next_views);s.frame_ready=true;s.next_ready=false;gpu_resident.view_map=gpu_resident.next_view_map;
+    if(s.rec_actors.size()!=s.actors.size()){s.rec_actors=s.actors;s.rec_versions=s.versions;}
+    else for(size_t a=0;a<s.actors.size();a++)if(s.rec_versions[a]!=s.versions[a]){s.rec_actors[a]=s.actors[a];s.rec_versions[a]=s.versions[a];}
+    record_cv.notify_all();
+}
+void latch_opaque_reference_slot(){
     auto& s=opaque_reference;if(!s.initialized||!s.frame_ready)return;auto& slot=s.slots[slot_index];
     // begin_frame has waited THIS slot. Descriptors never change while in use.
     if(gpu_owned_inputs){for(auto [first,count]:slot.pending_parts){auto at=uint64_t(first)*sizeof(SevkOpaquePart),bytes=uint64_t(count)*sizeof(SevkOpaquePart);std::memcpy(static_cast<uint8_t*>(slot.parts.mapped)+at,s.gpu_part_inputs.data()+first,bytes);check(vmaFlushAllocation(allocator,slot.parts.memory,at,bytes),"flush fenced resident part bindings");}slot.pending_parts.clear();}
-    if(s.materials_dirty[slot_index]){
-        std::vector<VkDescriptorImageInfo> images(s.material_ids.size());for(uint32_t t=0;t<images.size();t++){auto found=textures.find(s.material_ids[t]);if(found==textures.end())throw std::runtime_error("opaque material disappeared after frame publication");images[t]={VK_NULL_HANDLE,found->second.image.view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};}
-        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=slot.set;write.dstBinding=12;write.descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;write.descriptorCount=uint32_t(images.size());write.pImageInfo=images.data();vkUpdateDescriptorSets(device,1,&write,0,nullptr);s.materials_dirty[slot_index]=false;
-    }
     bool rebuilt=slot.object_inputs.bytes<s.object_inputs.bytes.size();
     if(rebuilt){auto replacement=opaque_reference_buffer(s.object_inputs.bytes.size(),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);destroy_buffer(slot.object_inputs);slot.object_inputs=replacement;
         VkDescriptorBufferInfo info{replacement.handle,0,replacement.bytes};VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=slot.set;write.dstBinding=17;write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;write.descriptorCount=1;write.pBufferInfo=&info;vkUpdateDescriptorSets(device,1,&write,0,nullptr);
@@ -265,6 +271,14 @@ void prepare_opaque_reference(VkCommandBuffer cmd){
             slot.appearance_versions[a]=s.object_inputs.versions[a];}
     }
     check(vmaFlushAllocation(allocator,slot.actors.memory,0,slot.actors.bytes),"flush committed opaque actors");check(vmaFlushAllocation(allocator,slot.object_inputs.memory,0,slot.object_inputs.bytes),"flush fenced stock object commits");
+}
+void prepare_opaque_reference(VkCommandBuffer cmd){
+    auto& s=opaque_reference;if(!s.initialized||!s.frame_ready)return;auto& slot=s.slots[slot_index];
+    // begin_frame has waited THIS slot and latched its actor rows (latch_opaque_reference_slot).
+    if(s.materials_dirty[slot_index]){
+        std::vector<VkDescriptorImageInfo> images(s.material_ids.size());for(uint32_t t=0;t<images.size();t++){auto found=textures.find(s.material_ids[t]);if(found==textures.end())throw std::runtime_error("opaque material disappeared after frame publication");images[t]={VK_NULL_HANDLE,found->second.image.view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};}
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=slot.set;write.dstBinding=12;write.descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;write.descriptorCount=uint32_t(images.size());write.pImageInfo=images.data();vkUpdateDescriptorSets(device,1,&write,0,nullptr);s.materials_dirty[slot_index]=false;
+    }
     for(auto& view:s.views)if(view.flags&128){uint64_t bit=uint64_t(1)<<view.light;if(!spots.frozen_ready[view.light]||spots.frozen_sizes[view.light]!=spots.resolution||(((view.flags&16)?(spots.static_dirty|pass_static_dirty()):spots.dynamic_dirty)&bit))view.flags|=64;}std::memcpy(slot.views.mapped,s.views.data(),s.views.size()*sizeof(SevkOpaqueView));check(vmaFlushAllocation(allocator,slot.views.memory,0,slot.views.bytes),"flush opaque current views");
     if(s.compute_timing&&s.compute_timing_valid[slot_index]){uint64_t values[22]{};auto result=vkGetQueryPoolResults(device,s.compute_timing,slot_index*11,11,sizeof(values),values,16,VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);if(result!=VK_NOT_READY){check(result,"read completed resident compute timings");bool ready=true;for(uint32_t i=0;i<11;i++)ready&=values[i*2+1]!=0;if(ready){uint64_t mask=timestamp_bits==64?~0ull:(uint64_t(1)<<timestamp_bits)-1;for(uint32_t i=0;i<10;i++)opaque_compute_times[i+1]+=uint64_t(double((values[(i+1)*2]-values[i*2])&mask)*timestamp_period);++opaque_compute_times[0];s.compute_timing_valid[slot_index]=false;}}}
     // Selectors are GPU-owned; dependency includes the previous submitted frame.
