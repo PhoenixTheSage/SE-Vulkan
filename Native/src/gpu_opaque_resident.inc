@@ -19,6 +19,7 @@ gpu_scene::Actor gpu_scene_actor_input(const SevkGpuSceneActor& input,const Sevk
 void publish_gpu_scene(uint32_t views,uint32_t references,uint32_t draws){
     critical_profile::Scope profile(critical_profile::PassPublish,true);
     if(recording||batching_uploads||!opaque_caps.enabled)throw std::runtime_error("resident publication outside owner epoch");auto& resident=gpu_resident;
+    lazy_batch_suppressed=true;struct Unsuppress{bool& flag;~Unsuppress(){flag=false;}} unsuppress{lazy_batch_suppressed};
     if(resident.published&&opaque_reference.initialized){wait(next_completion);check(vmaInvalidateAllocation(allocator,opaque_reference.selectors.memory,0,opaque_reference.selectors.bytes),"capture completed selectors for topology replacement");auto states=static_cast<const SevkOpaqueSelector*>(opaque_reference.selectors.mapped);for(uint32_t i=0;i<resident.upload.handles.size();i++)if(resident.registry.contains(resident.upload.handles[i]))resident.registry.selector_handoff(resident.upload.handles[i],states[i]);}
     gpu_scene::Upload upload;{GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::Snapshot);upload=resident.registry.upload();}if(upload.actors.empty())throw std::runtime_error("empty resident GPU publication");
     // Preflight retained source identity before allocating a new topology. These

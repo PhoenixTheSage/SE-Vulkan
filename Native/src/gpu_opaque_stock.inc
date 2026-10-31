@@ -66,7 +66,9 @@ void set_opaque_stock_batches(const SevkOpaqueStockBatch* inputs,uint32_t count,
     GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::StockPublication);
     auto& s=opaque_stock;auto& r=opaque_reference;
     if(recording||batching_uploads||!r.initialized||!inputs||count!=r.batch_count||!meshes||parts!=r.part_count||!objects||bytes!=r.actors.size()*128)
-        throw std::runtime_error("invalid immutable stock batches");
+        throw std::runtime_error(std::string("invalid immutable stock batches:")+(recording?" recording":"")+(batching_uploads?" uploads open":"")+(!r.initialized?" registry uninitialized":"")
+            +(count!=r.batch_count?" batches "+std::to_string(count)+"/"+std::to_string(r.batch_count):"")+(parts!=r.part_count?" parts "+std::to_string(parts)+"/"+std::to_string(r.part_count):"")
+            +(bytes!=r.actors.size()*128?" object bytes "+std::to_string(bytes)+"/"+std::to_string(r.actors.size()*128):"")+(!inputs||!meshes||!objects?" null input":""));
     std::vector<OpaqueStockState::Batch> batches;std::vector<OpaqueStockState::Geometry> geometry;std::unordered_set<uint64_t> geometry_ids;auto derived=r.part_inputs;std::vector<int> family_kind(r.family_inputs.size(),-1);
     if(gpu_resident_deltas)for(auto& actor:r.actors){int kind=bool(actor.flags&2);auto& prior=family_kind[actor.family];if(prior!=-1&&prior!=kind)throw std::runtime_error("stock family mixes OLD/NEW input contracts");prior=kind;}
     for(uint32_t b=0;b<count;b++){auto input=inputs[b];auto found=world.meshes.find(input.mesh);

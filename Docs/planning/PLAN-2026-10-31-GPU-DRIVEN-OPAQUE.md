@@ -89,6 +89,69 @@ lost to the CPU path. Details are in `PERFORMANCE_STRUCTURAL_PLAN.md`, from
 - **Result.** Vulkan players with SmoothFrames get 240 fps output that still
   moves at 60 Hz. This is a parity gap regardless of this plan.
 
+## Milestone 0 results (2026-10-31)
+
+**Restored.** The GPU path runs again on today's pipeline (split, two build
+stages, default placement, hybrid mode with every 10-12 treatment on).
+- **The in-game blocker.** World load failed with "invalid immutable stock
+  batches: uploads open". Under two build stages, `make_buffer` lazily opens
+  an upload batch on any allocation, and `publish_gpu_scene` allocates its
+  own buffers after checking that no batch is open. Publication now
+  suppresses the lazy batch, so its allocations upload immediately, as they
+  do on one build thread. The native message now names the failing
+  condition.
+- **`GpuSceneLiveTests` was not broken.** It needs `SE_VULKAN_GPU_OPAQUE_SCENE=1`
+  and the validation layer path; with both it passes 180 checks with zero
+  errors. The 10-27 failure was the environment.
+
+**Correctness.**
+- Core and synchronization validation in-game: zero errors.
+- **Not yet correct.** At the benchmark camera, against the CPU path:
+  - the grated floor panels beside the corridor show bright gaps (missing or
+    wrong geometry);
+  - the wall panel above and right of the door is darker. The 10-12 notes
+    recorded the same entrance-wall difference as unresolved.
+
+**Coverage** (orbit world): 6,307 GPU actors (4,497 NEW, 1,810 OLD), 339
+native-CPU, 40 managed fallbacks (22 mixed techniques, 17 explicit model-LOD
+fallbacks, 1 skeletal).
+
+**Cost** (CPU-detail pair KBC/KGC, same session):
+
+| | CPU path | GPU path |
+|---|---|---|
+| Present cadence | 6.14 ms | 13.53 ms |
+| Build thread | 5.84 ms | 13.17 ms |
+| `NativePassCommits` | 0.34 ms | 7.43 ms |
+| Actor traversal | 0.59 ms | 2.17 ms |
+| Native pass publish | 0.78 ms | 0.11 ms |
+| Build prologue | 0.72 ms | 0.17 ms |
+| Voxels and billboards | 0.46 ms | 0.13 ms |
+| GPU frame | 2.70 ms | 3.49 ms |
+| GPU cull compute | — | 0.36 ms (selection 0.115) |
+| Recording membership (recording thread) | — | 1.24 ms |
+
+(CPU-detail lanes run slower than plain ones; the plain KG run measured
+13.07 ms against about 4.6 ms for the CPU path.)
+
+**Why the GPU path paces at 13 ms.** Every GPU-scene export uses the plain
+`call` wrapper, which waits for any in-flight recording. The CPU pass path
+uses scene calls that run while an early-released recording continues. The
+pipeline census (KGP) shows `sevk_gpu_scene_updates` waiting on 4,110 of
+4,277 frames, 6.9 ms per frame. The build thread therefore runs after the
+previous frame's recording instead of alongside it.
+
+**What changes in the plan.**
+- **Milestone 1 is deferred.** Double-precision selection costs 0.115 ms
+  here, not 1.6 ms, and the whole cull 0.36 ms. Revisit only if the GPU
+  becomes the limit.
+- **Milestone 2 starts with the wait.** The GPU-scene commit, frame queue,
+  queries and visibility calls become scene calls. The recording snapshots
+  the GPU scene state it reads (slot inputs, recording membership) the way
+  `rec_view` does for the native pass, then releases early.
+- **Correctness comes first.** The floor and wall differences are fixed
+  before any speed work counts.
+
 ## Milestones
 
 Each milestone keeps the CPU path as the default and fallback until its gate

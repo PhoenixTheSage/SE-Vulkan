@@ -862,7 +862,10 @@ struct Renderer {uint32_t recipe_generation=1;
     bool batching_uploads{}; VkCommandBuffer batch_command{}; uint64_t upload_fence{};
     // Build stages (Plan 3 milestone 5): stage A uploads while stage B closes the batch, so an upload outside a batch
     // opens one (stage B's next EndUploads submits it) and BeginUploads inside one is a no-op.
-    bool lazy_batch_open()const{return build_stages&&!batching_uploads&&!recording;}
+    // Cold GPU-scene publication allocates its own buffers after checking that no batch is open; it suppresses the
+    // lazy batch so those allocations upload immediately, as they do on one build thread.
+    bool lazy_batch_suppressed{};
+    bool lazy_batch_open()const{return build_stages&&!batching_uploads&&!recording&&!lazy_batch_suppressed;}
     struct GpuMark { const char* name; uint64_t value; };
     std::array<GpuMark,8192> gpu_marks{}; uint32_t gpu_mark_head{}; bool gpu_checkpoints{}, gpu_fault{};
     void gpu_mark(VkCommandBuffer cmd,const char* name,uint64_t value){if(!gpu_checkpoints || !cmd)return;auto& m=gpu_marks[gpu_mark_head++%gpu_marks.size()];m={name,value};vkCmdSetCheckpointNV(cmd,&m);}
