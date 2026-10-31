@@ -1,0 +1,220 @@
+# Plan 4: GPU-driven opaque rendering (2026-10-31)
+
+## Goal
+
+Free CPU and GPU time so Vulkan can run well above 240 fps, not just match
+DX11 at the 240 Hz refresh.
+
+The user's direction (2026-10-31):
+- Going faster than the monitor is worthwhile. Tearing can be allowed, and
+  other players have higher refresh rates.
+- SE simulates at 60 UPS and caps rendering at 120 fps. SmoothFrames lifts the
+  cap and interpolates motion between sim ticks.
+- Building the same mechanism into Vulkan is welcome, so players don't need a
+  separate plugin.
+
+**The headline metric changes.** Present cadence at 240 Hz stays a gate, but
+it can't show gains above the refresh. The new metric is headroom: each
+frame chain's cost (build thread, recording thread, GPU) and the frame rate
+the slowest chain allows (1000 / its ms).
+
+## Why GPU-driven, and why now
+
+**Today's chains** (from the attribution doc and the latest recording laps):
+
+| Chain | Cost | Opaque-related share |
+|---|---|---|
+| Build thread | about 3.7 ms | Most of it: publication 1.3, `QueueWorld` 0.84, scene build and traversal about 1.6 |
+| Recording thread | about 3.0 ms of laps | About 1.8 ms: NEW main record 0.25, pass stream copy 0.18, pass and scene material prepare 0.26, sort and geometry prepare 0.17, spot shadows about 0.52, probe geometry 0.14, CSM and cascades 0.11, NEW main wait 0.11 |
+| GPU | about 2.5 ms | GBuffer about 0.95 |
+
+Every CPU cut so far moved the limit to the next chain. A GPU-driven opaque
+path removes work from the build and recording chains at the same time, and
+the GPU has about 1.7 ms of slack at 240 fps.
+
+**It also suits high frame rates.** At 240 fps, three of every four frames
+carry no new sim data. With interpolation (milestone 6), only the camera and
+a few local entities move between ticks. A GPU-resident scene then needs only
+a camera upload and a GPU cull on those frames: no traversal, no publication,
+no per-draw recording. The CPU path has to redo its culling every frame
+because the camera changes.
+
+## What already exists (10-11 to 10-12, paused)
+
+A full GPU-resident opaque path was built and validated, then paused when it
+lost to the CPU path. Details are in `PERFORMANCE_STRUCTURAL_PLAN.md`, from
+"Approved implementation continuation — 2026-10-12" to "Pause checkpoint".
+
+**Built:**
+- Hardware admission: multi-draw indirect, draw-indirect-count, descriptor
+  indexing, FP64 (`se_gpu_opaque.h`, `gpu_opaque_admission.h`).
+- A resident registry of families, parts and actors with delta commits
+  (`SE_VULKAN_GPU_OPAQUE_RESIDENT_DELTAS`, `_OWNED_INPUTS`).
+- GPU NEW/OLD LOD selectors, per-view membership, prefix and scatter, and
+  indirect arguments with GPU-written counts.
+- Fixed batch recording, view batches, role streams and sparse appearance.
+- A hybrid mode: GPU actors and native-CPU actors on disjoint sets.
+- GPU spot-shadow redraw predicates.
+- About 136,700 numerical checks, about 300 raster checks and 77 live
+  ownership checks, all with zero validation errors.
+
+**Why it lost (10-12, at about 10.7 ms frames):**
+- **GPU selection cost 1.6 ms.** It does world-scale culling and LOD math in
+  FP64, which a GeForce runs at 1/64 rate.
+- **The CPU work it should remove stayed:**
+  - native commits about 0.9 ms;
+  - actor traversal about 1.1 ms (fallbacks and root queries still ran);
+  - resident queue about 0.46 ms;
+  - recording membership about 0.64 ms.
+- Last matched pair: control 10.73 ms against GPU 11.06 ms.
+
+**Since then:**
+- The CPU path got much faster: native pass scene, cells, pipelining, the
+  split and two build stages.
+- The GPU path was not maintained. `GpuSceneLiveTests` failed on 10-27 with
+  "GPU scene stock shader admission completes".
+- With `SE_VULKAN_GPU_OPAQUE=1`, the native pass scene turns off unless
+  hybrid mode is set (`VulkanNativePassScene.cs`).
+
+## SmoothFrames under Vulkan
+
+- **Frame cap.** Works under Vulkan. It rewrites `MyRenderThread.m_waiter`'s
+  `m_targetFrequency`, which is backend-neutral.
+- **Interpolation.** Does not reach Vulkan. Its core is a Harmony patch on
+  `MyRender11.ProcessMessageQueue` and `MyRender11.SetupCameraMatrices`, plus
+  `MyManagers.PostponedUpdate` and the DX11 particle manager. Our renderer
+  never calls those.
+- **Its sim-side capture is backend-neutral:** `MyCamera.UploadViewMatrixToRender`,
+  `MyRenderProxy.AfterUpdate`, billboards, HUD markers, particles and lights.
+- **Result.** Vulkan players with SmoothFrames get 240 fps output that still
+  moves at 60 Hz. This is a parity gap regardless of this plan.
+
+## Milestones
+
+Each milestone keeps the CPU path as the default and fallback until its gate
+passes. Every gate includes:
+- core and synchronization validation;
+- the frozen-light lane;
+- the GPU suites;
+- matched Pertam orbit and interior runs.
+
+### 0. Restore and re-baseline (about 1 session)
+
+- Fix `GpuSceneLiveTests` and the stock shader admission against today's
+  shader suite.
+- Run the GPU path in hybrid mode under the split with two build stages.
+- Measure three numbers for three lanes (CPU-only, hybrid GPU, full GPU):
+  build ms, recording ms and GPU ms, plus the coverage counts (GPU actors,
+  native-CPU actors, managed fallbacks).
+- **Gate:** correct images and zero validation errors. No speed gate yet;
+  this is the honest starting point.
+
+### 1. Float selection with conservative bounds (about 1 session)
+
+- Replace FP64 culling and LOD math with camera-relative float. Positions
+  are subtracted in double on the CPU once per frame for the camera and per
+  commit for actors.
+- Expand frustum and LOD boundaries outward by a proven roundoff envelope.
+  Objects inside the envelope band fall back to an exact path: a small FP64
+  pass over only those candidates, or the CPU.
+- **Target:** GPU selection under 0.3 ms (from 1.6).
+- **Gate:** selection identical to FP64 over the numerical suite and a
+  recorded camera path, including far-orbit positions.
+
+### 2. Take GPU-owned actors off the CPU entirely (about 2 sessions)
+
+- GPU-owned actors skip build-thread traversal, LOD, view eligibility and
+  publication. Only pose and appearance deltas are committed, and only for
+  dirty actors.
+- Root and group visibility for GPU-owned actors comes from the GPU.
+- **The game's visible set (`VisibleObjects`).** The game uses it for LOD,
+  animation and grid decisions, and it already lags a frame. It comes from a
+  one-frame-late readback of GPU visibility bits into a host-cached mirror
+  (never a CPU read of write-combined memory).
+- **Recording.** One indirect-count draw per pipeline batch. The batch list
+  only changes when the topology does, so cache it as secondary command
+  buffers and re-record only when it changes.
+- **Target:** build-thread opaque work under 1.0 ms and recording opaque
+  work under 0.4 ms in full GPU mode.
+
+### 3. Shadows and probes on the GPU path (about 1–2 sessions)
+
+- Cascades, spot shadows and probe views use the same per-view GPU cull with
+  view masks. Keep the existing static-spot redraw predicates.
+- This removes spot shadow recording (about 0.5 ms) and probe geometry
+  (0.14 ms) from the recording chain.
+- **Gate:** cascade and spot depth images identical in the frozen-light
+  lane, and the full cascade and light update cycles.
+
+### 4. Coverage (about 1 session)
+
+- Measure which actors still fall back and why: skinned, deformed,
+  transparent mixed, highlight identities, light exclusions, admission
+  limits.
+- Move the largest group that can be moved. Skinned characters stay on the
+  CPU path unless measurement says otherwise.
+- **Target:** under 10% of visible opaque draws on fallback in Pertam orbit
+  and interior.
+
+### 5. Measure above the refresh (about 1 session)
+
+- Add an opt-in presentation lane for benchmarks: mailbox where the driver
+  offers it, otherwise tearing. Earlier immediate mode measured 28 ms;
+  re-check that before relying on it.
+- Report headroom fps alongside the 240 Hz cadence.
+- **Decision point:** promote GPU-driven opaque to the default if both hold:
+  - every chain beats the CPU path's slowest chain;
+  - images match.
+
+### 6. Built-in smooth frames (about 2 sessions, can run in parallel with 2–5)
+
+- **Frame cap.** When SmoothFrames isn't loaded, Vulkan sets the render
+  waiter's target frequency itself (default: monitor refresh, up to uncapped
+  with tearing).
+- **Interpolation.**
+  - Capture camera and local-entity poses at the same sim-side points
+    SmoothFrames uses.
+  - In `ApplyFrame`, re-pose the camera and those entities at
+    `lerp(prev, curr, alpha)`.
+  - Particles, billboards, attached lights and HUD markers follow the same
+    alpha.
+- **Coexistence.** If SmoothFrames is loaded, defer to its capture and
+  config. Offer it a Vulkan hook point (an Anomaly contract, below) rather
+  than duplicating its work.
+- **Gate:** motion smoothness at 240 fps, measured as distinct camera poses
+  per presented frame; no added input latency beyond one frame; HUD and
+  Rich HUD unaffected.
+
+## DX11 parity and Anomaly
+
+- **GPU-driven opaque is Vulkan-only.** DX11's frame belongs to Keen's
+  `MyRender11`. Replacing its opaque path would mean cloning Keen's
+  renderer, which Anomaly's rules forbid, and DX11 has no
+  draw-indirect-count. This is the documented DX11 limitation.
+- **Interpolation already exists on DX11** through SmoothFrames.
+- **Anomaly gaps to file** (`Docs/Extensibility.md`, `wiki/Framework-gaps.md`):
+  - **Frame interpolation contract.** A backend-neutral hook ("before frame
+    camera setup, with sim alpha") that SmoothFrames and Vulkan can share, so
+    interpolation isn't tied to `MyRender11.ProcessMessageQueue`.
+  - **GPU-culled visibility.** Guests that read the per-frame visible set or
+    expect per-draw callbacks for opaque actors will see GPU-owned actors
+    only through the readback mirror (one frame late). The contract has to
+    say so.
+
+## Risks
+
+- **Precision.** Float selection at planet scale is the reason FP64 was
+  used. The envelope plus exact fallback must be proven, not assumed.
+- **Visual regressions the unit tests missed.** On 10-12 the dark triangles
+  only showed in full-scene images. Every milestone needs full-scene image
+  checks.
+- **The GPU budget.** At 240 fps the GPU has about 1.7 ms of slack. Added
+  compute has to fit, and fewer draws should give some back.
+- **Maintenance.** Two opaque paths must both stay correct until one is
+  retired.
+
+## Effort
+
+About 8–10 sessions. Milestones 0–2 decide whether the approach works. If
+milestone 2 can't get the build thread's opaque work under about 1.0 ms,
+stop and re-plan.
