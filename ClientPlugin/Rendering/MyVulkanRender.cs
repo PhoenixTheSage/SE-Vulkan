@@ -463,6 +463,10 @@ public sealed class MyVulkanRender : IMyRender
             // Plan 3 census phases: 1 = stage A (scene), 2 = publication, 3 = queue and launch.
             backend.SetCensusPhase(1);
             capturing=launch.Captured=drawScene&&backend.WorldReady&&scene.BuildCaptureEnabled;if(capturing)backend.SetBuildCapture(true);
+            // A stage A that does not capture (no scene drawn: load, unload) issues its world clear and commits directly.
+            // Stage B(N) reports queued before its transparency, decal, highlight and exclusion queues, which go to the
+            // active submission; the clear would switch it under them ("invalid highlight draw N/0"). Wait for B(N).
+            else if(BuildStages)JoinLaunch();
             // Packet collection belongs to Build; the particle and decal output Apply produced joins it here.
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.BuildPrologue)){
             backend.CameraPosition = camera;

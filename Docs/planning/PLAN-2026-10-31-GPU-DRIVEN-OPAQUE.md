@@ -288,13 +288,20 @@ So it needs its own parity gate.
 - **`GpuSceneLiveTests --new-group-only` fails** ("NEW group parts remain
   contiguous in channel 0: managed"). The DLL from before milestone 2
   (`3837b6a`) fails identically, with the index exclusion off too.
-- **"invalid highlight draw N/0" at world unload.** It crashes about 4 s
-  after the results are written, on the CPU path too (three runs on 10-29
-  and 10-30). It now hits most GPU-path runs, because stage A runs alongside
-  stage B more often. Results are unaffected; files written at shutdown
-  (recording laps) are lost. Native validates highlight draws against
-  `world.current()`, which depends on the calling thread and on whether a
-  recording is running.
+- **Fixed: "invalid highlight draw N/0" at world unload** (2026-10-31).
+  - **Cause.** Stage B(N) reports its world queued before its
+    transparency, decal, highlight and exclusion queues, which go to the
+    active submission. A stage A(N+1) that doesn't capture (no scene drawn,
+    so at load and unload) issues its world clear directly. That switches
+    the active submission under stage B's highlight queue.
+  - **Evidence.** The native message now reports the state: "0/0 (thread
+    Vulkan frame launch, active 1 draws 0, recording -1, scene side 0…,
+    count 9)".
+  - **Fix.** A non-capturing stage A waits for stage B(N) to finish
+    (`JoinLaunch`). Only undrawn frames take this path.
+  - **Verified.** Five consecutive runs (two GPU with recording laps, two
+    GPU, one CPU) exit cleanly and write their shutdown files. Four of the
+    five GPU-path runs before the fix had crashed.
 
 ## Milestones
 
