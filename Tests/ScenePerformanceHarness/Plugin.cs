@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using ClientPlugin.Bootstrap;
@@ -360,9 +360,28 @@ public sealed partial class Plugin : IPlugin
             if(native!=null){ValidationFrames.Add(validation);presentationState=actualPresentation;NativeFrames.Add(performance);if(native.PacketProfilingEnabled)PacketFrames.Add(native.GetPacketPreparationStats());geometryStorage=((VulkanScene)SceneField.GetValue(__instance)).GeometryStorage;}
         }
     }
+    // -Uncapped (SE_VULKAN_HARNESS_UNCAPPED=1): SmoothFrames clamps its cap to the monitor refresh, so the render thread's
+    // frame limiter is set to 1000 Hz here every tick, the way SmoothFrames sets it. frame-rate-cap.json records the
+    // target it replaced.
+    static readonly bool Uncapped=Environment.GetEnvironmentVariable("SE_VULKAN_HARNESS_UNCAPPED")=="1";
+    static readonly FieldInfo LimiterField=AccessTools.Field(typeof(VRageRender.ExternalApp.MyRenderThread),"m_waiter");
+    static readonly FieldInfo LimiterTargetField=AccessTools.Field(typeof(VRage.Library.Utils.WaitForTargetFrameRate),"m_targetFrequency");
+    static float limiterReplaced=-1;
+    static void LiftFrameRateCap(){
+        var thread=MyRenderProxy.RenderThread;if(thread==null||LimiterField==null||LimiterTargetField==null)return;var waiter=LimiterField.GetValue(thread);if(waiter==null)return;
+        float target=(float)LimiterTargetField.GetValue(waiter);if(target==1000f)return;if(limiterReplaced<0)limiterReplaced=target;LimiterTargetField.SetValue(waiter,1000f);}
+    // SE_VULKAN_HARNESS_BURST=<n>: during sampling, a full-frame screenshot every update tick for n ticks (burst/NNN.png),
+    // to catch frames that alternate or drop geometry; screenshots are async, so ticks land on assorted frames.
+    static readonly int BurstFrames=int.TryParse(Environment.GetEnvironmentVariable("SE_VULKAN_HARNESS_BURST"),out int burst)&&burst>0?burst:0;
+    int burstTaken;
+    void CaptureBurst(){
+        if(burstTaken>=BurstFrames||!sampling)return;string folder=Path.Combine(reports,"burst");Directory.CreateDirectory(folder);
+        MyRenderProxy.TakeScreenshot(Vector2.One,Path.Combine(folder,burstTaken.ToString("D3")+".png"),debug:false,ignoreSprites:false,showNotification:false);burstTaken++;}
     public void Update()
     {
         if (finished) return;
+        if(Uncapped)LiftFrameRateCap();
+        if(BurstFrames>0)CaptureBurst();
         try
         {
             if (lifetime.Elapsed.TotalSeconds > (CameraSweepEnabled?600:240)) throw new Exception("Benchmark load/sample timeout.");
@@ -412,7 +431,9 @@ public sealed partial class Plugin : IPlugin
         if(gpuAdmissionSnapshot!=null)File.WriteAllText(Path.Combine(reports,"gpu-admission-audit.json"),JsonSerializer.Serialize(gpuAdmissionSnapshot,new JsonSerializerOptions{WriteIndented=true}));
         (double Cpu,double Interval)[] samples;lock(Gate) samples=Frames.ToArray();
         string census=WriteSampleCensus(samples.Length);
-        if(samples.Length<10) throw new Exception("Too few rendered frames ("+census+").");
+        if(Uncapped)File.WriteAllText(Path.Combine(reports,"frame-rate-cap.json"),JsonSerializer.Serialize(new{Uncapped=true,ReplacedTarget=limiterReplaced,Target=1000}));
+        // A stalled run keeps the renderer state that explains it (pipeline, frame and presentation status).
+        if(samples.Length<10){try{File.WriteAllText(Path.Combine(reports,"vulkan-status.txt"),VulkanDiagnostics.Report());}catch(Exception){}throw new Exception("Too few rendered frames ("+census+").");}
         var cpu=samples.Select(f=>f.Cpu).OrderBy(x=>x).ToArray();var interval=samples.Select(f=>f.Interval).OrderBy(x=>x).ToArray();
         double P(double[] a,double quantile)=>a[(int)Math.Min(a.Length-1,Math.Ceiling(a.Length*quantile)-1)];
         File.WriteAllText(Path.Combine(reports,"result.json"),JsonSerializer.Serialize(new{

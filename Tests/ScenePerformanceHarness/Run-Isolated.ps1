@@ -1,9 +1,14 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)][string]$World,
     [Parameter(Mandatory=$true)][string]$UserData,
     [Parameter(Mandatory=$true)][string]$Bin64,
     [Parameter(Mandatory=$true)][string]$Pulsar,
     [ValidateSet('Vulkan','Dx11')][string]$Backend='Vulkan',
+    # Exclusive fullscreen at the benchmark's 1920x1080 (switches the display mode): DX11 is otherwise held to the refresh
+    # by the desktop compositor even without vsync, while Vulkan presents in MAILBOX.
+    [switch]$Fullscreen,
+    # Lifts the render thread's frame limiter to 1000 Hz (SmoothFrames clamps its cap to the monitor refresh).
+    [switch]$Uncapped,
     [switch]$RichHudAudit,
     [string]$AnomalyProject,
     [string]$HudDlssProject,
@@ -271,7 +276,7 @@ Copy-Item -LiteralPath (Join-Path $sourceData 'SpaceEngineers.cfg') -Destination
 $configPath=Join-Path $data 'SpaceEngineers.cfg'
 $config=[xml](Get-Content -LiteralPath $configPath -Raw)
 foreach($item in $config.SelectNodes('//dictionary/item')){
-    $value=switch($item.Key){'ScreenWidth'{'1920'} 'ScreenHeight'{'1080'} 'VerticalSync'{'0'} 'ExperimentalMode'{'True'} 'EnableCloud'{'False'} default{$null}}
+    $value=switch($item.Key){'ScreenWidth'{'1920'} 'ScreenHeight'{'1080'} 'VerticalSync'{'0'} 'WindowMode'{if($Fullscreen){'2'}else{$null}} 'ExperimentalMode'{'True'} 'EnableCloud'{'False'} default{$null}}
     if($null -ne $value){$item.SelectSingleNode('Value/Value').InnerText=$value}
 }
 $sevkXmlSettings=[Xml.XmlWriterSettings]::new();$sevkXmlSettings.Indent=$false
@@ -327,6 +332,7 @@ $changes.SE_VULKAN_COMPARE_ASYNC_PRESENT=if($CompareAsyncPresent){'1'}else{'0'}
 $changes.SE_VULKAN_MATCH_FRAME=if($MatchFrame){if(!$SelectionAudit){throw 'MatchFrame requires paused SelectionAudit'};(Resolve-Path -LiteralPath $MatchFrame).Path}else{''}
 $changes.SE_VULKAN_BENCHMARK_FRAME=if($BenchmarkFrame){if($SelectionAudit -or $MatchFrame){throw 'BenchmarkFrame cannot be combined with paused SelectionAudit/MatchFrame'};(Resolve-Path -LiteralPath $BenchmarkFrame).Path}else{''}
 $changes.SE_VULKAN_PRESENT_SAMPLES='1'
+$changes.SE_VULKAN_HARNESS_UNCAPPED=if($Uncapped){'1'}else{'0'}
 $changes.SE_VULKAN_BULK_MODELS=if($BulkModels){'1'}else{'0'}
 $changes.SE_VULKAN_COMPARE_BULK_MODELS=if($CompareBulkModels){'1'}else{'0'}
 $changes.SE_VULKAN_MODEL_BATCHING=if($ModelBatching){'1'}else{'0'}
@@ -425,7 +431,7 @@ try{
     $child=Start-Process -FilePath $executable -ArgumentList $arguments -WorkingDirectory $portable -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $runRoot 'stdout.txt') -RedirectStandardError (Join-Path $runRoot 'stderr.txt')
 }
 finally{foreach($key in $previous.Keys){[Environment]::SetEnvironmentVariable($key,$previous[$key],'Process')}}
-$manifest=[pscustomobject]@{RunRoot=$runRoot;ProcessId=$child.Id;SourceWorld=$sourceWorld;Backend=$Backend;Width=1920;Height=1080;Validation=[bool]$Validation;FrameRateCap=1000;Runtime='net10.0';PluginSha256=(Get-FileHash -LiteralPath (Join-Path $localVulkan 'plugin.dll')).Hash;NativeSha256=(Get-FileHash -LiteralPath (Join-Path $localVulkan 'Assets/Native/win-x64/se_vulkan_native.dll')).Hash;SourceCheckpointSha256=(Get-FileHash -LiteralPath (Join-Path $sourceWorld 'Sandbox.sbc')).Hash}
+$manifest=[pscustomobject]@{RunRoot=$runRoot;ProcessId=$child.Id;Fullscreen=[bool]$Fullscreen;Uncapped=[bool]$Uncapped;SourceWorld=$sourceWorld;Backend=$Backend;Width=1920;Height=1080;Validation=[bool]$Validation;FrameRateCap=1000;Runtime='net10.0';PluginSha256=(Get-FileHash -LiteralPath (Join-Path $localVulkan 'plugin.dll')).Hash;NativeSha256=(Get-FileHash -LiteralPath (Join-Path $localVulkan 'Assets/Native/win-x64/se_vulkan_native.dll')).Hash;SourceCheckpointSha256=(Get-FileHash -LiteralPath (Join-Path $sourceWorld 'Sandbox.sbc')).Hash}
 $manifest | Add-Member -NotePropertyName StockShadowScheduleRequested -NotePropertyValue ([bool]$StockShadowSchedule)
 $manifest | Add-Member -NotePropertyName GpuOpaqueDeviceLocalRequested -NotePropertyValue ([bool]$GpuOpaqueDeviceLocal)
 $manifest | Add-Member -NotePropertyName GpuOpaqueViewBatchesRequested -NotePropertyValue ([bool]$GpuOpaqueViewBatches)

@@ -375,6 +375,62 @@ runs. The recording thread totals 5.09 ms. Its largest items now:
   mode (35 checks) and native mode (37 checks) pass with runs on and off;
   only the managed mode fails, as it already did.
 
+## Uncapped measurement (2026-11-01)
+
+**What the benchmark has really been measuring.**
+- **Vulkan** presents in MAILBOX (`presentation-state.json` Mode 1), so its
+  present never waits for the refresh.
+- **Every run** had SE's render-thread frame limiter at about 239 fps.
+  SmoothFrames clamps its cap to the monitor refresh (`MaxFrameRateCap =
+  DetectMonitorRefresh()`), so the harness's `FrameRateCap=1000` became 239.
+  The Vulkan CPU path (4.31–4.33 ms, limiter wait 0.18–0.26 ms) sat on that
+  cap; the GPU path (5.9 ms) did not.
+- **DX11 windowed** is also held to the refresh by the desktop compositor.
+  Its `Present` waits 1.50–1.55 ms a frame.
+
+**New harness switches.**
+- `-Fullscreen`: exclusive fullscreen at 1920×1080 (SE `WindowMode=2`).
+- `-Uncapped`: sets the render thread's limiter to 1000 Hz every tick;
+  `frame-rate-cap.json` records the replaced target (240).
+- `SE_VULKAN_HARNESS_BURST=<n>`: screenshot bursts during sampling. The
+  renderer keeps one capture at a time, so only about 1 in 15 lands.
+- A run with too few frames now keeps `vulkan-status.txt`.
+
+**Results** (present cadence; `nvidia-smi` sampled GPU utilisation every
+200 ms in the second batch):
+
+| | DX11 | Vulkan CPU path | Vulkan GPU path |
+|---|---|---|---|
+| Windowed, limiter at refresh (earlier) | 4.23 | 4.31–4.33 | 5.87–5.95 |
+| Fullscreen, limiter at refresh | 4.49 (limiter wait 1.08) | 5.36 | — |
+| Fullscreen, uncapped | 4.68; 5.57 | 4.92; 4.99 | 6.69 |
+| Windowed, uncapped | 5.22 | 6.70 | — |
+| GPU busy (fullscreen and windowed, uncapped) | 54–56% | 55–61% | 49% |
+
+**Conclusions.**
+- **Nobody is GPU-bound.** The GPU is about half busy in every
+  configuration. DX11's present still blocks for 1.8–2.0 ms in exclusive
+  fullscreen without vsync or limiter, so that block isn't a full GPU
+  queue either.
+- **Lifting the limiter made every configuration slower, both
+  renderers.** The likeliest cause is CPU contention: the render thread
+  no longer yields between frames. On this machine, SE runs fastest with
+  the limiter at the refresh. Not yet isolated.
+- **Fullscreen was slower than windowed for Vulkan** (4.92–5.36 against
+  4.31–4.33). Not explained.
+- **There is no uncapped headroom to win here for either renderer yet.**
+  The comparison that holds is the capped windowed one (DX11 4.23, Vulkan
+  CPU path 4.31–4.33, GPU path 5.9). The GPU path's goal stays reaching the
+  refresh with less CPU and GPU time.
+
+**Open: one fullscreen GPU-path run stalled.** `Vulkan-9ed74183…`
+rendered no frame in its 30 s window (census: 0 sampler calls, no
+screenshot). The user watched it alternate between two images. That fits
+the render thread re-presenting the two slots' last output images while
+frame building had stopped. No GPU-scene wait reported, and the log is
+clean. Two fullscreen GPU runs since rendered normally. Stalled runs now
+keep `vulkan-status.txt` for the next occurrence.
+
 ## Milestones
 
 Each milestone keeps the CPU path as the default and fallback until its gate
