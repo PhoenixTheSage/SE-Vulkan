@@ -4,9 +4,10 @@
     [Parameter(Mandatory=$true)][string]$Bin64,
     [Parameter(Mandatory=$true)][string]$Pulsar,
     [ValidateSet('Vulkan','Dx11')][string]$Backend='Vulkan',
-    # Exclusive fullscreen at the benchmark's 1920x1080 (switches the display mode): DX11 is otherwise held to the refresh
-    # by the desktop compositor even without vsync, while Vulkan presents in MAILBOX.
+    # Ordinary fullscreen at 1920x1080 (switches the display mode).
     [switch]$Fullscreen,
+    # Vulkan's separate exclusive mode; also selects fullscreen in the game config.
+    [switch]$ExclusiveFullscreen,
     # Lifts the render thread's frame limiter to 1000 Hz (SmoothFrames clamps its cap to the monitor refresh).
     [switch]$Uncapped,
     [switch]$RichHudAudit,
@@ -113,6 +114,7 @@
     [switch]$PassThru
 )
 $ErrorActionPreference='Stop'
+if($ExclusiveFullscreen){if($Backend -ne 'Vulkan'){throw 'ExclusiveFullscreen requires Vulkan'};$Fullscreen=$true}
 if(($GpuOpaqueViewBatches -or $GpuOpaqueHybrid -or $GpuOpaqueRoleStreams -or $GpuOpaqueSparseAppearance -or $GpuOpaqueResidentDeltas) -and !$GpuOpaqueScene){throw 'GPU path improvements require GpuOpaqueScene'}
 if($GpuOpaqueOwnedInputs -and !$GpuOpaqueResidentDeltas){throw 'Owned GPU inputs require GpuOpaqueResidentDeltas'}
 if($GpuOpaqueViewMasks -and !$GpuOpaqueScene){throw 'GPU view masks require GpuOpaqueScene'}
@@ -287,7 +289,7 @@ if(Test-Path -LiteralPath (Join-Path $sourceData 'SmoothFrames.cfg')){
     $cap.DocumentElement.FrameRateCap='1000';$cap.Save((Join-Path $data 'SmoothFrames.cfg'))
 }
 @"
-<VulkanConfig><RequestedBackend>$Backend</RequestedBackend><EnableValidation>$($Validation.IsPresent.ToString().ToLowerInvariant())</EnableValidation><RecoveryRequired>false</RecoveryRequired><RetryGeneration>0</RetryGeneration><LastFailure /></VulkanConfig>
+<VulkanConfig><RequestedBackend>$Backend</RequestedBackend><EnableValidation>$($Validation.IsPresent.ToString().ToLowerInvariant())</EnableValidation><ExclusiveFullscreen>$($ExclusiveFullscreen.IsPresent.ToString().ToLowerInvariant())</ExclusiveFullscreen><RecoveryRequired>false</RecoveryRequired><RetryGeneration>0</RetryGeneration><LastFailure /></VulkanConfig>
 "@ | Set-Content -LiteralPath (Join-Path $data 'Storage/Vulkan.cfg') -Encoding utf8
 [IO.File]::WriteAllText((Join-Path $data '.se-vulkan-performance'),$data)
 $profile=[xml](Get-Content -LiteralPath (Join-Path $sourcePulsar 'Interim/Profiles/Current.xml') -Raw)
@@ -302,6 +304,7 @@ if($RichHudAudit -and $HudDlssProject){$node=$profile.CreateElement('string');$n
 $profilePath=Join-Path $edition 'Profiles/ScenePerformance.xml';$profile.Save($profilePath)
 $arguments='-bin64 "{0}" -profile "{1}" -appdata "{2}" -noUpdate -noSplash -noDiscord -noStats -noPrompt -stableLogs' -f $Bin64,$profilePath,$data
 $changes=@{SE_VULKAN_PERF_DATA=$data;SE_VULKAN_PERF_BACKEND=$Backend;SE_VULKAN_ASSET_DIR=(Join-Path $localVulkan 'Assets')}
+$changes.SE_VULKAN_PERF_EXCLUSIVE=if($ExclusiveFullscreen){'1'}else{'0'}
 $changes.SE_VULKAN_HUD_REQUIRE_NGX=if($RichHudAudit -and $HudDlssProject){'1'}else{'0'}
 $changes.SE_VULKAN_HUD_AUDIT=if($RichHudAudit){'1'}else{'0'}
 $changes.SE_VULKAN_COMPARE_BATCHING=if($CompareRigidBatching){'1'}else{'0'}
@@ -433,6 +436,7 @@ try{
 finally{foreach($key in $previous.Keys){[Environment]::SetEnvironmentVariable($key,$previous[$key],'Process')}}
 $manifest=[pscustomobject]@{RunRoot=$runRoot;ProcessId=$child.Id;Fullscreen=[bool]$Fullscreen;Uncapped=[bool]$Uncapped;SourceWorld=$sourceWorld;Backend=$Backend;Width=1920;Height=1080;Validation=[bool]$Validation;FrameRateCap=1000;Runtime='net10.0';PluginSha256=(Get-FileHash -LiteralPath (Join-Path $localVulkan 'plugin.dll')).Hash;NativeSha256=(Get-FileHash -LiteralPath (Join-Path $localVulkan 'Assets/Native/win-x64/se_vulkan_native.dll')).Hash;SourceCheckpointSha256=(Get-FileHash -LiteralPath (Join-Path $sourceWorld 'Sandbox.sbc')).Hash}
 $manifest | Add-Member -NotePropertyName StockShadowScheduleRequested -NotePropertyValue ([bool]$StockShadowSchedule)
+$manifest | Add-Member -NotePropertyName ExclusiveFullscreenRequested -NotePropertyValue ([bool]$ExclusiveFullscreen)
 $manifest | Add-Member -NotePropertyName GpuOpaqueDeviceLocalRequested -NotePropertyValue ([bool]$GpuOpaqueDeviceLocal)
 $manifest | Add-Member -NotePropertyName GpuOpaqueViewBatchesRequested -NotePropertyValue ([bool]$GpuOpaqueViewBatches)
 $manifest | Add-Member -NotePropertyName GpuOpaqueHybridRequested -NotePropertyValue ([bool]$GpuOpaqueHybrid)

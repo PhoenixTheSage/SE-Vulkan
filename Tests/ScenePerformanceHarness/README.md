@@ -8,6 +8,13 @@ Frames cap to 1000. Custom source registrations are cleared only in the copy so
 they cannot override the Release DLL. Shader/native assets are copied with the
 plugin. `launch.json` records the DLL/native/source checkpoint hashes.
 
+`-Fullscreen` selects ordinary fullscreen. `-ExclusiveFullscreen` also writes
+Vulkan's separate exclusive-mode setting and requires Vulkan. Exclusive runs
+write `exclusive-fullscreen.json` with actual native acquisition samples and
+fail if exclusive access was not held throughout those observations. A requested
+mode that fell back is not exclusive-mode acceptance. Earlier runs that used
+only `-Fullscreen` did not enable Vulkan's exclusive option.
+
 The source save and source user profile are never loaded or edited. Checkpoints
 are copied without their Backup directory; private autosave and cloud storage
 are disabled. Linked source files are rejected. The script refuses to launch

@@ -389,7 +389,10 @@ runs. The recording thread totals 5.09 ms. Its largest items now:
   Its `Present` waits 1.50–1.55 ms a frame.
 
 **New harness switches.**
-- `-Fullscreen`: exclusive fullscreen at 1920×1080 (SE `WindowMode=2`).
+- `-Fullscreen`: ordinary fullscreen at 1920×1080 (SE `WindowMode=2`).
+  Correction: this did not set Vulkan's separate `ExclusiveFullscreen` option.
+  Use `-ExclusiveFullscreen` and verify `exclusive-fullscreen.json` for native
+  exclusive-mode acceptance; a display-mode fallback does not qualify.
 - `-Uncapped`: sets the render thread's limiter to 1000 Hz every tick;
   `frame-rate-cap.json` records the replaced target (240).
 - `SE_VULKAN_HARNESS_BURST=<n>`: screenshot bursts during sampling. The
@@ -430,6 +433,28 @@ the render thread re-presenting the two slots' last output images while
 frame building had stopped. No GPU-scene wait reported, and the log is
 clean. Two fullscreen GPU runs since rendered normally. Stalled runs now
 keep `vulkan-status.txt` for the next occurrence.
+
+## Fullscreen flash investigation (2026-11-01)
+
+Correctness work takes precedence over further recording cuts. Two defects
+are fixed: cold publication/clear discarded a queued GPU frame before
+BeginFrame, and unchanged conditional spotlight groups scattered into reference
+space that stage 7 had removed before the scan. The latter silently corrupted
+other views' geometry even with valid snapshots and no validation errors.
+
+The old shader deterministically fails the retained-spotlight reference canary;
+the guarded shader passes 25 focused checks with default and live policies.
+The queued-frame regression passes 26 checks; the live GPU scene suite passes
+180 and all three native opaque CTests pass. Final 1080p fullscreen/windowed
+Pertam runs complete 4,197/3,987 sampled frames with geometry intact in every
+saved live capture and no GPU-frame-loss diagnostics. See `Docs/Validation.md`
+for exact artifacts, hashes and the pre-existing broader raster-suite failure.
+
+The earlier benchmark's fullscreen switch did not request Vulkan's separate
+exclusive mode. Three explicit exclusive attempts fell back, so those runs do
+not accept native exclusive presentation. The sustained zero-sample stall was
+not independently reproduced. Do not describe the old capped/uncapped
+fullscreen measurements as proven native-exclusive results.
 
 ## Milestones
 

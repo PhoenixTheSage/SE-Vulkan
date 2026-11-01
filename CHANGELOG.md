@@ -1,6 +1,16 @@
 # SE-Vulkan changelog
 
-## Unreleased
+## 1.6.0 — 2026-11-01
+
+- Add opt-in frame building and two-stage build/launch pipelines with latched actor, light, environment, voxel and postprocess state, rotating snapshots, native frame gates and thread-placement controls.
+- Add GPU-driven opaque ownership under the staged pipeline, parallel recording preparation, retained stock bindings and consecutive indirect draw runs; retain explicit CPU fallback and admission checks.
+- Protect queued GPU scene inputs during topology publication and scene clearing, and consume them for both synchronous and worker recording. Add missed-frame, discarded-publication and overwritten-latch diagnostics.
+- Stop retained conditional spotlight groups from scattering into unallocated reference spans; add deterministic staged-publication, scene-clear, pixel and reference-canary regressions.
+- Add a shared native job pool and ordered parallel emission; reduce actor traversal, texture lookup, packet allocation and recording work through stable main order, resident reads, caches and incremental bounds.
+- Overlap publication with native recording, decouple presentation, add opt-in async submission, enable GPU light tiles and early cell/parallel recipe paths, and scissor spotlight passes. Preserve low-latency presentation and guest compute light-tile barriers.
+- Repair present-copy synchronization, OUT_OF_DATE recovery, world-unload highlight draws and texture-handle lifetime after texture destruction or unload.
+- Restore celestial view/probe scale and twinkle clock inputs for Anomaly packs.
+- Extend the performance harness with fullscreen, uncapped, frame census and burst-capture controls; record profiling, image comparisons and remaining acceptance limits in the validation and planning docs.
 
 - Replace the sticky startup-recovery latch: unclean exits are attributed to the renderer or the game, the main menu prompts after the second counted exit, DX11 fallback happens only for renderer-attributed crashes, and driver/plugin changes release a fallback automatically.
 - Fix the crash when SE-FRS turns FSR on: FidelityFX now gets a device-proc resolver that maps KHR aliases (`vkGetBufferMemoryRequirements2KHR`) to their core 1.4 entry points and stubs the debug-utils and AMD marker calls the device never enables. `ffxQuery`/`ffxDispatch` now get the context's address, the create descriptor no longer pads before `maxRenderSize` (FFX was building zero-width resources), and depth is passed as a sampled color image rather than a depth target.

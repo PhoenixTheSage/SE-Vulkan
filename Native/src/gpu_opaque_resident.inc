@@ -18,6 +18,10 @@ gpu_scene::Actor gpu_scene_actor_input(const SevkGpuSceneActor& input,const Sevk
 }
 void publish_gpu_scene(uint32_t views,uint32_t references,uint32_t draws){
     critical_profile::Scope profile(critical_profile::PassPublish,true);
+    // QueueWorld has latched the previous submission before BeginFrame opens it.
+    // Waiting only for a recording misses that interval and destroys its queued
+    // GPU inputs. Keep the old topology until the launch consumes the frame.
+    wait_scene_idle();
     // Two build stages: stage A's lazily opened upload batch is submitted here, before the topology binds its meshes.
     if(build_stages&&batching_uploads&&!frame_open())end_uploads();
     if(frame_open()||batching_uploads||!opaque_caps.enabled)throw std::runtime_error("resident publication outside owner epoch");auto& resident=gpu_resident;

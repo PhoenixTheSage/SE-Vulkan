@@ -776,6 +776,7 @@ struct Renderer {uint32_t recipe_generation=1;
     template<class Ready> void gpu_scene_wait(const char* what,Ready ready){
         while(!record_cv.wait_for(*scene_lock,std::chrono::seconds(2),ready)){std::fprintf(stderr,"GPU-scene %s wait: next_ready=%d recording=%d owner_is_me=%d pending=%d running=%d released=%d build_stages=%d\n",what,
             int(opaque_reference.next_ready),int(recording),int(frame_owner==std::this_thread::get_id()),int(record_pending),int(record_running),int(record_released.load()),int(build_stages));std::fflush(stderr);}}
+    uint64_t gpu_frames_missed{},gpu_frames_applied{},gpu_frames_latched{};
     bool own_frame_open()const{return recording&&frame_owner==std::this_thread::get_id()&&!overlap_from_caller();}
     // A scene call that replaces tables an open, pending or recording frame uses (GPU-scene rebind or publication,
     // rare): wait until there is none. Frame-closing calls notify record_cv while gate_waiters is set.
@@ -1084,7 +1085,6 @@ struct Renderer {uint32_t recipe_generation=1;
             auto entered=std::chrono::steady_clock::now();launch_lap_us[0]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(entered-tl_launch).count());
             std::unique_lock lock(api_mutex);record_pending=false;record_running=true;launch_lap_us[1]+=tl_since(entered);
             tl_recording_thread=true;sevk_jobs::tl_pacing_stage=true;record_lock=&lock;if(early_release)world.recording_submission=int32_t(world.active_submission);
-            if(build_stages)apply_opaque_reference_queued(world.active_submission);
             try{end_frame();tl_post(3);++pipelined_frames;if(checked&&(shadow_image_mask&((1u<<shadow_count)-1))!=predicted)++pipelined_mask_mismatches;}
             catch(const std::exception& e){record_error=e.what();record_failed=true;}catch(...){record_error="unknown native Vulkan error";record_failed=true;}
             // std::mutex is not fair: the next frame's back-to-back scene calls could keep winning api_mutex while the
@@ -2257,6 +2257,9 @@ struct Renderer {uint32_t recipe_generation=1;
         critical_profile::Finish critical_finish{critical};
         critical_profile::Scope critical_record(critical_profile::RecordOwner,true);
         if (!recording) { if (suspended) return 1; throw std::runtime_error("end_frame without begin_frame"); }
+        // Both synchronous and worker recording consume the submission's GPU
+        // inputs before releasing the scene lock; screenshots can use either.
+        if(build_stages&&world.current().queued)apply_opaque_reference_queued(world.active_submission);
         {auto settle=std::chrono::steady_clock::now();settle_cells();auto settled=std::chrono::steady_clock::now();release_recording_lock();
             if(tl_pipelined){launch_lap_us[2]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(settled-settle).count());launch_lap_us[3]+=tl_since(settled);}
             record_count("off-lap settle cells us",std::chrono::duration<double,std::micro>(settled-settle).count());record_count("off-lap lock release us",std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-settled).count());}

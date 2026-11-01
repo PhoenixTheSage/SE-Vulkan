@@ -1,5 +1,6 @@
 using System.Runtime.Loader;
 using System.Runtime.InteropServices;
+using System.Reflection;
 using ClientPlugin.Rendering;
 using ClientPlugin.Rendering.Interop;
 using ClientPlugin.Rendering.Shaders;
@@ -8,9 +9,34 @@ using VRageMath;
 using VRageRender;
 using VRage.Import;
 partial class Program {
-static int Main(string[] args){string bin=Path.GetFullPath(args.Length>0?args[0]:"T:/SteamLibrary/steamapps/common/SpaceEngineers/Bin64");AssemblyLoadContext.Default.Resolving+=(_,n)=>{string file=Path.Combine(bin,n.Name+".dll");return File.Exists(file)?AssemblyLoadContext.Default.LoadFromAssemblyPath(file):null;};return Run(bin,args.Contains("--placeholder-only"));}
+// This fixture publishes one actor, one batch, three views, twelve references and four draws per view.
+// Read the native verification ABI so overlapping GPU writes cannot pass solely because their pixels coincide.
+static unsafe void CheckRetainedSpotReferences(NativeBackend backend, Action<bool,string> check)
+{
+    const int views=3, references=12, draws=4*views;
+    var symbol=(IntPtr)typeof(NativeBackend).GetMethod("GetSymbol",BindingFlags.NonPublic|BindingFlags.Static)!
+        .Invoke(null,new object[]{"sevk_opaque_reference_readback"})!;
+    var context=(IntPtr)typeof(NativeBackend).GetField("context",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(backend)!;
+    var read=(delegate* unmanaged[Cdecl]<IntPtr,NativeGpuOpaqueSelector*,uint,byte*,uint,byte*,uint,byte*,byte*,uint,uint*,uint,uint*,int>)symbol;
+    NativeGpuOpaqueSelector selector;
+    byte* selections=stackalloc byte[views*16];
+    byte* rows=stackalloc byte[references*80];
+    byte* args=stackalloc byte[draws*20];
+    byte* records=stackalloc byte[draws*16];
+    uint* counts=stackalloc uint[views];
+    uint errors=0;
+    check(read(context,&selector,1,selections,views,rows,references,args,records,draws,counts,views,&errors)==0,
+        "read completed main and retained spotlight references");
+    check(errors==0&&counts[0]==1&&counts[1]==0&&counts[2]==0,
+        "only the main view allocated a draw for the unchanged caster");
+    // Each reference begins with actor, packed view, material. This slot is fresh after publication.
+    check(((uint*)rows)[1]==0&&((uint*)rows)[2]==10,"the allocated reference belongs to the main material");
+    check(new ReadOnlySpan<byte>(rows+80,(references-1)*80).IndexOfAnyExcept((byte)0)<0,
+        "a retained spotlight leaves every unallocated reference untouched");
+}
+static int Main(string[] args){string bin=Path.GetFullPath(args.Length>0?args[0]:"T:/SteamLibrary/steamapps/common/SpaceEngineers/Bin64");AssemblyLoadContext.Default.Resolving+=(_,n)=>{string file=Path.Combine(bin,n.Name+".dll");return File.Exists(file)?AssemblyLoadContext.Default.LoadFromAssemblyPath(file):null;};return Run(bin,args.Contains("--placeholder-only"),args.Contains("--conditional-spot-only"));}
 [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-static unsafe int Run(string bin,bool placeholderOnly){int checks=0;void Check(bool value,string label){if(!value)throw new Exception(label);checks++;Console.WriteLine("PASS "+label);}
+static unsafe int Run(string bin,bool placeholderOnly,bool conditionalSpotOnly){int checks=0;void Check(bool value,string label){if(!value)throw new Exception(label);checks++;Console.WriteLine("PASS "+label);}
  Environment.SetEnvironmentVariable("SE_VULKAN_GPU_OPAQUE","1");
  Check(Marshal.SizeOf<NativeGpuOpaqueActor>()==320&&Marshal.SizeOf<NativeGpuOpaquePart>()==196&&Marshal.SizeOf<NativeGpuOpaqueFamily>()==80&&Marshal.SizeOf<NativeGpuOpaqueView>()==296&&Marshal.SizeOf<NativeGpuOpaqueFrame>()==80,"indexed resident ABI");
  string content=Path.GetFullPath(Path.Combine(bin,"../Content")),output=Path.GetFullPath("TestResults/GpuOpaqueStockRaster");Directory.CreateDirectory(output);MyFileSystem.Init(content,output);
@@ -41,6 +67,39 @@ static unsafe int Run(string bin,bool placeholderOnly){int checks=0;void Check(b
  var gpuViews=new[]{new NativeGpuOpaqueView{Flags=1},new NativeGpuOpaqueView{Flags=1|2,Id=1}};var p=NativeBackend.MatrixValues(projection);var q=NativeBackend.MatrixValues(shadow);for(int i=0;i<16;i++){gpuViews[0].Projection[i]=p[i];gpuViews[1].Projection[i]=q[i];}
  for(uint epoch=1;epoch<=2;epoch++){var gpuFrame=new NativeGpuOpaqueFrame{Epoch=epoch,Coefficient=1,DistanceMult=1,Flags=3,SmoothCameraDistance=100,MaximumSeconds=1,MinimumSeconds=.25f};backend.QueueGpuOpaqueFrame(ref gpuFrame,gpuViews);var actual=Draw();File.WriteAllBytes(Path.Combine(output,"new-"+epoch+".rgba"),actual);Check(actual.SequenceEqual(reference),"GPU-selected NEW stock color matches original stream pixels slot "+epoch);Check(backend.ReadbackGbufferColor(64,64).SequenceEqual(referenceGbuffer),"NEW canonical placeholder preserves exact material RGB and pipeline marker despite incompatible actor input slot "+epoch);Check(backend.ReadbackShadow(0,256).SequenceEqual(referenceDepth),"GPU-selected NEW stock depth matches original silhouette slot "+epoch);}
  if(placeholderOnly){var stats=backend.GetStats();Check(stats.ValidationEnabled!=0&&stats.ValidationErrors==0,"canonical NEW placeholder has zero core/synchronization errors");File.WriteAllText(Path.Combine(output,"result-placeholder.json"),System.Text.Json.JsonSerializer.Serialize(new{Checks=checks,stats.ValidationEnabled,stats.ValidationErrors,Scope="Canonical newer-pipeline placeholder versus incompatible first-actor data; exact material RGB/marker and HDR/depth on both frame slots; world background clear. Excludes later resident pose/appearance cases."},new System.Text.Json.JsonSerializerOptions{WriteIndented=true}));return 0;}
+ (NativeGpuOpaqueView[] Views,float[] Depth) CheckRetainedSpot(byte[] mainGbuffer){
+     // GPU static signatures must retain exactly the prior depth image when
+     // neither geometry membership nor LOD/appearance changed.
+     backend.SetLights(new[]{new NativeLight{PositionRange=new float[]{0,0,10,30},ColorIntensity=new float[]{1,1,1,1},DirectionCone=new float[]{0,0,-1,.8f},Flags=1}});backend.SetSpots(256,new[]{new NativeSpot{Light=0,Flags=1,Cookie=0,Projection=NativeBackend.MatrixValues(shadow)}});
+     var spotViews=new NativeGpuOpaqueView[3];spotViews[0]=gpuViews[0];spotViews[1]=new NativeGpuOpaqueView{Flags=1|2|16|128,Id=15,Light=0};spotViews[2]=new NativeGpuOpaqueView{Flags=1|2|8|128,Id=16,Light=0};backend.PublishGpuScene(3,12,4);
+     float[] retainedSpot=null;
+     for(uint e=900;e<903;e++){
+         backend.SetSpotRedraw(e==900?1u:0u,0);
+         var gf=new NativeGpuOpaqueFrame{Epoch=e,Coefficient=1,DistanceMult=1,Flags=3,SmoothCameraDistance=100,MaximumSeconds=1,MinimumSeconds=.25f};
+         backend.QueueGpuSceneFrame(ref gf,spotViews);Draw();
+         var depth=backend.ReadbackSpot(0,256);
+         if(retainedSpot==null){Check(depth.Any(v=>v<1),"static spotlight control contains caster geometry");retainedSpot=depth;}
+         else {
+             Check(depth.SequenceEqual(retainedSpot),"unchanged GPU static spotlight retains exact depth slot "+e);
+             Check(backend.ReadbackGbufferColor(64,64).SequenceEqual(mainGbuffer),"retained spotlight preserves main-view material pixels slot "+e);
+         }
+         if(e==901)CheckRetainedSpotReferences(backend,Check);
+     }
+     return (spotViews,retainedSpot);
+ }
+ if(conditionalSpotOnly){
+     var casterModel=backend.RegisterGpuModel(new[]{new NativePassPart{Mesh=1,Color=10,Normal=11,Extensions=12,First=0,Count=3,Material=10,Flags=2}},false);
+     var caster=new NativeGpuSceneActor{Family=backend.RegisterGpuFamily(Array.Empty<float>(),new[]{casterModel}),SourceCount=1,Input=gpuActor,Selector=new NativeGpuOpaqueSelector{Other=-1}};
+     caster.Input.Colour[3]=1;
+     for(int i=0;i<128;i++)caster.Object[i]=placeholder[i];
+     backend.RegisterGpuActor(ref caster,Array.Empty<NativeGpuOpaqueAppearance>());
+     backend.BeginPacketCollection();
+     CheckRetainedSpot(referenceGbuffer);
+     var stats=backend.GetStats();
+     Check(stats.ValidationEnabled!=0&&stats.ValidationErrors==0,"retained spotlight has zero Vulkan validation errors");
+     Console.WriteLine(checks+" conditional spotlight checks passed");
+     return 0;
+ }
  // Default back-face state needs a stock-facing control, independently of
  // the opposite depth winding. The double-sided case above covers both paths.
  backend.UploadWorldMesh(1,new[]{V(-1,-1),V(1,-1),V(0,1)},new uint[]{2,1,0});backend.InitializeGpuOpaqueReference(new[]{gpuActor},new[]{gpuFamily},new[]{part},2,new float[]{-1,-1,0,1,-1,0,0,1,0},new uint[]{2,1,0},Array.Empty<byte>(),textures,4,8);
@@ -114,11 +173,7 @@ static unsafe int Run(string bin,bool placeholderOnly){int checks=0;void Check(b
  registeredActor.Input.Translation[1]=.35;registeredActor.Input.Minimum[1]=-.65;registeredActor.Input.Maximum[1]=1.35;registryControlActor.Handle=0;registryControlActor.Translation[1]=.35;registryControlActor.Bounds[1]=-.65;registryControlActor.Bounds[4]=1.35;registryControlActor.Handle=backend.RegisterPassActor(ref registryControlActor,Array.Empty<NativePassAppearance>());
  backend.BeginPacketCollection();backend.PreparePassFrame(ref frame,views,views.Length);backend.PublishPassFrame(Array.Empty<NativePassQueryResult>(),0);var movedRegisteredReference=Draw();var movedRegisteredGbuffer=backend.ReadbackGbufferColor(64,64);var movedRegisteredDepth=backend.ReadbackShadow(0,256);backend.RemovePassResource(2,registryControlActor.Handle);backend.ClearPassFrame();backend.BeginPacketCollection();backend.UpdateGpuActors(new[]{registeredActor},Array.Empty<NativeGpuOpaqueAppearance>());
  for(uint e=802;e<804;e++){var gf=new NativeGpuOpaqueFrame{Epoch=e,Coefficient=1,DistanceMult=1,Flags=3,SmoothCameraDistance=100,MaximumSeconds=1,MinimumSeconds=.25f};backend.QueueGpuSceneFrame(ref gf,gpuViews);var movedActual=Draw();if(e==802){File.WriteAllBytes(Path.Combine(output,"pose-control.rgba8"),movedRegisteredReference);File.WriteAllBytes(Path.Combine(output,"pose-indexed.rgba8"),movedActual);File.WriteAllBytes(Path.Combine(output,"pose-control-gbuffer.rgba8"),movedRegisteredGbuffer);File.WriteAllBytes(Path.Combine(output,"pose-indexed-gbuffer.rgba8"),backend.ReadbackGbufferColor(64,64));}Check(movedActual.SequenceEqual(movedRegisteredReference),"resident source pose commit matches stock color slot "+e);Check(backend.ReadbackShadow(0,256).SequenceEqual(movedRegisteredDepth),"resident source pose commit matches stock caster slot "+e);}
- // GPU static signatures must retain exactly the prior depth image when
- // neither geometry membership nor LOD/appearance changed.
- backend.SetLights(new[]{new NativeLight{PositionRange=new float[]{0,0,10,30},ColorIntensity=new float[]{1,1,1,1},DirectionCone=new float[]{0,0,-1,.8f},Flags=1}});backend.SetSpots(256,new[]{new NativeSpot{Light=0,Flags=1,Cookie=0,Projection=NativeBackend.MatrixValues(shadow)}});
- var spotViews=new NativeGpuOpaqueView[3];spotViews[0]=gpuViews[0];spotViews[1]=new NativeGpuOpaqueView{Flags=1|2|16|128,Id=15,Light=0};spotViews[2]=new NativeGpuOpaqueView{Flags=1|2|8|128,Id=16,Light=0};backend.PublishGpuScene(3,12,4);
- float[] retainedSpot=null;for(uint e=900;e<903;e++){backend.SetSpotRedraw(e==900?1u:0u,0);var gf=new NativeGpuOpaqueFrame{Epoch=e,Coefficient=1,DistanceMult=1,Flags=3,SmoothCameraDistance=100,MaximumSeconds=1,MinimumSeconds=.25f};backend.QueueGpuSceneFrame(ref gf,spotViews);Draw();var depth=backend.ReadbackSpot(0,256);if(retainedSpot==null){Check(depth.Any(v=>v<1),"static spotlight control contains caster geometry");retainedSpot=depth;}else Check(depth.SequenceEqual(retainedSpot),"unchanged GPU static spotlight retains exact depth slot "+e);}
+ var (spotViews,retainedSpot)=CheckRetainedSpot(movedRegisteredGbuffer);
  float[] SpotFrame(uint epoch){backend.SetSpotRedraw(0,0);var gf=new NativeGpuOpaqueFrame{Epoch=epoch,Coefficient=1,DistanceMult=1,Flags=3,SmoothCameraDistance=100,MaximumSeconds=1,MinimumSeconds=.25f};backend.QueueGpuSceneFrame(ref gf,spotViews);Draw();return backend.ReadbackSpot(0,256);}
  registeredActor.Input.Translation[0]=.6;registeredActor.Input.Minimum[0]=-.4;registeredActor.Input.Maximum[0]=1.6;backend.UpdateGpuActors(new[]{registeredActor},Array.Empty<NativeGpuOpaqueAppearance>());var movedSpot=SpotFrame(903);Check(!movedSpot.SequenceEqual(retainedSpot),"static caster movement updates retained spotlight without CPU redraw");Check(SpotFrame(904).SequenceEqual(movedSpot),"changed static map is retained across frame slots");
  registeredActor.Input.Flags|=8;backend.UpdateGpuActors(new[]{registeredActor},Array.Empty<NativeGpuOpaqueAppearance>());Check(SpotFrame(905).SequenceEqual(movedSpot),"static to dynamic ownership preserves spotlight silhouette");registeredActor.Input.Translation[0]=0;registeredActor.Input.Minimum[0]=-1;registeredActor.Input.Maximum[0]=1;backend.UpdateGpuActors(new[]{registeredActor},Array.Empty<NativeGpuOpaqueAppearance>());Check(SpotFrame(906).SequenceEqual(retainedSpot),"dynamic caster movement replaces previous overlay");Check(SpotFrame(907).SequenceEqual(retainedSpot),"unchanged dynamic overlay retains exact image");

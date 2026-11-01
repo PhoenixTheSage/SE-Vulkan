@@ -103,6 +103,8 @@ public sealed partial class Plugin : IPlugin
     static FieldInfo VoxelsField;
     static GeometryStorageStats geometryStorage;
     static NativePresentationStats presentationState;
+    static readonly bool RequireExclusive=Environment.GetEnvironmentVariable("SE_VULKAN_PERF_EXCLUSIVE")=="1";
+    static long exclusiveSamples,exclusiveAcquired;
     static volatile bool sampling;
     static volatile bool batchingEnabled=true;
     static volatile bool hintsEnabled=true;
@@ -338,6 +340,7 @@ public sealed partial class Plugin : IPlugin
         bool skipThis=skipNextFrame&&!KeepTelemetryFrames;skipNextFrame=false;if(skipThis)skippedTelemetryFrames++;
         if(!telemetry){lock(Gate){if(!sampling)return;if(!skipThis)Frames.Add(((now-drawStarted)*1000.0/Stopwatch.Frequency,(now-previous)*1000.0/Stopwatch.Frequency));ObserveBenchmarkCompletedFrame();SamplePresent(native);}return;}
         skipNextFrame=native!=null&&!RendererCpuProfiler.Enabled;
+        if(RequireExclusive&&native!=null){Interlocked.Increment(ref exclusiveSamples);if(native.RefreshExclusiveFullscreen())Interlocked.Increment(ref exclusiveAcquired);}
         var performance=native!=null?native.GetPerformanceStats():default;
         if(native!=null){gpuTopologyLast=native.GetGpuTopologyCounts();gpuTopologyFirst??=gpuTopologyLast;gpuComputeLast=native.GetGpuComputeTimes();gpuComputeFirst??=gpuComputeLast;if(RendererCpuProfiler.Enabled){gpuCpuCostsLast=native.GetType().GetMethod("GetGpuCpuCosts")?.Invoke(native,null) as ulong[];gpuCpuCostsFirst??=gpuCpuCostsLast;}}
         var validation=native!=null?native.GetQueueValidationStats():default;
@@ -431,6 +434,10 @@ public sealed partial class Plugin : IPlugin
         if(gpuAdmissionSnapshot!=null)File.WriteAllText(Path.Combine(reports,"gpu-admission-audit.json"),JsonSerializer.Serialize(gpuAdmissionSnapshot,new JsonSerializerOptions{WriteIndented=true}));
         (double Cpu,double Interval)[] samples;lock(Gate) samples=Frames.ToArray();
         string census=WriteSampleCensus(samples.Length);
+        if(RequireExclusive){
+            File.WriteAllText(Path.Combine(reports,"exclusive-fullscreen.json"),JsonSerializer.Serialize(new{Requested=true,Samples=exclusiveSamples,Acquired=exclusiveAcquired}));
+            if(exclusiveSamples==0||exclusiveAcquired!=exclusiveSamples){File.WriteAllText(Path.Combine(reports,"vulkan-status.txt"),VulkanDiagnostics.Report());throw new Exception("Exclusive fullscreen was not held for every observed sample.");}
+        }
         if(Uncapped)File.WriteAllText(Path.Combine(reports,"frame-rate-cap.json"),JsonSerializer.Serialize(new{Uncapped=true,ReplacedTarget=limiterReplaced,Target=1000}));
         // A stalled run keeps the renderer state that explains it (pipeline, frame and presentation status).
         if(samples.Length<10){try{File.WriteAllText(Path.Combine(reports,"vulkan-status.txt"),VulkanDiagnostics.Report());}catch(Exception){}throw new Exception("Too few rendered frames ("+census+").");}

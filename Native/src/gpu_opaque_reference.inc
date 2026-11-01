@@ -80,6 +80,7 @@ void init_opaque_reference(const SevkOpaqueReferenceConfig& c,bool shared_geomet
         (!shared_geometry&&c.draw_capacity>opaque_caps.draw_capacity)||!c.draw_capacity||!c.reference_capacity||(c.source_count&&!c.source_instances)||c.material_count>gpu_opaque::texture_capacity||(c.material_count&&!c.material_textures)||c.reserved>gpu_opaque::max_batches||c.material_reserved||
         c.source_count>gpu_opaque::storage_range/64||c.vertex_count>gpu_opaque::storage_range/12||c.index_count>gpu_opaque::storage_range/4||c.reference_capacity>gpu_opaque::storage_range/128-1||
         uint64_t(c.draw_capacity)*c.view_count>gpu_opaque::storage_range/32)throw std::runtime_error("invalid/admission-disabled opaque reference configuration: enabled="+std::to_string(opaque_caps.enabled)+", actors="+std::to_string(c.actor_count)+", families="+std::to_string(c.family_count)+", parts="+std::to_string(c.part_count)+", views="+std::to_string(c.view_count)+", sources="+std::to_string(c.source_count)+", references="+std::to_string(c.reference_capacity)+", draws="+std::to_string(c.draw_capacity)+", batches="+std::to_string(c.reserved)+", textures="+std::to_string(c.material_count));
+    if(opaque_reference.next_ready||opaque_reference.queued[0].ready||opaque_reference.queued[1].ready){std::fprintf(stderr,"GPU-scene publication drops frames: next %d queued %d/%d latched %llu applied %llu\n",int(opaque_reference.next_ready),int(opaque_reference.queued[0].ready),int(opaque_reference.queued[1].ready),(unsigned long long)gpu_frames_latched,(unsigned long long)gpu_frames_applied);std::fflush(stderr);}
     wait(next_completion);auto previous=std::move(opaque_reference);opaque_reference={};auto& s=opaque_reference;
     try{
         s.stock_geometry=shared_geometry;
@@ -260,6 +261,7 @@ OpaqueReferenceControl opaque_reference_control(){
 // begin_frame, where no recording is in flight.
 void latch_opaque_reference_queued(uint32_t submission){
     auto& s=opaque_reference;if(!s.next_ready)return;auto& q=s.queued[submission&1u];
+    if(q.ready){std::fprintf(stderr,"GPU-scene latch overwrites submission %u (latched %llu applied %llu)\n",submission&1u,(unsigned long long)gpu_frames_latched,(unsigned long long)gpu_frames_applied);std::fflush(stderr);}
     q.frame=s.next_frame;q.view_count=s.next_view_count;q.views.swap(s.next_views);q.view_map=gpu_resident.next_view_map;q.ready=true;s.next_ready=false;
     // Appearance commits move spans (the arena revision): copy it whole. Otherwise only changed actor rows and headers.
     if(s.latched_actors.size()!=s.actors.size()||s.latched_objects.revision!=s.object_inputs.revision||s.latched_objects.bytes.size()!=s.object_inputs.bytes.size()){s.latched_actors=s.actors;s.latched_versions=s.versions;s.latched_objects=s.object_inputs;}
@@ -267,10 +269,13 @@ void latch_opaque_reference_queued(uint32_t submission){
         std::memcpy(s.latched_objects.bytes.data()+a*gpu_opaque::appearance_header_stride,s.object_inputs.bytes.data()+a*gpu_opaque::appearance_header_stride,128);}
     if(q.actors.size()!=s.latched_actors.size()){q.actors=s.latched_actors;q.versions=s.latched_versions;}
     else for(size_t a=0;a<q.actors.size();a++)if(q.versions[a]!=s.latched_versions[a]){q.actors[a]=s.latched_actors[a];q.versions[a]=s.latched_versions[a];}
-    s.latched=true;s.latch_unbegun=true;record_cv.notify_all();
+    s.latched=true;s.latch_unbegun=true;++gpu_frames_latched;record_cv.notify_all();
 }
 void apply_opaque_reference_queued(uint32_t submission){
-    auto& s=opaque_reference;auto& q=s.queued[submission&1u];if(!q.ready)return;
+    auto& s=opaque_reference;auto& q=s.queued[submission&1u];
+    // A published GPU scene recording without its latched frame draws no GPU-owned objects (a dropped frame).
+    if(!q.ready){if(gpu_resident.published&&opaque_stock.ready&&gpu_frames_missed++<20){std::fprintf(stderr,"GPU-scene frame missed: submission %u queued %d/%d next_ready %d latched %u applied %llu\n",submission&1u,int(s.queued[0].ready),int(s.queued[1].ready),int(s.next_ready),unsigned(gpu_frames_latched),(unsigned long long)gpu_frames_applied);std::fflush(stderr);}return;}
+    ++gpu_frames_applied;
     s.frame=q.frame;s.view_count=q.view_count;s.views.swap(q.views);gpu_resident.view_map=q.view_map;s.frame_ready=true;s.rec_actors.swap(q.actors);s.rec_versions.swap(q.versions);q.ready=false;
 }
 void latch_opaque_reference_frame(){if(build_stages)return;latch_opaque_reference_queued(0);apply_opaque_reference_queued(0);}

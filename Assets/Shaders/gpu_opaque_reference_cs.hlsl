@@ -125,6 +125,10 @@ void main(uint3 id:SV_DispatchThreadID,uint3 block:SV_GroupID,uint lane:SV_Group
     if(control.stage==6){if(actor>=total_groups)return;uint b=actor/64;groups[actor*3+1]+=scan_scratch[b]+scan_scratch[blocks+b/64];return;}
     if(control.stage==2){
         uint work=actor;if(work>=control.actor_count*control.view_count||counts[control.view_count*control.batch])return;actor=work/control.view_count;uint v=work%control.view_count;
+        // Stage 7 removed retained spotlight groups before the prefix scan.
+        // They own no reference span; scattering them would overwrite the next
+        // allocated group (including main-view geometry).
+        if((views[v].flags&128)&&!counts[control.view_count*control.batch+1+v])return;
         Actor a=actors[actor];Family f=families[a.family];
         {
             Selection s=selections[work];View view=views[v];if(s.current<0&&s.other<0)return;

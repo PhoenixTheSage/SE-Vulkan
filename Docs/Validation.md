@@ -528,3 +528,67 @@ Evidence is under TestResults/RayShadowGpuTests and the ScenePerformance fixture
 see Docs/HardwareRayShadows.md for scope. Native fallback and basic shadow behavior
 are accepted here; this does not accept full hardware GI, reflections or software
 RT reconstruction parity.
+
+## GPU frame loss and retained-spot corruption, 2026-11-01
+
+Two independent defects were fixed before continuing GPU-path optimization.
+
+- A topology publication or scene clear could destroy GPU inputs between
+  `QueueWorld` and `BeginFrame`. Both now enter through the scene wrapper and
+  drain the queued/open/recording frame before replacing its tables. The GPU
+  timeline wait still protects resource destruction. Synchronous recording
+  also applies the queued inputs in `end_frame`, as the worker does.
+- The cull shader's stage 7 removes unchanged conditional spotlight groups
+  before the prefix scan, giving them no reference allocation. Stage 2 still
+  scattered those groups, overwriting references allocated to other views or
+  parts. It now skips the same retained views. This explains why valid actor
+  snapshots and clean Vulkan validation could coexist with missing geometry.
+
+`GpuSceneLiveTests --staged-publication-only` forces publication and managed
+scene clearing between QueueWorld and BeginFrame. The original DLL publishes
+prematurely and changes 1,200 output pixel bytes. The fixed path passes 26
+checks: actual GPU ownership, both slots, synchronous/worker recording, exact
+pixels and safe clear. All live GPU policy flags also pass this fixture.
+
+`GpuOpaqueStockRaster --conditional-spot-only` tests the first unchanged
+spotlight frame on a fresh slot. The original shader passes shadow-depth and
+main-color checks but fails the unallocated-reference canary. The fixed shader
+passes all 25 checks, both with ordinary policies and with role streams/view
+masks enabled. The 180-check live GPU scene suite and three native opaque
+CTests pass with zero core/synchronization validation errors. Existing unused
+fragment-output warnings remain. The broader stock raster suite has a separate
+OLD-0 pixel mismatch before this fixture, also observed on the original shader;
+it is not counted as passing.
+
+Final 1920x1080 Pertam runs with the temporary capture probes removed:
+
+- Fullscreen: `Vulkan-b2f6d66a5b584f6dafd8d5b9a6e3d53a`, 4,197 sampled frames,
+  first screenshot plus eight burst captures, geometry present throughout.
+- Windowed: `Vulkan-89703b2ca24948ce92b483ddf4ea2a35`, 3,987 sampled frames,
+  first screenshot plus seven burst captures, geometry present throughout.
+
+Both runs have no missed-frame, discarded-publication or overwritten-latch
+messages and exit cleanly. Pre-shader-fix windowed captures `Vulkan-7dd12...`
+and `Vulkan-aab714...` demonstrated missing geometry despite clean counters.
+Those images are retained; counter-only acceptance was rejected. Sparse burst
+captures do not prove every presented frame, while the focused reference
+canary deterministically proves the shader allocation violation is fixed.
+
+Evidence is in `TestResults/conditional-spot-focused-before.log`,
+`conditional-spot-focused-after.log`, `conditional-spot-focused-after-policies.log`,
+`conditional-spot-live-suite.log`, `conditional-spot-ctest.log`, the staged
+publication logs and the two ScenePerformance run folders above. Final native
+SHA-256: `FDB16E1A15674D22A313E2A54A0F8E21E6DBF288E8032E8234A0E895CBAC1485`.
+Compute shader SHA-256: `9E971974A117DA7B1B8E6BDAA77000F364B6DD6BB4CA4C4DDCC27D2CB966E997`.
+Release net48/net10 and native/shader assets are deployed to Pulsar Legacy and
+Interim. The changes affect Vulkan renderer internals; no Anomaly guest API or
+new backend-neutral capability is introduced.
+
+**Exclusive-mode limit:** the old harness's `-Fullscreen` switch never enabled
+Vulkan's separate exclusive option. The new `-ExclusiveFullscreen` switch
+records actual native acquisition and fails a fallback. All three explicit
+exclusive attempts recorded zero acquired samples and fell back to ordinary
+fullscreen; native exclusive presentation remains unaccepted. The earlier
+sustained zero-sample stall was not independently reproduced. The two proven
+corruption/frame-loss defects above are fixed without claiming a separate
+exclusive-mode recovery defect has been demonstrated or repaired.
