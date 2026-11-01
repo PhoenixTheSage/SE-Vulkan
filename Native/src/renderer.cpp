@@ -213,7 +213,7 @@ struct AtlasTransient { uint64_t completion{};std::vector<VkDescriptorSet> sets;
 struct OpaqueReferenceState {
     struct Depth {Image image;uint32_t width{},height{};bool valid{};double camera[3]{};float projection[16]{};};
     std::vector<Depth> depths;
-    struct Slot {Buffer actors,views,selections,groups,references,args,draws,counts,stock_objects,stock_colour,stock_depth,stock_draws,scan,object_inputs,parts;VkDescriptorSet set{};std::vector<uint64_t> versions,appearance_versions;std::vector<std::pair<uint32_t,uint32_t>> pending_parts;};
+    struct Slot {Buffer actors,views,selections,groups,references,args,draws,counts,stock_objects,stock_colour,stock_depth,stock_draws,scan,object_inputs,parts,runs;VkDescriptorSet set{};std::vector<uint64_t> versions,appearance_versions;std::vector<std::pair<uint32_t,uint32_t>> pending_parts;};
     std::array<Slot,2> slots;VkQueryPool compute_timing{};bool compute_timing_valid[2]{};
     Buffer families,parts,sources,vertices,indices,selectors,spot_signatures,role_parts;
     VkDescriptorSetLayout descriptor_layout{};VkPipelineLayout layout{};VkDescriptorPool pool{};
@@ -225,7 +225,7 @@ struct OpaqueReferenceState {
     std::vector<uint64_t> material_ids;std::array<bool,2> materials_dirty{};
     std::vector<uint64_t> versions;std::vector<SevkOpaqueView> views;
     SevkOpaqueFrame frame{};uint32_t part_count{},view_count{},view_capacity{},reference_capacity{},draw_capacity{},source_count{},last_slot{};
-    uint64_t revision{};uint32_t batch_count=1;bool initialized{},frame_ready{},published{};
+    uint64_t revision{};uint32_t batch_count=1;bool initialized{},frame_ready{},published{},run_region{};
     bool view_batches{},role_streams{},stock_geometry{};std::vector<std::vector<uint32_t>> recording_batches;
     // Plan 4 milestone 2: Build queues the next frame's inputs here (scene calls, alongside a recording); begin_frame
     // latches them into frame/views/view_count, and copies the actor rows the recording's batch lists read.

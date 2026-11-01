@@ -144,6 +144,16 @@ void main(uint3 id:SV_DispatchThreadID,uint3 block:SV_GroupID,uint lane:SV_Group
             }
         }return;
     }
+    // Stage 10: one thread per run copies its batches' draws, in run order, into the run region (arguments and stock
+    // draw records, which the stock shaders index by draw_base + DrawIndex) and writes the run's count.
+    if(control.stage==10){
+        uint runs=stock_runs[0];if(actor>=runs)return;uint at=2+actor*3,first=stock_runs[at],items=stock_runs[at+1],output=stock_runs[at+2],total=0;
+        bool overflow=counts[control.view_count*control.batch]!=0;
+        for(uint i=0;i<items&&!overflow;i++){uint item=2+runs*3+(first+i)*3,source=stock_runs[item],n=min(counts[stock_runs[item+1]],stock_runs[item+2]);
+            for(uint j=0;j<n;j++){uint s=source+j,d=output+total+j;arguments[d]=arguments[s];stock_draws.Store4(d*32,stock_draws.Load4(s*32));stock_draws.Store4(d*32+16,stock_draws.Load4(s*32+16));}
+            total+=n;}
+        counts[stock_runs[1]+actor]=total;return;
+    }
     if(control.stage==3){
         if(actor>=total_groups||counts[control.view_count*control.batch])return;
         uint count=groups[actor*3],first=groups[actor*3+1];if(!count)return;

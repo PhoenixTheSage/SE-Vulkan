@@ -5,7 +5,7 @@ static_assert(sizeof(SevkOpaqueView)==296&&sizeof(SevkOpaqueFrame)==80&&sizeof(S
 static_assert(sizeof(SevkOpaqueReference)==80&&sizeof(SevkOpaqueSelection)==16&&sizeof(OpaqueReferenceControl)==120);
 void cleanup_opaque_reference(){
     auto& s=opaque_reference;
-    for(auto& slot:s.slots)for(auto* b:{&slot.actors,&slot.views,&slot.selections,&slot.groups,&slot.references,&slot.args,&slot.draws,&slot.counts,&slot.stock_objects,&slot.stock_colour,&slot.stock_depth,&slot.stock_draws,&slot.scan,&slot.object_inputs,&slot.parts})destroy_buffer(*b);
+    for(auto& slot:s.slots)for(auto* b:{&slot.actors,&slot.views,&slot.selections,&slot.groups,&slot.references,&slot.args,&slot.draws,&slot.counts,&slot.stock_objects,&slot.stock_colour,&slot.stock_depth,&slot.stock_draws,&slot.scan,&slot.object_inputs,&slot.parts,&slot.runs})destroy_buffer(*b);
     for(auto* b:{&s.families,&s.parts,&s.sources,&s.vertices,&s.indices,&s.selectors,&s.spot_signatures,&s.role_parts})destroy_buffer(*b);
     if(s.compute_timing)vkDestroyQueryPool(device,s.compute_timing,nullptr);
     if(s.compute)vkDestroyPipeline(device,s.compute,nullptr);if(s.graphics)vkDestroyPipeline(device,s.graphics,nullptr);
@@ -135,26 +135,31 @@ void init_opaque_reference(const SevkOpaqueReferenceConfig& c,bool shared_geomet
             slot.selections=opaque_reference_buffer(c.actor_count*c.view_count*sizeof(SevkOpaqueSelection),storage,nullptr,true);
             slot.groups=opaque_reference_buffer(c.part_count*c.view_count*2ull*12,storage|VK_BUFFER_USAGE_TRANSFER_DST_BIT,nullptr,true);
             slot.references=opaque_reference_buffer(c.reference_capacity*sizeof(SevkOpaqueReference),storage,nullptr,true);
-            slot.args=opaque_reference_buffer(c.draw_capacity*c.view_count*sizeof(SevkOpaqueIndirect),storage|VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,nullptr,true);
+            // Plan 4 run merge: args and stock draws hold one more view-sized region (the run region), counts hold one run
+            // count per batch after the error flags, and runs is the host-written run table (stage 10). Only stock
+            // topologies get it, and only within the storage range admission proved for the views alone.
+            s.run_region=shared_geometry&&uint64_t(c.draw_capacity)*(c.view_count+1ull)*32<=gpu_opaque::storage_range;const uint64_t region_views=c.view_count+(s.run_region?1ull:0ull);
+            slot.args=opaque_reference_buffer(c.draw_capacity*region_views*sizeof(SevkOpaqueIndirect),storage|VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,nullptr,true);
             slot.draws=opaque_reference_buffer(c.draw_capacity*c.view_count*sizeof(SevkOpaqueDrawRecord),storage,nullptr,true);
-            slot.counts=opaque_reference_buffer((c.view_count*s.batch_count+1+c.view_count)*4ull,storage|(opaque_conditional?VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT:0)|VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,nullptr,true);
+            slot.counts=opaque_reference_buffer((c.view_count*s.batch_count+1+c.view_count+s.batch_count)*4ull,storage|(opaque_conditional?VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT:0)|VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,nullptr,true);
             slot.stock_objects=opaque_reference_buffer((c.reference_capacity+1)*128ull,storage|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,nullptr,true);
             slot.stock_colour=opaque_reference_buffer(c.reference_capacity*64ull,storage,nullptr,true);
             slot.stock_depth=opaque_reference_buffer(c.reference_capacity*48ull,storage,nullptr,true);
-            slot.stock_draws=opaque_reference_buffer(c.draw_capacity*c.view_count*32ull,storage,nullptr,true);
+            slot.stock_draws=opaque_reference_buffer(c.draw_capacity*region_views*32ull,storage,nullptr,true);
+            slot.runs=opaque_reference_buffer(s.run_region?(2+s.batch_count*6ull)*4:8,storage);
             uint32_t blocks=(c.part_count*c.view_count*2+63)/64;slot.scan=opaque_reference_buffer((blocks+(blocks+63)/64)*4ull,storage,nullptr,true);
         }
         }
         {GpuSceneCostScope pipeline_cost(gpu_scene_costs,GpuSceneCosts::InitPipeline);
-        std::array<VkDescriptorSetLayoutBinding,22> bindings{};for(uint32_t b=0;b<12;b++)bindings[b]={b,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT|VK_SHADER_STAGE_VERTEX_BIT,nullptr};
-        for(uint32_t b=14;b<22;b++)bindings[b]={b,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+        std::array<VkDescriptorSetLayoutBinding,23> bindings{};for(uint32_t b=0;b<12;b++)bindings[b]={b,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT|VK_SHADER_STAGE_VERTEX_BIT,nullptr};
+        for(uint32_t b=14;b<23;b++)bindings[b]={b,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
         bindings[12]={12,VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,gpu_opaque::texture_capacity,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};bindings[13]={13,VK_DESCRIPTOR_TYPE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
         VkDescriptorSetLayoutCreateInfo descriptor{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};descriptor.bindingCount=uint32_t(bindings.size());descriptor.pBindings=bindings.data();
         check(vkCreateDescriptorSetLayout(device,&descriptor,nullptr,&s.descriptor_layout),"create opaque descriptor layout");
         VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT|VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(OpaqueReferenceControl)};
         VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};layout.setLayoutCount=1;layout.pSetLayouts=&s.descriptor_layout;layout.pushConstantRangeCount=1;layout.pPushConstantRanges=&push;
         check(vkCreatePipelineLayout(device,&layout,nullptr,&s.layout),"create opaque pipeline layout");
-        VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,40},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,gpu_opaque::texture_capacity*2},{VK_DESCRIPTOR_TYPE_SAMPLER,2}};VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};pool.maxSets=2;pool.poolSizeCount=3;pool.pPoolSizes=sizes;
+        VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,46},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,gpu_opaque::texture_capacity*2},{VK_DESCRIPTOR_TYPE_SAMPLER,2}};VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};pool.maxSets=2;pool.poolSizeCount=3;pool.pPoolSizes=sizes;
         check(vkCreateDescriptorPool(device,&pool,nullptr,&s.pool),"create opaque fenced descriptor pool");
         for(auto& slot:s.slots){VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};alloc.descriptorPool=s.pool;alloc.descriptorSetCount=1;alloc.pSetLayouts=&s.descriptor_layout;
             check(vkAllocateDescriptorSets(device,&alloc,&slot.set),"allocate opaque slot descriptor");
@@ -163,6 +168,7 @@ void init_opaque_reference(const SevkOpaqueReferenceConfig& c,bool shared_geomet
             for(uint32_t b=0;b<12;b++){infos[b]={buffers[b]->handle,0,buffers[b]->bytes};writes[b]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[b].dstSet=slot.set;writes[b].dstBinding=b;writes[b].descriptorCount=1;writes[b].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;writes[b].pBufferInfo=&infos[b];}
             vkUpdateDescriptorSets(device,12,writes.data(),0,nullptr);
             VkDescriptorBufferInfo role_info{s.role_parts.handle,0,s.role_parts.bytes};VkWriteDescriptorSet role_write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};role_write.dstSet=slot.set;role_write.dstBinding=21;role_write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;role_write.descriptorCount=1;role_write.pBufferInfo=&role_info;vkUpdateDescriptorSets(device,1,&role_write,0,nullptr);
+            VkDescriptorBufferInfo runs_info{slot.runs.handle,0,slot.runs.bytes};VkWriteDescriptorSet runs_write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};runs_write.dstSet=slot.set;runs_write.dstBinding=22;runs_write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;runs_write.descriptorCount=1;runs_write.pBufferInfo=&runs_info;vkUpdateDescriptorSets(device,1,&runs_write,0,nullptr);
             std::array<Buffer*,5> added{&slot.stock_objects,&slot.stock_colour,&slot.stock_depth,&slot.object_inputs,&slot.stock_draws};std::array<VkDescriptorBufferInfo,5> added_infos{};std::array<VkWriteDescriptorSet,5> added_writes{};
             for(uint32_t b=0;b<5;b++){added_infos[b]={added[b]->handle,0,added[b]->bytes};auto& w=added_writes[b];w.sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;w.dstSet=slot.set;w.dstBinding=b+14;w.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;w.descriptorCount=1;w.pBufferInfo=&added_infos[b];}vkUpdateDescriptorSets(device,5,added_writes.data(),0,nullptr);
             VkDescriptorBufferInfo scan_info{slot.scan.handle,0,slot.scan.bytes};VkWriteDescriptorSet scan_write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};scan_write.dstSet=slot.set;scan_write.dstBinding=19;scan_write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;scan_write.descriptorCount=1;scan_write.pBufferInfo=&scan_info;vkUpdateDescriptorSets(device,1,&scan_write,0,nullptr);VkDescriptorBufferInfo signatures{s.spot_signatures.handle,0,s.spot_signatures.bytes};VkWriteDescriptorSet sw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};sw.dstSet=slot.set;sw.dstBinding=20;sw.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;sw.descriptorCount=1;sw.pBufferInfo=&signatures;vkUpdateDescriptorSets(device,1,&sw,0,nullptr);

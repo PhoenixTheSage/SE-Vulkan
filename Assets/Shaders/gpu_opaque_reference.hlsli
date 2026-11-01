@@ -45,6 +45,8 @@ struct Control {Frame frame;uint actor_count,family_count,part_count,view_count,
 [[vk::binding(19,0)]] RWStructuredBuffer<uint> scan_scratch;
 [[vk::binding(20,0)]] RWStructuredBuffer<uint4> spot_signatures;
 [[vk::binding(21,0)]] StructuredBuffer<uint> role_parts;
+// Plan 4 run merge (stage 10): [runs, count base, (first item, items, output base) per run, (source base, count index) per item].
+[[vk::binding(22,0)]] StructuredBuffer<uint> stock_runs;
 #endif
 uint group_index(uint part,uint view,uint old_slice){return (part*control.view_count+view)*2+old_slice;}
 double ddot(double3 a,double3 b){precise double value=a.x*b.x+a.y*b.y+a.z*b.z;return value;}

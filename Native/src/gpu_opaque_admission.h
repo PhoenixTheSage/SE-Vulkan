@@ -2,7 +2,7 @@
 #include "se_gpu_opaque.h"
 namespace gpu_opaque {
 constexpr uint32_t required_features=255, texture_capacity=4096,
-    storage_capacity=20, draw_capacity=65536, storage_range=128u*1024*1024,
+    storage_capacity=21, draw_capacity=65536, storage_range=128u*1024*1024,
     workgroup_size=64, max_parts=65535, max_batches=max_parts;
 // NEW batches retain part identity. At 64 views their count table is <17 MiB,
 // within the existing 128 MiB storage-range admission; no new GPU feature.

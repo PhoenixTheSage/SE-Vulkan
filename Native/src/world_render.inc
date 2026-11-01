@@ -429,6 +429,44 @@ void build_new_main_entries(std::vector<NewMainEntry>& entries,bool with_stock){
     std::stable_sort(entries.begin(),entries.end(),[](const NewMainEntry& a,const NewMainEntry& b){return std::tie(a.order,a.part)<std::tie(b.order,b.part);});
     if(with_stock)cpu_lap("new main sort");
 }
+// Plan 4 run merge (SE_VULKAN_GPU_OPAQUE_RUNS=0 turns it off). Consecutive NEW stock entries of the main list that share
+// pipeline, buffers and cull mode draw as one indirect run. The list is built right after the cull dispatch, before the
+// G-buffer; stage 10 copies each run's draws, in list order, into the run region, so the draws and their order are those
+// of one indirect draw per batch. An entry that records nothing (other phase, no capacity) does not break a run.
+// A merged run: draws from the run region (base), counted at count_index, up to capacity.
+struct StockRunDraw {uint32_t base,count_index,capacity;};
+bool gpu_opaque_runs=env_flag("SE_VULKAN_GPU_OPAQUE_RUNS",true);bool stock_runs_ready{};
+std::vector<NewMainEntry> stock_run_entries;std::vector<uint32_t> stock_run_of,stock_run_first;std::vector<StockRunDraw> stock_run_draws;
+bool stock_run_entry(uint32_t b){const auto& in=opaque_stock.batches[b].input;return !in.old&&main_geometry_phase(false,in.main_pipeline>=12,0u)==4&&opaque_reference.ranges[b].capacity!=0;}
+void prepare_stock_runs(VkCommandBuffer cmd){
+    stock_runs_ready=false;auto& r=opaque_reference;auto& s=opaque_stock;
+    if(!gpu_opaque_runs||!s.ready||!r.frame_ready||!world_new_main_ordered()||gpu_owners.enabled||new_main_pending)return;
+    auto& slot=r.slots[slot_index];if(!r.run_region||!slot.runs.handle||!slot.runs.mapped)return;
+    uint32_t view=gpu_resident.published?gpu_resident.view_map[0]:0;if(view>=r.view_count||!(r.views[view].flags&1)||(r.views[view].flags&2))return;
+    // The selection record_new_main would use (the G-buffer fills it the same way when there is no indirect plan).
+    if(!world.indirect_stats.enabled){auto& selection=world.current().main_selection;selection.clear();for(uint32_t i:world.current().order)if(!(world.current().draws[i].packet.flags&(4096|8192)))selection.push_back(i);}
+    build_new_main_entries(stock_run_entries,true);
+    stock_run_of.assign(stock_run_entries.size(),UINT32_MAX);stock_run_first.clear();stock_run_draws.clear();
+    const uint32_t region=r.view_count*r.draw_capacity,count_base=r.view_count*r.batch_count+1+r.view_count;
+    std::vector<uint32_t> runs,items;uint32_t output=0;const OpaqueStockState::Batch* last=nullptr;
+    for(uint32_t i=0;i<stock_run_entries.size();++i){const auto& e=stock_run_entries[i];if(e.kind!=1){last=nullptr;continue;}
+        if(!stock_run_entry(e.index))continue;
+        const auto& b=s.batches[e.index];const auto range=r.ranges[e.index];
+        if(!last||last->input.main_pipeline!=b.input.main_pipeline||((last->input.flags^b.input.flags)&1)||last->vertices!=b.vertices||last->indices!=b.indices){
+            stock_run_first.push_back(i);stock_run_draws.push_back({region+output,count_base+uint32_t(stock_run_draws.size()),0});runs.insert(runs.end(),{uint32_t(items.size()/3),0u,region+output});}
+        stock_run_draws.back().capacity+=range.capacity;runs[runs.size()-2]++;stock_run_of[i]=uint32_t(stock_run_draws.size()-1);
+        items.insert(items.end(),{view*r.draw_capacity+range.first,e.index*r.view_count+view,range.capacity});output+=range.capacity;last=&b;}
+    const uint32_t n=uint32_t(stock_run_draws.size());if(!n||output>r.draw_capacity)return;
+    std::vector<uint32_t> table{n,count_base};table.insert(table.end(),runs.begin(),runs.end());table.insert(table.end(),items.begin(),items.end());
+    if(table.size()*4>slot.runs.bytes)return;
+    // begin_frame waited this slot: its run table is free.
+    std::memcpy(slot.runs.mapped,table.data(),table.size()*4);check(vmaFlushAllocation(allocator,slot.runs.memory,0,table.size()*4),"flush stock run table");
+    opaque_reference_dependency(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT|VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,r.compute);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,r.layout,0,1,&slot.set,0,nullptr);
+    auto control=opaque_reference_control();control.stage=10;vkCmdPushConstants(cmd,r.layout,VK_SHADER_STAGE_COMPUTE_BIT|VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(control),&control);vkCmdDispatch(cmd,(n+63)/64,1,1);
+    opaque_reference_dependency(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT|VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT|VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT|VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    record_count("new main merged runs",double(n));stock_runs_ready=true;
+}
 // Starts the entry build on a worker at the end of prepare; record_new_main joins it.
 void start_new_main_entries(){
     // A frame that failed after the kick never joined it: settle that build first.
@@ -440,7 +478,8 @@ void start_new_main_entries(){
 void record_new_main(VkCommandBuffer cmd,WorldSlot& slot,const VkRenderingInfo* resume=nullptr){
     const auto& selection=world.current().main_selection;const auto* plan=world.indirect_stats.enabled?&world.current().indirect_plans[0]:nullptr;
     using Entry=NewMainEntry;std::vector<Entry> entries;
-    if(new_main_pending){new_main_job.wait();new_main_pending=false;entries.swap(new_main_entries);}else build_new_main_entries(entries,true);
+    bool runs=stock_runs_ready;stock_runs_ready=false;
+    if(runs)entries.swap(stock_run_entries);else if(new_main_pending){new_main_job.wait();new_main_pending=false;entries.swap(new_main_entries);}else build_new_main_entries(entries,true);
     // Records entries [begin,end) into target; runs of consecutive managed draws stay one selection call. Splitting
     // a run at a range boundary records the same draws in the same order.
     struct Counts{uint64_t commands{},groups{},packets{};};
@@ -449,6 +488,7 @@ void record_new_main(VkCommandBuffer cmd,WorldSlot& slot,const VkRenderingInfo* 
         for(uint32_t i=begin;i<end_entry;){const auto& entry=entries[i];if(entry.kind==0){bound={};uint32_t end=i+1;while(end<end_entry&&entries[end].kind==0&&entries[end].index==entries[end-1].index+1)++end;
                 auto count=plan?record_world_selection(target,slot,selection,-1,plan,world.current().indirect_bases[0],false,4,entry.index,entries[end-1].index+1):record_world_selection(target,slot,std::span(selection).subspan(entry.index,end-i),-1,nullptr,0,false,4);
                 counts.commands+=count.commands;counts.groups+=count.groups;counts.packets+=count.packets;i=end;
+            }else if(runs&&entry.kind==1){uint32_t run=stock_run_of[i];if(run!=UINT32_MAX&&stock_run_first[run]==i)counts.commands+=record_opaque_stock_view(target,slot,0,false,nullptr,nullptr,0,nullptr,4,entry.index,indexed_set,&bound,&stock_run_draws[run]);++i;
             }else{if(entry.kind!=1)bound={};counts.commands+=entry.kind==1?record_opaque_stock_view(target,slot,0,false,nullptr,nullptr,0,nullptr,4,entry.index,indexed_set,&bound):record_pass_view(target,slot,0,false,nullptr,nullptr,0,nullptr,4,entry.index,false);++i;}
         }
     };
@@ -661,7 +701,7 @@ void render_world(){
     // CPU fade dependencies must reach GPU conditional view flags before the
     // selector dispatch. Both paths now observe this frame's immutable inputs.
     cpu_lap("prepare spot fades");update_spot_fade_dependencies(slot,object_offsets,instance_offsets);
-    cpu_lap("prepare opaque reference");if(opaque_stock.ready)prepare_opaque_reference(cmd);gpu_owner_begin_frame();
+    cpu_lap("prepare opaque reference");if(opaque_stock.ready)prepare_opaque_reference(cmd);gpu_owner_begin_frame();if(opaque_stock.ready)prepare_stock_runs(cmd);
 
     cpu_lap("prepare shadow reuse");auto merge_shadow=[&](GeometryRecordCounts count){performance.shadow_commands+=count.commands;world.indirect_stats.shadow_groups+=count.groups;world.indirect_stats.grouped_draws+=count.packets;};
     auto emit_cascade=[&](uint32_t c){merge_shadow(record_world_selection(cmd,slot,world.current().cascade_casters[c],int(c),world.indirect_stats.enabled?&world.current().indirect_plans[c+1]:nullptr,world.current().indirect_bases[c+1]));performance.shadow_commands+=record_pass_view(cmd,slot,c+1);};

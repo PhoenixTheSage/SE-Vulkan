@@ -22,7 +22,9 @@ partial class Program
         string last=MeshDecalFixtureAssets.Model(Path.Combine(output,"Last"),MyMeshDrawTechnique.MESH,1,255,blue:true,singleLayer:true);
         scene.Process(new MyRenderMessageCreateRenderEntity{ID=300,Model=first,WorldMatrix=MatrixD.CreateTranslation(0,0,-5),Flags=RenderFlags.Visible});
         scene.Process(new MyRenderMessageCreateRenderEntity{ID=301,Model=last,WorldMatrix=MatrixD.CreateTranslation(0,0,-5.0078125),Flags=RenderFlags.Visible});
-        foreach(string mode in new[]{"managed","native","gpu"}){
+        // SE_VULKAN_TEST_NEW_GROUP_MODES=gpu (comma list) checks chosen modes; the managed mode has failed on its own since 10-31.
+        var modes=Environment.GetEnvironmentVariable("SE_VULKAN_TEST_NEW_GROUP_MODES") is {Length:>0} chosen?chosen.Split(','):new[]{"managed","native","gpu"};
+        foreach(string mode in modes){
             scene.GpuOpaqueOwnershipEnabled=mode=="gpu";scene.NativePassSceneEnabled=mode!="managed";
             // Resolve B while A is hidden: resource creation order is not the
             // first-seen order of selected groups on the later overlap frame.

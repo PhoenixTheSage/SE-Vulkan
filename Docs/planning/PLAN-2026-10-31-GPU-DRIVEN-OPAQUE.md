@@ -329,6 +329,52 @@ pipeline, buffers and cull mode form **1,779 runs**. One indirect draw per
 run, with the run's arguments compacted on the GPU in order, would cut the
 stock draws about threefold without changing draw order.
 
+## Milestone 2, step 4: the run merge (2026-10-31)
+
+**What it does** (`SE_VULKAN_GPU_OPAQUE_RUNS`, on by default; `0` turns it
+off). Consecutive NEW stock entries of the main list that share pipeline,
+geometry buffers and cull mode draw as one indirect run.
+- The recording builds the main entry list right after the cull dispatch,
+  before the G-buffer (`prepare_stock_runs`), and writes a run table into
+  the slot.
+- A new stage of the cull compute shader (stage 10) copies each run's
+  draws, in list order, into a run region appended to the arguments and
+  stock draw records. It writes one count per run after the error flags.
+- `record_new_main` issues one `vkCmdDrawIndexedIndirectCount` per run,
+  with `draw_base` in the run region.
+- Draws and their order are those of one indirect draw per batch. An entry
+  that records nothing (another phase, no capacity) doesn't break a run.
+- The run region exists only for stock topologies within the 128 MiB
+  storage range; the reference fixture's capacity extremes stay
+  per-batch.
+- Storage admission is 21 descriptors (binding 22 is the run table).
+
+**Result** (same build, interleaved):
+
+| | Present cadence |
+|---|---|
+| Runs on | 5.87 / 5.95 ms |
+| Runs off | 6.15 / 6.16 ms |
+| CPU path | 4.31 / 4.33 ms |
+
+`new main record` 1.40 → 0.95 ms; 5,558 stock entries now draw as 1,780
+runs. The recording thread totals 5.09 ms. Its largest items now:
+- batch lists, 0.84 ms;
+- spot shadows, 0.63 ms;
+- prepare opaque reference (now including the run build and table), 0.55 ms;
+- the new-main sort, 0.45 ms.
+
+**Gates.**
+- `Compare-GpuOwnership.ps1`: split, GPU-on 433 px against 398 off/off;
+  no split, GPU-on against the second off render 259 px against 285 off/off,
+  with cascades and spot maps identical.
+- In-game validation: zero errors. Ten runs exited cleanly.
+- Reference fixture: 136,700 checks.
+- Every `GpuSceneLiveTests` mode passes.
+- `--new-group-only` now takes `SE_VULKAN_TEST_NEW_GROUP_MODES`. Its GPU
+  mode (35 checks) and native mode (37 checks) pass with runs on and off;
+  only the managed mode fails, as it already did.
+
 ## Milestones
 
 Each milestone keeps the CPU path as the default and fallback until its gate
