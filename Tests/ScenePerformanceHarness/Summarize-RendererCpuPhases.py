@@ -37,7 +37,7 @@ output = dict(Source=str(reports), Launch=launch, Instrumented=True,
     FrameWallMs=rows['Frame']['WallMs'], FrameCpuMs=rows['Frame']['CpuMs'],
     CounterReadWallMs=data['CounterReadWallMs'], GpuMs=frame['GpuMs'],
     Rows=list(rows.values()), Native=native,
-    Interpretation='Inclusive wall scopes and render-thread CPU cycles; workers excluded. OS CPU-ms exposed only for frame aggregate. Fine actor/part buckets are wall-only. Cycles are not converted to milliseconds. No exclusive CPU-stack or instrumented FPS claim.')
+    Interpretation='Inclusive wall scopes and cycles on the render, build or launch thread executing each scope; native recording workers use the native profile. OS CPU-ms exposed only for the render-owner frame aggregate. Fine actor/part buckets are wall-only. Cycles are not converted to milliseconds. Overlapping rows must not be summed. No exclusive CPU-stack or instrumented FPS claim.')
 if args.ordinary_reports:
     ordinary_reports = args.ordinary_reports.resolve()
     ordinary = read(ordinary_reports / 'result.json')

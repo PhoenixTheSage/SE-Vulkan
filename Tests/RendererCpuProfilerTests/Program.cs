@@ -38,5 +38,50 @@ if(tails.Frames!=2||tails.DroppedSamples!=0||tails.GcTaggedFrames<1||tails.Slowe
 if(tails.Rows.Single(r=>r.Phase=="ActorUpdater").MeanOnSlowest5PercentMs<40||tails.Rows.Single(r=>r.Phase=="Frame").P95Ms<100)throw new Exception("Slow-frame attribution did not select the complete frame tail.");
 if(tails.Slowest[0].PhaseWallMs.Length!=tails.Rows.Length)throw new Exception("Tail phase array lost enum order.");
 window.Reset();if(window.Capture().Frames!=0||window.CaptureTails().Frames!=0)throw new Exception("Window reset retained stale frames.");
+// A build/launch can sample N before N's render lane finishes, then end after N+1.
+// The next frame is a synchronous screenshot with no worker phases.
+RendererCpuProfiler.MarkDrawStart(111);
+RendererCpuProfiler.BeginFrame();
+long older=RendererCpuProfiler.ReserveWorker();
+var accepted=new ManualResetEventSlim();
+var finishOlder=new ManualResetEventSlim();
+var worker=Task.Run(()=>{
+    RendererCpuProfiler.BeginWorker(older,build:true);
+    try{
+        if(RendererCpuProfiler.CurrentDrawStart!=111)throw new Exception("Build lost its draw start.");
+        using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.TextureLoads,false))Thread.SpinWait(25000);
+        long launch=RendererCpuProfiler.ReserveWorker();
+        var submit=Task.Run(()=>{
+            RendererCpuProfiler.BeginWorker(launch,build:false);
+            try{
+                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GuestFrame,false))Thread.SpinWait(25000);
+                window.Accept(RendererCpuProfiler.CurrentSequence,111.0);
+                accepted.Set();
+            }finally{RendererCpuProfiler.EndWorker();}
+        });
+        submit.GetAwaiter().GetResult();finishOlder.Wait(TimeSpan.FromSeconds(5));
+    }finally{RendererCpuProfiler.EndWorker();}
+});
+if(!accepted.Wait(TimeSpan.FromSeconds(5)))throw new Exception("Launch did not accept its own frame.");
+RendererCpuProfiler.EndFrame();
+RendererCpuProfiler.MarkDrawStart(222);
+RendererCpuProfiler.BeginFrame();
+long newer=RendererCpuProfiler.CurrentSequence;
+window.Accept(newer,222.0);
+window.Accept(newer,999.0);
+RendererCpuProfiler.EndFrame();
+if(window.Capture().Frames!=1)throw new Exception("An unfinished worker was included in the screenshot.");
+finishOlder.Set();worker.GetAwaiter().GetResult();
+window.WaitForAccepted(TimeSpan.FromSeconds(5));
+var matched=window.CaptureTails().Slowest.ToDictionary(s=>s.Frame.Sequence);
+foreach(var phase in new[]{RendererCpuProfiler.Phase.BuildThread,RendererCpuProfiler.Phase.TextureLoads,RendererCpuProfiler.Phase.GuestFrame}){
+    if(matched[older].PhaseWallMs[(int)phase]<=0||matched[newer].PhaseWallMs[(int)phase]!=0)
+        throw new Exception("Worker attribution crossed frame sequences: "+phase);
+}
+if(matched.Count!=2||matched[older].Frame.CompletedDrawMs!=111.0||matched[newer].Frame.CompletedDrawMs!=222.0||window.Capture().Sequence!=newer)
+    throw new Exception("Concurrent acceptance lost or duplicated a correlated frame.");
 GC.KeepAlive(allocation);
 Console.WriteLine($"Profiler checks passed: wait/busy cycles {wait.CpuCycles}/{busy.CpuCycles}; frame wall/CPU {full.WallMs:F2}/{full.CpuMs:F2}ms; allocation {busy.AllocatedBytes}; counter overhead {first.CounterReadWallMs:F3}ms.");
+
+// The standalone profiler test links the diagnostic source without loading the game.
+namespace VRageRender.Messages { internal enum MyRenderMessageEnum { TestMessage } }

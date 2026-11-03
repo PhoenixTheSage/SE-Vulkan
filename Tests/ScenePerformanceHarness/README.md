@@ -39,11 +39,69 @@ outside the CpuMean span:
 - `PresentBodyMs`: the renderer's `Present`.
 - `LoopMs`: SE's loop up to the next Draw.
 
+For the live optimized scheduling path, use `-ProductRenderingDefaults` with
+the same arguments in every comparison. This removes the legacy harness's
+explicit advanced-rendering overrides and uses the product defaults from the
+private, newly created Vulkan config. It does not copy custom advanced choices
+from the source profile. Without this switch the historical feature flags still
+apply. The launch manifest records `ProductRenderingDefaults` and `UserPlugins`;
+the manifest's individual `*Requested` fields describe explicit harness flags,
+not the effective product defaults. Check runtime reports for actual admission.
+
+`-UserPlugins -CpuDetail -ProductRenderingDefaults` diagnoses the loaded plugin
+stack, including the source profile's debug/release source-build choices.
+`renderer-cpu-phases.json` separates `GuestSceneGate`, `GuestPreparationGate`
+and `GuestFrameGate` semaphore waits from `GuestScene`, `GuestPreparation`
+and `GuestFrame` callback execution. These are inclusive worker scopes; do not
+sum them with their parents. `guest-listeners.json` is a lifetime aggregate
+that includes startup compilation, not the warmed sampling window. Use the
+renderer phase window for warmed callback costs. Keep an uninstrumented run
+for reported FPS and compare captures, resolution and effective settings.
+
+Use `-BenchmarkPlugin`, `-BenchmarkNative`, `-BenchmarkAssets` and
+`-BenchmarkHarness` to pin ordinary comparison artifacts. This is useful when
+another build changes the working tree during an investigation. The launch
+manifest hashes the copied managed plugin, native DLL and harness; reject an
+unintended hash difference before interpreting a before/after result.
+
+Indexed object-motion replay caches unchanged pipeline, raster and vertex/index
+bindings within each command buffer. `SE_VULKAN_MOTION_BIND_CACHE=0` restores
+the uncached command sequence for controlled comparisons; draws and pixels are
+unchanged. The launch manifest records the switch. Recording reports expose
+`indexed motion draws` and `indexed motion bindings`; the latter counts pipeline,
+vertex and index binds, excluding raster commands and the per-draw push constants.
+
 Opt-in native reports, limited to the sampling window:
 
 - `SE_VULKAN_GPU_PASS_TIMING=<file>`: GPU time per frame mark.
 - `SE_VULKAN_RECORD_TIMING=<file>`: recording-thread CPU time per mark and
   preparation lap.
+
+GPU recording reuse is enabled by default. Set
+`SE_VULKAN_GPU_OPAQUE_RECORD_CACHE=0` to compare uncached actor/view admission,
+or `SE_VULKAN_GPU_OPAQUE_RUN_CACHE=0` to rebuild merged-run plans every frame.
+`launch.json` records both treatments. These switches preserve GPU selection,
+draw order and quality. Recording reports include membership and run-plan reuse
+counters; `new main sort` now measures the sort itself and `new main run plan`
+measures CPU plan construction/upload. Run compaction dispatch now belongs to
+`prepare opaque reference`, inside the cull-compute chain. Use runs without
+recording timers for FPS comparisons.
+
+Additional independent rollback controls (all default enabled) are
+`SE_VULKAN_GPU_OPAQUE_RECORD_KEYS`, `SE_VULKAN_GPU_OPAQUE_BATCH_CACHE`,
+`SE_VULKAN_GPU_OPAQUE_MAIN_ORDER_CACHE`, `SE_VULKAN_GPU_OPAQUE_GEOMETRY_CACHE`,
+`SE_VULKAN_GPU_OPAQUE_PARALLEL_MAIN`, `SE_VULKAN_GPU_OPAQUE_PARALLEL_SPOTS`,
+and `SE_VULKAN_GPU_OPAQUE_FUSED_RETAINED`; set a control to `0` to restore its
+uncached/serial/unfused implementation. `SE_VULKAN_GPU_VISIBLE_PACKED=0`
+restores the actor traversal. `SE_VULKAN_GPU_VISIBLE_PACKED_VERIFY=1` runs
+an independent visible-set oracle and is diagnostic only.
+
+`SE_VULKAN_ASYNC_SUBMIT=1` opts into FIFO frame submission when decoupled
+presentation is actually available. Requested admission appears in the launch
+manifest; the recording counter `async frame submit active` proves actual
+admission. It defaults off. Recording laps and critical scopes can overlap
+worker time; they must not be added as exclusive CPU costs. Completed-present
+call rate is separate from physical scanout cadence.
 
 `-CpuDetail` also writes `message-census.json`, the exclusive time per render
 message type and its share of spike frames.
@@ -338,8 +396,11 @@ Normal renderer default is on for CPUs with>=4 hardware threads, with
 SE_VULKAN_PARALLEL_QUEUE=0 rollback; harness always sets it explicitly.
 
 CpuDetail now additionally emits renderer-cpu-phases.json for accepted sampled
-frames only. QPC scopes are inclusive; CPU time/cycles name the render thread
-including native calls on it, and exclude workers. CPU time is quantized. Cycles
+frames only. Render, build and launch lanes rendezvous by explicit frame sequence;
+accepted samples wait for their lanes to finish before serialization. Frame counts
+must agree exactly. QPC scopes are inclusive; cycles follow the thread executing
+the scope, including native calls there. Native recording workers use the separate
+native profile. Whole-frame CPU time names the render owner and is quantized. Cycles
 are active execution evidence, not milliseconds. Fine actor/part buckets use
 wall-only clocks and explicitly mark CPU/allocation unavailable. Counter overhead
 is reported. Diagnostic results are not ordinary FPS or exclusive CPU samples.
@@ -404,6 +465,13 @@ camera metadata. The usual private-data marker guard remains required. These
 captures require visual review and do not constitute performance samples.
 
 ## Rich HUD terminal capture
+
+World loading waits for an opened main-menu screen. Loading on a timer before
+startup finishes can leave a late `MyGuiScreenIntroVideo` over the world, drawing
+`main_menu_overlay.dds` above PostPP billboards. The Advanced audit rejects that
+screen before testing controls. `hud-ownership.json` records cumulative HUD
+collection/emission counters, full-screen sprites and live GUI screens; use it
+with screenshots. A late packet-list sample can miss already-consumed packets.
 
 `-RichHudAudit -AnomalyProject '<Anomaly repository>'` builds and loads Anomaly
 in the private profile, opens the terminal with its public `OpenMenu` API, records

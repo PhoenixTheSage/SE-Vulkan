@@ -30,6 +30,15 @@ public sealed class Config : INotifyPropertyChanged
     public bool RecoveryRequired { get => values.RecoveryRequired; set => values.RecoveryRequired = value; }
     public long RetryGeneration { get => values.RetryGeneration; set => values.RetryGeneration = value; }
     public string LastFailure { get => values.LastFailure; set => values.LastFailure = value; }
+    internal AdvancedRenderingSettings AdvancedRendering => values.AdvancedRendering ??= new AdvancedRenderingSettings();
+    internal void SetAdvanced(string id, bool enabled)
+    {
+        if (AdvancedRendering.Get(id) == enabled) return;
+        AdvancedRendering.Set(id, enabled);
+        Changed(nameof(AdvancedRendering));
+    }
+    [Button("Advanced", "Configure Vulkan rendering and scheduling. Changes apply at the next game restart.")]
+    public void ShowAdvanced() => AdvancedRenderingPage.Show();
     [Button("Show Status", "Show bootstrap, Vulkan layers and visual-system coverage.")]
     public void ShowStatus() => StatusScreen.Show();
     [Button("Show Profiler", "Show frame time. Record keeps a 10 second gameplay average; turn it off to drop that history. Live samples the current frame, including while this menu is open.")]

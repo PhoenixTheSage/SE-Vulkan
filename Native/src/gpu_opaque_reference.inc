@@ -295,15 +295,16 @@ void latch_opaque_reference_slot(){
     }
     check(vmaFlushAllocation(allocator,slot.actors.memory,0,slot.actors.bytes),"flush committed opaque actors");check(vmaFlushAllocation(allocator,slot.object_inputs.memory,0,slot.object_inputs.bytes),"flush fenced stock object commits");
 }
-void prepare_opaque_reference(VkCommandBuffer cmd){
+void prepare_opaque_reference(VkCommandBuffer cmd,uint32_t run_count=0){
     auto& s=opaque_reference;if(!s.initialized||!s.frame_ready)return;auto& slot=s.slots[slot_index];
+    static const bool fused_retained=env_flag("SE_VULKAN_GPU_OPAQUE_FUSED_RETAINED",true);
     // begin_frame has waited THIS slot and latched its actor rows (latch_opaque_reference_slot).
     if(s.materials_dirty[slot_index]){
         std::vector<VkDescriptorImageInfo> images(s.material_ids.size());for(uint32_t t=0;t<images.size();t++){auto found=textures.find(s.material_ids[t]);if(found==textures.end())throw std::runtime_error("opaque material disappeared after frame publication");images[t]={VK_NULL_HANDLE,found->second.image.view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};}
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=slot.set;write.dstBinding=12;write.descriptorType=VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;write.descriptorCount=uint32_t(images.size());write.pImageInfo=images.data();vkUpdateDescriptorSets(device,1,&write,0,nullptr);s.materials_dirty[slot_index]=false;
     }
     for(auto& view:s.views)if(view.flags&128){uint64_t bit=uint64_t(1)<<view.light;if(!spots.frozen_ready[view.light]||spots.frozen_sizes[view.light]!=spots.resolution||(((view.flags&16)?(spots.static_dirty|pass_static_dirty()):spots.dynamic_dirty)&bit))view.flags|=64;}std::memcpy(slot.views.mapped,s.views.data(),s.views.size()*sizeof(SevkOpaqueView));check(vmaFlushAllocation(allocator,slot.views.memory,0,slot.views.bytes),"flush opaque current views");
-    if(s.compute_timing&&s.compute_timing_valid[slot_index]){uint64_t values[22]{};auto result=vkGetQueryPoolResults(device,s.compute_timing,slot_index*11,11,sizeof(values),values,16,VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);if(result!=VK_NOT_READY){check(result,"read completed resident compute timings");bool ready=true;for(uint32_t i=0;i<11;i++)ready&=values[i*2+1]!=0;if(ready){uint64_t mask=timestamp_bits==64?~0ull:(uint64_t(1)<<timestamp_bits)-1;for(uint32_t i=0;i<10;i++)opaque_compute_times[i+1]+=uint64_t(double((values[(i+1)*2]-values[i*2])&mask)*timestamp_period);++opaque_compute_times[0];s.compute_timing_valid[slot_index]=false;}}}
+    if(s.compute_timing&&s.compute_timing_valid[slot_index]){uint64_t values[22]{};auto result=vkGetQueryPoolResults(device,s.compute_timing,slot_index*11,11,sizeof(values),values,16,VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);if(result!=VK_NOT_READY){check(result,"read completed resident compute timings");bool ready=true;for(uint32_t i=0;i<11;i++)ready&=values[i*2+1]!=0;if(ready){uint64_t mask=timestamp_bits==64?~0ull:(uint64_t(1)<<timestamp_bits)-1;for(uint32_t i=0;i<10;i++)if(!fused_retained||(i!=2&&i!=3))opaque_compute_times[i+1]+=uint64_t(double((values[(i+1)*2]-values[i*2])&mask)*timestamp_period);++opaque_compute_times[0];s.compute_timing_valid[slot_index]=false;}}}
     // Selectors are GPU-owned; dependency includes the previous submitted frame.
     opaque_reference_dependency(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_2_HOST_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT|VK_ACCESS_2_HOST_WRITE_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT|VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
@@ -312,13 +313,27 @@ void prepare_opaque_reference(VkCommandBuffer cmd){
     vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,s.compute);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,s.layout,0,1,&slot.set,0,nullptr);
     auto control=opaque_reference_control();
     if(s.role_streams)control.frame.flags|=4; // Internal dispatch option; not a caller frame flag.
+    if(fused_retained)control.frame.flags|=16; // Internal filtering/materialization; caller flags remain limited to 0..3.
     bool view_masks=std::getenv("SE_VULKAN_GPU_OPAQUE_VIEW_MASKS")&&std::strcmp(std::getenv("SE_VULKAN_GPU_OPAQUE_VIEW_MASKS"),"1")==0;
     if(view_masks)control.frame.flags|=8;
     uint32_t groups=s.part_count*s.view_count*2,blocks=(groups+63)/64;
     uint32_t timing_at=slot_index*11;if(s.compute_timing){vkCmdResetQueryPool(cmd,s.compute_timing,timing_at,11);vkCmdWriteTimestamp2(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,s.compute_timing,timing_at++);}
-    for(uint32_t stage:{0u,9u,8u,7u,1u,4u,5u,6u,2u,3u}){control.stage=stage;vkCmdPushConstants(cmd,s.layout,VK_SHADER_STAGE_COMPUTE_BIT|VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(control),&control);
+    uint32_t dispatches=0;
+    for(uint32_t stage:{0u,9u,8u,7u,1u,4u,5u,6u,2u,3u}){
+        if(fused_retained&&(stage==8||stage==7)){
+            // Keep all 11 query availabilities/schema positions. Removed
+            // stages are virtual boundaries and aggregate to zero duration.
+            if(s.compute_timing)vkCmdWriteTimestamp2(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,s.compute_timing,timing_at++);continue;}
+        control.stage=stage;vkCmdPushConstants(cmd,s.layout,VK_SHADER_STAGE_COMPUTE_BIT|VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(control),&control);
         uint32_t threads=(stage==9||stage==2)?uint32_t(s.actors.size())*s.view_count:stage==8?s.view_count:stage==5?1:stage==4?blocks:(stage==1||stage==6||stage==3||stage==7)?groups:uint32_t(s.actors.size());uint32_t workgroups=(threads+63)/64,x=std::min(workgroups,65535u),y=(workgroups+x-1)/x;vkCmdDispatch(cmd,x,y,1);
+        ++dispatches;
         opaque_reference_dependency(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT|VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);if(s.compute_timing)vkCmdWriteTimestamp2(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,s.compute_timing,timing_at++);}if(s.compute_timing)s.compute_timing_valid[slot_index]=true;
+    // Stage 3's existing compute->compute dependency makes its arguments/counts
+    // visible to run compaction. Keep the pipeline/set bound, then publish all
+    // compute outputs to graphics together. The CPU run table was flushed before
+    // the host->compute dependency above. Other callers request no stock runs.
+    if(run_count){control.stage=10;vkCmdPushConstants(cmd,s.layout,VK_SHADER_STAGE_COMPUTE_BIT|VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(control),&control);vkCmdDispatch(cmd,(run_count+63)/64,1,1);++dispatches;}
+    record_count("opaque compute dispatches",double(dispatches));record_count("opaque fused retained",fused_retained?1.0:0.0);
     opaque_reference_dependency(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT|VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT|VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|(opaque_conditional?VK_PIPELINE_STAGE_2_CONDITIONAL_RENDERING_BIT_EXT:0)|VK_PIPELINE_STAGE_2_HOST_BIT,
         (opaque_conditional?VK_ACCESS_2_CONDITIONAL_RENDERING_READ_BIT_EXT:0)|VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT|VK_ACCESS_2_SHADER_STORAGE_READ_BIT|VK_ACCESS_2_HOST_READ_BIT);
@@ -372,4 +387,12 @@ void readback_opaque_reference(SevkOpaqueSelector* selectors,uint32_t actor_coun
     auto& s=opaque_reference;if(recording||!s.published||!selectors||!selections||!refs||!args||!draws||!counts||!errors||actor_count!=s.actors.size()||selection_count!=actor_count*s.view_count||ref_capacity!=s.reference_capacity||draw_capacity!=s.draw_capacity*s.view_count||view_count!=s.view_count*s.batch_count)throw std::runtime_error("opaque exact verification readback size");
     wait(next_completion);auto& slot=s.slots[s.last_slot];
     opaque_reference_read(s.selectors,selectors,s.selectors.bytes);opaque_reference_read(slot.selections,selections,selection_count*sizeof(SevkOpaqueSelection));opaque_reference_read(slot.references,refs,slot.references.bytes);opaque_reference_read(slot.args,args,draw_capacity*sizeof(SevkOpaqueIndirect));opaque_reference_read(slot.draws,draws,draw_capacity*sizeof(SevkOpaqueDrawRecord));std::vector<uint32_t> result(view_count+1);opaque_reference_read(slot.counts,result.data(),result.size()*4ull);std::copy_n(result.data(),view_count,counts);*errors=result.back();
+}
+void readback_opaque_predicates(uint32_t* predicates,uint32_t count,uint32_t* errors){
+    auto& s=opaque_reference;
+    if(recording||!s.published||!predicates||!errors||count!=s.view_count)throw std::runtime_error("opaque predicate verification size/state");
+    wait(next_completion);uint32_t prefix=s.view_count*s.batch_count;
+    std::vector<uint32_t> values(size_t(prefix)+1+count);
+    opaque_reference_read(s.slots[s.last_slot].counts,values.data(),values.size()*sizeof(uint32_t));
+    std::copy_n(values.data()+prefix+1,count,predicates);*errors=values[prefix];
 }

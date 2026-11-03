@@ -148,7 +148,8 @@ void queue_world(const void* frame,uint32_t frame_bytes,const float* projection,
         // Validate canonical object slice order before sharing disjoint ranges.
         for(uint32_t i=0;i<count;i++){const auto& d=draws[i];uint64_t at=reinterpret_cast<uintptr_t>(d.object_constants)-1;
             if(!d.object_constants || at%world.alignment || at!=object_cursor || at+d.object_bytes>object_bytes)throw std::runtime_error("invalid world object blob offset");object_cursor+=uint32_t(world_align(d.object_bytes));}
-        auto range=[&](uint32_t begin,uint32_t end){critical_profile::Bind bind(&critical.workers[8+uint64_t(begin)*workers/count]);critical_profile::Scope task(critical_profile::QueueWorker,true);SevkQueueValidationStats stats{sizeof(SevkQueueValidationStats),SEVK_ABI_VERSION,world.texture_validation_cache?1u:0u};WorldTextureValidationCache<> cache;
+        auto* critical_frame=critical.input_frame();
+        auto range=[&](uint32_t begin,uint32_t end){critical_profile::Bind bind(critical_frame?&critical_frame->workers[8+uint64_t(begin)*workers/count]:nullptr);critical_profile::Scope task(critical_profile::QueueWorker,true);SevkQueueValidationStats stats{sizeof(SevkQueueValidationStats),SEVK_ABI_VERSION,world.texture_validation_cache?1u:0u};WorldTextureValidationCache<> cache;
             for(uint32_t i=begin;i<end;i++){const auto& d=draws[i];validate_world_packet(d,stats,cache);WorldDraw own{};own.packet=d;own.object_n=d.object_bytes;own.object_at=uint32_t(reinterpret_cast<uintptr_t>(d.object_constants)-1);
                 if(world.pipelines[d.pipeline].type>=2){own.instance_n=d.instance_count*64;uint64_t at=reinterpret_cast<uintptr_t>(d.instances)-1;if(at%64 || at+own.instance_n>instance_bytes)throw std::runtime_error("invalid world instance blob offset");own.instance_at=uint32_t(at);}
                 own.packet.object_constants=nullptr;own.packet.instances=nullptr;world.current().draws[i]=own;}
@@ -394,18 +395,33 @@ void record_old_main(VkCommandBuffer cmd,WorldSlot& slot,uint32_t phase){
 // NEW main entries: managed draws, GPU-opaque stock batches and native pass groups in stock owner order. Reads only
 // prepared frame state (selection, indirect plan, the recording's pass snapshot, owner orders), so frames without
 // stock entries build it on a worker from the end of prepare (SE_VULKAN_EARLY_MAIN_ENTRIES=0 builds it inline, C1).
-struct NewMainEntry {uint32_t order,part,kind,index;};
+using NewMainEntry=gpu_opaque::MainEntry;
 std::vector<NewMainEntry> new_main_entries;sevk_jobs::Group new_main_job;bool new_main_pending{};
 bool early_main_entries=env_flag("SE_VULKAN_EARLY_MAIN_ENTRIES",true);
-void build_new_main_entries(std::vector<NewMainEntry>& entries,bool with_stock){
+void build_new_main_entries(std::vector<NewMainEntry>& output,bool with_stock){
+    auto& r=opaque_reference;
+    static const bool order_cache_enabled=env_flag("SE_VULKAN_GPU_OPAQUE_MAIN_ORDER_CACHE",true);
+    uint32_t view=with_stock&&gpu_resident.published?gpu_resident.view_map[0]:0;
+    bool stock_visible=with_stock&&opaque_stock.ready&&r.frame_ready&&view<r.view_count&&(r.views[view].flags&1);
+    bool cached=stock_visible&&order_cache_enabled&&gpu_resident.published&&r.view_batches;
+    auto& entries=cached?r.stock_main_order.dynamic:output;
     entries.clear();const auto& selection=world.current().main_selection;const auto* plan=world.indirect_stats.enabled?&world.current().indirect_plans[0]:nullptr;
     const auto& owners=world.current().main_owner_orders;
     auto managed=[&](uint32_t draw,uint32_t index){const auto& d=world.current().draws[draw];if(world_main_phase(d.packet.pipeline,d.packet.flags)==4)entries.push_back({d.main_order?d.main_order:draw+1,d.main_part,0,index});};
     if(plan){for(uint32_t i=0;i<plan->runs.size();++i)managed(selection[plan->runs[i].selection_start],i);}else for(uint32_t i=0;i<selection.size();++i)managed(selection[i],i);
     auto owner_order=[&](uint32_t owner){auto found=owners.find(owner);if(found!=owners.end())return found->second;auto resident=world.resident_main_owners.find(owner);return resident==world.resident_main_owners.end()?UINT32_MAX:resident->second;};
-    auto& r=opaque_reference;
-    if(with_stock&&opaque_stock.ready&&r.frame_ready){
-        uint32_t view=gpu_resident.published?gpu_resident.view_map[0]:0;if(view<r.view_count&&(r.views[view].flags&1)){
+    if(cached){
+        auto batch_info=[&](uint32_t b){
+            struct Info {bool old;uint32_t group,part;};
+            if(opaque_stock.batches.at(b).input.old)return Info{true,0,0};
+            const auto& key=gpu_resident.upload.source.batches.at(b);return Info{false,key.group,key.part};
+        };
+        bool hit=r.stock_main_order.update(r.rec_actors,r.rec_versions,uint32_t(r.family_inputs.size()),
+            world.resident_main_owners,world.resident_main_order_revision,owners,r.recording_batches.at(view),batch_info);
+        record_count("new main stock order reused",hit?1.0:0.0);
+        cpu_lap("new main stock entries");
+    }else if(with_stock&&opaque_stock.ready&&r.frame_ready){
+        if(stock_visible){
             // The recording's actor rows (Build writes the live ones alongside it), in four chunks: owner lookups are reads.
             const auto& actors=r.rec_actors;const uint32_t n=uint32_t(actors.size());std::array<std::vector<uint32_t>,4> orders;
             auto chunk=[&](uint32_t k){auto& order=orders[k];order.assign(r.family_inputs.size(),UINT32_MAX);for(uint32_t i=uint32_t(uint64_t(n)*k/4);i<uint32_t(uint64_t(n)*(k+1)/4);++i){const auto& actor=actors[i];if(!(actor.flags&2))order.at(actor.family)=std::min(order.at(actor.family),owner_order(actor.owner));}};
@@ -425,27 +441,38 @@ void build_new_main_entries(std::vector<NewMainEntry>& entries,bool with_stock){
         for(uint32_t i=0;i<groups.size();++i){const auto& group=groups[i];if(group.key.view!=0||group.kind!=native_pass::Kind::Colour)continue;
             if(group.stream.get()!=cached_stream){cached_stream=group.stream.get();cached_order=UINT32_MAX;for(uint32_t owner:group.stream->owners)cached_order=std::min(cached_order,owner_order(owner));}
             uint32_t order=cached_order;entries.push_back({order==UINT32_MAX?UINT32_MAX-1:order,order==UINT32_MAX?i:group.main_part,2,i});}}
-    if(with_stock)cpu_lap("new main pass entries");
-    std::stable_sort(entries.begin(),entries.end(),[](const NewMainEntry& a,const NewMainEntry& b){return std::tie(a.order,a.part)<std::tie(b.order,b.part);});
     if(with_stock)cpu_lap("new main sort");
+    if(cached)r.stock_main_order.merge(output);
+    else std::stable_sort(entries.begin(),entries.end(),[](const NewMainEntry& a,const NewMainEntry& b){return std::tie(a.order,a.part)<std::tie(b.order,b.part);});
+    if(with_stock)cpu_lap("new main run plan");
 }
 // Plan 4 run merge (SE_VULKAN_GPU_OPAQUE_RUNS=0 turns it off). Consecutive NEW stock entries of the main list that share
-// pipeline, buffers and cull mode draw as one indirect run. The list is built right after the cull dispatch, before the
-// G-buffer; stage 10 copies each run's draws, in list order, into the run region, so the draws and their order are those
+// pipeline, buffers and cull mode draw as one indirect run. The CPU prepares the list/table before culling; stage 10
+// copies each run's draws, in list order, into the run region before the G-buffer, so the draws and their order are those
 // of one indirect draw per batch. An entry that records nothing (other phase, no capacity) does not break a run.
 // A merged run: draws from the run region (base), counted at count_index, up to capacity.
 struct StockRunDraw {uint32_t base,count_index,capacity;};
 bool gpu_opaque_runs=env_flag("SE_VULKAN_GPU_OPAQUE_RUNS",true);bool stock_runs_ready{};
 std::vector<NewMainEntry> stock_run_entries;std::vector<uint32_t> stock_run_of,stock_run_first;std::vector<StockRunDraw> stock_run_draws;
+std::vector<uint64_t> stock_run_keys;std::vector<uint32_t> stock_run_table;
 bool stock_run_entry(uint32_t b){const auto& in=opaque_stock.batches[b].input;return !in.old&&main_geometry_phase(false,in.main_pipeline>=12,0u)==4&&opaque_reference.ranges[b].capacity!=0;}
-void prepare_stock_runs(VkCommandBuffer cmd){
+void prepare_stock_runs(){
     stock_runs_ready=false;auto& r=opaque_reference;auto& s=opaque_stock;
-    if(!gpu_opaque_runs||!s.ready||!r.frame_ready||!world_new_main_ordered()||gpu_owners.enabled||new_main_pending)return;
+    if(!gpu_opaque_runs||!s.ready||!r.frame_ready||!world_new_main_ordered()||new_main_pending)return;
     auto& slot=r.slots[slot_index];if(!r.run_region||!slot.runs.handle||!slot.runs.mapped)return;
     uint32_t view=gpu_resident.published?gpu_resident.view_map[0]:0;if(view>=r.view_count||!(r.views[view].flags&1)||(r.views[view].flags&2))return;
     // The selection record_new_main would use (the G-buffer fills it the same way when there is no indirect plan).
     if(!world.indirect_stats.enabled){auto& selection=world.current().main_selection;selection.clear();for(uint32_t i:world.current().order)if(!(world.current().draws[i].packet.flags&(4096|8192)))selection.push_back(i);}
     build_new_main_entries(stock_run_entries,true);
+    // The plan depends on stock batch identities and where other owners interrupt
+    // their runs. Other owners' per-frame packet indices do not affect the plan;
+    // record_new_main still reads those owners from this frame's entry list.
+    static const bool cache_enabled=env_flag("SE_VULKAN_GPU_OPAQUE_RUN_CACHE",true);
+    auto key=[](const NewMainEntry& e){return (uint64_t(e.kind)<<32)|(e.kind==1?e.index:0u);};
+    bool reuse=cache_enabled&&r.run_plan_valid&&r.run_plan_view==view&&r.run_plan_view_count==r.view_count&&stock_run_keys.size()==stock_run_entries.size();
+    if(reuse)for(size_t i=0;i<stock_run_entries.size();++i)if(stock_run_keys[i]!=key(stock_run_entries[i])){reuse=false;break;}
+    record_count("new main run plan reused",reuse?1.0:0.0);
+    if(!reuse){r.run_plan_valid=false;
     stock_run_of.assign(stock_run_entries.size(),UINT32_MAX);stock_run_first.clear();stock_run_draws.clear();
     const uint32_t region=r.view_count*r.draw_capacity,count_base=r.view_count*r.batch_count+1+r.view_count;
     std::vector<uint32_t> runs,items;uint32_t output=0;const OpaqueStockState::Batch* last=nullptr;
@@ -457,15 +484,18 @@ void prepare_stock_runs(VkCommandBuffer cmd){
         stock_run_draws.back().capacity+=range.capacity;runs[runs.size()-2]++;stock_run_of[i]=uint32_t(stock_run_draws.size()-1);
         items.insert(items.end(),{view*r.draw_capacity+range.first,e.index*r.view_count+view,range.capacity});output+=range.capacity;last=&b;}
     const uint32_t n=uint32_t(stock_run_draws.size());if(!n||output>r.draw_capacity)return;
-    std::vector<uint32_t> table{n,count_base};table.insert(table.end(),runs.begin(),runs.end());table.insert(table.end(),items.begin(),items.end());
-    if(table.size()*4>slot.runs.bytes)return;
+    stock_run_table.assign({n,count_base});stock_run_table.insert(stock_run_table.end(),runs.begin(),runs.end());stock_run_table.insert(stock_run_table.end(),items.begin(),items.end());
+    if(stock_run_table.size()*4>slot.runs.bytes)return;
+    stock_run_keys.clear();stock_run_keys.reserve(stock_run_entries.size());for(const auto& e:stock_run_entries)stock_run_keys.push_back(key(e));
+    r.run_plan_view=view;r.run_plan_view_count=r.view_count;++r.run_plan_revision;r.run_plan_valid=true;
+    }
+    const uint32_t n=uint32_t(stock_run_draws.size());
     // begin_frame waited this slot: its run table is free.
-    std::memcpy(slot.runs.mapped,table.data(),table.size()*4);check(vmaFlushAllocation(allocator,slot.runs.memory,0,table.size()*4),"flush stock run table");
-    opaque_reference_dependency(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT|VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-    vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,r.compute);vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,r.layout,0,1,&slot.set,0,nullptr);
-    auto control=opaque_reference_control();control.stage=10;vkCmdPushConstants(cmd,r.layout,VK_SHADER_STAGE_COMPUTE_BIT|VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(control),&control);vkCmdDispatch(cmd,(n+63)/64,1,1);
-    opaque_reference_dependency(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT|VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT|VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT|VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-    record_count("new main merged runs",double(n));stock_runs_ready=true;
+    // Each slot retains its own table until a different CPU plan is published.
+    if(slot.run_plan_revision!=r.run_plan_revision){std::memcpy(slot.runs.mapped,stock_run_table.data(),stock_run_table.size()*4);check(vmaFlushAllocation(allocator,slot.runs.memory,0,stock_run_table.size()*4),"flush stock run table");slot.run_plan_revision=r.run_plan_revision;}
+    record_count("new main merged runs",double(n));
+    if(gpu_owners.enabled)record_count("new main tracked merged runs",double(n));
+    stock_runs_ready=true;
 }
 // Starts the entry build on a worker at the end of prepare; record_new_main joins it.
 void start_new_main_entries(){
@@ -492,19 +522,22 @@ void record_new_main(VkCommandBuffer cmd,WorldSlot& slot,const VkRenderingInfo* 
             }else{if(entry.kind!=1)bound={};counts.commands+=entry.kind==1?record_opaque_stock_view(target,slot,0,false,nullptr,nullptr,0,nullptr,4,entry.index,indexed_set,&bound):record_pass_view(target,slot,0,false,nullptr,nullptr,0,nullptr,4,entry.index,false);++i;}
         }
     };
-    // SE_VULKAN_PARALLEL_MAIN=1: contiguous entry ranges record into secondaries on the job pool and execute in
-    // order inside a resumed rendering instance (load ops). GPU-opaque stock entries allocate shared descriptors,
-    // so those frames stay serial, as do small ones.
+    // Contiguous entry ranges record into slot-owned secondaries and execute in
+    // the original order. Stock workers share one owner-prepared read-only set;
+    // their bind caches and descriptor-set variables remain worker-local.
     cpu_lap("new main record");record_count("new main entries",double(entries.size()));
     // Merge payoff: runs of consecutive stock entries sharing pipeline and buffers (one indirect draw each if merged).
     if(record_laps.enabled&&opaque_stock.ready){uint32_t stock=0,pass=0,runs=0;const OpaqueStockState::Batch* last=nullptr;
         for(auto& e:entries){if(e.kind!=1){last=nullptr;if(e.kind==2)++pass;continue;}++stock;const auto& b=opaque_stock.batches[e.index];
             if(!last||last->input.old!=b.input.old||last->input.main_pipeline!=b.input.main_pipeline||last->vertices!=b.vertices||last->indices!=b.indices||((last->input.flags^b.input.flags)&1))++runs;last=&b;}
         record_count("new main stock entries",double(stock));record_count("new main pass entries",double(pass));record_count("new main stock runs",double(runs));}bool stock_entries=std::any_of(entries.begin(),entries.end(),[](const Entry& e){return e.kind==1;});
-    uint32_t workers=parallel_main&&resume&&!stock_entries&&entries.size()>=384?std::min<uint32_t>(4,std::min<uint32_t>(uint32_t(entries.size()/192),sevk_jobs::shared().worker_count()+1)):0u;
+    static const bool stock_parallel=env_flag("SE_VULKAN_GPU_OPAQUE_PARALLEL_MAIN",true);
+    uint32_t workers=parallel_main&&resume&&(!stock_entries||stock_parallel)&&entries.size()>=384?std::min<uint32_t>(4,std::min<uint32_t>(uint32_t(entries.size()/192),sevk_jobs::shared().worker_count()+1)):0u;
+    record_count("new main workers",double(workers));
     world.main_tasks=0;
     if(workers<2){Counts counts;VkDescriptorSet indexed_set{};record_range(cmd,0,uint32_t(entries.size()),&indexed_set,counts);
         performance.main_commands+=uint32_t(counts.commands);world.indirect_stats.main_groups+=uint32_t(counts.groups);world.indirect_stats.grouped_draws+=uint32_t(counts.packets);return;}
+    const VkDescriptorSet stock_set=stock_entries?opaque_stock_view_set(slot,false):VK_NULL_HANDLE;
     std::array<VkCommandBuffer,4> secondaries{};std::array<Counts,4> counts{};
     for(uint32_t k=0;k<workers;++k){auto& pool=world.main_pools[slot_index][k];
         if(!pool){VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};info.queueFamilyIndex=queue_family;check(vkCreateCommandPool(device,&info,nullptr,&pool),"create frame-owned main pool");}
@@ -516,7 +549,7 @@ void record_new_main(VkCommandBuffer cmd,WorldSlot& slot,const VkRenderingInfo* 
     std::vector<VkFormat> formats(resume->colorAttachmentCount,VK_FORMAT_UNDEFINED);
     for(uint32_t c=0;c<resume->colorAttachmentCount;++c){if(!resume->pColorAttachments[c].imageView)continue;
         formats[c]=c<3?stock_formats[c]:c==3?VK_FORMAT_R16G16_SFLOAT:attach_vk_format(world.attach[c-4].format);}
-    auto record=[&](uint32_t k){critical_profile::Bind lane(&critical.workers[12+k]);tl_suppress_marks=true;struct Restore{~Restore(){tl_suppress_marks=false;}} restore;
+    auto record=[&](uint32_t k){critical_profile::Bind lane(critical.record_worker(12+k));tl_suppress_marks=true;struct Restore{~Restore(){tl_suppress_marks=false;}} restore;
         VkCommandBuffer target=secondaries[k];
         VkCommandBufferInheritanceRenderingInfo rendering{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO};rendering.colorAttachmentCount=resume->colorAttachmentCount;rendering.pColorAttachmentFormats=formats.data();
         rendering.depthAttachmentFormat=resume->pDepthAttachment&&resume->pDepthAttachment->imageView?VK_FORMAT_D32_SFLOAT:VK_FORMAT_UNDEFINED;rendering.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
@@ -524,7 +557,11 @@ void record_new_main(VkCommandBuffer cmd,WorldSlot& slot,const VkRenderingInfo* 
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT|VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;begin.pInheritanceInfo=&inheritance;
         check(vkBeginCommandBuffer(target,&begin),"begin main secondary");world_viewport(target,resume->renderArea.extent.width,resume->renderArea.extent.height);
         uint32_t first=uint32_t(uint64_t(entries.size())*k/workers),last=uint32_t(uint64_t(entries.size())*(k+1)/workers);
-        record_range(target,first,last,nullptr,counts[k]);check(vkEndCommandBuffer(target),"end main secondary");};
+        // A merged run is emitted only at its global first entry. If it crosses
+        // a partition boundary, the left secondary emits the whole run and the
+        // right skips its continuation; no fallback can interrupt that run.
+        VkDescriptorSet indexed_set=stock_set;
+        record_range(target,first,last,&indexed_set,counts[k]);check(vkEndCommandBuffer(target),"end main secondary");};
     sevk_jobs::Group jobs;for(uint32_t k=1;k<workers;++k)sevk_jobs::shared().submit(jobs,sevk_jobs::Spot,sevk_jobs::Priority::High,[&record,k]{record(k);});
     std::exception_ptr failure;try{record(0);}catch(...){failure=std::current_exception();}
     cpu_lap("new main wait");try{jobs.wait();}catch(...){if(!failure)failure=std::current_exception();}
@@ -585,7 +622,7 @@ void prepare_cascade_commands(){
         auto descriptors=cascade_descriptor_pool(c);check(vkResetDescriptorPool(device,descriptors,0),"reset cascade descriptor pool");}
 }
 GeometryRecordCounts record_cascade_secondary(uint32_t c){
-    critical_profile::Bind critical_lane(&critical.workers[c]);
+    critical_profile::Bind critical_lane(critical.record_worker(c));
     critical_profile::Scope critical_worker(critical_profile::CascadeWorker,true);
     auto command=world.cascade_commands[slot_index][c];
     VkCommandBufferInheritanceRenderingInfo rendering{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO};rendering.depthAttachmentFormat=VK_FORMAT_D32_SFLOAT;rendering.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
@@ -701,7 +738,8 @@ void render_world(){
     // CPU fade dependencies must reach GPU conditional view flags before the
     // selector dispatch. Both paths now observe this frame's immutable inputs.
     cpu_lap("prepare spot fades");update_spot_fade_dependencies(slot,object_offsets,instance_offsets);
-    cpu_lap("prepare opaque reference");if(opaque_stock.ready)prepare_opaque_reference(cmd);gpu_owner_begin_frame();if(opaque_stock.ready)prepare_stock_runs(cmd);
+    cpu_lap("prepare stock run plan");if(opaque_stock.ready)prepare_stock_runs();
+    cpu_lap("prepare opaque reference");if(opaque_stock.ready)prepare_opaque_reference(cmd,stock_runs_ready?uint32_t(stock_run_draws.size()):0u);gpu_owner_begin_frame();
 
     cpu_lap("prepare shadow reuse");auto merge_shadow=[&](GeometryRecordCounts count){performance.shadow_commands+=count.commands;world.indirect_stats.shadow_groups+=count.groups;world.indirect_stats.grouped_draws+=count.packets;};
     auto emit_cascade=[&](uint32_t c){merge_shadow(record_world_selection(cmd,slot,world.current().cascade_casters[c],int(c),world.indirect_stats.enabled?&world.current().indirect_plans[c+1]:nullptr,world.current().indirect_bases[c+1]));performance.shadow_commands+=record_pass_view(cmd,slot,c+1);};

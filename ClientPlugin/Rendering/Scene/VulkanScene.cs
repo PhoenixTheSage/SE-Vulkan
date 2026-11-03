@@ -33,6 +33,8 @@ namespace ClientPlugin.Rendering.Scene
             public MyActor Actor;
             // The game actor id, cached at creation: Build never reads the MyActor (frame split, milestone 2).
             public uint Id;
+            public PackedActorBounds.Lease BoundsLease;public int BoundsIndex=-1;public long BoundsToken;
+            public DenseGpuVisibility.Registration VisibilityRegistration;
             public readonly ActorFrame[] Frames={new ActorFrame(),new ActorFrame(),new ActorFrame()};
             public uint CandidateStamp;
             // Dirty marks made during Apply, folded into the Build flags at the latch (VulkanSceneHandoff).
@@ -59,7 +61,8 @@ namespace ClientPlugin.Rendering.Scene
             public Color Color = Color.White;
             public Vector3 Hsv;
             public float Dithering;
-            public RenderFlags Flags;
+            RenderFlags flags;
+            public RenderFlags Flags{get=>flags;set{flags=value;VisibilityRegistration?.SetFlags((uint)value);}}
             public string ConvertedOldMaterial;
             public uint InstanceBuffer = uint.MaxValue;
             public int InstanceStart, InstanceCount;
@@ -92,7 +95,9 @@ namespace ClientPlugin.Rendering.Scene
             public MatrixD ShadowPose;
             public Vector3D ShadowCenter;
             public float ShadowRadius;
-            public ulong GpuHandle,GpuFamily,GpuSource;public bool GpuOwned,GpuOld,GpuBindingDirty=true,GpuAppearanceDirty=true;public byte[] GpuSourceBytes,GpuObjectDefaults;public object GpuObjectLayout;public uint GpuType,GpuAppearanceCount;public string GpuFallbackReason;
+            public ulong GpuHandle,GpuFamily,GpuSource;bool gpuOwned;
+            public bool GpuOwned{get=>gpuOwned;set{gpuOwned=value;VisibilityRegistration?.SetOwned(value);}}
+            public bool GpuOld,GpuBindingDirty=true,GpuAppearanceDirty=true;public byte[] GpuSourceBytes,GpuObjectDefaults;public object GpuObjectLayout;public uint GpuType,GpuAppearanceCount;public string GpuFallbackReason;
             public bool HaveShadowPose, DynamicShadow;
             public bool SizeCulled;
             public ulong PassHandle;public PassFamily PassFamily;public bool PassOwned,PassBindingDirty=true,PassAppearanceDirty=true;
@@ -508,7 +513,10 @@ namespace ClientPlugin.Rendering.Scene
             actor.Construct(name ?? "Vulkan actor " + id); actor.SetID(id); actor.SetMatrix(ref world);
             actor.OnRotationChanged += angle => Interlocked.Increment(ref renderDirectRotationUpdates);
             actor.SetVisibility((flags & RenderFlags.Visible) != 0);
-            var data = new ActorData { Actor = actor, Id = id, Flags = flags };NoteActorFrame(data);
+            var data = new ActorData { Actor = actor, Id = id, Flags = flags };
+            if(backend.GpuSceneEnabled&&(GpuVisiblePacked||GpuVisiblePackedVerify)){data.BoundsLease=packedActorBounds.Rent();data.BoundsIndex=data.BoundsLease.Index;data.BoundsToken=data.BoundsLease.Token;
+                data.VisibilityRegistration=denseGpuVisibility.Create(data,id,data.BoundsIndex,data.BoundsToken,(uint)flags);}
+            NoteActorFrame(data);
             actors.Add(id, data);LogActor(id,data);
             var observer=new ResidentActorObserver(this);observer.Construct();actor.AddComponent<ResidentActorObserver>(observer);
             MarkMembershipDirty();
@@ -600,6 +608,7 @@ namespace ClientPlugin.Rendering.Scene
             var candidateList=drawCandidates as List<ActorData>;bool planned=candidateList!=null&&ParallelTraversalEnabled&&candidateList.Count>=256;
             if(planned)using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.CandidatePlan,false))PlanCandidates(candidateList);
             int candidateIndex=0;bool stableOrder=target.StableMainOrderEnabled;
+            var gpuVisibleFrustum=new FrustumVisibility(frustum);
             foreach (var data in drawCandidates)
             {
                 // Stable main order: pass-owned actors' orders are resident in native, and cell-owned (OLD)
@@ -609,7 +618,7 @@ namespace ClientPlugin.Rendering.Scene
                 if(planned){var plan=candidatePlans[candidateIndex++];ancestorsVisible=plan.Visible;ownerKey=plan.Key;}
                 else{ancestorsVisible=data.Model!=null&&BuildFrameOf(data).Visible;ownerKey=ancestorsVisible&&(data.Flags&RenderFlags.SkipInMainView)==0?MainGroupKey(data,true):null;}
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.MainOwnerDeclare,false))if(ownerKey!=null)target.DeclareMainOwner(data.Id,ownerKey);
-                if(data.GpuOwned){if((data.Flags&RenderFlags.SkipInMainView)==0&&(frustum==null||frustum.Contains(BuildFrameOf(data).Bounds)!=ContainmentType.Disjoint))visible.Add(data.Id);continue;}if(data.PassOwned||data.CellOwned)continue;
+                if(data.GpuOwned){if((data.Flags&RenderFlags.SkipInMainView)==0&&GpuVisibleBounds(in gpuVisibleFrustum,in BuildFrameOf(data).Bounds))visible.Add(data.Id);continue;}if(data.PassOwned||data.CellOwned)continue;
                 long actorStarted = Stopwatch.GetTimestamp();
                 bool actorVisible;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorAncestorVisibility,false))actorVisible=ancestorsVisible&&((data.Flags&RenderFlags.SkipInMainView)==0 || NewActorViewsEnabled);
                 if (!actorVisible) { profileCullTicks += Stopwatch.GetTimestamp() - actorStarted; continue; }
@@ -672,9 +681,7 @@ namespace ClientPlugin.Rendering.Scene
             }
             // GPU-owned actors are out of the index and skipped above: the same main-view test, in one pass.
             if(stableOrder&&GpuOwnedOutOfIndex&&gpuOwnedActors.Count!=0)using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GpuOwnedVisible)){
-                foreach(var data in gpuOwnedActors){var frame=BuildFrameOf(data);if(frame.Destroyed||!data.GpuOwned){gpuOwnedStale.Add(data);continue;}
-                    if((data.Flags&RenderFlags.SkipInMainView)==0&&(frustum==null||frustum.Contains(frame.Bounds)!=ContainmentType.Disjoint))visible.Add(data.Id);}
-                foreach(var data in gpuOwnedStale)gpuOwnedActors.Remove(data);gpuOwnedStale.Clear();}
+                PublishGpuOwnedVisible(in gpuVisibleFrustum);}
             cullStarted = Stopwatch.GetTimestamp();
             if(target.WorldReady&&!nativePassActive&&!gpuActive){EndOcclusion();EndShadowGroupOcclusion();target.ShadowExclusions=frameShadowExclusions.ToArray();}
             profileCullTicks += Stopwatch.GetTimestamp() - cullStarted;
@@ -1112,16 +1119,19 @@ namespace ClientPlugin.Rendering.Scene
                 actors.Remove(id); LogActor(id,null); actor.Actor.Destruct();
             }
             shadowIgnores.Remove(id);dirtyShadowOwners.Remove(id);spotByOwner.Remove(id);foreach(var values in shadowIgnores.Values)values.Remove(id);
-            if(applyHighlights.Remove(id)|applyOverlappingHighlights.Remove(id))highlightsChanged=true;if(applyInstances.Remove(id))MarkInstances(id); visible.Remove(id);
+            if(applyHighlights.Remove(id)|applyOverlappingHighlights.Remove(id))highlightsChanged=true;if(applyInstances.Remove(id))MarkInstances(id);
         }
 
         public override void Clear()
         {
+            WriteGpuVisibleProfile();
             // Unload runs with Build joined: flush the queued Build work and act on Build state directly.
             LatchBuildOps();FlushBuildOps();bool wasBuilding=building;building=true;
             try{
             foreach (uint id in new List<uint>(actors.Keys)) Remove(id);
             SyncBuildActors();
+            packedActorBounds.Clear();
+            denseGpuVisibility.Clear();
             applyPassDirty.Clear();applyCellDirty.Clear();applyCellPoseDirty.Clear();applyGpuDirty.Clear();applyGroupDirty.Clear();applyMembershipDirty=false;
             foreach (var light in new List<VulkanLightComponent>(lights)) light.Owner?.Destruct();
             instances.Clear();applyInstances.Clear();instancesChanged.Clear(); lights.Clear(); visible.Clear();

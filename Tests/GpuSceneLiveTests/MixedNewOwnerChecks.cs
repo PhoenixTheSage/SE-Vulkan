@@ -14,7 +14,7 @@ partial class Program
     {
         const int size=64;string output=Path.GetFullPath("TestResults/MixedNewOwners");Directory.CreateDirectory(output);
         var actors=(System.Collections.IDictionary)typeof(VulkanScene).GetField("actors",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;
-        bool Owned(uint id,string field){var data=actors[id]!;return (bool)data.GetType().GetField(field)!.GetValue(data)!;}
+        bool Owned(uint id,string field){var data=actors[id]!;return (bool)ActorMember(data,field)!;}
         byte[][] Capture(string label){render();var buffers=Enumerable.Range(0,4).Select(i=>backend.ReadbackWorldGbuffer((uint)i,size,size)).ToArray();for(int i=0;i<4;i++)File.WriteAllBytes(Path.Combine(output,label+"-"+i+".bin"),buffers[i]);return buffers;}
         scene.Process(new MyRenderMessageRemoveRenderObject{ID=200});backend.SetGeometryArena(true);
         string first=MeshDecalFixtureAssets.Model(Path.Combine(output,"First"),MyMeshDrawTechnique.DECAL_CUTOUT,1,255);

@@ -17,6 +17,9 @@
 void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
 void ok(int result, void* ctx) { if (result != 0) throw std::runtime_error(sevk_last_error(ctx)); }
 void identity(float* matrix) { std::memset(matrix, 0, 64); matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1; }
+#if defined(_WIN32)
+#include "async_submit_fault.h"
+#endif
 VKAPI_ATTR VkResult VKAPI_CALL old_loader_version(uint32_t* version) { *version=VK_API_VERSION_1_3;return VK_SUCCESS; }
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL old_loader_proc(VkInstance,const char* name) {
     return std::strcmp(name,"vkEnumerateInstanceVersion")==0?reinterpret_cast<PFN_vkVoidFunction>(old_loader_version):nullptr;
@@ -125,7 +128,17 @@ int main(int argc, char** argv) {
             RECT rect{0,0,64,64};AdjustWindowRect(&rect,WS_OVERLAPPEDWINDOW,FALSE);
             HWND window=CreateWindowW(cls.lpszClassName,L"SE-Vulkan hidden smoke",WS_OVERLAPPEDWINDOW,0,0,rect.right-rect.left,rect.bottom-rect.top,nullptr,nullptr,cls.hInstance,nullptr);
             require(window!=nullptr,"create hidden presentation window");info.platform=1;info.window=window;
+            bool fault_frame=argc>3&&std::strcmp(argv[3],"--fifo-frame-fault")==0;
+            bool fault_upload=argc>3&&std::strcmp(argv[3],"--fifo-upload-fault")==0;
+            if(fault_frame||fault_upload)submit_fault::install(info);
             ok(sevk_create(&info,&context),context);
+            if(fault_frame||fault_upload){
+                bool exercised=submit_fault::run(context,fault_upload);
+                sevk_destroy(context);context=nullptr;DestroyWindow(window);UnregisterClassW(cls.lpszClassName,cls.hInstance);
+                require(submit_fault::renderer_debug&&submit_fault::validation_errors==0,"validation clean through terminal HWND destruction");
+                if(!exercised){std::cout<<"No effective FIFO submission on the HWND device\n";return 77;}
+                std::cout<<"HWND "<<(fault_upload?"upload/dependent frame":"frame")<<" FIFO fault: original VkResult, successful frames/presents 2/2, zero validation errors, teardown completed\n";return 0;
+            }
             SevkPresentationStats presentation{sizeof(SevkPresentationStats),SEVK_ABI_VERSION};
             ok(sevk_get_presentation_stats(context,&presentation),context);
             require(sizeof(presentation)==32 && presentation.swapchain==1 && presentation.surface_ready==1 && presentation.vsync==0 && presentation.mode<=VK_PRESENT_MODE_FIFO_RELAXED_KHR && presentation.images>=2 && presentation.generation>0,"actual HWND presentation state");
@@ -163,10 +176,18 @@ int main(int argc, char** argv) {
             std::cout<<"HWND surface extent "<<stats.width<<'x'<<stats.height<<'\n';
             require(stats.presented_frames==7 && stats.validation_errors==0,"presented frame/validation counters");
             ok(sevk_set_async_present(context,1),context);
+            const bool test_submit=argc>3 && std::strcmp(argv[3],"--verify-async-submit")==0;
+            if(test_submit){
+                require(stats.validation_enabled,"async-submit HWND requires an active validation layer");
+                // Allow the next BeginFrame to overlap first-use worker startup. A readback
+                // or stats query between these submits would serialize that handoff.
+                for(unsigned i=0;i<8;++i){ok(sevk_begin_frame(context,&frame),context);ok(sevk_end_frame(context),context);}
+            }
             for(unsigned i=0;i<20;++i){ok(sevk_begin_frame(context,&frame),context);ok(sevk_request_readback(context),context);ok(sevk_end_frame(context),context);std::vector<uint8_t> pixels(stats.width*stats.height*4);ok(sevk_readback(context,pixels.data(),pixels.size()),context);require(pixels[0]>240&&pixels[1]<10,"async present preserves queued capture bytes");if(i==8){ok(sevk_resize(context,0,0,0),context);ok(sevk_begin_frame(context,&frame),context);ok(sevk_end_frame(context),context);ok(sevk_resize(context,64,64,0),context);}}
             ok(sevk_set_async_present(context,0),context);ok(sevk_get_present_flow_stats(context,&flow),context);
-            require(flow.completed_calls==28&&flow.pending==0&&flow.enabled==0&&flow.total_interval_ns>0&&flow.total_call_ns>0,"completed presentation calls counted after explicit worker join");
-            stats.size=sizeof(stats);ok(sevk_get_stats(context,&stats),context);require(stats.presented_frames==28&&stats.validation_errors==0,"async present resize/suspend-restore/mode switch has clean validation and actual presentation coverage");
+            const unsigned joined_frames=test_submit?36:28;
+            require(flow.completed_calls==joined_frames&&flow.pending==0&&flow.enabled==0&&flow.total_interval_ns>0&&flow.total_call_ns>0,"completed presentation calls counted after explicit worker join");
+            stats.size=sizeof(stats);ok(sevk_get_stats(context,&stats),context);require(stats.presented_frames==joined_frames&&stats.validation_errors==0,"async present resize/suspend-restore/mode switch has clean validation and actual presentation coverage");
             // Display bit 64 (low latency) leaves the decoupled present for the direct one and returns when cleared.
             ok(sevk_set_async_present(context,1),context);
             for(uint32_t flags: {64u,0u,64u,0u}){
@@ -176,7 +197,7 @@ int main(int argc, char** argv) {
                     require(pixels[0]>240&&pixels[1]<10,"low-latency present switch keeps the composed frame");}
             }
             ok(sevk_set_async_present(context,0),context);
-            stats.size=sizeof(stats);ok(sevk_get_stats(context,&stats),context);require(stats.presented_frames==40&&stats.validation_errors==0,"low-latency present switch presents every frame with clean validation");
+            stats.size=sizeof(stats);ok(sevk_get_stats(context,&stats),context);require(stats.presented_frames==joined_frames+12&&stats.validation_errors==0,"low-latency present switch presents every frame with clean validation");
             require(GetModuleHandleW(L"d3d11.dll")==nullptr,"native presentation must not load D3D11");
             sevk_destroy(context);context=nullptr;DestroyWindow(window);UnregisterClassW(cls.lpszClassName,cls.hInstance);
             std::cout<<"Native HWND presentation, pre-present capture, and no-D3D11 smoke passed\n";return 0;

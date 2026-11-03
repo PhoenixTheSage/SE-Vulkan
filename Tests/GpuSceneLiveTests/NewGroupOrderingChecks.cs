@@ -14,7 +14,7 @@ partial class Program
     {
         const int size=64;string output=Path.GetFullPath("TestResults/NewGroupOrdering");Directory.CreateDirectory(output);
         var actors=(System.Collections.IDictionary)typeof(VulkanScene).GetField("actors",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;
-        bool Owned(uint id,string field){var data=actors[id]!;return (bool)data.GetType().GetField(field)!.GetValue(data)!;}
+        bool Owned(uint id,string field){var data=actors[id]!;return (bool)ActorMember(data,field)!;}
         byte[][] Capture(string label){render();var buffers=Enumerable.Range(0,4).Select(i=>backend.ReadbackWorldGbuffer((uint)i,size,size)).ToArray();for(int i=0;i<4;i++)File.WriteAllBytes(Path.Combine(output,label+"-"+i+".bin"),buffers[i]);return buffers;}
         void Visible(uint id,bool value)=>scene.Process(new MyRenderMessageUpdateRenderObjectVisibility{ID=id,Visible=value});
         scene.Process(new MyRenderMessageRemoveRenderObject{ID=200});scene.GpuOpaqueOwnershipEnabled=false;scene.NativePassSceneEnabled=false;backend.SetGeometryArena(true);

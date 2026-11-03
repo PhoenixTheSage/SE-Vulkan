@@ -20,6 +20,15 @@ param(
     [switch]$MeshInstanceFade,
     [switch]$Postprocessing,
     [switch]$AnomalyParity,
+    [switch]$Reflex,
+    [switch]$ReflexSettings,
+    [switch]$ReflexResize,
+    [switch]$ReflexFailure,
+    [switch]$ReflexOwner,
+    [switch]$ReflexMinimize,
+    [switch]$ReflexTiming,
+    [switch]$ReflexOverlay,
+    [switch]$DisableSteamOverlay,
     [switch]$LightingDiagnostics,
     [switch]$StaticLightingDiagnostics,
     [switch]$StockShadowSchedule,
@@ -32,6 +41,13 @@ param(
     [string]$RenderDocDirectory
 )
 $ErrorActionPreference = 'Stop'
+if($ReflexOverlay -and (!$Reflex -or $ReflexTiming -or $ReflexSettings -or $ReflexResize -or $ReflexFailure -or $ReflexOwner -or $ReflexMinimize -or $AnomalyParity)){throw 'ReflexOverlay requires an independent Reflex fixture.'}
+if($ReflexSettings -and !$Reflex){throw 'ReflexSettings requires Reflex.'}
+if($ReflexResize -and (!$Reflex -or $ReflexSettings)){throw 'ReflexResize requires Reflex and runs separately from ReflexSettings.'}
+if($ReflexFailure -and (!$Reflex -or $ReflexSettings -or $ReflexResize)){throw 'ReflexFailure requires Reflex and an independent scenario.'}
+if($ReflexOwner -and (!$Reflex -or $ReflexSettings -or $ReflexResize -or $ReflexFailure)){throw 'ReflexOwner requires Reflex and an independent scenario.'}
+if($ReflexMinimize -and (!$Reflex -or $ReflexSettings -or $ReflexResize -or $ReflexFailure -or $ReflexOwner)){throw 'ReflexMinimize requires Reflex and an independent visible scenario.'}
+if($ReflexTiming -and (!$Reflex -or $ReflexSettings -or $ReflexResize -or $ReflexFailure -or $ReflexOwner -or $ReflexMinimize -or $AnomalyParity -or $MeshDecals -or $GlassOverlap -or $Planets -or $Asteroids -or $Postprocessing -or $Transparency)){throw 'ReflexTiming requires an independent Reflex fixture.'}
 if($MeshOldOrder -and (!$MeshDecals -or $MeshRaster -or $MeshInstanceColor -or $MeshDecalOverlap -or $MeshDecalCutout)){throw 'MeshOldOrder requires independent MeshDecals mode.'}
 if($MeshHdr16 -and !$MeshDecals){throw 'MeshHdr16 is a paired material-fixture HDR-format diagnostic and requires MeshDecals.'}
 if($MeshImmediateProbes -and !$MeshDecals){throw 'MeshImmediateProbes requires the paired MeshDecals diagnostic.'}
@@ -65,11 +81,20 @@ $builtPlugin = Join-Path $repository 'ClientPlugin/bin/Release/net48/Vulkan.dll'
 if(($GlassOverlap -or $MeshDecals) -and !(Test-Path -LiteralPath (Join-Path $repository 'Native/build/Release/se_vulkan_native.dll'))){throw 'Build the current native renderer before the isolated material fixture.'}
 & dotnet build (Join-Path $repository 'ClientPlugin/ClientPlugin.csproj') -c Release -p:RunPostBuildEvent=Never
 if ($LASTEXITCODE -ne 0) { throw 'Current managed renderer build failed.' }
-if ($AnomalyParity) {
+if ($AnomalyParity -or $Reflex) {
     $anomalyRoot = [IO.Path]::GetFullPath((Join-Path $repository '../Anomaly'))
     & dotnet build (Join-Path $anomalyRoot 'ClientPlugin/ClientPlugin.csproj') -c Release -m:1 -p:BuildInParallel=false -p:RunPostBuildEvent=Never
     if ($LASTEXITCODE -ne 0) { throw 'Current Anomaly build failed.' }
-    if (!(Test-Path -LiteralPath (Join-Path $repository 'Native/build/Release/se_vulkan_native.dll'))) { throw 'Build the current native renderer before the parity fixture.' }
+    $requiredNative=if($Reflex){'Native/build-reflex/Release/se_vulkan_native.dll'}else{'Native/build/Release/se_vulkan_native.dll'}
+    if (!(Test-Path -LiteralPath (Join-Path $repository $requiredNative))) { throw 'Build the selected current native renderer before the fixture.' }
+}
+if($Reflex) {
+    $reflexRoot=[IO.Path]::GetFullPath((Join-Path $repository '../SE-Reflex'))
+    $fgRoot=[IO.Path]::GetFullPath((Join-Path $repository '../SE-FG'))
+    foreach($root in @($reflexRoot,$fgRoot)) {
+        & dotnet build (Join-Path $root 'ClientPlugin/ClientPlugin.csproj') -c Release -p:RunPostBuildEvent=Never
+        if($LASTEXITCODE -ne 0){throw "Reflex fixture dependency build failed: $root"}
+    }
 }
 if (!(Test-Path -LiteralPath $builtPlugin)) { throw 'Build the Release managed plugin first.' }
 & dotnet build (Join-Path $PSScriptRoot 'CreativeFixtureHarness.csproj') -c Release -p:RunPostBuildEvent=Never
@@ -102,13 +127,14 @@ Copy-Item -LiteralPath (Join-Path $repository 'Vulkan.xml') -Destination (Join-P
 Copy-FixtureAssets (Join-Path $repository 'Assets') (Join-Path $vulkanLocal 'Assets')
 $anomalyId = ''
 $anomalySha = ''
-if ($AnomalyParity -or $GlassOverlap -or $MeshDecals) {
-    Copy-Item -LiteralPath (Join-Path $repository 'Native/build/Release/se_vulkan_native.dll') -Destination (Join-Path $vulkanLocal 'Assets/Native/win-x64/se_vulkan_native.dll')
+if ($AnomalyParity -or $GlassOverlap -or $MeshDecals -or $Reflex) {
+    $nativeBuild=if($Reflex){'Native/build-reflex'}else{'Native/build'}
+    Copy-Item -LiteralPath (Join-Path $repository "$nativeBuild/Release/se_vulkan_native.dll") -Destination (Join-Path $vulkanLocal 'Assets/Native/win-x64/se_vulkan_native.dll')
     # Keep private native shader interfaces paired with this build, without
     # deploying either artifact into the normal asset directory.
-    Copy-Item -Path (Join-Path $repository 'Native/build/shaders/*.spv') -Destination (Join-Path $vulkanLocal 'Assets/Shaders/Compiled')
+    Copy-Item -Path (Join-Path $repository "$nativeBuild/shaders/*.spv") -Destination (Join-Path $vulkanLocal 'Assets/Shaders/Compiled')
 }
-if ($AnomalyParity) {
+if ($AnomalyParity -or $Reflex) {
     $anomalyLocal = Join-Path $edition 'Local/Anomaly'
     New-Item -ItemType Directory -Force -Path $anomalyLocal | Out-Null
     $anomalyBuilt = Join-Path $anomalyRoot 'ClientPlugin/bin/Release/net48'
@@ -124,6 +150,18 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'bin/Release/net48/CreativeFixtu
 if(($LightingDiagnostics -or $MeshDecals) -and $Backend -eq 'Dx11') {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../CreativeFixtureHarness.Dx11/bin/Release/net48/CreativeFixtureHarness.Dx11.dll') -Destination $harnessLocal
 }
+$reflexIds=''
+if($Reflex) {
+    foreach($item in @(@($reflexRoot,'Reflex','Reflex.xml'),@($fgRoot,'SpaceEngineersFrameGen','FrameGen.xml'))) {
+        $destination=Join-Path $edition ('Local/'+$item[1]);New-Item -ItemType Directory -Force -Path $destination | Out-Null
+        $built=Join-Path $item[0] 'ClientPlugin/bin/Release/net48'
+        Copy-Item -LiteralPath (Join-Path $built ($item[1]+'.dll')) -Destination (Join-Path $destination 'plugin.dll')
+        Copy-Item -LiteralPath (Join-Path $item[0] $item[2]) -Destination (Join-Path $destination 'plugin.xml')
+        if(Test-Path -LiteralPath (Join-Path $built ($item[1]+'.Dx11.dll'))){Copy-Item -LiteralPath (Join-Path $built ($item[1]+'.Dx11.dll')) -Destination $destination}
+        if(Test-Path -LiteralPath (Join-Path $item[0] 'Assets')){Copy-FixtureAssets (Join-Path $item[0] 'Assets') (Join-Path $destination 'Assets')}
+    }
+    $reflexIds='<string>3B11A1D9-4C54-47DA-97D5-DCF60BBAFAA2</string><string>737958D2-DAE2-4649-AC09-BAE1C7925E15</string>'
+}
 $observerId = ''
 if ($ObserveD3D11) {
     $observerLocal = Join-Path $edition 'Local/D3D11DeviceObserver'
@@ -134,7 +172,7 @@ if ($ObserveD3D11) {
 $profile = Join-Path $edition 'Profiles/CreativeFixture.xml'
 @"
 <?xml version="1.0" encoding="utf-8"?>
-<Profile><Name>Isolated $Backend Creative fixture</Name><GitHub /><DevFolder /><Local><string>AE72EBB8-F4A8-4ADB-A400-19CC46FDAB79</string>$anomalyId<string>CreativeFixtureHarness.dll</string>$observerId</Local><Mods /></Profile>
+<Profile><Name>Isolated $Backend Creative fixture</Name><GitHub /><DevFolder /><Local><string>AE72EBB8-F4A8-4ADB-A400-19CC46FDAB79</string>$anomalyId$reflexIds<string>CreativeFixtureHarness.dll</string>$observerId</Local><Mods /></Profile>
 "@ | Set-Content -LiteralPath $profile -Encoding utf8
 @'
 <?xml version="1.0" encoding="utf-8"?>
@@ -153,6 +191,14 @@ Copy-Item -LiteralPath (Join-Path $pulsarSource 'Legacy/config.xml') -Destinatio
 <item><Key>WindowMode</Key><Value><Value xsi:type="xsd:string">0</Value></Value></item>
 </dictionary></Data></MyObjectBuilder_ConfigData>
 '@ | Set-Content -LiteralPath (Join-Path $gameData 'SpaceEngineers.cfg') -Encoding utf8
+if($Reflex) {
+    $fixtureConfig=Join-Path $gameData 'SpaceEngineers.cfg'
+    [xml]$fixtureXml=Get-Content -LiteralPath $fixtureConfig -Raw
+    $entry=$fixtureXml.CreateElement('item');$key=$fixtureXml.CreateElement('Key');$key.InnerText='VerticalSync';$entry.AppendChild($key) | Out-Null
+    $outer=$fixtureXml.CreateElement('Value');$value=$fixtureXml.CreateElement('Value');$value.SetAttribute('type','http://www.w3.org/2001/XMLSchema-instance','xsd:string') | Out-Null;$value.InnerText='0'
+    $outer.AppendChild($value) | Out-Null;$entry.AppendChild($outer) | Out-Null;$fixtureXml.SelectSingleNode('//dictionary').AppendChild($entry) | Out-Null
+    $fixtureXml.Save($fixtureConfig)
+}
 if($LightingDiagnostics -or $GlassOverlap -or $MeshDecals) {
     # Device auto-detection differs between backends. Seed every compared
     # quality setting before startup; the harness reapplies and records the
@@ -176,6 +222,7 @@ if (!$ValidationLayerPath) { $ValidationLayerPath = Join-Path $repository 'Nativ
 $layerDirectory = [IO.Path]::GetFullPath($ValidationLayerPath)
 if ($Backend -eq 'Vulkan' -and !(Test-Path -LiteralPath (Join-Path $layerDirectory 'VkLayer_khronos_validation.json'))) { throw "Private validation layer missing: $layerDirectory" }
 $environmentChanges = @{
+    SE_VULKAN_REFLEX_FIXTURE=([int]$Reflex.IsPresent).ToString()
     SE_VULKAN_POSTPROCESS_FIXTURE=([int]$Postprocessing.IsPresent).ToString()
     SE_VULKAN_ANOMALY_PARITY=([int]$AnomalyParity.IsPresent).ToString()
     SE_VULKAN_LIGHTING_DIAGNOSTICS=([int]$LightingDiagnostics.IsPresent).ToString()
@@ -191,6 +238,13 @@ $environmentChanges = @{
     SE_VULKAN_MESH_DECAL_OVERLAP=([int]$MeshDecalOverlap.IsPresent).ToString()
     SE_VULKAN_MESH_DECAL_CUTOUT=([int]$MeshDecalCutout.IsPresent).ToString()
     SE_VULKAN_CREATIVE_FIXTURE='1'
+    SE_VULKAN_REFLEX_SETTINGS=([int]$ReflexSettings.IsPresent).ToString()
+    SE_VULKAN_REFLEX_RESIZE=([int]$ReflexResize.IsPresent).ToString()
+    SE_VULKAN_REFLEX_FAILURE=([int]$ReflexFailure.IsPresent).ToString()
+    SE_VULKAN_REFLEX_OWNER=([int]$ReflexOwner.IsPresent).ToString()
+    SE_VULKAN_REFLEX_MINIMIZE=([int]$ReflexMinimize.IsPresent).ToString()
+    SE_VULKAN_REFLEX_TIMING=([int]$ReflexTiming.IsPresent).ToString()
+    SE_VULKAN_REFLEX_OVERLAY=([int]$ReflexOverlay.IsPresent).ToString()
     SE_VULKAN_CREATIVE_REPORT_DIR=$reports
     SE_VULKAN_CREATIVE_USER_DATA=$gameData
     SE_VULKAN_CREATIVE_DURATION_SECONDS=$DurationSeconds.ToString()
@@ -236,6 +290,7 @@ if ($StockShadowFit) { $environmentChanges.SE_VULKAN_STOCK_SHADOW_FIT = '1' }
 if ($StockActorLods) { $environmentChanges.SE_VULKAN_ACTOR_LODS = '1' }
 if ($StockNewActorViews) { $environmentChanges.SE_VULKAN_NEW_ACTOR_VIEWS = '1' }
 if ($StaticLightingDiagnostics) { $environmentChanges.SE_VULKAN_STATIC_LIGHTING_DIAGNOSTICS = '1' }
+if ($DisableSteamOverlay) { $environmentChanges.DISABLE_VK_LAYER_VALVE_steam_overlay_1 = '1' }
 if ($RenderDocDirectory) {
     if ($Backend -ne 'Vulkan') { throw 'This capture mode requires the native Vulkan fixture.' }
     $renderDoc = [IO.Path]::GetFullPath($RenderDocDirectory)
@@ -248,7 +303,7 @@ if ($RenderDocDirectory) {
 $arguments = '-bin64 "{0}" -profile "{1}" -appdata "{2}" -noUpdate -noSplash -noDiscord -noStats -noPrompt -stableLogs' -f $gameBin,$profile,$gameData
 if ($PrepareOnly) {
     [pscustomobject]@{RunRoot=$runRoot;Backend=$Backend;DurationSeconds=$DurationSeconds;Executable=(Join-Path $portable 'Legacy.exe');WorkingDirectory=$portable;Arguments=$arguments;Environment=$environmentChanges} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $runRoot 'prepared.json') -Encoding utf8
-    [pscustomobject]@{RunRoot=$runRoot;Prepared=$true;AnomalyParity=[bool]$AnomalyParity;AnomalySha256=$anomalySha;PluginSha256=(Get-FileHash -LiteralPath $builtPlugin -Algorithm SHA256).Hash;NativeSha256=(Get-FileHash -LiteralPath (Join-Path $vulkanLocal 'Assets/Native/win-x64/se_vulkan_native.dll') -Algorithm SHA256).Hash} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runRoot 'launch.json') -Encoding utf8
+    [pscustomobject]@{RunRoot=$runRoot;Prepared=$true;Reflex=[bool]$Reflex;ReflexMinimize=[bool]$ReflexMinimize;ReflexTiming=[bool]$ReflexTiming;ReflexOverlay=[bool]$ReflexOverlay;SteamOverlayDisabled=[bool]$DisableSteamOverlay;AnomalyParity=[bool]($AnomalyParity -or $Reflex);AnomalySha256=$anomalySha;PluginSha256=(Get-FileHash -LiteralPath $builtPlugin -Algorithm SHA256).Hash;NativeSha256=(Get-FileHash -LiteralPath (Join-Path $vulkanLocal 'Assets/Native/win-x64/se_vulkan_native.dll') -Algorithm SHA256).Hash} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runRoot 'launch.json') -Encoding utf8
     Write-Output "PREPARED_RUN_ROOT=$runRoot"
     return
 }
@@ -258,7 +313,7 @@ try {
 } finally {
     foreach ($key in $previous.Keys) { [Environment]::SetEnvironmentVariable($key, $previous[$key], 'Process') }
 }
-$launch = [pscustomobject]@{RunRoot=$runRoot;ProcessId=$launched.Id;Backend=$Backend;DurationSeconds=$DurationSeconds;Width=640;Height=480;AnomalyParity=[bool]$AnomalyParity;AnomalySha256=$anomalySha;PluginSha256=(Get-FileHash -LiteralPath $builtPlugin -Algorithm SHA256).Hash;NativeSha256=(Get-FileHash -LiteralPath (Join-Path $vulkanLocal 'Assets/Native/win-x64/se_vulkan_native.dll') -Algorithm SHA256).Hash;Arguments=$arguments}
+$launch = [pscustomobject]@{RunRoot=$runRoot;ProcessId=$launched.Id;Backend=$Backend;DurationSeconds=$DurationSeconds;Width=640;Height=480;Reflex=[bool]$Reflex;AnomalyParity=[bool]($AnomalyParity -or $Reflex);AnomalySha256=$anomalySha;PluginSha256=(Get-FileHash -LiteralPath $builtPlugin -Algorithm SHA256).Hash;NativeSha256=(Get-FileHash -LiteralPath (Join-Path $vulkanLocal 'Assets/Native/win-x64/se_vulkan_native.dll') -Algorithm SHA256).Hash;Arguments=$arguments}
 $launch | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runRoot 'launch.json') -Encoding utf8
 $launch | ConvertTo-Json
 # Return immediately so the caller can monitor evidence and communicate during gameplay.

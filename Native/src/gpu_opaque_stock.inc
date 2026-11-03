@@ -58,9 +58,21 @@ void init_opaque_stock_pipeline(uint32_t id,uint32_t old,const void* vertex,uint
 
 void validate_opaque_stock_geometry(){
     GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::StockGeometry);
-    for(auto& g:opaque_stock.geometry){auto it=world.meshes.find(g.id);
+    auto& stock=opaque_stock;
+    static const bool cache_enabled=env_flag("SE_VULKAN_GPU_OPAQUE_GEOMETRY_CACHE",true);
+    // Uploads and range replacement advance the geometry stamp; removing a
+    // world mesh advances the mesh revision. Installing batches resets the proof.
+    bool hit=cache_enabled&&stock.ready&&stock.geometry_validated&&
+        stock.validated_geometry_stamp==ray.geometry_stamp&&stock.validated_mesh_revision==world_mesh_revision;
+    record_count("stock geometry validation reused",hit?1.0:0.0);
+    if(hit)return;
+    stock.geometry_validated=false;
+    for(const auto& g:stock.geometry){auto it=world.meshes.find(g.id);
         if(it==world.meshes.end()||it->second.ray_stamp!=g.stamp||it->second.vertices.handle!=g.vertices||it->second.indices.handle!=g.indices||it->second.vertex_offset!=g.vertex_offset||it->second.index_offset!=g.index_offset)
             throw std::runtime_error("resident stock geometry generation disappeared; return ownership before publication");}
+    stock.validated_geometry_stamp=ray.geometry_stamp;
+    stock.validated_mesh_revision=world_mesh_revision;
+    stock.geometry_validated=true;
 }
 void set_opaque_stock_batches(const SevkOpaqueStockBatch* inputs,uint32_t count,const uint64_t* meshes,uint32_t parts,const void* objects,uint32_t bytes){
     GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::StockPublication);
@@ -94,7 +106,7 @@ void set_opaque_stock_batches(const SevkOpaqueStockBatch* inputs,uint32_t count,
     r.gpu_part_inputs=std::move(derived);if(gpu_owned_inputs)for(auto& slot:r.slots)slot.pending_parts.emplace_back(0,r.part_count);
     for(uint32_t i=0;i<r.actors.size();i++)r.object_inputs.object(i,static_cast<const uint8_t*>(objects)+i*128);for(auto& version:r.versions)version=++r.revision;
     for(auto& slot:r.slots)opaque_reference_placeholder(slot.stock_objects);
-    if(s.pool)vkDestroyDescriptorPool(device,s.pool,nullptr);s.pool={};s.indexed_sets={};s.batches=std::move(batches);s.geometry=std::move(geometry);s.materials_dirty={true,true};s.ready=true;
+    if(s.pool)vkDestroyDescriptorPool(device,s.pool,nullptr);s.pool={};s.indexed_sets={};s.batches=std::move(batches);s.geometry=std::move(geometry);s.geometry_validated=false;s.materials_dirty={true,true};s.ready=true;r.run_plan_valid=false;r.stock_main_order={};
 }
 void set_opaque_stock_inputs(uint64_t mesh,const void* objects,uint32_t bytes,uint32_t old,uint32_t main,uint32_t depth){
     SevkOpaqueStockBatch batch{mesh,old,main,depth,UINT32_MAX};std::vector<uint64_t> meshes(opaque_reference.part_count,mesh);
@@ -105,10 +117,26 @@ void prepare_opaque_stock(WorldSlot& world_slot){
     {GpuSceneCostScope cost(gpu_scene_costs,GpuSceneCosts::RecordingMembership);
     // The family view masks in four chunks on the pool (each actor is independent; masks OR together).
     if(reference.view_batches){const auto& actors=reference.rec_actors;const uint32_t n=uint32_t(actors.size());std::array<std::vector<uint64_t>,4> masks;
-        auto chunk=[&](uint32_t k){masks[k].assign(reference.recording_families.size(),0);gpu_opaque::recording_family_views(std::span(actors).subspan(uint64_t(n)*k/4,uint64_t(n)*(k+1)/4-uint64_t(n)*k/4),reference.views,masks[k]);};
+        static const bool cache_enabled=env_flag("SE_VULKAN_GPU_OPAQUE_RECORD_CACHE",true);
+        static const bool narrow_keys=env_flag("SE_VULKAN_GPU_OPAQUE_RECORD_KEYS",true);
+        auto& cache=reference.recording_membership;cache.resize(n);
+        bool reuse=cache_enabled&&cache.unchanged(reference.rec_versions,reference.views);
+        record_count("stock membership reused",reuse?1.0:0.0);
+        if(!reuse){uint64_t changed=cache.changed_views(reference.views);
+        std::array<uint64_t,4> tests{};
+        auto chunk=[&](uint32_t k){masks[k].assign(reference.recording_families.size(),0);
+            uint32_t begin=uint32_t(uint64_t(n)*k/4),end=uint32_t(uint64_t(n)*(k+1)/4);
+            if(cache_enabled)tests[k]=cache.update(actors,reference.rec_versions,reference.views,changed,begin,end,masks[k],narrow_keys);
+            else gpu_opaque::recording_family_views(std::span(actors).subspan(begin,end-begin),reference.views,masks[k]);};
         if(parallel_prepare&&n>=1024)sevk_jobs::parallel_for(sevk_jobs::Upload,sevk_jobs::Priority::High,4,4,chunk);else for(uint32_t k=0;k<4;k++)chunk(k);
+        if(cache_enabled)record_count("stock membership predicate tests",double(tests[0]+tests[1]+tests[2]+tests[3]));
         for(uint32_t k=1;k<4;k++)for(size_t f=0;f<masks[0].size();f++)masks[0][f]|=masks[k][f];
-        reference.recording_batches=gpu_opaque::recording_batches(std::span<const uint64_t>(masks[0]),reference.recording_families,reference.views,reference.batch_count);}}
+        auto lists_at=std::chrono::steady_clock::now();
+        static const bool batch_cache=env_flag("SE_VULKAN_GPU_OPAQUE_BATCH_CACHE",true);
+        if(batch_cache){auto rebuilt=reference.recording_batch_cache.update(masks[0],reference.recording_families,reference.views,reference.batch_count,reference.recording_batches);record_count("stock recording lists rebuilt",double(rebuilt));}
+        else reference.recording_batches=gpu_opaque::recording_batches(std::span<const uint64_t>(masks[0]),reference.recording_families,reference.views,reference.batch_count);
+        record_count("stock recording list build us",std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-lists_at).count());
+        if(cache_enabled)cache.finish(reference.views);}}}
     auto& s=opaque_stock;auto& r=opaque_reference;if(!s.ready)return;validate_opaque_stock_geometry();
     if(!s.pool){VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,16},{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,gpu_opaque::texture_capacity*8}};VkDescriptorPoolCreateInfo create{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};create.maxSets=4;create.poolSizeCount=2;create.pPoolSizes=sizes;check(vkCreateDescriptorPool(device,&create,nullptr,&s.pool),"create fenced stock indexed descriptor pool");}
     auto& slot=r.slots[slot_index];bool dirty=s.materials_dirty[slot_index];
@@ -120,17 +148,23 @@ void prepare_opaque_stock(WorldSlot& world_slot){
 // State bound by the previous stock entry of a main list, so consecutive entries skip identical binds. The caller
 // resets it whenever anything else records in between.
 struct StockBinding {VkPipeline pipeline{};VkPipelineLayout layout{};VkBuffer vertices{},indices{};};
+// Prepared once by the recording owner before main workers launch. Its buffers
+// are owned by this fenced frame slot; workers only read the descriptor set.
+VkDescriptorSet opaque_stock_view_set(WorldSlot& slot,bool forward,Buffer* probe_frame=nullptr,Buffer* probe_projection=nullptr,VkDescriptorPool descriptors=nullptr){
+    auto set=world_set(slot,forward?probes.material_layout:world.material_layout,descriptors);
+    world_write_buffer(set,0,forward?*probe_frame:slot.frame,1280,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    world_write_buffer(set,1,forward?*probe_projection:slot.projections,64,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
+    world_write_buffer(set,2,opaque_reference.slots[slot_index].stock_objects,128,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
+    world_write_image(set,156,stock.dither.view);for(uint32_t binding:{258u,259u})world_write_image(set,binding,{},standard_sampler(binding),true);
+    if(forward){world_write_buffer(set,4,transparency.shadow_constants[slot_index],1200,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,7,probes.forward_projection[slot_index][probes.work_face],64,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_image(set,144,transparency.csm.view);world_write_image(set,271,{},shadow_sampler,true);}
+    return set;
+}
 uint32_t record_opaque_stock_view(VkCommandBuffer cmd,WorldSlot& slot,uint32_t view,bool spot,Buffer* probe_frame,Buffer* probe_projection,uint32_t light,VkDescriptorPool descriptors=nullptr,int main_phase=-1,uint32_t only_batch=UINT32_MAX,VkDescriptorSet* shared_set=nullptr,StockBinding* carried=nullptr,const StockRunDraw* run=nullptr){
     auto& s=opaque_stock;auto& r=opaque_reference;uint32_t original_view=view;if(gpu_resident.published){if(view>=64)return 0;view=gpu_resident.view_map[view];}if(!s.ready||!r.frame_ready||view>=r.view_count||!(r.views[view].flags&1))return 0;
     bool depth=(r.views[view].flags&2)!=0,forward=probe_frame!=nullptr;
     if(r.view_batches&&r.recording_batches.at(view).empty())return 0;
     auto set=shared_set?*shared_set:VK_NULL_HANDLE;
-    if(!set){set=world_set(slot,forward?probes.material_layout:world.material_layout,descriptors);
-    world_write_buffer(set,0,forward?*probe_frame:slot.frame,1280,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-    world_write_buffer(set,1,forward?*probe_projection:slot.projections,64,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
-    world_write_buffer(set,2,r.slots[slot_index].stock_objects,128,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
-    world_write_image(set,156,stock.dither.view);for(uint32_t binding:{258u,259u})world_write_image(set,binding,{},standard_sampler(binding),true);
-    if(forward){world_write_buffer(set,4,transparency.shadow_constants[slot_index],1200,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_buffer(set,7,probes.forward_projection[slot_index][probes.work_face],64,VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);world_write_image(set,144,transparency.csm.view);world_write_image(set,271,{},shadow_sampler,true);}
+    if(!set){set=opaque_stock_view_set(slot,forward,probe_frame,probe_projection,descriptors);
     if(shared_set)*shared_set=set;}
     uint32_t offsets[]{depth?uint32_t(world_align(64)*(spot?9+light:original_view)):0,0};VkDescriptorSet sets[]{set,s.indexed_sets[slot_index][depth?1:0]};uint32_t commands=0;
     StockBinding local;auto& bound=carried?*carried:local;bool track=r.view_batches||carried;
@@ -144,6 +178,6 @@ uint32_t record_opaque_stock_view(VkCommandBuffer cmd,WorldSlot& slot,uint32_t v
         if(!track||pipeline.layout!=bound.layout){vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline.layout,0,2,sets,2,offsets);if(pipeline.velocity)gbuffer_velocity_bind_gpu(cmd,pipeline.layout);bound.layout=pipeline.layout;}
         VkDeviceSize vertex_offset=0;if(!track||batch.vertices!=bound.vertices){vkCmdBindVertexBuffers(cmd,0,1,&batch.vertices,&vertex_offset);bound.vertices=batch.vertices;}if(!track||batch.indices!=bound.indices){vkCmdBindIndexBuffer(cmd,batch.indices,0,VK_INDEX_TYPE_UINT32);bound.indices=batch.indices;}
         uint32_t batch_view=b*r.view_count+view,base=run?run->base:view*r.draw_capacity+range.first,count_index=run?run->count_index:batch_view,capacity=run?run->capacity:range.capacity;vkCmdPushConstants(cmd,pipeline.layout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,4,&base);
-        vkCmdDrawIndexedIndirectCount(cmd,r.slots[slot_index].args.handle,uint64_t(base)*sizeof(SevkOpaqueIndirect),r.slots[slot_index].counts.handle,count_index*4,capacity,sizeof(SevkOpaqueIndirect));gpu_owner_record((input.old?49153u:32769u)+2*id,batch_view,base,range.capacity);commands++;
+        vkCmdDrawIndexedIndirectCount(cmd,r.slots[slot_index].args.handle,uint64_t(base)*sizeof(SevkOpaqueIndirect),r.slots[slot_index].counts.handle,count_index*4,capacity,sizeof(SevkOpaqueIndirect));gpu_owner_record((input.old?49153u:32769u)+2*id,batch_view,base,capacity,count_index);commands++;
     }return commands;
 }

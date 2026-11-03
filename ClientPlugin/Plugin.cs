@@ -9,8 +9,8 @@ using VRage.Plugins;
 
 // Define assembly version when compiled by Pulsar
 #if !LOCAL_BUILD
-[assembly: AssemblyVersion("1.6.0.0")]
-[assembly: AssemblyFileVersion("1.6.0.0")]
+[assembly: AssemblyVersion("1.7.0.0")]
+[assembly: AssemblyFileVersion("1.7.0.0")]
 #endif
     
 namespace ClientPlugin;
@@ -35,6 +35,7 @@ public class Plugin : IPlugin
 
     public void Dispose()
     {
+        AdvancedRenderingPage.Dispose();
         ConfigStorage.Flush();
         Instance = null;
     }
@@ -42,6 +43,7 @@ public class Plugin : IPlugin
     public void Update()
     {
         PluginStatusPage.TryInstall("Vulkan", Config.Current.ShowStatus, PopulateStatusPage);
+        AdvancedRenderingPage.Update();
         VulkanDiagnostics.Refresh();
         RecoveryPrompt.TryShow();
     }
@@ -49,6 +51,7 @@ public class Plugin : IPlugin
     static void PopulateStatusPage(object page)
     {
         PluginStatusPage.AddButton(page, "Show Profiler", Config.Current.ShowProfiler, "Open frame timing diagnostics.");
+        PluginStatusPage.AddButton(page, "Advanced", Config.Current.ShowAdvanced, "Configure Vulkan rendering and scheduling.");
         PluginStatusPage.AddButton(page, "Write report to log", Config.Current.WriteReport, "Write the status snapshot to the game log.");
     }
 

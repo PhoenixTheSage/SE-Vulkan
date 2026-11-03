@@ -17,7 +17,10 @@
 #include "gpu_appearance_arena.h"
 #include "gpu_scene_costs.h"
 #include "gpu_opaque_view_batches.h"
+#include "stock_main_order.h"
 #include <volk.h>
+#include "reflex_vulkan.h"
+#include "reflex_attribution.h"
 #if defined(_WIN32)
 #include <windows.h>
 #include <dbghelp.h>
@@ -187,7 +190,7 @@ struct Slot { Buffer lines{};
     std::unordered_map<MaterialKey,VkDescriptorSet,MaterialHash> materials;
 };
 struct Retired { uint64_t completion{}; Texture texture{}; Mesh mesh{}; };
-struct UploadSlot { VkCommandPool pool{}; VkCommandBuffer command{}; uint64_t completion{}; std::vector<Buffer> pending, reusable; uint64_t cached_bytes{}; };
+struct UploadSlot { VkCommandPool pool{}; VkCommandBuffer command{}; uint64_t completion{}; std::vector<Buffer> pending, reusable; uint64_t cached_bytes{}; sevk_reflex::Output reflex_output{}; };
 struct SpritePush { float rect[4], uv[4], color[4], screen[2], angle; uint32_t flags; float origin[2], pad[2]; float hdr_ui[4]; };
 struct MeshPush { float world[16], tint[4], hsv[4], dither, emissivity; uint32_t flags, pad; };
 struct NativeFrame { SevkFrameInfo frame; uint32_t light_count, reserved[3]; SevkLight lights[64]; float shadow_matrices[4][16], shadow_splits[4]; uint32_t shadow_count, shadow_reserved[3]; };
@@ -213,7 +216,7 @@ struct AtlasTransient { uint64_t completion{};std::vector<VkDescriptorSet> sets;
 struct OpaqueReferenceState {
     struct Depth {Image image;uint32_t width{},height{};bool valid{};double camera[3]{};float projection[16]{};};
     std::vector<Depth> depths;
-    struct Slot {Buffer actors,views,selections,groups,references,args,draws,counts,stock_objects,stock_colour,stock_depth,stock_draws,scan,object_inputs,parts,runs;VkDescriptorSet set{};std::vector<uint64_t> versions,appearance_versions;std::vector<std::pair<uint32_t,uint32_t>> pending_parts;};
+    struct Slot {Buffer actors,views,selections,groups,references,args,draws,counts,stock_objects,stock_colour,stock_depth,stock_draws,scan,object_inputs,parts,runs;VkDescriptorSet set{};std::vector<uint64_t> versions,appearance_versions;std::vector<std::pair<uint32_t,uint32_t>> pending_parts;uint64_t run_plan_revision{};};
     std::array<Slot,2> slots;VkQueryPool compute_timing{};bool compute_timing_valid[2]{};
     Buffer families,parts,sources,vertices,indices,selectors,spot_signatures,role_parts;
     VkDescriptorSetLayout descriptor_layout{};VkPipelineLayout layout{};VkDescriptorPool pool{};
@@ -237,6 +240,10 @@ struct OpaqueReferenceState {
     struct Queued {bool ready{};SevkOpaqueFrame frame{};std::vector<SevkOpaqueView> views;uint32_t view_count{};std::array<uint32_t,64> view_map{};std::vector<SevkOpaqueActor> actors;std::vector<uint64_t> versions;};
     std::array<Queued,2> queued;std::vector<SevkOpaqueActor> latched_actors;std::vector<uint64_t> latched_versions;gpu_opaque::AppearanceArena latched_objects;bool latched{},latch_unbegun{};
     std::vector<gpu_opaque::FamilyBatches> recording_families;
+    gpu_opaque::RecordingMembershipCache recording_membership;
+    gpu_opaque::RecordingBatchCache recording_batch_cache;
+    gpu_opaque::StockMainOrder stock_main_order;
+    uint64_t run_plan_revision{};uint32_t run_plan_view{},run_plan_view_count{};bool run_plan_valid{};
 };
 struct OpaqueStockState {
     struct Pipeline {VkPipeline back{},no_cull{};VkPipelineLayout layout{};bool velocity{};};
@@ -247,6 +254,8 @@ struct OpaqueStockState {
     struct Batch {SevkOpaqueStockBatch input;VkBuffer vertices{},indices{};};
     struct Geometry {uint64_t id,stamp;VkBuffer vertices,indices;VkDeviceSize vertex_offset,index_offset;};
     std::vector<Batch> batches;std::vector<Geometry> geometry;
+    uint64_t validated_geometry_stamp{},validated_mesh_revision{};
+    bool geometry_validated{};
     bool ready{};
 };
 struct IndexedMotionState {
@@ -361,6 +370,7 @@ struct WorldState {ModelState models;
     // Stable main order: pass-owned actors' group orders, kept across frames and updated only when an
     // actor's pass commit changes. Frame owner orders take precedence.
     std::unordered_map<uint32_t,uint32_t> resident_main_owners;
+    uint64_t resident_main_order_revision{};
     bool parallel_spots{};uint32_t spot_tasks{};
     VkCommandPool spot_pools[2][8]{};std::vector<VkCommandBuffer> spot_commands[2][8];uint32_t spot_used[2][8]{};
     // Parallel NEW main recording (SE_VULKAN_PARALLEL_MAIN): one pool and secondary per worker per slot.
@@ -423,7 +433,7 @@ struct ShadowUsageView {Buffer gpu,readback,screen;bool pending{};};
 struct ShadowUsageState {PostStage stage;ShadowUsageView views[2][19];uint32_t pixels[19][8]{};uint64_t completion[19]{},latest{};bool enabled{};};
 struct PostCandidate {uint64_t expected{};VkFormat format{};std::vector<std::pair<uint32_t,PostStage>> stages;};
 struct PostState {VkImageView tone_bloom{};bool grading{},display_graded{};PostImage tone_hdr{},fxaa_hdr{},chromatic_hdr{};uint64_t revision{},next_generation{},pending{};std::map<uint64_t,PostCandidate> candidates;std::vector<std::pair<uint64_t,PostStage>> retired;std::vector<PostStage> geometry,cells,gpu_new,gpu_old;PostStage oit{},stages[144]{},lighting[4]{},atmosphere[3]{},foliage[5]{},decals[10]{},particles[10]{},transparent[40]{},billboards[65]{};PostImage shadow_blur{},exposure[2]{},half{},bloom_down[11]{},bloom_up[10]{},tone{},fxaa{},chromatic{},ao{},ao_blur{};PostImage* output{};PostImage* after_tonemap{};Buffer constants[2]{},histogram{};VkSampler point{};VkPipeline compose{};VkFormat compose_format{};uint32_t width{},height{},exposure_index{};SevkPostprocessConfig config{};SevkPostprocessStats stats{sizeof(SevkPostprocessStats),SEVK_ABI_VERSION};};
-struct GpuOwnerRow {uint32_t module{},first{},capacity{},frame{};uint64_t generation{};uint32_t condition=UINT32_MAX;};
+struct GpuOwnerRow {uint32_t module{},first{},capacity{},frame{};uint64_t generation{};uint32_t condition=UINT32_MAX,count_index=UINT32_MAX;};
 struct GpuOwnerSlot {Buffer ranges{},work{},readback{};std::vector<GpuOwnerRow> rows;uint64_t completion{};bool pending{};};
 struct GpuOwnerState {PostStage reduction{};GpuOwnerSlot slots[2];std::vector<std::pair<uint64_t,GpuOwnerSlot>> retired;bool enabled{};};
 struct GBufferVelocityConstants {float view_proj[16],prev_view_proj[16],size[2],inv_size[2];uint32_t prev_count,has_history,has_prev_world,bone_count;float rows[3][4];uint32_t instance_base,probe_mode;float padding[2],camera_delta[3],tail;};
@@ -559,14 +569,21 @@ struct Renderer {uint32_t recipe_generation=1;
     // Two build stages: `recording` stays set until the recording thread ends the command buffer, but once stage B's
     // end_frame_async hands the frame over, stage A runs as the single build thread did during a recording.
     bool frame_gated()const{return recording&&frame_owner!=std::thread::id{}&&frame_owner!=std::this_thread::get_id()&&!tl_recording_thread&&!(build_stages&&(record_pending||record_running));}
+    template<class Ready> void wait_record(std::unique_lock<std::mutex>& lock,Ready ready){
+        if(!async_submit_enabled){record_cv.wait(lock,ready);return;}
+        // The FIFO never takes api_mutex. Check periodically as well as on its
+        // notification, which can race the unlocked-to-wait transition.
+        while(!ready()){raise_submit_error();record_cv.wait_for(lock,std::chrono::milliseconds(20));}
+        raise_submit_error();
+    }
     // Holds api_mutex. Census: an off-owner call meeting an open frame. Gate: wait until no frame is open or recording.
     void pass_frame_gate(std::unique_lock<std::mutex>& lock){
         if(!frame_gated())return;++gate_offowner_calls;if(!frame_gate)return;
         auto at=std::chrono::steady_clock::now();++gate_waiters;struct Leave{uint32_t& n;~Leave(){--n;}} leave{gate_waiters};
         // Two build stages: only stage B's open frame is waited out. The recording it launches is then handled as on
         // one build thread (deferred calls, read snapshots, scene calls after the early release, ordinary calls wait).
-        if(build_stages)record_cv.wait(lock,[&]{return !frame_gated();});
-        else record_cv.wait(lock,[&]{return !frame_gated()&&!record_pending&&!record_running;});
+        if(build_stages)wait_record(lock,[&]{return !frame_gated();});
+        else wait_record(lock,[&]{return !frame_gated()&&!record_pending&&!record_running;});
         uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-at).count());++gate_waits;gate_wait_us+=us;
 #if defined(_WIN32)
         if(pipeline_census){void* frames[4]{};CaptureStackBackTrace(0,4,frames,nullptr);for(void* frame:frames){auto& site=gate_sites[frame];++site.first;site.second+=us;}}
@@ -574,9 +591,12 @@ struct Renderer {uint32_t recipe_generation=1;
     }
     // Two build stages: the deferrable, snapshot and deferrable-scene wrappers wait out stage B's open frame first, so
     // that once it closes they see the recording in flight and take their deferred or snapshot paths.
-    void wait_open_frame(){
-        if(!build_stages)return;std::unique_lock lock(api_mutex);if(!frame_gated())return;
-        struct Notify{Renderer* r;~Notify(){if(r->gate_waiters)r->record_cv.notify_all();}} notify{this};pass_frame_gate(lock);}
+    bool wait_open_frame(){
+        try{if(async_submit_enabled)raise_submit_error();
+            if(build_stages){std::unique_lock lock(api_mutex);if(frame_gated()){
+                struct Notify{Renderer* r;~Notify(){if(r->gate_waiters)r->record_cv.notify_all();}} notify{this};pass_frame_gate(lock);}}
+            return true;
+        }catch(const std::exception& e){global_error=e.what();return false;}}
     // Census only: exports whose calls waited at the frame gate, and scene calls made off the frame owner.
     std::map<void*,std::pair<uint64_t,uint64_t>> gate_sites,offowner_scene_sites;std::mutex offowner_sites_mutex;
     // Census (milestone 6 diagnosis): scene calls (call_scene) that waited for a recording to release or finish, and
@@ -640,6 +660,37 @@ struct Renderer {uint32_t recipe_generation=1;
     void tl_post(int i){auto now=std::chrono::steady_clock::now();tl_post_us[i]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(now-tl_post_at).count());tl_post_at=now;}
     std::map<void*,std::pair<uint64_t,uint64_t>> packing_wait_sites;uint64_t packing_blocked[2]{},packing_blocked_us[2]{};
     VkSurfaceKHR surface{}; VkSwapchainKHR swapchain{};
+    sevk_reflex::Session reflex;
+    sevk_reflex::SubmissionAttribution reflex_submissions;
+    sevk_reflex::Output reflex_frame{};
+    bool reflex_deferred_primary{};
+    sevk_reflex::Output reflex_normalize(sevk_reflex::Output output) const {
+        if(!output.parent)return {};
+        auto state=reflex.state();
+        return state.bound&&state.epoch==output.epoch&&state.configured_mode!=UINT32_MAX?output:sevk_reflex::Output{};
+    }
+    sevk_reflex::Output reflex_output() const {return reflex_normalize(sevk_reflex::output_for(this));}
+    template<class Fn> auto capture_reflex(Fn fn) {
+        auto output=reflex_output();
+        return [output,fn=std::move(fn)](Renderer& r)mutable{sevk_reflex::OutputScope scope(&r,output);return fn(r);};
+    }
+    VkResult reflex_submit(VkQueue target,VkSubmitInfo2 info,sevk_reflex::Output output,const char* kind="direct") {
+        auto state=reflex.state();
+        uint64_t parent=state.bound&&state.epoch==output.epoch&&state.configured_mode!=UINT32_MAX?output.parent:0;
+        if(parent&&env_flag("SE_VULKAN_REFLEX_TRACE",false))std::fprintf(stderr,"Reflex submit: kind=%s queue=%p parent=%llu ordinal=%llu epoch=%llu thread=%zu\n",kind,reinterpret_cast<void*>(target),(unsigned long long)parent,(unsigned long long)output.ordinal,(unsigned long long)output.epoch,std::hash<std::thread::id>{}(std::this_thread::get_id()));
+        return reflex_submissions.submit(target,info,parent,[&](const VkSubmitInfo2& tagged){return vkQueueSubmit2(target,1,&tagged,VK_NULL_HANDLE);});
+    }
+    VkResult reflex_present(VkQueue target,const VkPresentInfoKHR& info,sevk_reflex::Output output) {
+        auto state=reflex.state();
+        bool tracked=output.parent&&state.bound&&state.epoch==output.epoch&&state.configured_mode!=UINT32_MAX;
+        if(tracked)reflex.mark(output.parent,output.ordinal?10:4,output.epoch);
+        if(tracked&&env_flag("SE_VULKAN_REFLEX_TRACE",false))std::fprintf(stderr,"Reflex present: queue=%p parent=%llu ordinal=%llu epoch=%llu thread=%zu\n",reinterpret_cast<void*>(target),(unsigned long long)output.parent,(unsigned long long)output.ordinal,(unsigned long long)output.epoch,std::hash<std::thread::id>{}(std::this_thread::get_id()));
+        VkResult result=reflex.host_call([&]{return vkQueuePresentKHR(target,&info);});
+        if(tracked)reflex.mark(output.parent,output.ordinal?11:5,output.epoch);
+        return result;
+    }
+    bool reflex_extension{};
+    uint32_t reflex_version{};
     VkPresentModeKHR actual_present_mode=VK_PRESENT_MODE_FIFO_KHR;uint32_t swapchain_generation{};
     bool exclusive_extension{}, exclusive_requested{}, exclusive_swapchain{}, exclusive_held{}, exclusive_denied{}; void* exclusive_monitor{};
     VkFormat color_format{ VK_FORMAT_R8G8B8A8_SRGB }; VkExtent2D extent{}, output_extent{}, present_extent{}; uint32_t sprite_w{}, sprite_h{};
@@ -688,11 +739,22 @@ struct Renderer {uint32_t recipe_generation=1;
     bool async_submit_enabled=env_flag("SE_VULKAN_ASYNC_SUBMIT",false);
     struct SubmitFifo{std::thread thread;std::mutex mutex;std::condition_variable cv;std::deque<std::function<void()>> tasks;bool busy{},stopping{};} submit_fifo;
     std::atomic<int32_t> submit_error{0};
+    std::atomic<uint64_t> accepted_async_frames{0};
+    uint64_t accepted_direct_frames{};
     bool async_submit_active()const{return async_submit_enabled&&frame_decoupled;}
+    void fail_submit(VkResult result){
+        // All remaining tasks are later in timeline order. Submitting one could put
+        // a wait for a cancelled upload on the GPU, which even device idle cannot drain.
+        {std::lock_guard lock(submit_fifo.mutex);if(!submit_error.load()){
+            if(result==VK_ERROR_DEVICE_LOST)device_lost=true;
+            submit_error.store(result);
+        }submit_fifo.tasks.clear();}
+        open_present_gate();submit_fifo.cv.notify_all();record_cv.notify_all();
+    }
     void submit_worker(){std::unique_lock lock(submit_fifo.mutex);
         for(;;){submit_fifo.cv.wait(lock,[&]{return submit_fifo.stopping||!submit_fifo.tasks.empty();});if(submit_fifo.tasks.empty())return;
             auto task=std::move(submit_fifo.tasks.front());submit_fifo.tasks.pop_front();submit_fifo.busy=true;lock.unlock();
-            try{task();}catch(...){submit_error.store(VK_ERROR_DEVICE_LOST);}
+            try{task();}catch(...){fail_submit(VK_ERROR_UNKNOWN);}
             lock.lock();submit_fifo.busy=false;submit_fifo.cv.notify_all();}}
     void submit_async(std::function<void()> task){
         if(!submit_fifo.thread.joinable()){submit_fifo.stopping=false;submit_fifo.thread=std::thread([this]{
@@ -700,18 +762,29 @@ struct Renderer {uint32_t recipe_generation=1;
             SetThreadDescription(GetCurrentThread(),L"Vulkan frame submit");
 #endif
             submit_worker();});}
-        {std::lock_guard lock(submit_fifo.mutex);submit_fifo.tasks.push_back(std::move(task));}submit_fifo.cv.notify_all();}
-    void raise_submit_error(){if(int32_t error=submit_error.exchange(0))check_gpu(VkResult(error),"asynchronous frame-queue submit");}
-    void drain_submits(){if(!submit_fifo.thread.joinable())return;{std::unique_lock lock(submit_fifo.mutex);submit_fifo.cv.wait(lock,[&]{return submit_fifo.tasks.empty()&&!submit_fifo.busy;});}raise_submit_error();}
+        {std::lock_guard lock(submit_fifo.mutex);raise_submit_error();submit_fifo.tasks.push_back(std::move(task));}submit_fifo.cv.notify_all();}
+    void raise_submit_error()const{
+        int32_t error=submit_error.load();
+        if(error==VK_ERROR_DEVICE_LOST)throw std::runtime_error("asynchronous frame-queue submit failed (VkResult -4, device lost)");
+        if(error)check(VkResult(error),"asynchronous frame-queue submit");
+    }
+    bool report_submit_error()const{
+        if(!async_submit_enabled||!submit_error.load())return false;
+        try{raise_submit_error();}catch(const std::exception& e){global_error=e.what();}
+        return true;
+    }
+    void drain_submits(){if(!submit_fifo.thread.joinable())return;std::unique_lock lock(submit_fifo.mutex);submit_fifo.cv.wait(lock,[&]{return submit_fifo.tasks.empty()&&!submit_fifo.busy;});}
     void stop_submits(){if(!submit_fifo.thread.joinable())return;{std::lock_guard lock(submit_fifo.mutex);submit_fifo.stopping=true;}submit_fifo.cv.notify_all();submit_fifo.thread.join();submit_fifo.tasks.clear();}
     // Queues a frame-queue submit whose infos are copied; then (optionally) the decoupled present task, so the copy is
     // never submitted before the frame it waits for.
-    void submit_frame_async(VkCommandBuffer command,std::vector<VkSemaphoreSubmitInfo> waits,std::vector<VkSemaphoreSubmitInfo> signals,std::function<PresentResult()> present){
-        submit_async([this,command,waits=std::move(waits),signals=std::move(signals),present=std::move(present)]()mutable{
+    void submit_frame_async(VkCommandBuffer command,std::vector<VkSemaphoreSubmitInfo> waits,std::vector<VkSemaphoreSubmitInfo> signals,std::function<PresentResult()> present,bool is_frame){
+        auto output=sevk_reflex::output_for(this);
+        submit_async([this,command,waits=std::move(waits),signals=std::move(signals),present=std::move(present),is_frame,output]()mutable{
             VkCommandBufferSubmitInfo info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};info.commandBuffer=command;
             VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};submit.commandBufferInfoCount=1;submit.pCommandBufferInfos=&info;
             submit.waitSemaphoreInfoCount=uint32_t(waits.size());submit.pWaitSemaphoreInfos=waits.data();submit.signalSemaphoreInfoCount=uint32_t(signals.size());submit.pSignalSemaphoreInfos=signals.data();
-            VkResult result=vkQueueSubmit2(queue,1,&submit,VK_NULL_HANDLE);if(result!=VK_SUCCESS){submit_error.store(result);return;}
+            VkResult result=reflex_submit(queue,submit,output,"fifo");if(result!=VK_SUCCESS){fail_submit(result);return;}
+            if(is_frame)++accepted_async_frames;
             if(present)enqueue_decoupled(std::move(present));});}
     void enqueue_decoupled(std::function<PresentResult()> task){
         if(!decoupled.thread.joinable()){decoupled.stopping=false;decoupled.thread=std::thread([this]{decoupled_worker();});sevk_jobs::place_thread(decoupled.thread,"SE_VULKAN_PRESENT_CPU",default_thread_cpu(4));start_present_watchdog();}
@@ -721,7 +794,15 @@ struct Renderer {uint32_t recipe_generation=1;
         if(all)open_present_gate();render_wait_stage=1;{std::unique_lock lock(decoupled.mutex);if(all)decoupled.cv.wait(lock,[&]{return decoupled.tasks.empty()&&!decoupled.busy;});done.swap(decoupled.results);}render_wait_stage=0;if(all)gate_flush=false;
         for(auto& r:done)accept_present(r,propagate);}
     void stop_decoupled(){open_present_gate();watchdog_stop=true;if(present_watchdog.joinable())present_watchdog.join();if(!decoupled.thread.joinable())return;{std::lock_guard lock(decoupled.mutex);decoupled.stopping=true;}decoupled.cv.notify_all();decoupled.thread.join();decoupled.results.clear();}
-    void wait_decoupled_copies(){if(decoupled.timeline&&decoupled.value){VkSemaphoreWaitInfo w{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};w.semaphoreCount=1;w.pSemaphores=&decoupled.timeline;w.pValues=&decoupled.value;vkWaitSemaphores(device,&w,UINT64_MAX);}}
+    void wait_timeline(VkSemaphore semaphore,uint64_t value,const char* operation){
+        VkSemaphoreWaitInfo w{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};w.semaphoreCount=1;w.pSemaphores=&semaphore;w.pValues=&value;
+        // A reservation may never reach the GPU. Normal waits complete directly
+        // in the first call and do not synchronize the recording and submit threads.
+        VkResult result;
+        do{if(async_submit_enabled)raise_submit_error();result=vkWaitSemaphores(device,&w,async_submit_enabled?20000000ull:UINT64_MAX);}while(result==VK_TIMEOUT);
+        check_gpu(result,operation);
+    }
+    void wait_decoupled_copies(){if(decoupled.timeline&&decoupled.value)wait_timeline(decoupled.timeline,decoupled.value,"wait for decoupled copies");}
     // Frame generation (bit 2) presents its own extra frame; low latency (bit 64, DX11 MaximumFrameLatency 1) cannot
     // leave up to two copy-and-present tasks queued on the worker. Both present directly.
     bool decoupled_ready()const{return decoupled_present_enabled&&swapchain&&present_queue&&swap_transfer&&async_present&&decoupled.output[0].handle&&!(display_flags&(2|64));}
@@ -774,6 +855,7 @@ struct Renderer {uint32_t recipe_generation=1;
     // latched frame open (stage B) or a released recording runs; they touch only pending inputs and host rows.
     // GPU-scene waits on record_cv, reporting their state to stderr every 2 s they last (hang diagnosis).
     template<class Ready> void gpu_scene_wait(const char* what,Ready ready){
+        if(async_submit_enabled){wait_record(*scene_lock,ready);return;}
         while(!record_cv.wait_for(*scene_lock,std::chrono::seconds(2),ready)){std::fprintf(stderr,"GPU-scene %s wait: next_ready=%d recording=%d owner_is_me=%d pending=%d running=%d released=%d build_stages=%d\n",what,
             int(opaque_reference.next_ready),int(recording),int(frame_owner==std::this_thread::get_id()),int(record_pending),int(record_running),int(record_released.load()),int(build_stages));std::fflush(stderr);}}
     uint64_t gpu_frames_missed{},gpu_frames_applied{},gpu_frames_latched{};
@@ -784,7 +866,7 @@ struct Renderer {uint32_t recipe_generation=1;
         gpu_scene_wait("idle",[&]{return !record_pending&&!record_running&&!opaque_reference.latch_unbegun&&!(recording&&frame_owner!=std::this_thread::get_id());});
         if(record_failed){record_failed=false;throw std::runtime_error(record_error);}flush_deferred();}
     // A scene call that needs the full recording to finish first (rare paths).
-    void wait_for_recording_end(){if(!overlap_from_caller()||!scene_lock)return;record_cv.wait(*scene_lock,[&]{return !record_running;});if(record_failed){record_failed=false;throw std::runtime_error(record_error);}flush_deferred();}
+    void wait_for_recording_end(){if(!overlap_from_caller()||!scene_lock)return;wait_record(*scene_lock,[&]{return !record_running;});if(record_failed){record_failed=false;throw std::runtime_error(record_error);}flush_deferred();}
     // Plan 3 milestone 5 (build stages): the pass snapshot a recording uses is taken when its world is queued, per
     // submission, because the next frame's stage A clears, prepares and commits the pass scene before this recording
     // starts. Off, the recording snapshots the live pass scene when it releases the lock, as before.
@@ -827,11 +909,13 @@ struct Renderer {uint32_t recipe_generation=1;
         else if(value.result!=VK_SUCCESS && value.result!=VK_SUBOPTIMAL_KHR && propagate)check_gpu(value.result,"present rendered frame");
         if(value.result==VK_SUCCESS||value.result==VK_SUBOPTIMAL_KHR)++stats.presented_frames;
     }
-    void join_present(bool propagate=true){
+    void join_present(bool propagate=true,bool propagate_submit=true){
         critical_profile::Scope critical_join(critical_profile::PresentJoin);
         // Queued frame submits enqueue their presents: drain them first.
-        if(propagate)drain_submits();else try{drain_submits();}catch(...){}
+        if(submit_fifo.thread.joinable()){open_present_gate();drain_submits();}
         if(decoupled.thread.joinable())drain_decoupled(true,propagate);
+        else gate_flush=false;
+        if(propagate_submit&&async_submit_enabled)raise_submit_error();
         if(!present_pending)return;
         auto begin=present_clock();present_stage.wait();present_pending=false;auto result=present_result;present_flow.last_join_us=uint32_t((present_clock()-begin)/1000);accept_present(result,propagate);
     }
@@ -853,7 +937,10 @@ struct Renderer {uint32_t recipe_generation=1;
     uint32_t anisotropy_samples{1}; float anisotropy_limit{1}, mip_bias{};
     VkSemaphore timeline{}; VkCommandPool upload_pool{};
     std::array<Slot, 2> slots{}; uint32_t slot_index{}, image_index{}; uint64_t next_completion{};
-    bool recording{}, suspended{}, surface_dirty{}, vsync{}, validation{}, readback_supported{}, device_lost{};
+    bool recording{}, suspended{}, surface_dirty{}, vsync{}, validation{}, readback_supported{};
+    bool steam_mutable_swapchain{};
+    std::atomic<bool> device_lost{};
+    std::string fifo_device_fault;
     bool last_image_valid{}; uint32_t last_image_index{};
     Buffer capture{}; bool capture_requested{}, capture_valid{}; uint64_t capture_completion{};
     std::unordered_map<uint64_t, Texture> textures;
@@ -976,6 +1063,14 @@ struct Renderer {uint32_t recipe_generation=1;
                 ++r->stats.validation_errors;
                 r->last_validation_error=data && data->pMessage?std::string(data->pMessage).substr(0,500):"Vulkan validation error";
                 if(r->stats.validation_errors<=16 && data && data->pMessage) std::fprintf(stderr,"SE-Vulkan validation: %s\n",data->pMessage);
+                if (r->stats.validation_errors <= 4 && data) {
+                    for (uint32_t i = 0; i < data->objectCount; ++i) {
+                        const auto& object = data->pObjects[i];
+                        std::fprintf(stderr, "SE-Vulkan validation object: type=%d handle=%llx name=%s\n",
+                            int(object.objectType), static_cast<unsigned long long>(object.objectHandle),
+                            object.pObjectName ? object.pObjectName : "(unnamed)");
+                    }
+                }
 #if defined(_WIN32)
                 // The first errors name their caller: each native frame's nearest export (no PDB ships), so the outermost
                 // sevk_ frame is the API call that triggered it.
@@ -1035,8 +1130,7 @@ struct Renderer {uint32_t recipe_generation=1;
         if(batch_command){auto at=std::chrono::steady_clock::now();flush_uploads();wait_flush_us+=tl_since(at);++wait_flushes;}
         if (!value) return;
         auto at=std::chrono::steady_clock::now();
-        VkSemaphoreWaitInfo w{ VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO }; w.semaphoreCount = 1; w.pSemaphores = &timeline; w.pValues = &value;
-        check_gpu(vkWaitSemaphores(device, &w, UINT64_MAX), "wait GPU timeline");wait_sem_us+=tl_since(at);
+        wait_timeline(timeline,value,"wait GPU timeline");wait_sem_us+=tl_since(at);
     }
     // Shadow masks end_frame leaves for the next frame: a pending resolution
     // change clears the cache, then render_world adds this frame's updates.
@@ -1062,7 +1156,7 @@ struct Renderer {uint32_t recipe_generation=1;
     static std::optional<float> upscaler_fraction(){{auto& n=ngx_request();std::lock_guard l(n.mu);if(n.enabled&&!n.directory.empty())return std::clamp(ngx_scale(n.mode),.25f,1.f);}{auto& f=fsr_request();std::lock_guard l(f.mu);if(f.enabled&&!f.directory.empty())return std::clamp(fsr_scale(f.mode),.25f,1.f);}return std::nullopt;}
     static bool upscaler_requested(){{auto& n=ngx_request();std::lock_guard l(n.mu);if(n.enabled&&!n.directory.empty())return true;}{auto& f=fsr_request();std::lock_guard l(f.mu);if(f.enabled&&!f.directory.empty())return true;}return false;}
     // Ordinary calls: recording finished, then deferred calls in issue order.
-    void await_recording(std::unique_lock<std::mutex>& lock){record_cv.wait(lock,[&]{return !record_pending&&!record_running;});if(record_failed){record_failed=false;throw std::runtime_error(record_error);}}
+    void await_recording(std::unique_lock<std::mutex>& lock){wait_record(lock,[&]{return !record_pending&&!record_running;});if(record_failed){record_failed=false;throw std::runtime_error(record_error);}}
     // Deferred calls replay on the first ordinary call after recording; the pipeline report times them.
     uint64_t deferred_flushes{},deferred_calls{},deferred_us{};
     void flush_deferred(){std::vector<DeferredCall> work;{std::lock_guard q(deferred_mutex);work.swap(deferred);}if(work.empty())return;auto flush_at=std::chrono::steady_clock::now();
@@ -1081,7 +1175,9 @@ struct Renderer {uint32_t recipe_generation=1;
         if(last_record_end.time_since_epoch().count())record_count("launch gap us",std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-last_record_end).count());
         publish_launch_snapshot();uint32_t predicted=snapshot.cache_mask;bool checked=snapshot.cache_valid;
         {std::lock_guard q(deferred_mutex);record_in_flight=true;}record_pending=true;tl_launch=std::chrono::steady_clock::now();tl_pipelined=true;
-        record_stage.start([this,predicted,checked]{
+        auto output=reflex_frame;
+        record_stage.start([this,predicted,checked,output]{
+            sevk_reflex::OutputScope reflex_scope(this,output);
             auto entered=std::chrono::steady_clock::now();launch_lap_us[0]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(entered-tl_launch).count());
             std::unique_lock lock(api_mutex);record_pending=false;record_running=true;launch_lap_us[1]+=tl_since(entered);
             tl_recording_thread=true;sevk_jobs::tl_pacing_stage=true;record_lock=&lock;if(early_release)world.recording_submission=int32_t(world.active_submission);
@@ -1175,7 +1271,7 @@ struct Renderer {uint32_t recipe_generation=1;
             VkSemaphoreSubmitInfo signal{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO }; signal.semaphore = timeline; signal.value = completion; signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
             VkSubmitInfo2 submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 }; submit.commandBufferInfoCount = 1; submit.pCommandBufferInfos = &command;
             submit.signalSemaphoreInfoCount = 1; submit.pSignalSemaphoreInfos = &signal;
-            join_present();check(vkQueueSubmit2(queue, 1, &submit, VK_NULL_HANDLE), "submit upload"); wait(completion);
+            join_present();check(reflex_submit(queue,submit,sevk_reflex::output_for(this)), "submit upload"); wait(completion);
         } catch (...) { vkFreeCommandBuffers(device, upload_pool, 1, &cmd); throw; }
         vkFreeCommandBuffers(device, upload_pool, 1, &cmd);
     }
@@ -1208,6 +1304,7 @@ struct Renderer {uint32_t recipe_generation=1;
             throw std::runtime_error("invalid platform window/surface callback");
         load_loader(info.get_instance_proc_addr);
         validation = info.enable_validation && layer_available("VK_LAYER_KHRONOS_validation");
+        reflex.validation_host_gate(validation);
         std::vector<const char*> extensions;
         for (uint32_t i = 0; i < info.instance_extension_count; ++i) {
             if (!info.instance_extensions || !info.instance_extensions[i]) throw std::runtime_error("invalid instance extension list");
@@ -1331,6 +1428,20 @@ struct Renderer {uint32_t recipe_generation=1;
         auto has=[&](const char* name){for(auto& e:available)if(std::strcmp(e.extensionName,name)==0)return true;return false;};
         std::vector<const char*> device_extensions;if(surface)device_extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 #if defined(_WIN32)
+        steam_mutable_swapchain = surface && GetModuleHandleW(L"SteamOverlayVulkanLayer64.dll") &&
+            has(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME);
+        if (steam_mutable_swapchain) device_extensions.push_back(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME);
+#endif
+        VkPhysicalDevicePresentIdFeaturesKHR reflex_present_id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
+        if(surface&&has(VK_NV_LOW_LATENCY_2_EXTENSION_NAME)&&has(VK_KHR_PRESENT_ID_EXTENSION_NAME)) {
+            VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,&reflex_present_id};
+            vkGetPhysicalDeviceFeatures2(physical,&query);
+        }
+        const auto reflex_plan=sevk_reflex::device_plan(available,surface!=VK_NULL_HANDLE,f12.timelineSemaphore!=0,reflex_present_id.presentId!=0);
+        reflex_version=reflex_plan.version;reflex_extension=reflex_plan.enabled;
+        if(env_flag("SE_VULKAN_REFLEX_TRACE",false))std::fprintf(stderr,"Reflex device plan: revision=%u enabled=%u presentId=%u\n",reflex_version,reflex_extension?1u:0u,reflex_present_id.presentId);
+        if(reflex_extension){device_extensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);device_extensions.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME);}
+#if defined(_WIN32)
         exclusive_extension=surface&&surface_capabilities2&&has(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);if(exclusive_extension)device_extensions.push_back(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
 #endif
         VkPhysicalDeviceConditionalRenderingFeaturesEXT conditional{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT};
@@ -1374,6 +1485,7 @@ struct Renderer {uint32_t recipe_generation=1;
                 ray.scratch_alignment=std::max(1u,limits.minAccelerationStructureScratchOffsetAlignment);
                 VkFormatProperties hdr{};vkGetPhysicalDeviceFormatProperties(physical,VK_FORMAT_R16G16B16A16_SFLOAT,&hdr);ray.hdr_storage=(hdr.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)!=0;
                 VkFormatProperties visibility{};vkGetPhysicalDeviceFormatProperties(physical,VK_FORMAT_R8_UNORM,&visibility);ray.visibility_storage=(visibility.optimalTilingFeatures&VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)!=0;}}
+        if(reflex_extension){reflex_present_id.pNext=chain;chain=&reflex_present_id;}
         if(opaque_conditional){conditional.pNext=chain;chain=&conditional;}f13.pNext=chain;
         ngx_add_device_extensions(device_extensions, available, f12);
         VkDeviceCreateInfo create{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &features }; create.queueCreateInfoCount = queue_info_count; create.pQueueCreateInfos = queue_infos.data();
@@ -1656,7 +1768,7 @@ struct Renderer {uint32_t recipe_generation=1;
     void release_exclusive() {
 #if defined(_WIN32)
         if (exclusive_held && swapchain && vkReleaseFullScreenExclusiveModeEXT) {
-            VkResult result = vkReleaseFullScreenExclusiveModeEXT(device, swapchain);
+            VkResult result = reflex.host_call([&]{return vkReleaseFullScreenExclusiveModeEXT(device, swapchain);});
             if (result != VK_SUCCESS && result != VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT && result != VK_ERROR_SURFACE_LOST_KHR)
                 exclusive_held = false;
         }
@@ -1666,7 +1778,7 @@ struct Renderer {uint32_t recipe_generation=1;
     void try_acquire_exclusive(bool deny_on_failure) {
 #if defined(_WIN32)
         if (!exclusive_swapchain || !exclusive_requested || !exclusive_extension || exclusive_held || exclusive_denied || !swapchain || !exclusive_monitor || !vkAcquireFullScreenExclusiveModeEXT) return;
-        VkResult result = vkAcquireFullScreenExclusiveModeEXT(device, swapchain);
+        VkResult result = reflex.host_call([&]{return vkAcquireFullScreenExclusiveModeEXT(device, swapchain);});
         if (result == VK_SUCCESS) { exclusive_held = true; return; }
         exclusive_held = false;
         if (deny_on_failure && result != VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) exclusive_denied = true;
@@ -1674,8 +1786,8 @@ struct Renderer {uint32_t recipe_generation=1;
         (void)deny_on_failure;
 #endif
     }
-    void destroy_targets() {
-        join_present(false);wait_decoupled_copies();
+    void destroy_targets(bool device_idle=false) {
+        if(!device_idle){join_present(false);wait_decoupled_copies();}
         for(auto& image:decoupled.output)destroy_image(image);for(auto s:decoupled.acquire)vkDestroySemaphore(device,s,nullptr);decoupled.acquire.clear();decoupled.initialized[0]=decoupled.initialized[1]=false;decoupled.slot_value[0]=decoupled.slot_value[1]=0;
         release_exclusive();
         destroy_buffer(capture); capture_valid=false; capture_completion=0;
@@ -1683,6 +1795,11 @@ struct Renderer {uint32_t recipe_generation=1;
         for (auto view : swap_views) vkDestroyImageView(device, view, nullptr);
         for (auto semaphore : present_semaphores) vkDestroySemaphore(device, semaphore, nullptr);
         swap_views.clear(); swap_images.clear(); present_semaphores.clear(); image_initialized.clear();
+        // Final cleanup already waited the device idle and is noexcept. Device
+        // destruction ends attribution; do not enqueue new work or throw there.
+        if(!device_idle){auto cleared=reflex_submissions.clear([&](VkQueue target,const VkSubmitInfo2& submit){return vkQueueSubmit2(target,1,&submit,VK_NULL_HANDLE);});
+            if(!device_lost)check(cleared,"clear Reflex queue attribution");}
+        reflex.reset();
         if (swapchain) vkDestroySwapchainKHR(device, swapchain, nullptr); swapchain = {}; exclusive_swapchain = false;
         offscreen_initialized = depth_initialized = last_image_valid = false;
     }
@@ -1747,6 +1864,40 @@ struct Renderer {uint32_t recipe_generation=1;
             swap_transfer = (caps.supportedUsageFlags & (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) == (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
             if (readback_supported) swap.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
             if (swap_transfer) swap.imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            const VkImageUsageFlags attachment_usage = swap.imageUsage;
+            // Steam binds its own storage view using the swapchain's base format.
+            // Keep the renderer's sRGB attachment for linear blending and encoding.
+            const VkFormat unorm = color_format == VK_FORMAT_B8G8R8A8_SRGB ? VK_FORMAT_B8G8R8A8_UNORM :
+                color_format == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_UNDEFINED;
+            const VkFormat view_formats[] = { unorm, color_format };
+            VkImageFormatListCreateInfo format_list{VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
+            format_list.viewFormatCount = 2;
+            format_list.pViewFormats = view_formats;
+            if (steam_mutable_swapchain && unorm != VK_FORMAT_UNDEFINED &&
+                (caps.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT) &&
+                std::any_of(formats.begin(), formats.end(), [&](const auto& format) {
+                    return format.format == unorm && format.colorSpace == chosen->colorSpace;
+                })) {
+                VkFormatProperties properties{};
+                vkGetPhysicalDeviceFormatProperties(physical, unorm, &properties);
+                VkPhysicalDeviceImageFormatInfo2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2};
+                query.pNext = &format_list;
+                query.format = unorm;
+                query.type = VK_IMAGE_TYPE_2D;
+                query.tiling = VK_IMAGE_TILING_OPTIMAL;
+                query.usage = attachment_usage | VK_IMAGE_USAGE_STORAGE_BIT;
+                query.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+                VkImageFormatProperties2 supported{VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2};
+                if ((properties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) &&
+                    vkGetPhysicalDeviceImageFormatProperties2(physical, &query, &supported) == VK_SUCCESS &&
+                    extent.width <= supported.imageFormatProperties.maxExtent.width &&
+                    extent.height <= supported.imageFormatProperties.maxExtent.height) {
+                    swap.flags |= VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
+                    swap.imageFormat = unorm;
+                    swap.imageUsage = query.usage;
+                    swap.pNext = &format_list;
+                }
+            }
             swap.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE; swap.preTransform = caps.currentTransform;
             swap.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
             if (!(caps.supportedCompositeAlpha & swap.compositeAlpha)) {
@@ -1767,21 +1918,42 @@ struct Renderer {uint32_t recipe_generation=1;
                 VkSurfaceCapabilitiesFullScreenExclusiveEXT exclusive_caps{ VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_FULL_SCREEN_EXCLUSIVE_EXT };
                 VkSurfaceCapabilities2KHR caps2{ VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR, &exclusive_caps };
                 if (vkGetPhysicalDeviceSurfaceCapabilities2KHR(physical, &surface_info, &caps2) == VK_SUCCESS && exclusive_caps.fullScreenExclusiveSupported) {
+                    exclusive_win32.pNext = swap.pNext;
                     swap.pNext = &exclusive_info; exclusive_chain = true;
                 }
             }
 #endif
+            VkSwapchainLatencyCreateInfoNV reflex_swap{VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV};
+            if(reflex_extension){reflex_swap.pNext=swap.pNext;reflex_swap.latencyModeEnable=VK_TRUE;swap.pNext=&reflex_swap;}
+            if(env_flag("SE_VULKAN_REFLEX_TRACE",false))std::fprintf(stderr,"Reflex before swapchain create: enabled=%u\n",reflex_extension?1u:0u);
             check(vkCreateSwapchainKHR(device, &swap, nullptr, &swapchain), "create swapchain");
+            if(env_flag("SE_VULKAN_REFLEX_TRACE",false))std::fprintf(stderr,"Reflex after swapchain create\n");
+            if(reflex_extension){reflex.bind(device,swapchain,reflex_version,{vkSetLatencySleepModeNV,vkLatencySleepNV,vkSetLatencyMarkerNV,vkCreateSemaphore,vkDestroySemaphore,vkWaitSemaphores,vkGetLatencyTimingsNV});reflex_submissions.bind(device,reflex_version);}
+            if(env_flag("SE_VULKAN_REFLEX_TRACE",false))std::fprintf(stderr,"Reflex session bound\n");
 #if defined(_WIN32)
             exclusive_swapchain = exclusive_chain;
             if (exclusive_chain) try_acquire_exclusive(true);
 #endif
             actual_present_mode=mode;++swapchain_generation;
             count = 0; check(vkGetSwapchainImagesKHR(device, swapchain, &count, nullptr), "query swap images"); swap_images.resize(count);
+            if(env_flag("SE_VULKAN_REFLEX_TRACE",false))std::fprintf(stderr,"Reflex swapchain image count=%u\n",count);
             check(vkGetSwapchainImagesKHR(device, swapchain, &count, swap_images.data()), "query swap images");
+            if(env_flag("SE_VULKAN_REFLEX_TRACE",false))std::fprintf(stderr,"Reflex swapchain images retrieved\n");
             for (VkImage image : swap_images) {
+                if (validation && vkSetDebugUtilsObjectNameEXT) {
+                    VkDebugUtilsObjectNameInfoEXT name{VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
+                    name.objectType = VK_OBJECT_TYPE_IMAGE;
+                    name.objectHandle = reinterpret_cast<uintptr_t>(image);
+                    name.pObjectName = "SE-Vulkan swapchain image";
+                    vkSetDebugUtilsObjectNameEXT(device, &name);
+                }
                 VkImageViewCreateInfo view{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO }; view.image = image; view.viewType = VK_IMAGE_VIEW_TYPE_2D;
                 view.format = color_format; view.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1 };
+                VkImageViewUsageCreateInfo view_usage{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
+                if (swap.flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) {
+                    view_usage.usage = attachment_usage;
+                    view.pNext = &view_usage;
+                }
                 VkImageView result{}; check(vkCreateImageView(device, &view, nullptr, &result), "create swap view"); swap_views.push_back(result);
                 VkSemaphoreCreateInfo semaphore{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO }; VkSemaphore signal{};
                 check(vkCreateSemaphore(device, &semaphore, nullptr, &signal), "create presentation semaphore"); present_semaphores.push_back(signal);
@@ -1887,10 +2059,14 @@ struct Renderer {uint32_t recipe_generation=1;
         } catch (...) { if(batch_command)wait(next_completion);destroy_buffer(staging); destroy_texture(texture); throw; }
         destroy_buffer(staging); collect();
     }
-    struct PendingStream {uint32_t width{},height{},format{};std::vector<uint8_t> data;bool queued{};};
+    struct PendingStream {uint32_t width{},height{},format{};std::vector<uint8_t> data;bool queued{};sevk_reflex::Output output{};};
     std::mutex stream_mutex;std::unordered_map<uint64_t,PendingStream> pending_streams;
-    void apply_pending_stream(uint64_t id){std::vector<uint8_t> data;uint32_t width,height,format;
-        {std::lock_guard s(stream_mutex);auto& pending=pending_streams[id];pending.queued=false;data.swap(pending.data);width=pending.width;height=pending.height;format=pending.format;}
+    void apply_pending_stream(uint64_t id){std::vector<uint8_t> data;uint32_t width,height,format;sevk_reflex::Output output;
+        {std::lock_guard s(stream_mutex);auto& pending=pending_streams[id];pending.queued=false;data.swap(pending.data);width=pending.width;height=pending.height;format=pending.format;output=pending.output;}
+        // Unbound decoder/streaming work belongs to the consuming output. A
+        // bound producer instead retains the owner of the actual latest bytes.
+        output=reflex_normalize(output);if(!output.parent)output=reflex_output();
+        sevk_reflex::OutputScope stream_scope(this,output);
         if(!data.empty())update_stream_texture(id,width,height,format,data.data(),data.size());
         std::lock_guard s(stream_mutex);auto& pending=pending_streams[id];if(pending.data.empty()){data.clear();pending.data.swap(data);} // keep the capacity
     }
@@ -2037,7 +2213,9 @@ struct Renderer {uint32_t recipe_generation=1;
         }
         target_ready=true;
         start_present_watchdog();{bool next=decoupled_ready();if(next!=frame_decoupled){join_present();decoupled.initialized[0]=decoupled.initialized[1]=false;std::fill(image_initialized.begin(),image_initialized.end(),false);}frame_decoupled=next;}
-        if(frame_decoupled&&decoupled.thread.joinable()){drain_decoupled(false);uint64_t n=worker_tasks.exchange(0);if(n){const char* names[6]{"worker reuse wait us","worker acquire us","worker record submit us","worker copy wait us","worker present us","worker present cpu us"};for(int i=0;i<6;++i)record_count(names[i],double(worker_ns[i].exchange(0))/1000.0/double(n));}}
+        // The submit worker can be creating decoupled.thread for the first frame. Poll the
+        // mutex-protected results directly, which also works before the first result exists.
+        if(frame_decoupled){drain_decoupled(false);uint64_t n=worker_tasks.exchange(0);if(n){const char* names[6]{"worker reuse wait us","worker acquire us","worker record submit us","worker copy wait us","worker present us","worker present cpu us"};for(int i=0;i<6;++i)record_count(names[i],double(worker_ns[i].exchange(0))/1000.0/double(n));}}
         if(!frame_decoupled && !deferred_acquire && acquire_frame_image(slot,true))return 1;
         work.acquire_us=slot_take();
         check(vkResetCommandPool(device, slot.pool, 0), "reset frame commands"); work.reset_us=slot_take();lap(6);
@@ -2047,9 +2225,10 @@ struct Renderer {uint32_t recipe_generation=1;
         std::memcpy(constants.lights, lights.data(), constants.light_count * sizeof(SevkLight));
         std::memcpy(constants.shadow_matrices,shadow_matrices,sizeof(constants.shadow_matrices)); std::memcpy(constants.shadow_splits,shadow_splits,sizeof(constants.shadow_splits)); constants.shadow_count=std::min(4u,shadow_count);
         std::memcpy(slot.uniform.mapped, &constants, sizeof(constants)); check(vmaFlushAllocation(allocator, slot.uniform.memory, 0, sizeof(constants)), "flush frame constants");
-        VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }; begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        check(vkBeginCommandBuffer(slot.command, &begin), "begin frame command"); frame_mark("frame begin");
-        frame_meshes.clear(); frame_sprites.clear(); frame_lines[0].clear(); frame_lines[1].clear(); recording=true; frame_owner=std::this_thread::get_id(); if(!build_stages)scene_owner.store(frame_owner,std::memory_order_relaxed); /* two build stages: the launch thread opens frames, stage A owns the scene */ guest.resources_open=true; lap(7); return 0;
+        reflex_frame=reflex_output();reflex_deferred_primary=reflex_frame.parent!=0;
+        if(!reflex_deferred_primary){VkCommandBufferBeginInfo begin{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }; begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            check(vkBeginCommandBuffer(slot.command, &begin), "begin frame command"); frame_mark("frame begin");}
+        frame_meshes.clear(); frame_sprites.clear(); frame_lines[0].clear(); frame_lines[1].clear(); critical.open_recording(); recording=true; frame_owner=std::this_thread::get_id(); if(!build_stages)scene_owner.store(frame_owner,std::memory_order_relaxed); /* two build stages: the launch thread opens frames, stage A owns the scene */ guest.resources_open=true; lap(7); return 0;
     }
     // Acquires the slot's swapchain image. begin_frame (can_resize) recreates the swapchain on
     // OUT_OF_DATE and retries once; end_frame cannot resize an open frame, so it marks the surface
@@ -2057,10 +2236,10 @@ struct Renderer {uint32_t recipe_generation=1;
     template<class SlotT> int acquire_frame_image(SlotT& slot,bool can_resize){
         if(!swapchain)return 0;
         try_acquire_exclusive(false);
-        VkResult result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, slot.acquired, VK_NULL_HANDLE, &image_index);
+        VkResult result = reflex.host_call([&]{return vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, slot.acquired, VK_NULL_HANDLE, &image_index);});
         if (result == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) {
             exclusive_held = false; try_acquire_exclusive(false);
-            if (exclusive_held) result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, slot.acquired, VK_NULL_HANDLE, &image_index);
+            if (exclusive_held) result = reflex.host_call([&]{return vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, slot.acquired, VK_NULL_HANDLE, &image_index);});
             else return 1;
         }
         if (result == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -2068,7 +2247,7 @@ struct Renderer {uint32_t recipe_generation=1;
             uint32_t logical_w=sprite_w?sprite_w:extent.width,logical_h=sprite_h?sprite_h:extent.height;
             if(extent.width&&extent.height)resize_output(extent.width,extent.height,logical_w,logical_h,vsync);
             if(suspended||!swapchain)return 1;
-            result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, slot.acquired, VK_NULL_HANDLE, &image_index);
+            result = reflex.host_call([&]{return vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, slot.acquired, VK_NULL_HANDLE, &image_index);});
             if(result==VK_ERROR_OUT_OF_DATE_KHR)return 1;
         }
         if (result == VK_SUBOPTIMAL_KHR) surface_poll_due=true;
@@ -2255,8 +2434,12 @@ struct Renderer {uint32_t recipe_generation=1;
     }
     int end_frame() {
         critical_profile::Finish critical_finish{critical};
+        critical_profile::Bind critical_owner(critical.record_owner());
         critical_profile::Scope critical_record(critical_profile::RecordOwner,true);
         if (!recording) { if (suspended) return 1; throw std::runtime_error("end_frame without begin_frame"); }
+        const auto reflex_output=reflex_frame;
+        sevk_reflex::OutputScope reflex_scope(this,reflex_output);
+        sevk_reflex::MarkerRegion reflex_record(reflex,reflex_output,reflex_output.ordinal?8:2,reflex_output.ordinal?9:3);
         // Both synchronous and worker recording consume the submission's GPU
         // inputs before releasing the scene lock; screenshots can use either.
         if(build_stages&&world.current().queued)apply_opaque_reference_queued(world.active_submission);
@@ -2268,6 +2451,8 @@ struct Renderer {uint32_t recipe_generation=1;
         // Close that allocation window before recording the world/guest draws.
         guest.resources_open=false;
         auto& slot = slots[slot_index];
+        if(reflex_deferred_primary){VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            check(vkBeginCommandBuffer(slot.command,&begin),"begin attributed frame command");frame_mark("frame begin");}
         auto record_at=std::chrono::steady_clock::now();if(tl_pipelined)tl_us[0]+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(record_at-tl_launch).count());
         frame_image_pending=deferred_acquire&&swapchain&&!frame_decoupled;
         if(tl_pipelined)tl_us[1]+=tl_since(record_at);auto acquired_at=std::chrono::steady_clock::now();
@@ -2338,7 +2523,7 @@ struct Renderer {uint32_t recipe_generation=1;
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
         if(world.current().queued&&timing_pool){vkCmdWriteTimestamp2(slot.command,VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,timing_pool,slot_index*2+1);timing_valid[slot_index]=true;}
         frame_mark("frame end");auto tail_at=std::chrono::steady_clock::now();auto tail=[&](const char* name){auto now=std::chrono::steady_clock::now();record_count(name,std::chrono::duration<double,std::micro>(now-tail_at).count());tail_at=now;};if(profile_label_open){vkCmdEndDebugUtilsLabelEXT(slot.command);profile_label_open=false;}
-        check(vkEndCommandBuffer(slot.command), "end frame command"); recording = false; frame_owner = {};
+        check(vkEndCommandBuffer(slot.command), "end frame command");reflex_record.close(); recording = false; frame_owner = {};
         guest.passes.clear();guest.has_early_owned=guest.has_global_clear=false;tenant_end_frame(); // Frame packets never replay implicitly in a later frame.
         performance.finish_us=perf_take();
         VkCommandBufferSubmitInfo command{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO }; command.commandBuffer = slot.command;
@@ -2353,7 +2538,7 @@ struct Renderer {uint32_t recipe_generation=1;
         // The previous copy out of this slot's output image must finish before the frame overwrites it. A CPU wait,
         // not a GPU wait-before-signal: the driver's present on the second queue waits for the frame queue to progress,
         // so a frame blocked on a copy the worker has not submitted yet deadlocked (C1). The copy ran a frame ago.
-        tail("tail end commands us");if(frame_decoupled&&decoupled.slot_value[slot_index]&&decoupled_copied.load(std::memory_order_acquire)<decoupled.slot_value[slot_index]){render_wait_stage=4;VkSemaphoreWaitInfo w{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};w.semaphoreCount=1;w.pSemaphores=&decoupled.timeline;w.pValues=&decoupled.slot_value[slot_index];vkWaitSemaphores(device,&w,UINT64_MAX);render_wait_stage=0;}
+        tail("tail end commands us");if(frame_decoupled&&decoupled.slot_value[slot_index]&&decoupled_copied.load(std::memory_order_acquire)<decoupled.slot_value[slot_index]){render_wait_stage=4;wait_timeline(decoupled.timeline,decoupled.slot_value[slot_index],"wait for output slot copy");render_wait_stage=0;}
         uint64_t upload_wait=0;if(upload_fence && upload_fence<slot.completion){upload_wait=upload_fence;waits[wait_count].sType=VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;waits[wait_count].semaphore=timeline;waits[wait_count].value=upload_wait;waits[wait_count].stageMask=VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;++wait_count;}
         VkSubmitInfo2 submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 }; submit.commandBufferInfoCount = 1; submit.pCommandBufferInfos = &command;
         submit.signalSemaphoreInfoCount = 1; submit.pSignalSemaphoreInfos = signals.data();
@@ -2361,21 +2546,22 @@ struct Renderer {uint32_t recipe_generation=1;
         if (swapchain&&target_ready&&!frame_decoupled) { signals[1].semaphore = present_semaphores[image_index];
             signals[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; submit.signalSemaphoreInfoCount = 2; }
         bool async_frame=async_submit_active();VkResult result=VK_SUCCESS;
+        record_count("async frame submit active",async_frame?1.0:0.0);
         std::vector<VkSemaphoreSubmitInfo> async_waits(waits.begin(),waits.begin()+wait_count),async_signals(signals.begin(),signals.begin()+submit.signalSemaphoreInfoCount);
-        tail("tail copy wait us");if(async_frame){raise_submit_error();if(!target_ready)submit_frame_async(slot.command,std::move(async_waits),std::move(async_signals),{});}else{if(!frame_decoupled)join_present();result = vkQueueSubmit2(queue, 1, &submit, VK_NULL_HANDLE);}tail("tail submit us");if(tl_pipelined){tl_us[2]+=tl_since(acquired_at);++tl_frames;}tl_submit[slot_index]=std::chrono::steady_clock::now();tl_post_at=tl_submit[slot_index];
+        tail("tail copy wait us");if(async_frame){raise_submit_error();if(!target_ready)submit_frame_async(slot.command,std::move(async_waits),std::move(async_signals),{},true);}else{if(!frame_decoupled)join_present();result = reflex_submit(queue,submit,reflex_output);}tail("tail submit us");if(tl_pipelined){tl_us[2]+=tl_since(acquired_at);++tl_frames;}tl_submit[slot_index]=std::chrono::steady_clock::now();tl_post_at=tl_submit[slot_index];
         performance.submit_us=perf_take();
-        check_gpu(result, "submit rendered frame"); if(upload_wait)upload_fence=0; ++stats.submitted_frames;critical_finish.submitted=true;
+        check_gpu(result, "submit rendered frame"); if(upload_wait)upload_fence=0; if(!async_frame)++accepted_direct_frames; ++stats.submitted_frames;critical_finish.submitted=true;
         if(capture_requested) {capture_completion=slot.completion;capture_valid=true;capture_requested=false;}
         depth_initialized = true; if(target_ready){last_image_valid = true; last_image_index = image_index;}
         if (frame_decoupled&&target_ready) {
             std::function<PresentResult()> present_task;
             decoupled.initialized[slot_index]=true;uint64_t copy_value=++decoupled.value;decoupled.slot_value[slot_index]=copy_value;
             uint64_t gate=present_gate&&tl_pipelined?launches.load()+2:0;
-            present_task=[this,source=decoupled.output[slot_index].handle,size=decoupled.size,chain=swapchain,frame_value=slot.completion,copy_value,gate]()->PresentResult{
+            present_task=[this,source=decoupled.output[slot_index].handle,size=decoupled.size,chain=swapchain,frame_value=slot.completion,copy_value,gate,reflex_output]()->PresentResult{
                 uint32_t k=decoupled.ring++%uint32_t(decoupled.commands.size());
                 auto wait_copy=[&](uint64_t value){if(!value)return;VkSemaphoreWaitInfo w{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};w.semaphoreCount=1;w.pSemaphores=&decoupled.timeline;w.pValues=&value;vkWaitSemaphores(device,&w,UINT64_MAX);};
                 uint64_t t0=present_clock();decoupled_stage=1;wait_copy(decoupled.command_done[k]);
-                decoupled_stage=2;uint64_t t1=present_clock();uint32_t index=0;VkResult acquired=vkAcquireNextImageKHR(device,chain,UINT64_MAX,decoupled.acquire[k],VK_NULL_HANDLE,&index);uint64_t t2=present_clock();worker_ns[0]+=t1-t0;worker_ns[1]+=t2-t1;
+                decoupled_stage=2;uint64_t t1=present_clock();uint32_t index=0;VkResult acquired=reflex.host_call([&]{return vkAcquireNextImageKHR(device,chain,UINT64_MAX,decoupled.acquire[k],VK_NULL_HANDLE,&index);});uint64_t t2=present_clock();worker_ns[0]+=t1-t0;worker_ns[1]+=t2-t1;
                 bool ok=acquired==VK_SUCCESS||acquired==VK_SUBOPTIMAL_KHR;VkCommandBuffer cmd=decoupled.commands[k];
                 if(ok){check(vkResetCommandBuffer(cmd,0),"reset present copy");VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};begin.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;check(vkBeginCommandBuffer(cmd,&begin),"begin present copy");
                     // The acquire's source stage matches the frame-timeline wait (TRANSFER), so its layout transition chains after the release.
@@ -2394,14 +2580,14 @@ struct Renderer {uint32_t recipe_generation=1;
                 if(ok){signals[1]={VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};signals[1].semaphore=present_semaphores[index];signals[1].stageMask=VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;}
                 VkCommandBufferSubmitInfo command{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};command.commandBuffer=cmd;
                 VkSubmitInfo2 copy{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};copy.waitSemaphoreInfoCount=ok?2u:1u;copy.pWaitSemaphoreInfos=waits.data();copy.commandBufferInfoCount=ok?1u:0u;copy.pCommandBufferInfos=&command;copy.signalSemaphoreInfoCount=ok?2u:1u;copy.pSignalSemaphoreInfos=signals.data();
-                decoupled_stage=3;VkResult submitted=vkQueueSubmit2(present_queue,1,&copy,VK_NULL_HANDLE);decoupled.command_done[k]=copy_value;
+                decoupled_stage=3;VkResult submitted=reflex_submit(present_queue,copy,reflex_output,"copy");decoupled.command_done[k]=copy_value;
                 if(submitted!=VK_SUCCESS){uint64_t now=present_clock();return PresentResult{submitted,now,now};}
                 if(!ok){uint64_t now=present_clock();return PresentResult{acquired,now,now};}
                 // As in the direct path, present only once the copy completed, so the present call stays short.
                 uint64_t t3=present_clock();worker_ns[2]+=t3-t2;decoupled_stage=4;if(present_after_gpu){wait_copy(copy_value);decoupled_copied.store(copy_value,std::memory_order_release);}wait_present_gate(gate);decoupled_stage=5;uint64_t t4=present_clock();worker_ns[3]+=t4-t3;
                 VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};present.waitSemaphoreCount=1;present.pWaitSemaphores=&present_semaphores[index];present.swapchainCount=1;present.pSwapchains=&chain;present.pImageIndices=&index;
-                uint64_t begin=present_clock();uint64_t cycles_before=thread_cycles();VkResult status=vkQueuePresentKHR(present_queue,&present);decoupled_stage=6;worker_ns[4]+=present_clock()-begin;worker_ns[5]+=uint64_t(double(thread_cycles()-cycles_before)/3.6);++worker_tasks;if(status==VK_SUCCESS&&acquired==VK_SUBOPTIMAL_KHR)status=VK_SUBOPTIMAL_KHR;return PresentResult{status,begin,present_clock()};};
-            if(async_frame)submit_frame_async(slot.command,std::move(async_waits),std::move(async_signals),std::move(present_task));else enqueue_decoupled(std::move(present_task));
+                uint64_t begin=present_clock();uint64_t cycles_before=thread_cycles();VkResult status=reflex_present(present_queue,present,reflex_output);decoupled_stage=6;worker_ns[4]+=present_clock()-begin;worker_ns[5]+=uint64_t(double(thread_cycles()-cycles_before)/3.6);++worker_tasks;if(status==VK_SUCCESS&&acquired==VK_SUBOPTIMAL_KHR)status=VK_SUBOPTIMAL_KHR;return PresentResult{status,begin,present_clock()};};
+            if(async_frame)submit_frame_async(slot.command,std::move(async_waits),std::move(async_signals),std::move(present_task),true);else enqueue_decoupled(std::move(present_task));
         } else if (swapchain&&target_ready) {
             image_initialized[image_index] = true;
             // One immutable task owns the queue until joined before any other
@@ -2411,10 +2597,10 @@ struct Renderer {uint32_t recipe_generation=1;
             // the render thread made in begin_frame (surface query, timeline wait). Waiting on the timeline first
             // keeps the present call short; the image still presents once rendering completes.
             uint64_t present_after=present_after_gpu?slot.completion:0;
-            auto submit_present=[present_queue=queue,chain=swapchain,index=image_index,semaphore=present_semaphores[image_index],present_after,dev=device,line=timeline](){
+            auto submit_present=[this,present_queue=queue,chain=swapchain,index=image_index,semaphore=present_semaphores[image_index],present_after,dev=device,line=timeline,reflex_output](){
                 if(present_after){VkSemaphoreWaitInfo w{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};w.semaphoreCount=1;w.pSemaphores=&line;w.pValues=&present_after;vkWaitSemaphores(dev,&w,UINT64_MAX);}
                 VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};present.waitSemaphoreCount=1;present.pWaitSemaphores=&semaphore;present.swapchainCount=1;present.pSwapchains=&chain;present.pImageIndices=&index;
-                uint64_t begin=present_clock();VkResult status=vkQueuePresentKHR(present_queue,&present);return PresentResult{status,begin,present_clock()};
+                uint64_t begin=present_clock();VkResult status=reflex_present(present_queue,present,reflex_output);return PresentResult{status,begin,present_clock()};
             };
             if(async_present){present_pending=true;present_stage.start([this,submit_present]{present_result=submit_present();});}else accept_present(submit_present());
         } else if(!swapchain) offscreen_initialized = true;
@@ -2521,12 +2707,15 @@ struct Renderer {uint32_t recipe_generation=1;
 #include "gpu_opaque_resident.inc"
     void cleanup() noexcept {
         critical.detach();
-        try{join_present(false);}catch(...){}stop_submits();stop_decoupled();
+        try{join_present(false,false);}catch(...){}
         try{join_cells_emit();}catch(...){}
         retire_job.join();csm_job.join();csm_copy_pending=false;try{new_main_job.wait();}catch(...){}new_main_pending=false;
         try{cells_join();}catch(...){}
-        try{join_present(false);}catch(...){}
-        try{end_uploads();}catch(...){}
+        try{join_present(false,false);}catch(...){}
+        // Do not enqueue an open batch after terminal failure or after the workers stop.
+        try{if(!submit_error.load())end_uploads();}catch(...){}
+        try{join_present(false,false);}catch(...){}stop_submits();stop_decoupled();
+        if(submit_error.load()){batch_command={};batching_uploads=false;}
         if (device) {
             vkDeviceWaitIdle(device);
             cleanup_ngx();
@@ -2559,7 +2748,7 @@ struct Renderer {uint32_t recipe_generation=1;
             for (auto& item : textures) destroy_texture(item.second);
             for (auto& item : meshes) destroy_mesh(item.second);
             for (auto& item : retired) { destroy_texture(item.texture); destroy_mesh(item.mesh); }
-            if (allocator) destroy_targets();
+            if (allocator) destroy_targets(true);
             for (auto& line : line_pipelines) if (line) vkDestroyPipeline(device, line, nullptr);
             for (auto& slot : slots) { if (allocator) { destroy_buffer(slot.uniform); destroy_buffer(slot.lines); } if (slot.acquired) vkDestroySemaphore(device, slot.acquired, nullptr); if (slot.pool) vkDestroyCommandPool(device, slot.pool, nullptr); }
             if (sprite_pipeline) vkDestroyPipeline(device, sprite_pipeline, nullptr);
@@ -2639,18 +2828,20 @@ inline void stage_gate(Renderer* r){
     uint64_t ticket=Renderer::tl_stage_ticket;if(!ticket)return;Renderer::tl_stage_ticket=0;++r->stage_gate_passes;
     if(r->stage_gate_closed(ticket)){
         auto at=std::chrono::steady_clock::now();std::unique_lock lock(r->api_mutex);
-        r->record_cv.wait(lock,[&]{return !r->stage_gate_closed(ticket);});
+        r->wait_record(lock,[&]{return !r->stage_gate_closed(ticket);});
         ++r->stage_gate_waits;r->stage_gate_us+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-at).count());}
     std::vector<Renderer::DeferredCall> held;held.swap(Renderer::tl_stage_held);
     for(auto& item:held)if(call_deferrable_scene(r,std::move(item.fn)))throw std::runtime_error(global_error.empty()?"held scene call failed":global_error);
 }
 // Void calls whose arguments are copied: queued in issue order while a
 // pipelined end_frame records, otherwise executed as ordinary calls.
-template<class Fn> int32_t call_deferrable(void* context, Fn fn) {
+template<class Fn> int32_t call_deferrable(void* context, Fn original) {
     if (!context) { global_error = "null Vulkan context"; return -1; }
     auto* renderer = static_cast<Renderer*>(context);
+    auto fn=renderer->capture_reflex(std::move(original));
+    if(renderer->report_submit_error())return -1;
     if(Renderer::tl_capturing){renderer->note_phase_call();std::lock_guard queue(renderer->deferred_mutex);renderer->captured.push_back({std::move(fn),false});++renderer->captured_calls;return 0;}
-    renderer->wait_open_frame();
+    if(!renderer->wait_open_frame())return -1;
     {std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){renderer->note_phase_call();renderer->deferred.push_back({std::move(fn),false});return 0;}}
     return call(context,fn);
 }
@@ -2670,15 +2861,15 @@ template<class Fn> int32_t call_scene(void* context, Fn&& fn) {
         if(renderer->pipeline_census){uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-lock_at).count());if(us>20){++renderer->scene_lock_waits;renderer->scene_lock_us+=us;}}
         renderer->pass_frame_gate(lock);
         auto ready=[&]{return !renderer->record_pending&&(!renderer->record_running||renderer->record_released.load(std::memory_order_acquire));};
-        if(renderer->pipeline_census&&!ready()){auto at=std::chrono::steady_clock::now();renderer->record_cv.wait(lock,ready);
+        if(renderer->pipeline_census&&!ready()){auto at=std::chrono::steady_clock::now();renderer->wait_record(lock,ready);
             uint64_t us=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-at).count());++renderer->scene_waits;renderer->scene_wait_us+=us;
 #if defined(_WIN32)
             void* frames[4]{};CaptureStackBackTrace(0,4,frames,nullptr);for(void* frame:frames){auto& site=renderer->scene_wait_sites[frame];++site.first;site.second+=us;}
 #endif
         }
-        renderer->record_cv.wait(lock,ready);
+        renderer->wait_record(lock,ready);
         // As in call(): a frame that opened while this call waited is waited out before the call runs.
-        while(renderer->frame_gate&&renderer->frame_gated()){renderer->pass_frame_gate(lock);renderer->record_cv.wait(lock,ready);}
+        while(renderer->frame_gate&&renderer->frame_gated()){renderer->pass_frame_gate(lock);renderer->wait_record(lock,ready);}
         WorldState::tl_scene_side=true;renderer->scene_lock=&lock;struct Clear{Renderer* r;~Clear(){r->scene_lock=nullptr;WorldState::tl_scene_side=false;}} clear{renderer};
         renderer->join_cells_emit();
         if(renderer->record_running)renderer->flush_deferred_scene();else{renderer->await_recording(lock);renderer->flush_deferred();}
@@ -2688,14 +2879,16 @@ template<class Fn> int32_t call_scene(void* context, Fn&& fn) {
     catch (...) { global_error = "unknown native Vulkan error"; return -1; }
 }
 // Deferrable scene-only calls (pass and cell commits): queued while recording, applied by the next scene call.
-template<class Fn> int32_t call_deferrable_scene(void* context, Fn fn) {
+template<class Fn> int32_t call_deferrable_scene(void* context, Fn original) {
     if (!context) { global_error = "null Vulkan context"; return -1; }
     auto* renderer = static_cast<Renderer*>(context);
+    auto fn=renderer->capture_reflex(std::move(original));
+    if(renderer->report_submit_error())return -1;
     // Stage A before its gate opens: held in order, run when the gate opens (stage_gate).
     if(Renderer::tl_stage_ticket&&renderer->build_stages){
         if(renderer->stage_gate_closed(Renderer::tl_stage_ticket)){renderer->note_phase_call();++renderer->stage_held_calls;Renderer::tl_stage_held.push_back({std::move(fn),true});return 0;}
         try{stage_gate(renderer);}catch(const std::exception& e){global_error=e.what();return -1;}}
-    renderer->check_scene_caller("call_deferrable_scene");renderer->wait_open_frame();
+    renderer->check_scene_caller("call_deferrable_scene");if(!renderer->wait_open_frame())return -1;
     // Once an early-released recording has taken its snapshots, run the call as a scene call (call_scene replays the
     // queued scene calls first, so order holds) instead of copying, queuing and replaying it. Under the frame split
     // Build runs almost entirely while the previous frame records, so every commit took the queue before.
@@ -2728,7 +2921,7 @@ template<class Snapshot,class Fn> int32_t call_snapshot(void* context,Snapshot&&
     // feedback, flares, resolution, probes) come from the latest launch snapshot, as they did on one build thread
     // while a recording was in flight, instead of waiting out stage B's open frame and collecting.
     if(renderer->build_stages&&renderer->snapshot_published.load(std::memory_order_acquire)){std::lock_guard read(renderer->snapshot_mutex);std::optional<int32_t> result=snapshot(*renderer);if(result)return *result;}
-    renderer->wait_open_frame();
+    if(!renderer->wait_open_frame())return -1;
     {std::lock_guard queue(renderer->deferred_mutex);if(renderer->record_in_flight){std::lock_guard read(renderer->snapshot_mutex);std::optional<int32_t> result=snapshot(*renderer);if(result)return *result;}}
     return call(context,fn);
 }
@@ -2790,6 +2983,9 @@ int32_t SEVK_CALL sevk_opaque_stock_batches(void* context,const SevkOpaqueStockB
 int32_t SEVK_CALL sevk_opaque_reference_readback(void* context,SevkOpaqueSelector* selectors,uint32_t actor_count,SevkOpaqueSelection* selections,uint32_t selection_count,SevkOpaqueReference* refs,uint32_t ref_capacity,SevkOpaqueIndirect* args,SevkOpaqueDrawRecord* draws,uint32_t draw_capacity,uint32_t* counts,uint32_t view_count,uint32_t* errors){
     return call(context,[&](Renderer& r){r.readback_opaque_reference(selectors,actor_count,selections,selection_count,refs,ref_capacity,args,draws,draw_capacity,counts,view_count,errors);return 0;});
 }
+int32_t SEVK_CALL sevk_opaque_predicate_readback(void* context,uint32_t* predicates,uint32_t count,uint32_t* errors){
+    return call(context,[&](Renderer& r){r.readback_opaque_predicates(predicates,count,errors);return 0;});
+}
 int32_t SEVK_CALL sevk_upload_texture(void* context, uint64_t id, uint32_t width, uint32_t height, uint32_t format, uint32_t srgb, const void* data, uint64_t bytes) {
     return call(context, [&](Renderer& r) { r.upload_texture(id,width,height,format,srgb != 0,data,bytes); return 0; });
 }
@@ -2800,7 +2996,7 @@ int32_t SEVK_CALL sevk_update_stream_texture(void* context,uint64_t id,uint32_t 
     // While recording, keep only the latest frame per texture and queue one upload for it, applied before the
     // next frame opens; video frames otherwise waited for the whole recording.
     if(context&&id&&data&&bytes==uint64_t(width)*height*4&&width&&height&&width<=16384&&height<=16384&&format<=1){auto* r=static_cast<Renderer*>(context);bool in_flight;{std::lock_guard q(r->deferred_mutex);in_flight=r->record_in_flight;}
-        if(in_flight){bool enqueue;{std::lock_guard s(r->stream_mutex);auto& pending=r->pending_streams[id];pending.width=width;pending.height=height;pending.format=format;
+        if(in_flight){bool enqueue;{std::lock_guard s(r->stream_mutex);auto& pending=r->pending_streams[id];pending.width=width;pending.height=height;pending.format=format;pending.output=sevk_reflex::output_for(r);
                 auto* bytes_in=static_cast<const uint8_t*>(data);pending.data.assign(bytes_in,bytes_in+bytes);enqueue=!pending.queued;pending.queued=true;}
             if(enqueue){std::lock_guard q(r->deferred_mutex);r->deferred.push_back({[id](Renderer& renderer){renderer.apply_pending_stream(id);return 0;},false});}
             return 0;}}
@@ -2843,7 +3039,7 @@ int32_t SEVK_CALL sevk_end_frame(void* context) { return call(context, [&](Rende
 // A scene mutation without outputs that a capturing thread queues instead of running (Plan 3 milestone 3).
 template<class Fn> bool capture_scene(void* context,Fn fn){
     if(!context||!Renderer::tl_capturing)return false;auto* renderer=static_cast<Renderer*>(context);
-    std::lock_guard queue(renderer->deferred_mutex);renderer->captured.push_back({std::move(fn),true});++renderer->captured_calls;return true;}
+    std::lock_guard queue(renderer->deferred_mutex);renderer->captured.push_back({renderer->capture_reflex(std::move(fn)),true});++renderer->captured_calls;return true;}
 int32_t SEVK_CALL sevk_set_build_capture(void* ctx,uint32_t enable){
     Renderer::tl_capturing=enable!=0;
     // Two stages: a capturing stage A takes the next ticket (one per captured frame, matched by sevk_stage_queued).
@@ -2873,10 +3069,28 @@ int32_t SEVK_CALL sevk_replay_build_capture(void* ctx){
 int32_t SEVK_CALL sevk_set_census_phase(void*,uint32_t phase){Renderer::tl_census_phase=phase;return 0;}
 int32_t SEVK_CALL sevk_end_frame_async(void* context) { return call(context, [&](Renderer& r) { return r.end_frame_async(); }); }
 int32_t SEVK_CALL sevk_remove_resource(void* context, uint32_t kind, uint64_t id) { return call(context, [&](Renderer& r) { r.remove(kind,id); return 0; }); }
-int32_t SEVK_CALL sevk_get_stats(void* context, SevkStats* stats) { return call(context, [&](Renderer& r) {
+int32_t SEVK_CALL sevk_get_stats(void* context, SevkStats* stats) {
+    auto copy=[&](Renderer& r) {
     if (!stats || stats->size != sizeof(SevkStats)) throw std::runtime_error("stats ABI size mismatch");
-    r.collect();r.stats.meshes=r.meshes.size()+r.world.meshes.size()+r.stock.meshes.size();r.stats.textures=r.textures.size()+r.world.cubes.size()+r.world.arrays.size(); *stats = r.stats; copy_text(stats->detail, !r.last_validation_error.empty()?r.last_validation_error:(r.error.empty() ? r.recent_validation : r.error)); return 0;
-}); }
+    r.stats.meshes=r.meshes.size()+r.world.meshes.size()+r.stock.meshes.size();r.stats.textures=r.textures.size()+r.world.cubes.size()+r.world.arrays.size(); *stats = r.stats;
+    // The recorder's ordinal advances at enqueue time for motion and guest history.
+    // The ABI reports only frames whose queue submission actually succeeded.
+    stats->submitted_frames=r.accepted_direct_frames+r.accepted_async_frames.load();
+    stats->device_lost=r.device_lost.load()?1:0;
+    if(r.submit_error.load()==VK_ERROR_DEVICE_LOST){
+        // Detailed device diagnostics read recording state. Query them here, after
+        // joining recording, rather than from the FIFO or a split-scene caller.
+        if(r.fifo_device_fault.empty())r.fifo_device_fault="asynchronous frame-queue submit failed (VkResult -4, device lost)"+r.gpu_fault_report();
+        copy_text(stats->detail,r.fifo_device_fault);
+    }else copy_text(stats->detail,!r.last_validation_error.empty()?r.last_validation_error:(r.error.empty()?r.recent_validation:r.error));return 0;};
+    auto* r=static_cast<Renderer*>(context);
+    if(r&&r->submit_error.load()){
+        // Terminal diagnostics remain readable without replaying abandoned calls.
+        std::unique_lock lock(r->api_mutex);r->record_cv.wait(lock,[&]{return !r->record_pending&&!r->record_running;});
+        try{return copy(*r);}catch(const std::exception& e){global_error=e.what();return -1;}
+    }
+    return call(context,[&](Renderer& renderer){renderer.collect();return copy(renderer);});
+}
 int32_t SEVK_CALL sevk_readback(void* context, void* rgba8, uint64_t bytes) { return call(context, [&](Renderer& r) { r.readback(rgba8,bytes); return 0; }); }
 int32_t SEVK_CALL sevk_request_readback(void* context) {return call(context,[&](Renderer& r) {if(!r.readback_supported) throw std::runtime_error("capture unsupported by presentation surface");r.capture_requested=true;return 0;});}
 void SEVK_CALL sevk_destroy(void* context) { if (active_context == context) active_context = nullptr; if(context){auto* r=static_cast<Renderer*>(context);r->record_stage.wait();
@@ -2963,7 +3177,15 @@ int32_t SEVK_CALL sevk_world_old_order(void* ctx,const SevkOldPartOrder* orders,
 int32_t SEVK_CALL sevk_world_draw_owners(void* ctx,const uint32_t* owners,uint32_t count){return call_scene(ctx,[&](Renderer& r){r.set_world_draw_owners(owners,count);return 0;});}
 int32_t SEVK_CALL sevk_world_resident_main_owners(void* ctx,const SevkMainOwnerOrder* set,uint32_t set_count,const uint32_t* removed,uint32_t removed_count){if((!set&&set_count)||(!removed&&removed_count)||set_count>1000000||removed_count>1000000)return -1;
     return call_deferrable(ctx,[set_copy=copy_in(set,set_count),set_count,removed_copy=copy_in(removed,removed_count),removed_count](Renderer& r){auto& map=r.world.resident_main_owners;
-        for(uint32_t i=0;i<removed_count;++i)map.erase(removed_copy.get()[i]);for(uint32_t i=0;i<set_count;++i){auto o=set_copy.get()[i];if(!o.group)throw std::runtime_error("invalid resident main owner order");map[o.owner]=o.group;}return 0;});}
+        auto& revision=r.world.resident_main_order_revision;
+        for(uint32_t i=0;i<set_count;++i)if(!set_copy.get()[i].group)throw std::runtime_error("invalid resident main owner order");
+        for(uint32_t i=0;i<removed_count;++i)if(map.erase(removed_copy.get()[i]))++revision;
+        for(uint32_t i=0;i<set_count;++i){
+            auto o=set_copy.get()[i];auto [it,inserted]=map.try_emplace(o.owner,o.group);
+            if(inserted)++revision;
+            else if(it->second!=o.group){it->second=o.group;++revision;}
+        }
+        return 0;});}
 int32_t SEVK_CALL sevk_world_main_owners(void* ctx,const SevkMainOwnerOrder* owners,uint32_t count){return call_scene(ctx,[&](Renderer& r){r.set_world_main_owners(owners,count);return 0;});}
 int32_t SEVK_CALL sevk_get_model_group_stats(void* ctx,SevkModelGroupStats* stats){return call(ctx,[&](Renderer& r){if(!stats||stats->size!=sizeof(*stats)||stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("model group stats ABI mismatch");*stats=r.world.models.stats;return 0;});}
 int32_t SEVK_CALL sevk_get_recipe_stats(void* ctx,SevkRecipeStats* stats){return call(ctx,[&](Renderer& r){r.settle_cells();if(!stats || stats->size!=sizeof(*stats) || stats->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("recipe stats ABI mismatch");*stats=r.world.current().recipe_stats;return 0;});}
@@ -3114,6 +3336,52 @@ int32_t SEVK_CALL sevk_fsr_configure(uint32_t enabled,uint32_t mode,float sharpn
 int32_t SEVK_CALL sevk_fsr_status(char* text,uint32_t capacity){return Renderer::fsr_copy_status(text,capacity);}
 int32_t SEVK_CALL sevk_fsr_debug(char* text,uint32_t capacity){return Renderer::fsr_copy_debug(text,capacity);}
 int32_t SEVK_CALL sevk_fg_status(SevkFrameGenStatus* status){return Renderer::fg_copy_status(status);}
+
+static_assert(sizeof(SevkReflexStatus)==56,"Reflex diagnostic ABI packing");
+static_assert(sizeof(SevkReflexLatency)==96,"Reflex latency ABI packing");
+int32_t SEVK_CALL sevk_reflex_latency(void* ctx,uint64_t epoch,SevkReflexLatency* latency){return call_unlocked(ctx,[&](Renderer& r){
+    if(!latency||latency->size!=sizeof(*latency)||latency->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("Reflex latency ABI mismatch");
+    *latency={sizeof(*latency),SEVK_ABI_VERSION,epoch};
+    std::array<VkLatencyTimingsFrameReportNV,64> reports{};uint32_t count{};
+    auto result=r.reflex.timings(epoch,reports,count);if(result!=VK_SUCCESS)return int32_t(result);
+    for(uint32_t i=0;i<count;++i){const auto& f=reports[i];if(!f.presentID)continue;
+        ++latency->report_count;latency->frame_id=f.presentID;
+        latency->sim_start=f.simStartTimeUs;latency->sim_end=f.simEndTimeUs;
+        latency->render_start=f.renderSubmitStartTimeUs;latency->render_end=f.renderSubmitEndTimeUs;
+        latency->present_start=f.presentStartTimeUs;latency->present_end=f.presentEndTimeUs;
+        latency->gpu_start=f.gpuRenderStartTimeUs;latency->gpu_end=f.gpuRenderEndTimeUs;
+    }return int32_t(VK_SUCCESS);});}
+int32_t SEVK_CALL sevk_reflex_status(void* ctx,SevkReflexStatus* status){return call_unlocked(ctx,[&](Renderer& r){
+    if(!status||status->size!=sizeof(*status)||status->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("Reflex status ABI mismatch");
+    const auto state=r.reflex.state();
+    *status={sizeof(*status),SEVK_ABI_VERSION,r.reflex_extension?1u:0u,r.reflex_version,state.bound?1u:0u,state.configured_mode,
+        int32_t(state.result),0,state.epoch,state.sleeps,state.markers};return 0;});}
+int32_t SEVK_CALL sevk_reflex_configure(void* ctx,uint64_t epoch,uint32_t mode){return call_unlocked(ctx,[&](Renderer& r){return epoch?int32_t(r.reflex.configure(mode,epoch)):int32_t(VK_ERROR_OUT_OF_DATE_KHR);});}
+int32_t SEVK_CALL sevk_reflex_sleep(void* ctx,uint64_t epoch){return call_unlocked(ctx,[&](Renderer& r){return epoch?int32_t(r.reflex.sleep(epoch)):int32_t(VK_ERROR_OUT_OF_DATE_KHR);});}
+int32_t SEVK_CALL sevk_reflex_marker(void* ctx,uint64_t epoch,uint64_t id,uint32_t marker){return call_unlocked(ctx,[&](Renderer& r){return epoch?int32_t(r.reflex.mark(id,marker,epoch)):int32_t(VK_ERROR_OUT_OF_DATE_KHR);});}
+int32_t SEVK_CALL sevk_reflex_bind_output(void* ctx,const SevkReflexOutput* output){return call_unlocked(ctx,[&](Renderer& r){
+    // A refused rebind cannot leave an older token active on this thread.
+    sevk_reflex::bind_output(&r,{});
+    if(!output||output->size!=sizeof(*output)||output->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("Reflex output ABI mismatch");
+    if(!output->parent_id){if(output->epoch||output->output_ordinal||output->generation)return int32_t(VK_ERROR_INITIALIZATION_FAILED);sevk_reflex::bind_output(&r,{});return int32_t(VK_SUCCESS);}
+    auto state=r.reflex.state();
+    if(!state.bound||state.version<3)return int32_t(VK_ERROR_EXTENSION_NOT_PRESENT);
+    if(!output->epoch||output->epoch!=state.epoch)return int32_t(VK_ERROR_OUT_OF_DATE_KHR);
+    if(!output->generation||state.configured_mode==UINT32_MAX)return int32_t(VK_ERROR_INITIALIZATION_FAILED);
+    sevk_reflex::bind_output(&r,{output->epoch,output->parent_id,output->output_ordinal,output->generation});return int32_t(VK_SUCCESS);});}
+int32_t SEVK_CALL sevk_reflex_retire(void* ctx,uint64_t epoch){return call(ctx,[&](Renderer& r){
+    auto state=r.reflex.state();
+    if(!epoch||epoch!=state.epoch)return int32_t(VK_ERROR_OUT_OF_DATE_KHR);
+    if(!state.bound)return int32_t(VK_ERROR_EXTENSION_NOT_PRESENT);
+    if(r.recording)throw std::runtime_error("Reflex retirement requires a closed frame");
+    r.end_uploads();r.join_present();
+    auto result=r.reflex_submissions.clear([&](VkQueue target,const VkSubmitInfo2& submit){return vkQueueSubmit2(target,1,&submit,VK_NULL_HANDLE);});
+    if(result!=VK_SUCCESS)return int32_t(result);
+    // Rebind the same borrowed swapchain to retire every prior thread/closure
+    // token, reset pacing, and leave a fresh, unconfigured epoch for reactivation.
+    result=r.reflex.retire(epoch);if(result!=VK_SUCCESS)return int32_t(result);
+    r.reflex_frame={};r.reflex_deferred_primary=false;sevk_reflex::bind_output(&r,{});
+    return int32_t(VK_SUCCESS);});}
 int32_t SEVK_CALL sevk_resolve_render_resolution(void* ctx,uint32_t width,uint32_t height,uint32_t* render_width,uint32_t* render_height,float* fraction){
     if(!width || !height || !render_width || !render_height || !fraction)return -1;
     auto resolve=[&](float value){*render_width=std::max(1u,uint32_t(std::lround(width*value)));*render_height=std::max(1u,uint32_t(std::lround(height*value)));*fraction=value;};
@@ -3249,4 +3517,20 @@ int32_t SEVK_CALL sevk_get_light_tile_stats(void* ctx,SevkLightTileStats* stats)
 #include "native_pass_exports.inc"
 #include "old_cells_exports.inc"
 int32_t SEVK_CALL sevk_critical_begin(void* ctx,uint32_t stride){return call(ctx,[&](Renderer& r){if(r.recording||stride>1024)throw std::runtime_error("invalid critical sample stride");r.critical.begin(stride);return 0;});}
-int32_t SEVK_CALL sevk_critical_profile(void* ctx,SevkCriticalProfile* profile){return call(ctx,[&](Renderer& r){if(!profile||profile->size!=sizeof(*profile)||profile->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("critical profile ABI mismatch");*profile=r.critical.totals;return 0;});}
+// Tickets travel with a managed launch record. Profiling handoff uses only the
+// profiler mutex: waiting on the API/recording gate here would serialize the
+// workload whose overlap the diagnostic is meant to measure.
+int32_t SEVK_CALL sevk_critical_stage(void* ctx,uint32_t operation,uint32_t stride,uint64_t* ticket){
+    return call_unlocked(ctx,[&](Renderer& r){
+        if(!ticket)throw std::runtime_error("missing critical ticket");
+        switch(operation){
+            case 0:*ticket=r.critical.begin(stride);break;
+            case 1:r.critical.detach();break;
+            case 2:r.critical.launch(*ticket);break;
+            case 3:r.critical.discard(*ticket);break;
+            default:throw std::runtime_error("invalid critical stage");
+        }
+        return 0;
+    });
+}
+int32_t SEVK_CALL sevk_critical_profile(void* ctx,SevkCriticalProfile* profile){return call(ctx,[&](Renderer& r){if(!profile||profile->size!=sizeof(*profile)||profile->abi_version!=SEVK_ABI_VERSION)throw std::runtime_error("critical profile ABI mismatch");*profile=r.critical.snapshot();return 0;});}

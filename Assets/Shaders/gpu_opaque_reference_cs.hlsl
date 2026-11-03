@@ -1,6 +1,19 @@
 #define GPU_OPAQUE_COMPUTE
 #include "gpu_opaque_reference.hlsli"
 groupshared uint scan_values[64];
+uint raw_spot_predicate(uint view,bool atomic_read){
+    uint at=control.view_count*control.batch+1+view;
+    if(atomic_read){uint value;InterlockedOr(counts[at],0,value);return value;}
+    return counts[at];
+}
+uint effective_spot_predicate(uint view,bool atomic_read){
+    uint value=raw_spot_predicate(view,atomic_read);View destination=views[view];
+    // Stage 0 produces Boolean words. An already-true raw destination needs
+    // no static union; otherwise match legacy stage 8's same-light sources.
+    if(value==0&&(destination.flags&136)==136)
+        for(uint i=0;i<control.view_count;i++)if((views[i].flags&144)==144&&views[i].light==destination.light)value|=raw_spot_predicate(i,atomic_read);
+    return value;
+}
 uint scan_inclusive(uint value,uint lane){
     scan_values[lane]=value;GroupMemoryBarrierWithGroupSync();
     for(uint step=1;step<64;step*=2){uint add=lane>=step?scan_values[lane-step]:0;GroupMemoryBarrierWithGroupSync();scan_values[lane]+=add;GroupMemoryBarrierWithGroupSync();}
@@ -110,7 +123,13 @@ void main(uint3 id:SV_DispatchThreadID,uint3 block:SV_GroupID,uint lane:SV_Group
         return;
     }
     if(control.stage==1){
-        uint count=0;[branch] if(actor<total_groups)count=groups[actor*3];uint inclusive=scan_inclusive(count,lane);
+        uint count=0;[branch] if(actor<total_groups){count=groups[actor*3];
+            if(control.frame.flags&16){uint view=(actor/2)%control.view_count;
+                // Filter before allocating prefix spans. Every lane still
+                // participates in the shared scan, including the partial tail.
+                if((views[view].flags&128)&&!effective_spot_predicate(view,false))count=0;
+                groups[actor*3]=count;}}
+        uint inclusive=scan_inclusive(count,lane);
         if(actor<total_groups)groups[actor*3+1]=inclusive-count;
         if(lane==63&&block_index<blocks)scan_scratch[block_index]=inclusive;
         return;
@@ -125,10 +144,10 @@ void main(uint3 id:SV_DispatchThreadID,uint3 block:SV_GroupID,uint lane:SV_Group
     if(control.stage==6){if(actor>=total_groups)return;uint b=actor/64;groups[actor*3+1]+=scan_scratch[b]+scan_scratch[blocks+b/64];return;}
     if(control.stage==2){
         uint work=actor;if(work>=control.actor_count*control.view_count||counts[control.view_count*control.batch])return;actor=work/control.view_count;uint v=work%control.view_count;
-        // Stage 7 removed retained spotlight groups before the prefix scan.
+        // Stage 7, or fused stage 1, removed retained groups before the scan.
         // They own no reference span; scattering them would overwrite the next
         // allocated group (including main-view geometry).
-        if((views[v].flags&128)&&!counts[control.view_count*control.batch+1+v])return;
+        if((views[v].flags&128)&&!((control.frame.flags&16)?effective_spot_predicate(v,false):counts[control.view_count*control.batch+1+v]))return;
         Actor a=actors[actor];Family f=families[a.family];
         {
             Selection s=selections[work];View view=views[v];if(s.current<0&&s.other<0)return;
@@ -159,7 +178,17 @@ void main(uint3 id:SV_DispatchThreadID,uint3 block:SV_GroupID,uint lane:SV_Group
         counts[stock_runs[1]+actor]=total;return;
     }
     if(control.stage==3){
-        if(actor>=total_groups||counts[control.view_count*control.batch])return;
+        if(actor>=total_groups)return;
+        // One first-part/slice-0 invocation per view publishes the conditional
+        // word only AFTER scatter has finished reading immutable raw words.
+        // Do this even on overflow, matching stage 8's pre-overflow publication.
+        // A source may have both static and dynamic flags: all same-light
+        // sources union the same set, so an already-unioned atomic value is
+        // equivalent to its raw value for this Boolean OR. Atomic reads/writes
+        // avoid a mixed atomic/non-atomic access within this dispatch.
+        if((control.frame.flags&16)&&actor<control.view_count*2&&!(actor&1)){
+            uint view=actor/2;if(views[view].flags&128){uint value=effective_spot_predicate(view,true),unused;InterlockedOr(counts[control.view_count*control.batch+1+view],value,unused);}}
+        if(counts[control.view_count*control.batch])return;
         uint count=groups[actor*3],first=groups[actor*3+1];if(!count)return;
         uint p=actor/(control.view_count*2),v=(actor/2)%control.view_count;Part part=parts[p];
         bool old=(actors[references[first].actor].flags&2)!=0;uint n=old?count:1,at;

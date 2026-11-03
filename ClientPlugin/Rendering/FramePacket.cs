@@ -2,6 +2,7 @@ using VRage.Library.Utils;
 using VRageMath;
 using VRageRender;
 using VRageRender.Messages;
+using ClientPlugin.Rendering.Interop;
 
 namespace ClientPlugin.Rendering;
 
@@ -10,6 +11,7 @@ namespace ClientPlugin.Rendering;
 // rewrites (camera, light, settings, draw flags); the scene's own inputs latch through VulkanScene.LatchFrame.
 internal sealed class FramePacket
 {
+    public NativeBackend.ReflexOutputToken ReflexOutput;
     public bool DrawScene;
     // The scene update ran in Apply (VulkanScene.ApplyBuildOrderEnabled); otherwise Build runs it at the old place.
     public bool ApplyBuildOrder;

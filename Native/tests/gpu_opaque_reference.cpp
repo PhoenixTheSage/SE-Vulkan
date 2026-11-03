@@ -2,6 +2,7 @@
 #include "../src/native_pass_scene.h"
 #include "../src/stock_proxy_lod.h"
 #include "../src/gpu_opaque_view_batches.h"
+#include "../src/stock_main_order.h"
 #include <iostream>
 #include <vector>
 #include <set>
@@ -30,7 +31,111 @@ float distance(const SevkOpaqueActor& a,const SevkOpaqueFrame& f){
     }else{float x=float(a.translation[0]-f.camera[0]),y=float(a.translation[1]-f.camera[1]),z=float(a.translation[2]-f.camera[2]);squared=x*x+y*y+z*z;}
     return (std::sqrt(squared)/((a.flags&2)?1:a.scale)*f.coefficient+f.distance_add)*f.distance_mult;
 }
+void recording_cache_checks(){
+    gpu_opaque::RecordingMembershipCache cache;
+    gpu_opaque::RecordingBatchCache list_cache;
+    std::vector<SevkOpaqueActor> actors(17);std::vector<uint64_t> versions(actors.size(),1);
+    std::vector<SevkOpaqueView> views(64);std::vector<gpu_opaque::FamilyBatches> families(5);
+    for(uint32_t f=0;f<families.size();++f)for(uint32_t role=0;role<3;++role)families[f][role]={f*3+role,(f*3+role+1)%15};
+    for(uint32_t i=0;i<actors.size();++i){auto& a=actors[i];a.family=i%5;a.flags=1|16|(i%2?8:0);a.minimum[0]=double(i)-8;a.maximum[0]=a.minimum[0]+.5;}
+    for(uint32_t v=0;v<views.size();++v){auto& view=views[v];view.flags=1|4|(v%3==0?2:v%3==1?32:0)|(v%5==0?8:0);view.planes[0]=1;view.planes[3]=-double(v%11);}
+    std::vector<std::vector<uint32_t>> batches;
+    uint32_t hits=0;uint32_t random=83;
+    for(uint32_t frame=0;frame<240;++frame){
+        random=random*1664525u+1013904223u;uint32_t i=random%uint32_t(actors.size()),v=(random>>8)%uint32_t(views.size());
+        switch(frame%12){
+        case 0:actors[i].minimum[0]+=3;actors[i].maximum[0]+=3;++versions[i];break;
+        case 1:actors[i].flags^=1|16;++versions[i];break;
+        case 2:actors[i].hidden_views[v/32]^=1u<<(v%32);++versions[i];break;
+        case 3:views[v].planes[3]+=2;break;
+        case 4:views[v].flags^=2|8|16|32;break;
+        case 5:actors[i].family=(actors[i].family+1)%5;++versions[i];break;
+        case 6:views.resize(views.size()==64?7:64);break;
+        case 7:actors[i].flags^=64|128;++versions[i];break;
+        case 8:for(auto& view:views){view.flags^=64|128;view.minimum_lod++;view.projection[0]+=.01f;}break;
+        default:break; // Unchanged interpolated frames must reuse exactly.
+        }
+        if(frame==20){actors[0].hidden_views[1]^=1u<<31;++versions[0];}
+        cache.resize(actors.size());
+        if(cache.unchanged(versions,views))++hits;
+        else{auto changed=cache.changed_views(views);std::vector<uint64_t> masks(families.size());
+            // Exercise disjoint ranges and reduction (the renderer's four jobs).
+            for(uint32_t k=0;k<4;++k){std::vector<uint64_t> local(families.size());cache.update(actors,versions,views,changed,uint32_t(actors.size()*k/4),uint32_t(actors.size()*(k+1)/4),local);for(uint32_t f=0;f<masks.size();++f)masks[f]|=local[f];}
+            list_cache.update(masks,families,views,15,batches);cache.finish(views);
+        }
+        require(batches==gpu_opaque::recording_batches(actors,families,views,15),"cached recording membership matches uncached admission after actor/view mutations");
+    }
+    require(hits>=60,"unchanged and irrelevant view changes reuse recording membership");
+    auto before=cache.masks;
+    for(uint32_t i=0;i<actors.size();++i){++versions[i];actors[i].translation[0]+=1;actors[i].basis[0]+=.01f;actors[i].appearance_count++;actors[i].flags^=2|4|32;}
+    std::vector<uint64_t> masks(families.size());
+    require(cache.update(actors,versions,views,cache.changed_views(views),0,uint32_t(actors.size()),masks)==0,"LOD/appearance/pose-only revisions perform no membership retests");
+    require(before==cache.masks,"irrelevant actor revisions preserve each recording mask");
+    require(gpu_opaque::recording_batches(masks,families,views,15)==gpu_opaque::recording_batches(actors,families,views,15),"narrow actor keys preserve family reduction");
+    require(list_cache.update(masks,families,views,15,batches)==0,"unchanged family population reuses every execution list");
+    masks[0]^=uint64_t(1)<<2;
+    require(list_cache.update(masks,families,views,15,batches)==1,"one light population rebuilds exactly one execution list");
+    require(batches==gpu_opaque::recording_batches(masks,families,views,15),"incremental list update preserves sorted batch identities");
+    views[0].flags^=2;
+    require(list_cache.update(masks,families,views,15,batches)==1,"role change invalidates only its execution list");
+    require(batches==gpu_opaque::recording_batches(masks,families,views,15),"role invalidation preserves exact batch admission");
+    cache.resize(actors.size()+1);require(!cache.unchanged(versions,views),"actor cardinality invalidates recording cache");
+    cache={};require(!cache.unchanged(versions,views),"topology replacement starts with a cold recording cache");
+}
+void stock_main_order_checks(){
+    using gpu_opaque::MainEntry;
+    gpu_opaque::StockMainOrder cache;
+    struct Batch {bool old;uint32_t group,part;};
+    std::vector<Batch> topology;
+    std::vector<uint32_t> admitted;
+    for(uint32_t i=0;i<96;++i){topology.push_back({i%11==10,i%3+1,i%8});admitted.push_back(i);}
+    std::vector<SevkOpaqueActor> actors(5);
+    for(uint32_t i=0;i<actors.size();++i){actors[i].owner=100+i;actors[i].family=i>1?std::min(i-1,2u):0;}
+    actors[3].flags=2;
+    std::vector<uint64_t> versions(actors.size(),1);uint64_t resident_revision=1;
+    gpu_opaque::OwnerOrders resident{{100,10},{101,20},{102,10},{103,40}},frame{{101,10},{999,7}};
+    std::vector<MainEntry> managed{{10,0,0,13},{10,0,0,7},{44,2,0,9}},pass{{10,0,2,6},{10,0,2,1}};
+    auto verify=[&](bool expect_hit){
+        // Independent legacy oracle: resolve every actor's order, append all
+        // three owners in old source order, stable-sort only by order and part.
+        std::array<uint32_t,3> orders{UINT32_MAX,UINT32_MAX,UINT32_MAX};
+        for(const auto& a:actors)if(!(a.flags&2)){
+            uint32_t order=frame.contains(a.owner)?frame.at(a.owner):resident.contains(a.owner)?resident.at(a.owner):UINT32_MAX;
+            orders.at(a.family)=std::min(orders.at(a.family),order);
+        }
+        auto expected=managed;
+        for(uint32_t b:admitted){const auto& batch=topology.at(b);if(batch.old)continue;uint32_t order=orders.at(batch.group-1);
+            expected.push_back({order==UINT32_MAX?UINT32_MAX-2:order,order==UINT32_MAX?b:batch.part,1,b});}
+        expected.insert(expected.end(),pass.begin(),pass.end());
+        std::stable_sort(expected.begin(),expected.end(),[](const auto& a,const auto& b){return std::tie(a.order,a.part)<std::tie(b.order,b.part);});
+        cache.dynamic=managed;cache.dynamic.insert(cache.dynamic.end(),pass.begin(),pass.end());
+        bool hit=cache.update(actors,versions,3,resident,resident_revision,frame,admitted,[&](uint32_t b){return topology.at(b);});
+        std::vector<MainEntry> actual;cache.merge(actual);
+        require(actual==expected,"cached stock order differs from full stable sort including coplanar fallback ties");
+        require(hit==expect_hit,"stock order cache reused or rebuilt incorrectly");
+    };
+    verify(false);verify(true);
+    actors[0].translation[1]+=200;actors[1].appearance_count++;++versions[0];++versions[1];verify(true);
+    frame[999]=55;pass[0].index=88;managed.erase(managed.begin());verify(true);
+    resident[100]=30;++resident_revision;verify(true); // 101's frame override still owns family 0's minimum.
+    frame.erase(101);verify(false);
+    resident.erase(101);++resident_revision;verify(false);
+    frame[100]=10;verify(false);
+    actors[2].family=0;++versions[2];verify(false); // Family 1 becomes unmapped.
+    actors[3].flags=0;++versions[3];verify(false);   // OLD -> NEW gives family 2 an owner.
+    admitted.erase(admitted.begin(),admitted.begin()+3);verify(false);
+    actors[3].owner=203;frame[203]=10;++versions[3];verify(false);
+    actors.erase(actors.begin()+3);versions.erase(versions.begin()+3);verify(false);
+    cache={};topology[admitted[0]].part=67;verify(false);verify(true);
+    // Resident registration has unique owners; public raw actor replacements
+    // can share an owner across families. Its override applies to every row.
+    auto shared=actors.front();shared.family=1;actors.push_back(shared);versions.push_back(1);verify(false);
+    frame[shared.owner]=19;verify(false);
+    frame.erase(shared.owner);verify(false);verify(true);
+}
 int main(int argc,char** argv){void* ctx=nullptr;try{
+    recording_cache_checks();
+    stock_main_order_checks();
     SevkProbe probe{sizeof(probe)};
     if(sevk_probe(&probe)!=0||!probe.validation_available){std::cout<<"GPU opaque verification unavailable: compatible device and active Khronos validation are required\n";return 77;}
 #if defined(_WIN32)
@@ -182,6 +287,37 @@ int main(int argc,char** argv){void* ctx=nullptr;try{
     require(!errors&&coverage_counts[1]==1&&args[6].index_count==6&&args[6].instance_count==2,"appearance restoration reunites solid segment across owners");
     require(selected[2].current==-1&&selected[3].current==0,"main occlusion leaves caster membership independent");
     coverage_actors[0].hidden_views[0]=3;ok(sevk_opaque_reference_actor(ctx,0,&coverage_actors[0]),ctx);coverage_frame.epoch++;capture_coverage();require(selectors[0].initialized&&selectors[0].epoch==coverage_frame.epoch&&coverage_counts[1]==1&&args[6].instance_count==1,"all-view occlusion retains once-per-frame selector advancement");
+    uint32_t predicates[2]{99,99},predicate_errors=99;
+    ok(sevk_opaque_predicate_readback(ctx,predicates,2,&predicate_errors),ctx);
+    require(!predicate_errors&&!predicates[0]&&!predicates[1],"verification reads exact zero predicates for non-conditional views");
+    require(sevk_opaque_predicate_readback(ctx,predicates,1,&predicate_errors)!=0,"predicate verification rejects mismatched packed-view count");
+    // Raw verification has no frozen spotlight images, so its conditional
+    // views are deliberately force-dirty. Check exact final words at view 63,
+    // including combined flags, and capacity admission. The four-light
+    // live fixture separately proves actual retained-false predicate/scatter.
+    uint32_t conditional_supported=0;ok(sevk_gpu_scene_supported(ctx,&conditional_supported),ctx);
+    if(conditional_supported){
+        SevkOpaqueActor conditional_actors[2]{actors[0],actors[1]};for(uint32_t a=0;a<2;a++){conditional_actors[a].family=0;conditional_actors[a].flags=1|16|(a?8:0);conditional_actors[a].source_count=1;}
+        SevkOpaqueFamily conditional_family{1,0,1,0,{}};SevkOpaquePart conditional_part{0,0,0,3,10,3,1,0};
+        auto conditional_config=config;conditional_config.actors=conditional_actors;conditional_config.actor_count=2;conditional_config.families=&conditional_family;conditional_config.family_count=1;conditional_config.parts=&conditional_part;conditional_config.part_count=1;conditional_config.view_count=64;conditional_config.reference_capacity=256;conditional_config.draw_capacity=2;conditional_config.reserved=0;
+        SevkOpaqueView conditional_views[64]{};for(uint32_t v=0;v<64;v++){identity(conditional_views[v].projection);conditional_views[v].id=v;conditional_views[v].light=v%4;conditional_views[v].flags=1|2|128|(v%3==0?16u:v%3==1?8u:24u);}
+        conditional_views[0].flags=1;conditional_views[62].flags&=~1u;
+        std::vector<SevkOpaqueSelector> cs(2);std::vector<SevkOpaqueSelection> cv(128);std::vector<SevkOpaqueReference> cr(256);std::vector<SevkOpaqueIndirect> ca(128);std::vector<SevkOpaqueDrawRecord> cd(128);uint32_t cc[64]{},cp[64]{},ce=0;
+        auto conditional_frame=scan_frame;conditional_frame.epoch=8000;
+        auto capture_conditional=[&]{ok(sevk_opaque_reference_frame(ctx,&conditional_frame,conditional_views,64),ctx);ok(sevk_begin_frame(ctx,&output),ctx);ok(sevk_end_frame(ctx),ctx);ok(sevk_opaque_reference_readback(ctx,cs.data(),2,cv.data(),128,cr.data(),conditional_config.reference_capacity,ca.data(),cd.data(),128,cc,64,&ce),ctx);ok(sevk_opaque_predicate_readback(ctx,cp,64,&predicate_errors),ctx);};
+        ok(sevk_opaque_reference_init(ctx,&conditional_config),ctx);
+        auto caller_internal_flag=conditional_frame;caller_internal_flag.flags|=16;
+        require(sevk_opaque_reference_frame(ctx,&caller_internal_flag,conditional_views,64)!=0,"caller cannot enable internal retained-fusion flag");
+        capture_conditional();require(!ce&&!predicate_errors,"64-view conditional scan stays bounded");
+        if(const char* timing=std::getenv("SE_VULKAN_GPU_OPAQUE_TIMING");timing&&std::strcmp(timing,"1")==0){uint64_t times[11]{};ok(sevk_gpu_scene_compute_times(ctx,times,11),ctx);require(times[0]>0,"all eleven compute query positions become available");const char* fused=std::getenv("SE_VULKAN_GPU_OPAQUE_FUSED_RETAINED");if(!fused||std::strcmp(fused,"0")!=0)require(times[3]==0&&times[4]==0,"removed conditional dispatch stages report exact zero work");}
+        for(uint32_t v=0;v<64;v++){require(cp[v]==(v?1u:0u),"conditional final Boolean word matches legacy forced predicate at every view");
+            require(cc[v]==(v==0?1u:v==62||v%3==2?0u:1u),"combined/disabled conditional views preserve exact draw count");}
+        conditional_config.reference_capacity=4;ok(sevk_opaque_reference_init(ctx,&conditional_config),ctx);conditional_frame.epoch++;
+        require(sevk_opaque_reference_frame(ctx,&conditional_frame,conditional_views,64)!=0&&std::strstr(sevk_last_error(ctx),"current resident views exceed reference capacity"),"conditional reference overflow is rejected before dispatch");
+        conditional_config.reference_capacity=256;ok(sevk_opaque_reference_init(ctx,&conditional_config),ctx);capture_conditional();
+        require(!ce&&!predicate_errors,"valid conditional epoch recovers after capacity rejection");
+        for(uint32_t v=0;v<64;v++)require(cp[v]==(v?1u:0u),"recovered conditional epoch preserves exact final Boolean words");
+    }
     SevkStats stats{sizeof(stats)};ok(sevk_get_stats(ctx,&stats),ctx);require(stats.validation_enabled&&stats.validation_errors==0,"GPU opaque reference has zero core validation errors");
     sevk_destroy(ctx);ctx=nullptr;std::cout<<"GPU opaque resident selection -> grouped references -> actual indirect counts -> raster: "<<checks<<" checks passed; zero validation errors\n";return 0;
 }catch(const std::exception& error){std::cerr<<"Opaque reference failed after "<<checks<<" checks: "<<error.what()<<"\n";if(ctx)sevk_destroy(ctx);return 1;}}

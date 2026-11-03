@@ -16,7 +16,7 @@ public sealed partial class Plugin
         var supported=type.GetMethod("GpuActorSupported",flags);var modelSupported=type.GetMethod("GpuModelSupported",flags);
         var reasons=new Dictionary<string,int>();int cpuEligible=0,managedEligible=0,cpuEligibleNoFailure=0,dirtyCpuEligible=0;
         foreach(DictionaryEntry entry in actors){
-            var actor=entry.Value;var actorType=actor.GetType();object Read(string name)=>actorType.GetField(name,flags).GetValue(actor);
+            var actor=entry.Value;var actorType=actor.GetType();object Read(string name)=>actorType.GetField(name,flags)?.GetValue(actor)??actorType.GetProperty(name,flags)?.GetValue(actor);
             var model=Read("Model");if(model==null||(bool)Read("GpuOwned"))continue;
             bool cpu=(bool)Read("PassOwned"),eligible=(bool)supported.Invoke(scene,new[]{actor});string rejection;
             if(eligible){

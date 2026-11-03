@@ -13,7 +13,7 @@ partial class Program
     {
         const int size=64;string output=Path.GetFullPath("TestResults/MixedOrdering");Directory.CreateDirectory(output);
         var actors=(System.Collections.IDictionary)typeof(VulkanScene).GetField("actors",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;
-        bool Owned(uint id,string field){var data=actors[id]!;return (bool)data.GetType().GetField(field)!.GetValue(data)!;}
+        bool Owned(uint id,string field){var data=actors[id]!;return (bool)ActorMember(data,field)!;}
         void Create(uint id,string model,double z,bool old)=>scene.Process(new MyRenderMessageCreateRenderEntity{ID=id,Model=model,WorldMatrix=MatrixD.CreateTranslation(0,0,z),Flags=RenderFlags.Visible|(old?RenderFlags.ForceOldPipeline:0)});
         byte[][] Capture(string label){render();var buffers=Enumerable.Range(0,4).Select(i=>backend.ReadbackWorldGbuffer((uint)i,size,size)).ToArray();for(int i=0;i<4;i++)File.WriteAllBytes(Path.Combine(output,label+"-"+i+".bin"),buffers[i]);return buffers;}
         string root=Path.Combine(output,"Models");

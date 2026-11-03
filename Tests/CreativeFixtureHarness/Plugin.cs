@@ -48,6 +48,7 @@ public sealed partial class Plugin : IPlugin
     private readonly Stopwatch clock = new Stopwatch();
     private readonly List<string> captureNames = new List<string>();
     private string reports, userData, loadWorld, baselineWorld;
+    private object fixtureGameInstance;
     private RendererBackend expectedBackend = RendererBackend.Vulkan;
     private bool transparencyMode;
     private bool started, sawSession, spawned, textCameraSet, textCaptured, spritesPrepared, spritesCaptured, playerCameraSet, playerCaptured, completed, unloading, exiting, failed;
@@ -79,6 +80,9 @@ public sealed partial class Plugin : IPlugin
 
     public void Init(object gameInstance)
     {
+        fixtureGameInstance = gameInstance;
+        reflexTimingMode = Environment.GetEnvironmentVariable("SE_VULKAN_REFLEX_TIMING") == "1";
+        reflexOverlayMode = Environment.GetEnvironmentVariable("SE_VULKAN_REFLEX_OVERLAY") == "1";
         planetMode=Environment.GetEnvironmentVariable("SE_VULKAN_PLANET_FIXTURE")=="1";
         asteroidMode=Environment.GetEnvironmentVariable("SE_VULKAN_ASTEROID_FIXTURE")=="1";
         if (Environment.GetEnvironmentVariable("SE_VULKAN_CREATIVE_FIXTURE") != "1")
@@ -125,7 +129,7 @@ public sealed partial class Plugin : IPlugin
         MySandboxGame.Config.Save();
         File.WriteAllText(Path.Combine(reports, "harness-started.txt"), DateTime.UtcNow.ToString("u"));
         clock.Start();
-        Report("Initialized isolated fixture gate. Waiting for the Vulkan menu and definitions.");
+        Report("Initialized isolated fixture gate for " + expectedBackend + ". Waiting for the menu and definitions.");
     }
 
     public void Update()
@@ -134,6 +138,7 @@ public sealed partial class Plugin : IPlugin
         {
             MyScreenManager.GetFirstScreenOfType<MyGuiScreenGDPR>()?.CloseScreenNow();
             MyScreenManager.GetFirstScreenOfType<MyGuiScreenWelcomeScreen>()?.CloseScreenNow();
+            ObserveReflex();
             if (clock.Elapsed.TotalSeconds >= nextReport) { nextReport += 10; Report("Fixture progress"); }
             if (started && !spawned && MySession.Static != null) sawSession = true;
             if (started && !spawned && sawSession && MySession.Static == null) throw new InvalidOperationException("World loading returned to the menu; inspect the flushed isolated SpaceEngineers.log for the loading exception.");
@@ -356,6 +361,8 @@ public sealed partial class Plugin : IPlugin
 
     private void Exercise()
     {
+        if(reflexOverlayMode){ExerciseReflexOverlay();return;}
+        if(reflexTimingMode){ExerciseReflexTiming();return;}
         if(glassOverlapMode){ExerciseGlassOverlap(clock.Elapsed.TotalSeconds-spawnedAt);return;}
         if(meshDecalMode){ExerciseMeshDecals(clock.Elapsed.TotalSeconds-spawnedAt);return;}
         // Submit through the same public game path as mods and stock effects.
@@ -500,8 +507,15 @@ public sealed partial class Plugin : IPlugin
                 accept.OnOkClick(null);
                 if (BackendRuntime.RequestedBackend != alternate || !BackendRuntime.RestartRequired || !ReferenceEquals(session, MySession.Static) || !session.Ready)
                     throw new InvalidOperationException("In-world renderer selection exited the fixture or failed to request a restart.");
+                // The comparison is complete. Restore the original request so
+                // subsequent telemetry cannot imply the alternate is active.
+                var restore = new MyGuiScreenOptionsDisplay(); MyGuiSandbox.AddScreen(restore);
+                restore.Controls.OfType<MyGuiControlCombobox>().Single(control => control.Name == "VulkanRendererSelector").SelectItemByKey((long)previous);
+                restore.OnOkClick(null);
+                if (BackendRuntime.RequestedBackend != previous || BackendRuntime.ActiveBackend != expectedBackend)
+                    throw new InvalidOperationException("Display fixture failed to restore its original backend request.");
                 worldDisplayChecked = true;
-                File.WriteAllText(Path.Combine(reports, "world-display-passed.txt"), "Cancel discarded draft; OK requested=" + alternate + "; active=" + BackendRuntime.ActiveBackend + "; world remains ready.");
+                File.WriteAllText(Path.Combine(reports, "world-display-passed.txt"), "Cancel discarded draft; OK requested=" + alternate + "; restored request=" + previous + "; active=" + BackendRuntime.ActiveBackend + "; world remains ready.");
             }
             completed = true; completedAt = clock.Elapsed.TotalSeconds;
             WriteFixture("Simulation fixture and native capture delivery completed; visual parity requires capture review.");
@@ -613,6 +627,7 @@ public sealed partial class Plugin : IPlugin
     private void WriteFixture(string phase)
     {
         new XDocument(new XElement("CreativeFixture", new XAttribute("Phase", phase), new XAttribute("VisualAcceptance", "PendingReview"),
+            new XAttribute("ExpectedBackend", expectedBackend), new XAttribute("ActiveBackend", BackendRuntime.ActiveBackend),
             new XElement("World", MySession.Static?.CurrentPath ?? ""), new XElement("LargeGrid", platform?.EntityId ?? 0),
             new XElement("InitialBaseline", baselineWorld ?? loadWorld ?? ""),
             new XElement("LargeBlocks", platform?.GetBlocks().Count ?? 0), new XElement("SmallGrid", smallGrid?.EntityId ?? 0),
@@ -656,7 +671,7 @@ public sealed partial class Plugin : IPlugin
         VulkanDiagnostics.Set("Creative fixture acceptance", SubsystemState.Failed, error.Message);
         Report("Fixture failed: " + error);
     }
-    public void Dispose() { ShutdownLightingDiagnostics(); MySession.LoadingStep -= PreparePrivateSessionDirectory; if (reports != null) { Report("Harness disposed."); File.WriteAllText(Path.Combine(reports, "harness-disposed.txt"), DateTime.UtcNow.ToString("u")); } }
+    public void Dispose() { ShutdownReflexTiming(); ShutdownReflexMinimize(); ShutdownReflexOwner(); ShutdownReflexFailure(); ShutdownLightingDiagnostics(); MySession.LoadingStep -= PreparePrivateSessionDirectory; if (reports != null) { Report("Harness disposed."); File.WriteAllText(Path.Combine(reports, "harness-disposed.txt"), DateTime.UtcNow.ToString("u")); } }
     private static string FullDirectory(string path) => string.IsNullOrWhiteSpace(path) ? throw new InvalidOperationException("An explicit isolated directory is required.") : Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     private static bool SameDirectory(string a, string b) => !string.IsNullOrWhiteSpace(a) && FullDirectory(a).Equals(FullDirectory(b), StringComparison.OrdinalIgnoreCase);
     private static bool IsWithin(string path, string root) => FullDirectory(path).StartsWith(FullDirectory(root) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);

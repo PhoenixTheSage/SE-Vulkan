@@ -800,6 +800,44 @@ SEVK_API int32_t SEVK_CALL sevk_native_owner_capabilities(void* ctx,SevkNativeOw
 /* flags1 marks a stock restore: execute stock without pack-only GPU production instrumentation. */
 SEVK_API int32_t SEVK_CALL sevk_prepare_native_generation(void* ctx,const SevkNativeGeneration* request,uint64_t* generation);
 
+/* Anomaly-owned Reflex binding diagnostics. Extension/binding readiness and accepted
+   configuration are not proof of applied mode, game lifecycle or latency reduction. */
+typedef struct SevkReflexStatus {
+    uint32_t size,abi_version,extension_enabled,extension_version,swapchain_bound,configured_mode;
+    int32_t last_result;
+    uint32_t reserved;
+    uint64_t epoch,sleep_count,marker_count;
+} SevkReflexStatus;
+SEVK_API int32_t SEVK_CALL sevk_reflex_status(void* ctx,SevkReflexStatus* status);
+/* Optional driver timing summary, oldest-to-newest reports. Zero identified
+ * reports means no timing evidence. Timestamps are microseconds from the driver. */
+typedef struct SevkReflexLatency {
+    uint32_t size,abi_version;
+    uint64_t epoch;
+    uint32_t report_count,reserved;
+    uint64_t frame_id,sim_start,sim_end,render_start,render_end,present_start,present_end,gpu_start,gpu_end;
+} SevkReflexLatency;
+SEVK_API int32_t SEVK_CALL sevk_reflex_latency(void* ctx,uint64_t epoch,SevkReflexLatency* latency);
+/* Commands require a nonzero epoch from the diagnostic snapshot. Retired
+   swapchain epochs are rejected before any driver call. */
+SEVK_API int32_t SEVK_CALL sevk_reflex_configure(void* ctx,uint64_t epoch,uint32_t mode);
+SEVK_API int32_t SEVK_CALL sevk_reflex_sleep(void* ctx,uint64_t epoch);
+/* Marker enum uses VkLatencyMarkerNV values, which differ from NVAPI after 7. */
+SEVK_API int32_t SEVK_CALL sevk_reflex_marker(void* ctx,uint64_t epoch,uint64_t frame_id,uint32_t marker);
+/* Thread-scoped immutable output owner. All-zero fields clear the binding.
+ * Ordinal zero is the input-bearing base output; nonzero is an OOB repeat.
+ * This binding does not perform admission or sleep. Callers must close the
+ * cross-output upload window before enabling it. No pointer is retained. */
+typedef struct SevkReflexOutput {
+    uint32_t size,abi_version;
+    uint64_t epoch,parent_id,output_ordinal,generation;
+} SevkReflexOutput;
+SEVK_API int32_t SEVK_CALL sevk_reflex_bind_output(void* ctx,const SevkReflexOutput* output);
+/* Closed-frame owner release: drains native CPU jobs, clears all tagged queues
+ * (including dormant ones), disables pacing and retires the epoch without
+ * recreating the borrowed swapchain. Not the same operation as requesting Off. */
+SEVK_API int32_t SEVK_CALL sevk_reflex_retire(void* ctx,uint64_t epoch);
+
 #ifdef __cplusplus
 }
 #endif

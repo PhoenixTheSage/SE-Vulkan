@@ -1,6 +1,6 @@
 #pragma once
 #define SEVK_CRITICAL_ROWS 22
-/* Diagnostic only. Every stride-th completed frame is sampled. Owner/worker
+/* Diagnostic only. Select every stride-th begun ticket; aggregate it only after submission. Owner/worker
  * scopes and API scopes overlap. CPU time is quantized Windows thread time;
  * cycles are never converted to milliseconds. API time includes loader,
  * validation layers and driver work, not the driver alone. */
@@ -12,3 +12,6 @@ typedef struct SevkCriticalProfile {
 } SevkCriticalProfile;
 SEVK_API int32_t SEVK_CALL sevk_critical_begin(void* ctx,uint32_t stride);
 SEVK_API int32_t SEVK_CALL sevk_critical_profile(void* ctx,SevkCriticalProfile* profile);
+
+/* Diagnostic stage ticket: 0 begin, 1 detach build, 2 attach launch, 3 discard if unopened. */
+SEVK_API int32_t SEVK_CALL sevk_critical_stage(void* ctx,uint32_t operation,uint32_t stride,uint64_t* ticket);

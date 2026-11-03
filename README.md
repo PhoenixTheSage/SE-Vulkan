@@ -26,6 +26,19 @@ Phase #5 adds stock near/far GGX probes and BRDF reflections, atmosphere probe c
 
 Renderer selection lives in `Storage/Vulkan.cfg` below the game's resolved user-data folder. The vanilla renderer key remains valid for plugin-disabled launches. Display Cancel and resolution rejection/timeouts discard the screen draft. Changing the backend never closes an active world.
 
+**Advanced rendering.** The Vulkan config's **Advanced** button and Anomaly's
+**Vulkan → Advanced** Rich HUD page share the rendering/scheduling options stored
+in `Storage/Vulkan.cfg`. Optimized GPU scene, split/two-stage building, asynchronous
+submission and recording reuse default on, including when loading an older config.
+The page warns “Don't change unless you know what you're doing”. A yellow
+“Changes require a restart to take effect” notice appears for pending startup
+changes and clears if they are reverted. **Restore optimized defaults** restores
+the enabled preferences. Explicit `SE_VULKAN_*` environment overrides take
+precedence and make their controls read-only; private benchmark/rollback launches
+retain that contract. Graphics quality, renderer choice and frame-rate caps remain
+in their existing controls. Advanced edits are debounced and written by the config
+worker; they do not hot-switch renderer ownership or serialize every HUD tick.
+
 For Pulsar source development, register the repository and `Vulkan.xml` using `-sources`. Source compilation also needs built native/shader assets before startup; set `SE_VULKAN_ASSET_DIR` to the repository's absolute `Assets` directory when the source cache location cannot resolve them. The normal local DLL deployment copies Assets beside the plugin before startup.
 
 Linux builds use `cmake -S Native -B Native/build -DCMAKE_BUILD_TYPE=Release`, followed by `cmake --build Native/build --target se_vulkan_native sevk_smoke` and CTest. Package `libse_vulkan_native.so` in `Assets/Native/linux-x64`, SPIR-V in `Assets/Shaders/Compiled`, and compiler tools in `Assets/Tools/linux-x64`. The Linux CI job builds both configurations; live X11/Wayland game acceptance remains separate.

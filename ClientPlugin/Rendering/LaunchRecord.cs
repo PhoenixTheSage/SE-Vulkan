@@ -11,6 +11,7 @@ namespace ClientPlugin.Rendering;
 // hand-off rewrites. Two records alternate, so stage A can fill frame N+1's while stage B launches frame N.
 internal sealed class LaunchRecord
 {
+    public NativeBackend.ReflexOutputToken ReflexOutput;
     public bool DrawScene,WorldQueued,Captured;
     // Stage gate: launched on the launch thread (counted by the managed hand-off); queued reported (managed and native).
     public bool Launched,Reported;
@@ -19,6 +20,7 @@ internal sealed class LaunchRecord
     public bool HqTarget;
     public NativeSpriteBlit[] Sprites=System.Array.Empty<NativeSpriteBlit>();public int SpriteCount;
     public readonly VulkanDebugLines.LineBatch Lines=new();
+    public ulong CriticalTicket;
     public uint ShadowUpdateMask;
     public NativeBackend.FrameEmission Emission;
 }

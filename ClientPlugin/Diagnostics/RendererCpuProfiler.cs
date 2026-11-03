@@ -1,11 +1,14 @@
 using System;
 using System.Diagnostics;
+using System.Collections.Generic;
+using System.Threading;
 using System.Runtime.InteropServices;
 
 namespace ClientPlugin.Diagnostics;
 
-// Diagnostic scopes are inclusive. CPU counters name the owning render thread,
-// including native calls on that thread, but exclude updater/recording workers.
+// Diagnostic scopes are inclusive. Counters follow the render, build or launch
+// thread executing the scope, including native calls there. Native recording
+// workers have their own native profile. Frame CPU time names the render owner.
 // GetThreadTimes is quantized and aliases short phases. Use it only for the
 // whole-frame aggregate; phase CPU attribution uses QueryThreadCycleTime.
 // Fine actor scopes use only QPC: thousands of OS counter calls would distort
@@ -15,6 +18,7 @@ public static class RendererCpuProfiler
     public enum Phase
     {
         Frame, Draw, Messages, Clipmaps, Particles, Scene, TextureLoads,
+        GuestScene, GuestSceneGate, GuestPreparationGate, GuestFrameGate,
         TransformsBefore, ActorUpdater, TransformsAfter, SpatialIndex,
         LightsAndExclusions, ShadowPoses, Skybox, Occlusion, ActorTraversal,
         CandidateQuery, ActorAncestorVisibility, ActorViewGate, ActorSizeTest, ActorOcclusionTest, ActorLodSelection, CascadeMembership,
@@ -33,13 +37,37 @@ public static class RendererCpuProfiler
     }
     public static bool Enabled {get;}=Environment.GetEnvironmentVariable("SE_VULKAN_CPU_DETAIL")=="1";
     static readonly Counter[] Current=new Counter[(int)Phase.Count];
-    static readonly Counter[] Completed=new Counter[(int)Phase.Count];
+    // At most one render, one build and one launch overlap. Keep extra completed
+    // rows for the synchronous Present postfix and diagnostic readers.
+    const int RetainedFrames=16;
+    internal sealed class FrameRow
+    {
+        internal long Sequence,Start,Overhead;
+        internal uint Owner;
+        internal int Remaining,Gen0,Gen1,Gen2;
+        internal readonly Counter[] Phases=new Counter[(int)Phase.Count];
+        internal readonly long[] MessageTicks=new long[MessageTypes];
+        internal readonly int[] MessageCalls=new int[MessageTypes];
+        internal readonly List<(Window Window,double DrawMs,long Revision)> Waiting=new();
+    }
+    static readonly object gate=new();
+    static readonly FrameRow[] rows=Enabled?CreateRows():null;
+    static FrameRow[] CreateRows(){var result=new FrameRow[RetainedFrames];for(int i=0;i<result.Length;i++)result[i]=new FrameRow();return result;}
+    [ThreadStatic]static long laneSequence,drawPrefixStart;
+    public static long CurrentSequence=>Enabled?laneSequence:0;
+    public static void MarkDrawStart(long timestamp){if(Enabled)drawPrefixStart=timestamp;}
+    public static long CurrentDrawStart=>Enabled&&laneSequence!=0?rows[laneSequence%RetainedFrames].Start:0;
+    static FrameRow RowFor(long id){
+        var row=rows[id%RetainedFrames];
+        if(id<=0||row.Sequence!=id)throw new InvalidOperationException("Expired profiler frame "+id);
+        return row;
+    }
     static readonly Func<long> Allocated=GetAllocationCounter();
     static Scope frame;
     static bool active;
-    static uint owner,completedOwner;
-    static long sequence,completedSequence,readTicks,completedReadTicks;
-    static int gen0,gen1,gen2,completedGen0,completedGen1,completedGen2;
+    static uint owner;
+    static long sequence,completedSequence,readTicks;
+    static int gen0,gen1,gen2;
     static Func<long> GetAllocationCounter()
     {
         var method=typeof(GC).GetMethod("GetAllocatedBytesForCurrentThread",Type.EmptyTypes);
@@ -48,8 +76,8 @@ public static class RendererCpuProfiler
     // Exclusive wall ticks per render message type (MyRenderMessageEnum value); a DrawCommands
     // container keeps only its own time, its children count under their own types.
     const int MessageTypes=512,MessageNesting=8;
-    static readonly long[] currentMessageTicks=new long[MessageTypes],completedMessageTicks=new long[MessageTypes];
-    static readonly int[] currentMessageCalls=new int[MessageTypes],completedMessageCalls=new int[MessageTypes];
+    static readonly long[] currentMessageTicks=new long[MessageTypes];
+    static readonly int[] currentMessageCalls=new int[MessageTypes];
     static readonly long[] messageStart=new long[MessageNesting],messageChild=new long[MessageNesting];
     static int messageDepth;
     public static bool BeginMessage(){if(!Enabled||!active||messageDepth>=MessageNesting)return false;messageStart[messageDepth]=Stopwatch.GetTimestamp();messageChild[messageDepth]=0;messageDepth++;return true;}
@@ -60,7 +88,15 @@ public static class RendererCpuProfiler
     public static void BeginFrame()
     {
         if(!Enabled)return;
-        Array.Clear(Current,0,Current.Length);readTicks=0;owner=GetCurrentThreadId();ownerManaged=Environment.CurrentManagedThreadId;active=true;sequence++;
+        Array.Clear(Current,0,Current.Length);readTicks=0;owner=GetCurrentThreadId();ownerManaged=Environment.CurrentManagedThreadId;active=true;
+        lock(gate){
+            laneSequence=++sequence;
+            var row=rows[sequence%RetainedFrames];
+            if(row.Remaining!=0)throw new InvalidOperationException("Profiler frame was reused before completion: "+row.Sequence);
+            row.Sequence=sequence;row.Remaining=1;row.Owner=owner;row.Overhead=0;
+            row.Start=drawPrefixStart!=0?drawPrefixStart:Stopwatch.GetTimestamp();drawPrefixStart=0;
+            Array.Clear(row.Phases,0,row.Phases.Length);
+        }
         Array.Clear(currentMessageTicks,0,MessageTypes);Array.Clear(currentMessageCalls,0,MessageTypes);messageDepth=0;
         gen0=GC.CollectionCount(0);gen1=GC.CollectionCount(1);gen2=GC.CollectionCount(2);
         frame=Measure(Phase.Frame);
@@ -69,44 +105,60 @@ public static class RendererCpuProfiler
     {
         if(!Enabled||!active)return;
         frame.Dispose();active=false;
-        Array.Copy(Current,Completed,Current.Length);
-        lock(buildGate){if(buildReady){for(int i=0;i<Completed.Length;i++)Add(ref Completed[i],BuildDone[i]);buildReady=false;}}
-        completedOwner=owner;completedSequence=sequence;completedReadTicks=readTicks;
-        Array.Copy(currentMessageTicks,completedMessageTicks,MessageTypes);Array.Copy(currentMessageCalls,completedMessageCalls,MessageTypes);
-        completedGen0=GC.CollectionCount(0)-gen0;completedGen1=GC.CollectionCount(1)-gen1;completedGen2=GC.CollectionCount(2)-gen2;
+        lock(gate){
+            var row=RowFor(laneSequence);
+            row.Overhead=readTicks;
+            Array.Copy(currentMessageTicks,row.MessageTicks,MessageTypes);Array.Copy(currentMessageCalls,row.MessageCalls,MessageTypes);
+            row.Gen0=GC.CollectionCount(0)-gen0;row.Gen1=GC.CollectionCount(1)-gen1;row.Gen2=GC.CollectionCount(2)-gen2;
+            FinishLane(row,Current);
+        }
     }
-    // Scopes belong to the render thread, or to the build thread while a Build runs there (milestone 6); a forked
-    // producer's calls on a worker are not measured.
+    static void FinishLane(FrameRow row,Counter[] values)
+    {
+        for(int i=0;i<values.Length;i++)Add(ref row.Phases[i],values[i]);
+        if(--row.Remaining!=0)return;
+        completedSequence=Math.Max(completedSequence,row.Sequence);
+        foreach(var sample in row.Waiting)sample.Window.FinishAccepted(row,sample.DrawMs,sample.Revision);
+        row.Waiting.Clear();
+        Monitor.PulseAll(gate);
+    }
     public static Scope Measure(Phase phase,bool counters=true)
     {
         if(!Enabled)return default;
-        int thread=Environment.CurrentManagedThreadId;
-        if(active&&thread==ownerManaged)return new Scope(phase,counters,Current);
-        if(buildActive&&thread==buildManaged)return new Scope(phase,counters,BuildCurrent);
+        if(workerActive)return new Scope(phase,counters,workerCounters);
+        if(active&&Environment.CurrentManagedThreadId==ownerManaged)return new Scope(phase,counters,Current);
         return default;
     }
     static int ownerManaged;
-    // Frame split (milestone 6): the build thread's lane. BeginBuild/EndBuild bracket one Build on that thread; its
-    // counters wait in BuildDone and fold into the render thread's next completed frame (Apply of frame N+1 plus
-    // Build of frame N, joined during it). The BuildThread phase is that Build's wall time.
-    static readonly Counter[] BuildCurrent=new Counter[(int)Phase.Count],BuildDone=new Counter[(int)Phase.Count];
-    static int buildManaged;static volatile bool buildActive;static bool buildReady;static Scope buildFrame;
-    static readonly object buildGate=new object();
-    public static void BeginBuild()
-    {
-        if(!Enabled)return;
-        Array.Clear(BuildCurrent,0,BuildCurrent.Length);buildManaged=Environment.CurrentManagedThreadId;buildActive=true;
-        buildFrame=Measure(Phase.BuildThread);
+    [ThreadStatic]static Counter[] workerCounters;
+    [ThreadStatic]static bool workerActive;
+    [ThreadStatic]static Scope buildFrame;
+    // Reserve the next lane before publishing work: it may finish before the
+    // producer returns or after a newer render frame has already completed.
+    public static long ReserveWorker(){
+        if(!Enabled)return 0;
+        lock(gate)RowFor(laneSequence).Remaining++;
+        return laneSequence;
     }
-    public static void EndBuild()
-    {
-        if(!Enabled||!buildActive)return;
-        buildFrame.Dispose();buildActive=false;
-        lock(buildGate){if(!buildReady)Array.Clear(BuildDone,0,BuildDone.Length);for(int i=0;i<BuildDone.Length;i++)Add(ref BuildDone[i],BuildCurrent[i]);buildReady=true;}
+    public static void BeginWorker(long id,bool build){
+        if(!Enabled)return;
+        laneSequence=id;workerCounters??=new Counter[(int)Phase.Count];Array.Clear(workerCounters,0,workerCounters.Length);
+        workerActive=true;buildFrame=build?Measure(Phase.BuildThread):default;
+    }
+    public static void EndWorker(){
+        if(!Enabled||!workerActive)return;
+        buildFrame.Dispose();workerActive=false;
+        lock(gate)FinishLane(RowFor(laneSequence),workerCounters);
+        laneSequence=0;
     }
     static void Add(ref Counter t,in Counter c){t.Calls+=c.Calls;t.CpuCalls+=c.CpuCalls;t.CycleCalls+=c.CycleCalls;t.Wall+=c.Wall;t.Cpu+=c.Cpu;t.Cycles+=c.Cycles;t.Allocated+=c.Allocated;}
     public static Snapshot Capture()
-        =>Describe(Completed,1,completedSequence,completedOwner,completedReadTicks);
+    {
+        lock(gate){
+            if(completedSequence==0)return Describe(Current,0,0,0,0);
+            var row=RowFor(completedSequence);return Describe(row.Phases,1,row.Sequence,row.Owner,row.Overhead);
+        }
+    }
     static Snapshot Describe(Counter[] values,long frames,long lastSequence,uint thread,long overhead)
     {
         var rows=new Row[values.Length];
@@ -132,28 +184,58 @@ public static class RendererCpuProfiler
         readonly FrameTail[] samples=Enabled?new FrameTail[Capacity]:null;
         int sampleCount;long dropped;
         long frames,lastSequence,overhead;uint thread;
+        readonly long[] accepted=Enabled?new long[RetainedFrames]:null;
+        long revision;
+        int pending;
         public void AddCompleted()=>AddCompleted(double.NaN);
-        public void AddCompleted(double completedDrawMs)
-        {
-            if(!Enabled||completedSequence==lastSequence)return;
-            if(frames==0)thread=completedOwner;else if(thread!=completedOwner)thread=0;
-            for(int i=0;i<totals.Length;i++){ref var t=ref totals[i];var c=Completed[i];t.Calls+=c.Calls;t.CpuCalls+=c.CpuCalls;t.CycleCalls+=c.CycleCalls;t.Wall+=c.Wall;t.Cpu+=c.Cpu;t.Cycles+=c.Cycles;t.Allocated+=c.Allocated;}
+        public void AddCompleted(double completedDrawMs){
+            if(!Enabled)return;
+            lock(gate)if(completedSequence!=0)Accept(completedSequence,completedDrawMs);
+        }
+        public void Accept(long id,double completedDrawMs){
+            if(!Enabled)return;
+            lock(gate){
+                var row=RowFor(id);
+                int index=(int)(id%RetainedFrames);
+                if(accepted[index]==id)return;
+                accepted[index]=id;pending++;
+                if(row.Remaining==0)FinishAccepted(row,completedDrawMs,revision);
+                else row.Waiting.Add((this,completedDrawMs,revision));
+            }
+        }
+        // Only the benchmark reporting thread waits, after closing acceptance.
+        public void WaitForAccepted(TimeSpan timeout){
+            if(!Enabled)return;
+            var timer=Stopwatch.StartNew();
+            lock(gate)while(pending!=0){
+                var remaining=timeout-timer.Elapsed;
+                if(remaining<=TimeSpan.Zero)throw new TimeoutException("Missing CPU lanes for "+pending+" accepted frames");
+                Monitor.Wait(gate,remaining);
+            }
+        }
+        internal void FinishAccepted(FrameRow row,double completedDrawMs,long acceptedRevision){
+            if(acceptedRevision!=revision)return;
+            pending--;
+            if(frames==0)thread=row.Owner;else if(thread!=row.Owner)thread=0;
+            var values=row.Phases;
+            for(int i=0;i<totals.Length;i++)Add(ref totals[i],values[i]);
             if(sampleCount<Capacity){
-                var c=Completed[(int)Phase.Frame];samples[sampleCount]=new FrameTail{Sequence=completedSequence,CompletedDrawMs=completedDrawMs,
+                var c=values[(int)Phase.Frame];samples[sampleCount]=new FrameTail{Sequence=row.Sequence,CompletedDrawMs=completedDrawMs,
                     FrameWallMs=c.Wall*1000.0/Stopwatch.Frequency,FrameCpuMs=c.CpuCalls==c.Calls?c.Cpu*.0001:double.NaN,
-                    AllocatedBytes=c.Allocated,Gen0Collections=completedGen0,Gen1Collections=completedGen1,Gen2Collections=completedGen2};
-                for(int i=0;i<totals.Length;i++)walls[sampleCount*totals.Length+i]=Completed[i].Wall*1000.0/Stopwatch.Frequency;
+                    AllocatedBytes=c.Allocated,Gen0Collections=row.Gen0,Gen1Collections=row.Gen1,Gen2Collections=row.Gen2};
+                for(int i=0;i<totals.Length;i++)walls[sampleCount*totals.Length+i]=values[i].Wall*1000.0/Stopwatch.Frequency;
                 sampleCount++;
             }else dropped++;
-            frames++;lastSequence=completedSequence;overhead+=completedReadTicks;
-            bool spike=Completed[(int)Phase.Messages].Wall*1000.0/Stopwatch.Frequency>=MessageSpikeMs;if(spike)messageSpikeFrames++;
-            for(int i=0;i<MessageTypes;i++){if(completedMessageCalls[i]==0)continue;messageTicks[i]+=completedMessageTicks[i];messageCalls[i]+=completedMessageCalls[i];if(spike)messageSpikeTicks[i]+=completedMessageTicks[i];}
+            frames++;lastSequence=Math.Max(lastSequence,row.Sequence);overhead+=row.Overhead;
+            bool spike=values[(int)Phase.Messages].Wall*1000.0/Stopwatch.Frequency>=MessageSpikeMs;if(spike)messageSpikeFrames++;
+            for(int i=0;i<MessageTypes;i++){if(row.MessageCalls[i]==0)continue;messageTicks[i]+=row.MessageTicks[i];messageCalls[i]+=row.MessageCalls[i];if(spike)messageSpikeTicks[i]+=row.MessageTicks[i];}
         }
         // A frame whose Messages phase reaches this wall time is a spike frame.
         public const double MessageSpikeMs=2.0;
         readonly long[] messageTicks=Enabled?new long[MessageTypes]:null,messageCalls=Enabled?new long[MessageTypes]:null,messageSpikeTicks=Enabled?new long[MessageTypes]:null;
         long messageSpikeFrames;
-        public MessageSnapshot CaptureMessages()
+        public MessageSnapshot CaptureMessages(){lock(gate)return CaptureMessagesLocked();}
+        MessageSnapshot CaptureMessagesLocked()
         {
             if(!Enabled||frames==0)return new MessageSnapshot{Enabled=Enabled,Rows=Array.Empty<MessageRow>()};
             double ms=1000.0/Stopwatch.Frequency;var rows=new System.Collections.Generic.List<MessageRow>();
@@ -162,8 +244,9 @@ public static class RendererCpuProfiler
             rows.Sort((a,b)=>b.MsPerFrame.CompareTo(a.MsPerFrame));
             return new MessageSnapshot{Enabled=true,Frames=frames,SpikeFrames=messageSpikeFrames,SpikeThresholdMs=MessageSpikeMs,Rows=rows.ToArray()};
         }
-        public Snapshot Capture()=>Describe(totals,frames,lastSequence,thread,overhead);
-        public TailSnapshot CaptureTails()
+        public Snapshot Capture(){lock(gate)return Describe(totals,frames,lastSequence,thread,overhead);}
+        public TailSnapshot CaptureTails(){lock(gate)return CaptureTailsLocked();}
+        TailSnapshot CaptureTailsLocked()
         {
             if(!Enabled||sampleCount==0)return new TailSnapshot{Enabled=Enabled,Frames=0,DroppedSamples=dropped,Rows=Array.Empty<TailRow>(),Slowest=Array.Empty<SlowFrame>()};
             var order=new int[sampleCount];for(int i=0;i<order.Length;i++)order[i]=i;
@@ -182,8 +265,8 @@ public static class RendererCpuProfiler
             }
             return new TailSnapshot{Enabled=true,Frames=sampleCount,DroppedSamples=dropped,GcTaggedFrames=gcTagged,Rows=rows,Slowest=slowest};
         }
-        public void Reset(){Array.Clear(totals,0,totals.Length);frames=lastSequence=overhead=dropped=0;sampleCount=0;thread=0;
-            if(Enabled){Array.Clear(messageTicks,0,MessageTypes);Array.Clear(messageCalls,0,MessageTypes);Array.Clear(messageSpikeTicks,0,MessageTypes);}messageSpikeFrames=0;}
+        public void Reset(){lock(gate){revision++;pending=0;if(Enabled)Array.Clear(accepted,0,accepted.Length);Array.Clear(totals,0,totals.Length);frames=lastSequence=overhead=dropped=0;sampleCount=0;thread=0;
+            if(Enabled){Array.Clear(messageTicks,0,MessageTypes);Array.Clear(messageCalls,0,MessageTypes);Array.Clear(messageSpikeTicks,0,MessageTypes);}messageSpikeFrames=0;Monitor.PulseAll(gate);}}
     }
     internal struct Counter {public long Calls,CpuCalls,CycleCalls,Wall,Cpu,Allocated;public ulong Cycles;}
     public struct Scope:IDisposable

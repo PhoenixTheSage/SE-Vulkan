@@ -14,7 +14,7 @@ partial class Program
         const int size=64;string output=Path.GetFullPath("TestResults/OldResourceOrder");Directory.CreateDirectory(output);
         scene.InitializeStockOldIdentities(false);check(System.Runtime.InteropServices.Marshal.SizeOf<NativeOldPartOrder>()==32,"OLD ordering metadata has the native ABI stride");string currentOwner="";
         var actors=(System.Collections.IDictionary)typeof(VulkanScene).GetField("actors",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;
-        bool Owned(uint id,string field)=>(bool)actors[id]!.GetType().GetField(field)!.GetValue(actors[id])!;
+        bool Owned(uint id,string field)=>(bool)ActorMember(actors[id]!,field)!;
         void Create(uint id,string model,double z){scene.Process(new MyRenderMessageCreateRenderEntity{ID=id,Model=model,WorldMatrix=MatrixD.CreateTranslation(0,0,z),Flags=RenderFlags.Visible|RenderFlags.ForceOldPipeline});
             if(id==402&&currentOwner=="mixed")for(int i=0;i<33;i++)scene.Process(new MyRenderMessageUpdateColorEmissivity{ID=id,MaterialName=VRage.Utils.MyStringId.GetOrCompute("unused-order-fallback-"+i),DiffuseColor=Color.White,Emissivity=.5f});}
         byte[][] Capture(string label){render();var data=Enumerable.Range(0,4).Select(i=>backend.ReadbackWorldGbuffer((uint)i,size,size)).ToArray();for(int i=0;i<4;i++)File.WriteAllBytes(Path.Combine(output,label+"-"+i+".bin"),data[i]);return data;}

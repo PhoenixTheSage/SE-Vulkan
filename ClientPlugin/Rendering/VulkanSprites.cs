@@ -36,10 +36,13 @@ internal sealed partial class VulkanSprites
     public int SpriteCount => main.Sprites.Count;
     public float ViewportScale = 1;
     public double DrawTimeSeconds;
+    static readonly bool TraceHud=Environment.GetEnvironmentVariable("SE_VULKAN_HUD_AUDIT")=="1";
+    readonly List<object> hudSprites=new();
+    public object HudSprites {get;private set;}
     public event Action<string> Warning;
     public VulkanSprites(VulkanTextureCache textures) { this.textures = textures; }
-    public void BeginFrame() { main.Sprites.Clear(); main.Clips.Clear(); }
-    public void LatchMain() { (main, buildMain) = (buildMain, main); buildViewportScale = ViewportScale; }
+    public void BeginFrame() { main.Sprites.Clear(); main.Clips.Clear(); if(TraceHud)hudSprites.Clear(); }
+    public void LatchMain() { if(TraceHud)HudSprites=hudSprites.ToArray(); (main, buildMain) = (buildMain, main); buildViewportScale = ViewportScale; }
     // Main-batch placement shared by MainPackets and the plugin's blittable MainPacketsInto
     // (VulkanSprites.Blit.cs): transformed destination and origin, and the clip rectangle.
     struct MainPlacement {public float X,Y,Width,Height,OriginX,OriginY;public int ClipX,ClipY,ClipWidth,ClipHeight;}
@@ -224,6 +227,8 @@ internal sealed partial class VulkanSprites
     private void Add(Batch batch, string texture, RectangleF destination, Rectangle? source, Color color,
         float angle, Vector2 origin, bool ignoreBounds, float[] explicitUv = null, bool premultiplied = true)
     {
+        if(TraceHud&&ReferenceEquals(batch,main)&&destination.Width>=1000&&destination.Height>=600)
+            hudSprites.Add(new{Texture=texture,Destination=destination.ToString(),Color=color.ToString(),premultiplied});
         var handle = textures.GetSpriteTexture(texture, out _);
         if (!string.IsNullOrEmpty(texture) && handle == 0) return; // Missing content is reported by the cache, not painted as a white substitute.
         var uv = new[] { 0f, 0f, 1f, 1f };

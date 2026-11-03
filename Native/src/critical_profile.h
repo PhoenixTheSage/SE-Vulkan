@@ -3,6 +3,10 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <stdexcept>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -33,12 +37,74 @@ public:
     ~Scope(){if(!target)return;uint64_t end=clock();auto& row=target->rows[kind];row.calls++;row.wall_ns+=end-start;if(counted){uint64_t time{},cycles{};if(cpu(time,cycles)&&time>=cpu_start&&cycles>=cycles_start){row.cpu_100ns+=time-cpu_start;row.cycles+=cycles-cycles_start;row.cpu_reads++;}}target->overhead+=clock()-end;}
 };
 template<class F>decltype(auto) api(Kind kind,F&& call){if(!lane)return call();Scope scope(kind);return call();}
-struct State {
-    Lane owner;std::array<Lane,16> workers{};bool pending{};
-    SevkCriticalProfile totals{sizeof(SevkCriticalProfile),SEVK_ABI_VERSION};
-    void begin(uint32_t stride){pending=true;totals.enabled=stride!=0;totals.stride=stride;totals.begun++;bool sample=stride&&totals.begun%stride==0;owner={};owner.sampled=sample;for(auto& worker:workers){worker={};worker.sampled=sample;}lane=sample?&owner:nullptr;}
-    void finish(){if(!pending||!totals.enabled){pending=false;lane=nullptr;return;}pending=false;totals.completed++;if(owner.sampled){totals.selected++;auto add=[&](const Lane& source){totals.counter_overhead_ns+=source.overhead;for(uint32_t i=0;i<SEVK_CRITICAL_ROWS;i++){auto& a=totals.rows[i];auto& b=source.rows[i];a.calls+=b.calls;a.wall_ns+=b.wall_ns;a.cpu_100ns+=b.cpu_100ns;a.cycles+=b.cycles;a.cpu_reads+=b.cpu_reads;}};add(owner);for(auto& worker:workers)add(worker);}owner.sampled=false;for(auto& worker:workers)worker.sampled=false;lane=nullptr;}
-    void detach(){pending=false;if(lane==&owner)lane=nullptr;}
+// Build and launch are sequential for one ticket, but may overlap the previous
+// ticket's recording. Each sampled frame owns its lanes until recording finishes.
+struct Frame {
+    Lane scene,record;
+    std::array<Lane,16> workers{};
+    Frame(){scene.sampled=record.sampled=true;for(auto& worker:workers)worker.sampled=true;}
 };
-struct Finish {State& state;bool submitted{};~Finish(){if(submitted)state.finish();else state.detach();}};
+class State {
+    struct Ticket {uint64_t id{};std::unique_ptr<Frame> sample;};
+    struct Attachment {State* state;uint64_t id;Frame* frame;};
+    static inline thread_local Attachment attachment{};
+    mutable std::mutex mutex;
+    std::unordered_map<uint64_t,Ticket> pending;
+    Ticket recording;
+    SevkCriticalProfile totals{sizeof(SevkCriticalProfile),SEVK_ABI_VERSION};
+    void attach(const Ticket& t){attachment={this,t.id,t.sample.get()};lane=t.sample?&t.sample->scene:nullptr;}
+public:
+    uint64_t begin(uint32_t stride){
+        if(stride>1024)throw std::runtime_error("invalid critical sample stride");
+        std::lock_guard lock(mutex);
+        // Legacy single-thread callers may abandon a frame before BeginFrame.
+        if(attachment.state==this)pending.erase(attachment.id);
+        detach();totals.stride=stride;totals.enabled=stride!=0;
+        if(!stride)return 0;
+        uint64_t id=++totals.begun;auto& t=pending[id];t.id=id;
+        if(id%stride==0)t.sample=std::make_unique<Frame>();
+        attach(t);return id;
+    }
+    void launch(uint64_t id){
+        std::lock_guard lock(mutex);
+        auto found=pending.find(id);
+        if(found==pending.end())throw std::runtime_error("critical launch ticket not pending");
+        attach(found->second);
+    }
+    void detach(){if(attachment.state==this){attachment={};lane=nullptr;}}
+    void discard(uint64_t id){std::lock_guard lock(mutex);if(attachment.state==this&&attachment.id==id)detach();pending.erase(id);}
+    Frame* input_frame()const{return attachment.state==this?attachment.frame:nullptr;}
+    void open_recording(){
+        // BeginFrame has waited for the previous recording. Untagged runtime
+        // frames take no lock and never allocate profiling state.
+        if(attachment.state!=this)return;
+        std::lock_guard lock(mutex);
+        auto found=pending.find(attachment.id);
+        if(found==pending.end())throw std::runtime_error("critical frame opened without ticket");
+        recording=std::move(found->second);pending.erase(found);detach();
+    }
+    Lane* record_owner(){return recording.sample?&recording.sample->record:nullptr;}
+    Lane* record_worker(size_t i){return recording.sample?&recording.sample->workers[i]:nullptr;}
+    void finish(bool submitted){
+        if(!recording.id)return;
+        std::lock_guard lock(mutex);
+        if(submitted){
+            totals.completed++;
+            if(auto* f=recording.sample.get()){
+                totals.selected++;
+                auto add=[&](const Lane& source){
+                    totals.counter_overhead_ns+=source.overhead;
+                    for(uint32_t i=0;i<SEVK_CRITICAL_ROWS;i++){
+                        auto& a=totals.rows[i];const auto& b=source.rows[i];
+                        a.calls+=b.calls;a.wall_ns+=b.wall_ns;a.cpu_100ns+=b.cpu_100ns;a.cycles+=b.cycles;a.cpu_reads+=b.cpu_reads;
+                    }
+                };
+                add(f->scene);add(f->record);for(auto& worker:f->workers)add(worker);
+            }
+        }
+        recording={};
+    }
+    SevkCriticalProfile snapshot()const{std::lock_guard lock(mutex);return totals;}
+};
+struct Finish {State& state;bool submitted{};~Finish(){state.finish(submitted);}};
 }

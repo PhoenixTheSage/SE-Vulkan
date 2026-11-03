@@ -26,7 +26,7 @@ partial class Program
             scene.GpuOpaqueOwnershipEnabled=owner=="gpu";scene.NativePassSceneEnabled=owner!="managed";
             for(int c=0;c<count;c++)settings.ShadowCascadeFrozen[c]=false;Frame();var expected=Capture();
             var actor=actors[200u]!;
-            check(((bool)actor.GetType().GetField("GpuOwned")!.GetValue(actor)!)==(owner=="gpu")&&((bool)actor.GetType().GetField("PassOwned")!.GetValue(actor)!)==(owner=="native"),"shadow cache uses actual requested owner: "+owner);
+            check(((bool)actor.GetType().GetProperty("GpuOwned")!.GetValue(actor)!)==(owner=="gpu")&&((bool)actor.GetType().GetField("PassOwned")!.GetValue(actor)!)==(owner=="native"),"shadow cache uses actual requested owner: "+owner);
             check(expected.Any(d=>d.Count(v=>v<1)>10),"actual owner fills a positive cascade silhouette: "+label);
             check(backend.GetShadowCacheMask()==active,"every scene cascade has world ownership: "+label);
             for(int c=0;c<count;c++)settings.ShadowCascadeFrozen[c]=true;Frame();

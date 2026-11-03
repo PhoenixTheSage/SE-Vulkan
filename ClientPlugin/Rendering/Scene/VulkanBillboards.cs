@@ -23,6 +23,13 @@ namespace ClientPlugin.Rendering.Scene
         private static readonly uint[] Indices = { 0, 1, 2, 0, 2, 3 };
         public long Submitted { get; private set; }
         public long Unsupported { get; private set; }
+        // Cumulative ownership-boundary diagnostics; late shared-list reads may
+        // already point at the next frame when recording is pipelined.
+        public long HudCollected { get; private set; }
+        public long HudEmitted { get; private set; }
+        public long HudDisabled { get; private set; }
+        public object HudPreview { get; private set; }
+        static readonly bool TraceHud = System.Environment.GetEnvironmentVariable("SE_VULKAN_HUD_AUDIT")=="1";
 
         public VulkanBillboards(VulkanScene scene, NativeBackend backend) { this.scene = scene; this.backend = backend; }
 
@@ -80,6 +87,11 @@ namespace ClientPlugin.Rendering.Scene
                 foreach (var entry in shared.Billboards.Read.Matrices) collectedMatrices[entry.Key] = entry.Value;
             }
             DrainGenerated(into);
+            if(TraceHud)foreach(var b in into)if(b.BlendType==MyBillboard.BlendTypeEnum.PostPP||b.BlendType==MyBillboard.BlendTypeEnum.LDR){
+                ++HudCollected;
+                if(HudPreview==null)
+                    HudPreview=new { b.Material,b.BlendType,b.Position0,b.Position1,b.Position2,b.Position3,b.Color,b.ColorIntensity,b.ParentID,b.CustomViewProjection };
+            }
             ResolveParents(into, collectedHidden);
         }
         // Parented billboards follow a game actor that Apply moves and destroys: resolve them while collecting, into
@@ -139,7 +151,7 @@ namespace ClientPlugin.Rendering.Scene
                 if (hiddenParent.Contains(billboard)) continue;
                 var settings=scene.RenderSettings;
                 bool enabled=settings.DrawBillboards && (billboard.BlendType==MyBillboard.BlendTypeEnum.Standard?settings.DrawBillboardsStandard:billboard.BlendType==MyBillboard.BlendTypeEnum.AdditiveBottom?settings.DrawBillboardsBottom:billboard.BlendType==MyBillboard.BlendTypeEnum.AdditiveTop?settings.DrawBillboardsTop:billboard.BlendType==MyBillboard.BlendTypeEnum.LDR?settings.DrawBillboardsLDR:settings.DrawBillboardsPostPP);
-                if(!enabled)continue;
+                if(!enabled){if(TraceHud&&(billboard.BlendType==MyBillboard.BlendTypeEnum.PostPP||billboard.BlendType==MyBillboard.BlendTypeEnum.LDR))++HudDisabled;continue;}
                 Vector3D billboardCamera=camera;
                 if(billboard.CustomViewProjection!=-1){if(billboard.CustomViewProjection<0 || billboard.CustomViewProjection>=32 || !haveShared || !matrices.TryGetValue(billboard.CustomViewProjection,out var custom)){Unsupported++;continue;}billboardCamera=custom.CameraPosition;}
                 MyTransparentMaterial material = MyTransparentMaterials.GetMaterial(billboard.Material);
@@ -179,6 +191,7 @@ namespace ClientPlugin.Rendering.Scene
                 }
                 Vector3D center = (a+b+c+d)*.25;
                 Vector2 uv0=material.UVOffset+billboard.UVOffset*material.UVSize,uv1=uv0+material.UVSize*billboard.UVSize;
+                if(TraceHud&&(billboard.BlendType==MyBillboard.BlendTypeEnum.PostPP||billboard.BlendType==MyBillboard.BlendTypeEnum.LDR))++HudEmitted;
                 var vertices=new float[20];void V(int index,Vector3D point,Vector2 uv){if(billboard.CustomViewProjection==-1)point-=camera;int j=index*5;vertices[j]=(float)point.X;vertices[j+1]=(float)point.Y;vertices[j+2]=(float)point.Z;vertices[j+3]=uv.X;vertices[j+4]=uv.Y;}
                 var triangle = billboard as MyTriangleBillboard;
                 if (triangle != null)

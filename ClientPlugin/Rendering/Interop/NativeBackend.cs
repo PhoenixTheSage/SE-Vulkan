@@ -222,7 +222,9 @@ public sealed partial class NativeBackend : IDisposable
 
     public void Dispose()
     {
-        if (context != IntPtr.Zero) { api.Destroy(context); context = IntPtr.Zero;ResetWorldRecipes();NativePassReady=false; }
+        reflexLife.EnterWriteLock();
+        try { if (context != IntPtr.Zero) { api.Destroy(context); context = IntPtr.Zero;ResetWorldRecipes();NativePassReady=false; } }
+        finally { reflexLife.ExitWriteLock(); }
         foreach (var pointer in ownedStrings) Marshal.FreeHGlobal(pointer);
         ownedStrings.Clear();
         surfaceFactory = null;

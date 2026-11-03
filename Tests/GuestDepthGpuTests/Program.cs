@@ -121,7 +121,7 @@ partial class Program
         backend.BeginPacketCollection();scene.SetCamera(Vector3D.Zero,MyTimeSpan.Zero,1f/60);scene.Draw(backend);
         var actors=(System.Collections.IDictionary)typeof(VulkanScene).GetField("actors",BindingFlags.Instance|BindingFlags.NonPublic).GetValue(scene);
         object actor=actors[(uint)10];var actorType=actor.GetType();
-        actorType.GetField("GpuOwned").SetValue(actor,true);actorType.GetField("PassOwned").SetValue(actor,true);
+        actorType.GetProperty("GpuOwned").SetValue(actor,true);actorType.GetField("PassOwned").SetValue(actor,true);
         SceneCall("BeginGuestDepthFrame");
         Check((bool)SceneCall("ConfigureGuestSceneDepth",images,worldViews),"managed world-space depth views configured");
         SceneCall("CollectGuestSceneDepth",voxels);
@@ -152,7 +152,7 @@ partial class Program
         Check(backend.BeginFrame(projection,Vector3.Forward,Vector3.One,Vector3.Zero,Color.Black),"failed-source frame begins");backend.EndFrame();
         Check(backend.GuestDepthReady==0,"failed scene source cancels all native depth requests");
         actorType.GetField("Model").SetValue(actor,model);
-        actorType.GetField("GpuOwned").SetValue(actor,false);actorType.GetField("PassOwned").SetValue(actor,false);
+        actorType.GetProperty("GpuOwned").SetValue(actor,false);actorType.GetField("PassOwned").SetValue(actor,false);
         byte[] ManagedGeometry(string label)
         {
             backend.BeginPacketCollection();scene.Draw(backend);SceneCall("BeginGuestDepthFrame");

@@ -17,6 +17,8 @@ public static class BackendFactory
         try
         {
             BackendRuntime.InitializeConfiguration(MyFileSystem.UserDataPath);
+            if (BackendRuntime.RequestedBackend == RendererBackend.Vulkan)
+                AdvancedRenderingOptions.ApplyStartup(BackendRuntime.Configuration.AdvancedRendering);
             EarlyBootstrapHooks.Install();
             if (BackendRuntime.RequestedBackend == RendererBackend.Vulkan)
             {
@@ -24,7 +26,7 @@ public static class BackendFactory
                 if (!BackendRuntime.HookReady || !BackendRuntime.LazyCacheDisabled) reason = "Early renderer hook or preloader cache guard is unavailable.";
                 else if (BackendRuntime.RecoveryRequired) reason = BackendRuntime.Configuration.LastFailure;
                 else if (PulsarCompatibility.Check(out reason) && VulkanWindowHost.CheckPlatform(out reason) &&
-                    MyVulkanRender.TryCreate(settings.GetValueOrDefault(), out candidate, out reason))
+                    TryCreateVulkan(settings.GetValueOrDefault(), out candidate, out reason))
                 {
                     BackendRuntime.BeginVulkanAttempt();
                     BackendRuntime.SetActive(RendererBackend.Vulkan, "Vulkan selected; startup validation pending.");
@@ -41,6 +43,10 @@ public static class BackendFactory
         // Keep vanilla DX11 creation outside the Vulkan exception handler; its own failure must propagate once.
         return Dx11(settings, reason);
     }
+    // Keep renderer type initialization behind the startup-settings boundary.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TryCreateVulkan(MyRenderSettings settings, out IMyRender candidate, out string reason) =>
+        MyVulkanRender.TryCreate(settings, out candidate, out reason);
     private static IMyRender Dx11(MyRenderSettings? settings, string reason)
     {
         BackendRuntime.SetActive(RendererBackend.Dx11, reason);

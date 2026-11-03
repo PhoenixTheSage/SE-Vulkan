@@ -84,11 +84,15 @@ public sealed partial class VulkanScene
     // A removed actor's Build state: native ownership, dirty entries, its occlusion group and candidate proxy.
     void RemoveBuildState(ActorData actor)
     {
+        // Apply can remove or reuse this ID while the prior Build is publishing its visible set.
+        visible.Remove(actor.Id);
         RemoveNativePassActor(actor,false,markSpots:false);nativePassDirty.Remove(actor);ReleaseCell(actor,false);cellDirty.Remove(actor);cellPoseDirty.Remove(actor);
         occlusionGroups.Remove(actor.Actor);
         if(actor.Proxy>=0)actorIndex.RemoveProxy(actor.Proxy);
         staticGroups.Remove(actor);
         ReleaseDynamicMeshes(actor);
+        packedActorBounds.Release(actor.BoundsLease);
+        actor.VisibilityRegistration?.Remove();
     }
     long BuildActorChecks,BuildActorMismatches;
     void VerifyBuildActors()

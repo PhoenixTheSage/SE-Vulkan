@@ -92,6 +92,10 @@ SEVK_API int32_t SEVK_CALL sevk_opaque_stock_batches(void* ctx,const SevkOpaqueS
 SEVK_API int32_t SEVK_CALL sevk_opaque_reference_readback(void* ctx,SevkOpaqueSelector* selectors,uint32_t actor_count,
     SevkOpaqueSelection* selections,uint32_t selection_count,SevkOpaqueReference* references,uint32_t reference_capacity,
     SevkOpaqueIndirect* args,SevkOpaqueDrawRecord* draws,uint32_t draw_capacity,uint32_t* counts,uint32_t view_count,uint32_t* errors);
+/* Verification only: completed per-packed-view conditional words, after the
+ * batch/view counts and error word. Waits for the submitted slot; never use as
+ * a frame producer or a game-visible-set publication. */
+SEVK_API int32_t SEVK_CALL sevk_opaque_predicate_readback(void* ctx,uint32_t* predicates,uint32_t view_count,uint32_t* errors);
 
 SEVK_API int32_t SEVK_CALL sevk_readback_spot(void* ctx,uint32_t light,void* data,uint64_t bytes);
 

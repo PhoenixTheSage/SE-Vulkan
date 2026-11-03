@@ -336,3 +336,7 @@ both manifests and actual probe metadata authenticate the selected mode. The
 ordinary timed fixture remains separate. Compare its completed probe folders
 with `Compare-LightingProbes.py --mesh-fixture`; this route requires the
 immediate control and reports all faces/mips without assigning a parity verdict.
+
+## Reflex integration lane
+
+`-Reflex` snapshots the real sibling Anomaly, SE-Reflex and SE-FG builds into the private profile and uses the native build-reflex DLL/shaders. It records `reflex-history.txt` while cycling the real SE-Reflex Config.Mode property through On, Boost, Off and rearm during the world exercise. It seeds VerticalSync=0 only in private game data so the FG path can run. Status records accepted mode, availability, driver state where available, native counters and detailed FG gating. This is not a visible settings-widget test or a latency-reduction assertion. Prefer `-PrepareOnly` and the existing hash-checked Start-Prepared launcher. See SE-Reflex/Docs/LiveIntegration.md for completed run evidence and unresolved native behavior.

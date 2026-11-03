@@ -36,6 +36,7 @@ public sealed partial class VulkanScene
         public float ParentedCameraDistanceSquared(Vector3D camera)=>(float)LocalAabb.DistanceSquared(Vector3D.Transform(camera,WorldInv));
     }
     const int ActorFrameSlots=3;
+    readonly PackedActorBounds packedActorBounds=new(ActorFrameSlots);
     int applyParity,buildParity,launchParity;
     // Actors whose frame may have changed: everything RefreshSpatialIndex drains (transform, geometry, visibility
     // and parent changes reach it, including descendants), plus creation and removal. An actor is refreshed in the
@@ -51,10 +52,15 @@ public sealed partial class VulkanScene
     {
         using var profile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ActorSnapshot);
         int slot=applyParity,previous=(slot+ActorFrameSlots-1)%ActorFrameSlots;
-        foreach(var data in frameDirty)RefreshActorFrame(data.Frames[slot],data);
-        foreach(var data in frameDirtyPrevious)if(!frameDirty.Contains(data))data.Frames[slot].CopyFrom(data.Frames[previous]);
-        foreach(var data in frameDirtyEarlier)if(!frameDirty.Contains(data)&&!frameDirtyPrevious.Contains(data))data.Frames[slot].CopyFrom(data.Frames[previous]);
+        foreach(var data in frameDirty){RefreshActorFrame(data.Frames[slot],data);SnapshotPackedBounds(data,slot);}
+        foreach(var data in frameDirtyPrevious)if(!frameDirty.Contains(data)){data.Frames[slot].CopyFrom(data.Frames[previous]);SnapshotPackedBounds(data,slot);}
+        foreach(var data in frameDirtyEarlier)if(!frameDirty.Contains(data)&&!frameDirtyPrevious.Contains(data)){data.Frames[slot].CopyFrom(data.Frames[previous]);SnapshotPackedBounds(data,slot);}
         frameDirtyEarlier.Clear();(frameDirtyEarlier,frameDirtyPrevious,frameDirty)=(frameDirtyPrevious,frameDirty,frameDirtyEarlier);
+    }
+    void SnapshotPackedBounds(ActorData data,int slot)
+    {
+        if(data.BoundsLease==null)return;
+        var frame=data.Frames[slot];packedActorBounds.Write(slot,data.BoundsLease,in frame.Bounds,frame.Destroyed);
     }
     void RefreshActorFrame(ActorFrame frame,ActorData data)
     {

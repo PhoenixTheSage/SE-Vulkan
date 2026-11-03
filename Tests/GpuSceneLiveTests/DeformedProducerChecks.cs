@@ -19,7 +19,7 @@ partial class Program
         void Source(){scene.Process(new MyRenderMessageUpdateRenderCubeInstanceBuffer{ID=401,InstanceData=new List<VRage.MyCubeInstanceData>{cube},Capacity=1});}
         Source();scene.Process(new MyRenderMessageSetInstanceBuffer{ID=400,InstanceBufferId=401,InstanceCount=1,LocalAabb=new BoundingBox(new Vector3(-2),new Vector3(2))});
         var visible=render();var data=actors[400u]!;
-        bool Owned()=>(bool)data.GetType().GetField("GpuOwned")!.GetValue(data)!&&((ICollection)typeof(NativeBackend).GetField("worldPackets",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.GetValue(backend)!).Count==0;
+        bool Owned()=>(bool)data.GetType().GetProperty("GpuOwned")!.GetValue(data)!&&((ICollection)typeof(NativeBackend).GetField("worldPackets",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.GetValue(backend)!).Count==0;
         byte[][] Buffers()=>Enumerable.Range(0,4).Select(i=>backend.ReadbackWorldGbuffer((uint)i,64,64)).ToArray();
         int Coverage()=>backend.ReadbackWorldGbuffer(0,64,64).Where((v,i)=>i%4==3&&v!=255).Count();
         check(Owned()&&Convert.ToUInt32(data.GetType().GetField("GpuType")!.GetValue(data))==4&&Coverage()>100&&visible.Where((v,i)=>i%4<3).Any(v=>v!=0),"normal scene producer admits a visible genuine deformed DF stream without managed packets");

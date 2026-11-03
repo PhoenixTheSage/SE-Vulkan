@@ -1,5 +1,13 @@
 # SE-Vulkan changelog
 
+## 1.7.0 — 2026-11-03
+
+- Add shared Advanced settings for startup scheduling and GPU scene options. Default optimized paths on, preserve environment overrides and show pending restart notices.
+- Add Vulkan Reflex sleep, markers, frame identity and timing through Anomaly, including generated outputs, asynchronous submission and swapchain recreation.
+- Reuse native recording state, fuse GPU view and shadow work, parallelize stock recording and improve visibility and motion handling while preserving fallback and ownership evidence.
+- Recover from asynchronous submission failures and synchronize generated output acquisition. Support storage-capable SDR swapchain images for the Windows Steam overlay while rendering through sRGB views.
+- Expand critical path profiling and add focused GPU, configuration, Reflex lifecycle and live harness coverage.
+
 ## 1.6.0 — 2026-11-01
 
 - Add opt-in frame building and two-stage build/launch pipelines with latched actor, light, environment, voxel and postprocess state, rotating snapshots, native frame gates and thread-placement controls.

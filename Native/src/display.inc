@@ -4,7 +4,7 @@ struct DisplayState {
     VkPipeline upscale{}, interpolate{};
     Image color[2]{}, interpolant{}, zero{}, depth_copy[2]{};
     Buffer constants[2]{};
-    VkSemaphore acquire{}, present{};
+    VkSemaphore acquire{};
     uint32_t width{}, height{}, index{}, depth_w{}, depth_h{}, depth_index{};
     uint8_t visited[3]{}, depth_visited[2]{};
     bool ready{}, interpolant_ready{}, zero_ready{}, depth_ready{}, upscale_ready{};
@@ -30,7 +30,6 @@ void cleanup_display() noexcept {
     if (display_state.pipeline_layout) vkDestroyPipelineLayout(device, display_state.pipeline_layout, nullptr);
     if (display_state.layout) vkDestroyDescriptorSetLayout(device, display_state.layout, nullptr);
     if (display_state.acquire) vkDestroySemaphore(device, display_state.acquire, nullptr);
-    if (display_state.present) vkDestroySemaphore(device, display_state.present, nullptr);
     for (auto& image : display_state.color) destroy_image(image);
     for (auto& image : display_state.depth_copy) destroy_image(image);
     destroy_image(display_state.interpolant); destroy_image(display_state.zero);
@@ -300,18 +299,18 @@ void display_store_depth(VkCommandBuffer cmd, Image& dest, bool known) {
     barrier(cmd, src.handle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-    barrier(cmd, dest.handle, known ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
+    barrier(cmd, dest.handle, known ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT,
         known ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, known ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : 0,
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     VkImageCopy region{};
     region.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
-    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
     region.extent = {display_state.depth_w, display_state.depth_h, 1};
     vkCmdCopyImage(cmd, src.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dest.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     barrier(cmd, src.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT,
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    barrier(cmd, dest.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
+    barrier(cmd, dest.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT,
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 }
@@ -362,8 +361,10 @@ void present_generated_color(VkCommandBuffer cmd, uint32_t index) {
     // same order as the real frame, so HUD and menus are on the generated image.
     VkImage image = swap_images[index];
     bool known = index < image_initialized.size() && image_initialized[index];
+    // Chain the layout transition to the acquire wait even on first use.
+    // UNDEFINED discards contents; it does not make WSI acquisition optional.
     barrier(cmd, image, known ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-        known ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, known ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT : 0,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, known ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT : 0,
         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     barrier(cmd, depth.handle, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT,
         VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
@@ -454,8 +455,8 @@ void display_try_warp(VkCommandBuffer cmd, uint32_t write, VkImageView motion, u
     }
     if (display_state.depth_w != in_w || display_state.depth_h != in_h || !display_state.depth_copy[0].view) {
         for (auto& image : display_state.depth_copy) if (image.handle) retire_image(image);
-        display_state.depth_copy[0] = make_image(in_w, in_h, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-        display_state.depth_copy[1] = make_image(in_w, in_h, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        display_state.depth_copy[0] = make_image(in_w, in_h, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+        display_state.depth_copy[1] = make_image(in_w, in_h, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
         display_state.depth_w = in_w;
         display_state.depth_h = in_h;
         display_state.depth_ready = false;
@@ -575,10 +576,9 @@ void present_generated_frame() {
     if (!display_state.acquire) {
         VkSemaphoreCreateInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         check(vkCreateSemaphore(device, &info, nullptr, &display_state.acquire), "display acquire semaphore");
-        check(vkCreateSemaphore(device, &info, nullptr, &display_state.present), "display present semaphore");
     }
     uint32_t index = 0;
-    VkResult acquired = vkAcquireNextImageKHR(device, swapchain, 0, display_state.acquire, VK_NULL_HANDLE, &index);
+    VkResult acquired = reflex.host_call([&]{return vkAcquireNextImageKHR(device, swapchain, 0, display_state.acquire, VK_NULL_HANDLE, &index);});
     if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
         fg_present_failed("no-swapchain", "Extra present could not acquire a swap image.");
         return;
@@ -586,7 +586,10 @@ void present_generated_frame() {
     VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     allocate.commandPool = upload_pool; allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; allocate.commandBufferCount = 1;
     VkCommandBuffer cmd{}; check(vkAllocateCommandBuffers(device, &allocate, &cmd), "display present command");
+    auto output=reflex_output();output.ordinal=UINT64_MAX;
+    sevk_reflex::OutputScope reflex_generated_scope(this,output);
     try {
+        sevk_reflex::MarkerRegion reflex_record(reflex,output,8,9);
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         check(vkBeginCommandBuffer(cmd, &begin), "begin display present");
         present_generated_color(cmd, index);
@@ -597,16 +600,18 @@ void present_generated_frame() {
         VkSemaphoreSubmitInfo signals[2]{};
         signals[0].sType = signals[1].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
         signals[0].semaphore = timeline; signals[0].value = completion; signals[0].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        signals[1].semaphore = display_state.present; signals[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        // Reacquiring this exact WSI image proves its previous present wait
+        // has consumed this semaphore, for both real and generated flips.
+        signals[1].semaphore = present_semaphores[index]; signals[1].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
         submit.commandBufferInfoCount = 1; submit.pCommandBufferInfos = &command;
         submit.waitSemaphoreInfoCount = 1; submit.pWaitSemaphoreInfos = &acquired_wait;
         submit.signalSemaphoreInfoCount = 2; submit.pSignalSemaphoreInfos = signals;
-        join_present(); check(vkQueueSubmit2(queue, 1, &submit, VK_NULL_HANDLE), "submit generated frame");
+        reflex_record.close();join_present(); check(reflex_submit(queue,submit,output), "submit generated frame");
         VkPresentInfoKHR present_info{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-        present_info.waitSemaphoreCount = 1; present_info.pWaitSemaphores = &display_state.present;
+        present_info.waitSemaphoreCount = 1; present_info.pWaitSemaphores = &present_semaphores[index];
         present_info.swapchainCount = 1; present_info.pSwapchains = &swapchain; present_info.pImageIndices = &index;
-        VkResult presented = vkQueuePresentKHR(queue, &present_info);
+        VkResult presented = reflex_present(queue,present_info,output);
         wait(completion);
         if (index < image_initialized.size()) image_initialized[index] = true;
         if (presented == VK_SUCCESS || presented == VK_SUBOPTIMAL_KHR) fg_presented();

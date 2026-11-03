@@ -12,6 +12,18 @@ public static class GuestBridge
     static NativeBackend current;
     static Scene.VulkanScene scene;
     static object[] frameInputs;
+    public static object[] ReflexBindingState() => current?.ReflexBindingState();
+    public static object[] ReflexLatencyStatus() => current?.ReflexLatencyStatus();
+    // Renderer-owned control endpoints for Anomaly. No handles or command
+    // buffers cross this boundary, and requests carry the observed native epoch.
+    public static int ReflexConfigure(ulong epoch, int mode) => current?.ReflexConfigure(epoch, mode) ?? -7;
+    public static int ReflexSleep(ulong epoch) => current?.ReflexSleep(epoch) ?? -7;
+    public static int ReflexMarker(ulong epoch, ulong frameId, uint marker) => current?.ReflexMarker(epoch, frameId, marker) ?? -7;
+    public static int ReflexRetire(ulong epoch) => current?.ReflexRetire(epoch) ?? -7;
+    public static int ReflexLifecycleVersion() => 2;
+    public static bool ReflexLifecycleReady() => current?.ReflexLifecycleReady == true;
+    public static bool SetReflexLifecycle(System.Func<object, bool, ulong[]> begin, System.Action<bool, int> end, System.Func<int, bool> validate) => ReflexFrameHooks.Set(begin, end, validate);
+    public static string ReflexLifecycleStatus() => ReflexFrameHooks.Status;
     internal static void SetFrameInputs(VRageMath.Vector3D camera, VRageMath.Vector3 color, VRageMath.Vector3 direction, float diffuse, float ambient)
     {
         frameInputs = new object[] { new double[] { camera.X, camera.Y, camera.Z },

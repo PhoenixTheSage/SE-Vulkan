@@ -11,6 +11,7 @@
     # Lifts the render thread's frame limiter to 1000 Hz (SmoothFrames clamps its cap to the monitor refresh).
     [switch]$Uncapped,
     [switch]$RichHudAudit,
+    [switch]$InteractiveUiAudit,
     [string]$AnomalyProject,
     [string]$HudDlssProject,
     [switch]$CompareRigidBatching,
@@ -40,6 +41,7 @@
     [string]$Nsight,
     [string]$ProfileNative,
     [string]$BenchmarkPlugin,
+    [string]$BenchmarkHarness,
     [string]$BenchmarkNative,
     [string]$BenchmarkAssets,
     [switch]$DeepProfile,
@@ -111,6 +113,8 @@
     [ValidateSet('individual','batch')][string]$NsightGpuWorkload='individual',
     # Keep the source profile's local DevFolder plugins (and their Storage settings) instead of only Vulkan.
     [switch]$UserPlugins,
+    # Use the renderer's optimized product defaults instead of legacy harness feature overrides.
+    [switch]$ProductRenderingDefaults,
     [switch]$PassThru
 )
 $ErrorActionPreference='Stop'
@@ -119,7 +123,7 @@ if(($GpuOpaqueViewBatches -or $GpuOpaqueHybrid -or $GpuOpaqueRoleStreams -or $Gp
 if($GpuOpaqueOwnedInputs -and !$GpuOpaqueResidentDeltas){throw 'Owned GPU inputs require GpuOpaqueResidentDeltas'}
 if($GpuOpaqueViewMasks -and !$GpuOpaqueScene){throw 'GPU view masks require GpuOpaqueScene'}
 if($GpuOpaqueHybrid -and !$NativePassScene){throw 'GPU hybrid ownership requires NativePassScene'}
-foreach($taskArtifact in @($BenchmarkPlugin,$BenchmarkNative)){if($taskArtifact -and !(Test-Path -LiteralPath $taskArtifact -PathType Leaf)){throw 'Benchmark artifact must be an existing file.'}}
+foreach($taskArtifact in @($BenchmarkPlugin,$BenchmarkNative,$BenchmarkHarness)){if($taskArtifact -and !(Test-Path -LiteralPath $taskArtifact -PathType Leaf)){throw 'Benchmark artifact must be an existing file.'}}
 if(($BenchmarkPlugin -or $BenchmarkNative) -and ($ProfileNative -or $DeepProfile -or $Nsight)){throw 'Pinned ordinary benchmark artifacts cannot be mixed with profiling artifacts.'}
 if(($BulkModels -or $CompareBulkModels) -and ($Backend -ne 'Vulkan' -or !$ModelBatching -or !$RetainedSubmission -or !$WorldRecipes -or $RetainedObjects)){throw 'Bulk model groups require Vulkan retained recipe/model submission.'}
 if($CompareBulkModels){
@@ -268,7 +272,7 @@ if($RichHudAudit -and $HudDlssProject){
     Copy-Item -LiteralPath (Join-Path $HudDlssProject 'Assets/nvngx_dlss.dll') -Destination $localDlss
     Copy-Item -LiteralPath (Join-Path $sourceData 'Storage/SpaceEngineersDLSS.cfg') -Destination (Join-Path $data 'Storage/SpaceEngineersDLSS.cfg')
 }
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'bin/Release/net10.0/ScenePerformanceHarness.dll') -Destination (Join-Path $localHarness 'plugin.dll')
+Copy-Item -LiteralPath $(if($BenchmarkHarness){$BenchmarkHarness}else{Join-Path $PSScriptRoot 'bin/Release/net10.0/ScenePerformanceHarness.dll'}) -Destination (Join-Path $localHarness 'plugin.dll')
 Get-ChildItem -LiteralPath $sourceWorld | Where-Object Name -ne 'Backup' | Copy-Item -Destination (Join-Path $data 'World') -Recurse
 foreach($file in 'Sandbox.sbc','Sandbox_config.sbc'){
     $path=Join-Path $data ('World/'+$file)
@@ -414,6 +418,13 @@ foreach($suffix in '','_systemwide','_reflex','_reflex_systemwide'){
     $changes[('DISABLE_VK_LAYER_NV_nsight_sys'+$suffix)]=if($Nsight -and !$NsightCpuSampling){'0'}else{'1'}
 }
 $previous=@{}
+if($ProductRenderingDefaults -or $env:SE_VULKAN_ADVANCED_AUDIT -eq '1'){
+    # Exercise persisted/default product choices instead of harness overrides.
+    $advancedSource=[IO.File]::ReadAllText((Join-Path $repository 'ClientPlugin/Bootstrap/AdvancedRenderingSettings.cs'))
+    $advancedNames=[regex]::Matches($advancedSource,'new\("[^"]+",\s*"[^"]+",\s*"[^"]+",\s*"([A-Z_]+)"')
+    if($advancedNames.Count -lt 30){throw 'Advanced settings audit did not identify the product switches'}
+    foreach($match in $advancedNames){$changes[('SE_VULKAN_'+$match.Groups[1].Value)]=$null}
+}
 $session='SeVulkan'+[Guid]::NewGuid().ToString('N')
 if($Nsight){$changes.SE_VULKAN_PROFILE_MARKERS=if(!$NsightCpuSampling -and $NsightGpuWorkload -eq 'individual'){'1'}else{'0'}}
 foreach($key in $changes.Keys){$previous[$key]=[Environment]::GetEnvironmentVariable($key,'Process');[Environment]::SetEnvironmentVariable($key,$changes[$key],'Process')}
@@ -431,11 +442,16 @@ try{
         }
         $executable=$Nsight
     }
-    $child=Start-Process -FilePath $executable -ArgumentList $arguments -WorkingDirectory $portable -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $runRoot 'stdout.txt') -RedirectStandardError (Join-Path $runRoot 'stderr.txt')
+    if($InteractiveUiAudit -and (!$RichHudAudit -or $env:SE_VULKAN_ADVANCED_AUDIT -ne '1')){throw 'InteractiveUiAudit is only for the private advanced settings UI audit'}
+    $windowStyle=if($InteractiveUiAudit){'Normal'}else{'Hidden'}
+    $child=Start-Process -FilePath $executable -ArgumentList $arguments -WorkingDirectory $portable -WindowStyle $windowStyle -PassThru -RedirectStandardOutput (Join-Path $runRoot 'stdout.txt') -RedirectStandardError (Join-Path $runRoot 'stderr.txt')
 }
 finally{foreach($key in $previous.Keys){[Environment]::SetEnvironmentVariable($key,$previous[$key],'Process')}}
 $manifest=[pscustomobject]@{RunRoot=$runRoot;ProcessId=$child.Id;Fullscreen=[bool]$Fullscreen;Uncapped=[bool]$Uncapped;SourceWorld=$sourceWorld;Backend=$Backend;Width=1920;Height=1080;Validation=[bool]$Validation;FrameRateCap=1000;Runtime='net10.0';PluginSha256=(Get-FileHash -LiteralPath (Join-Path $localVulkan 'plugin.dll')).Hash;NativeSha256=(Get-FileHash -LiteralPath (Join-Path $localVulkan 'Assets/Native/win-x64/se_vulkan_native.dll')).Hash;SourceCheckpointSha256=(Get-FileHash -LiteralPath (Join-Path $sourceWorld 'Sandbox.sbc')).Hash}
 $manifest | Add-Member -NotePropertyName StockShadowScheduleRequested -NotePropertyValue ([bool]$StockShadowSchedule)
+$manifest | Add-Member -NotePropertyName ProductRenderingDefaults -NotePropertyValue ([bool]$ProductRenderingDefaults)
+$manifest | Add-Member -NotePropertyName UserPlugins -NotePropertyValue ([bool]$UserPlugins)
+$manifest | Add-Member -NotePropertyName MotionBindingCache -NotePropertyValue ($env:SE_VULKAN_MOTION_BIND_CACHE -ne '0')
 $manifest | Add-Member -NotePropertyName ExclusiveFullscreenRequested -NotePropertyValue ([bool]$ExclusiveFullscreen)
 $manifest | Add-Member -NotePropertyName GpuOpaqueDeviceLocalRequested -NotePropertyValue ([bool]$GpuOpaqueDeviceLocal)
 $manifest | Add-Member -NotePropertyName GpuOpaqueViewBatchesRequested -NotePropertyValue ([bool]$GpuOpaqueViewBatches)
@@ -445,6 +461,20 @@ $manifest | Add-Member -NotePropertyName GpuOpaqueSparseAppearanceRequested -Not
 $manifest | Add-Member -NotePropertyName GpuOpaqueResidentDeltasRequested -NotePropertyValue ([bool]$GpuOpaqueResidentDeltas)
 $manifest | Add-Member -NotePropertyName GpuOpaqueOwnedInputsRequested -NotePropertyValue ([bool]$GpuOpaqueOwnedInputs)
 $manifest | Add-Member -NotePropertyName GpuOpaqueViewMasksRequested -NotePropertyValue ([bool]$GpuOpaqueViewMasks)
+$manifest | Add-Member -NotePropertyName GpuOpaqueRecordingCache -NotePropertyValue ($env:SE_VULKAN_GPU_OPAQUE_RECORD_CACHE -ne '0')
+$manifest | Add-Member -NotePropertyName GpuOpaqueRunCache -NotePropertyValue ($env:SE_VULKAN_GPU_OPAQUE_RUN_CACHE -ne '0')
+$manifest | Add-Member -NotePropertyName GpuOpaqueRecordingKeys -NotePropertyValue ($env:SE_VULKAN_GPU_OPAQUE_RECORD_KEYS -ne '0')
+$manifest | Add-Member -NotePropertyName GpuOpaqueBatchCache -NotePropertyValue ($env:SE_VULKAN_GPU_OPAQUE_BATCH_CACHE -ne '0')
+$manifest | Add-Member -NotePropertyName GpuOpaqueVisibleFast -NotePropertyValue ($env:SE_VULKAN_GPU_OPAQUE_VISIBLE_FAST -ne '0')
+$manifest | Add-Member -NotePropertyName GpuOpaqueVisibleVerify -NotePropertyValue ($env:SE_VULKAN_GPU_OPAQUE_VISIBLE_VERIFY -eq '1')
+$manifest | Add-Member -NotePropertyName GpuOpaqueParallelMain -NotePropertyValue ($env:SE_VULKAN_GPU_OPAQUE_PARALLEL_MAIN -ne '0')
+$manifest | Add-Member -NotePropertyName GpuOpaqueParallelSpots -NotePropertyValue ($env:SE_VULKAN_GPU_OPAQUE_PARALLEL_SPOTS -ne '0')
+$manifest | Add-Member -NotePropertyName GpuOpaqueGeometryCache -NotePropertyValue ($env:SE_VULKAN_GPU_OPAQUE_GEOMETRY_CACHE -ne '0')
+$manifest | Add-Member -NotePropertyName GpuOpaqueMainOrderCache -NotePropertyValue ($env:SE_VULKAN_GPU_OPAQUE_MAIN_ORDER_CACHE -ne '0')
+$manifest | Add-Member -NotePropertyName GpuOpaqueFusedRetained -NotePropertyValue ($env:SE_VULKAN_GPU_OPAQUE_FUSED_RETAINED -ne '0')
+$manifest | Add-Member -NotePropertyName AsyncSubmitRequested -NotePropertyValue ($env:SE_VULKAN_ASYNC_SUBMIT -eq '1')
+$manifest | Add-Member -NotePropertyName GpuVisiblePacked -NotePropertyValue ($env:SE_VULKAN_GPU_VISIBLE_PACKED -ne '0')
+$manifest | Add-Member -NotePropertyName GpuVisiblePackedVerify -NotePropertyValue ($env:SE_VULKAN_GPU_VISIBLE_PACKED_VERIFY -eq '1')
 $manifest | Add-Member -NotePropertyName GpuOpaqueTimingRequested -NotePropertyValue ([bool]$GpuOpaqueTiming)
 $manifest | Add-Member -NotePropertyName GpuOpaqueSceneRequested -NotePropertyValue ([bool]$GpuOpaqueScene)
 $manifest | Add-Member -NotePropertyName NativePassSceneRequested -NotePropertyValue ([bool]$NativePassScene)

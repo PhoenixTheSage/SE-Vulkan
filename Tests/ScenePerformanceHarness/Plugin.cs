@@ -213,7 +213,7 @@ public sealed partial class Plugin : IPlugin
         }
         else if(SweepIsolation)harmony.Patch(AccessTools.Method(renderer, "Draw", new[] { typeof(bool) }),prefix:new HarmonyMethod(typeof(Plugin),nameof(ApplySweepPolicy)));
         if(!CameraSweepEnabled){InstallFrameGapCensus();InstallSampleCensus();}
-        nativeCriticalEnabled=Environment.GetEnvironmentVariable("SE_VULKAN_CRITICAL_PROFILE")=="1";haveCritical=false;InstallFrameStateAudit();InstallSystemParityAudit();InstallLightingReconciliation();
+        nativeCriticalEnabled=Environment.GetEnvironmentVariable("SE_VULKAN_CRITICAL_PROFILE")=="1";haveCritical=false;criticalObservations=0;InstallFrameStateAudit();InstallSystemParityAudit();InstallLightingReconciliation();
     }
     // Render-thread time outside Draw..Present-prefix, split by owner. Pipelined Vulkan samples in the
     // Present prefix, so the Present body and this harness's postfix fall outside CpuMeanMs too.
@@ -247,7 +247,7 @@ public sealed partial class Plugin : IPlugin
     static void GapDrawBegin(object instance){
         if(timingReports&&sampling!=timingReportsSampling&&instance is MyVulkanRender){timingReportsSampling=sampling;ApplyTimingReports(instance,sampling);}
         gapRenderThread=Environment.CurrentManagedThreadId;long now=Stopwatch.GetTimestamp();if(sampling&&gapExitAt!=0){gapLoop+=GapMs(gapExitAt,now);gapFrames++;}gapExitAt=0;}
-    static void BeginDraw(object __instance) {GapDrawBegin(__instance);BeginNativeCritical(__instance);ApplyMatchedFrameOnce(__instance);LightingBeginDraw(__instance);BeginWorkloadDiagnostics(__instance);captureWorkloadFrame=workloadAudit && (sampling || selectionArmed) && workloadSnapshot==null;if((captureWorkloadFrame || probeCoverageCollecting) && selectionAudit && __instance is MyVulkanRender)((NativeBackend)BackendField.GetValue(__instance)).BeginLogicalSelectionCapture();drawStarted = Stopwatch.GetTimestamp();RenderFrameEvents.Log.Begin(++profileFrameSequence);frameBatching=batchingEnabled;frameHints=hintsEnabled;frameWide=wideEnabled;frameVoxelLookup=voxelLookupEnabled;frameVoxelObject=voxelObjectEnabled;frameTextureValidation=textureValidationEnabled;frameIndirect=indirectEnabled;frameRetained=retainedEnabled;frameSubmission=submissionEnabled;frameActorLods=actorLodsEnabled;frameSize=sizeEnabled;frameFar=farEnabled;frameView=viewEnabled;frameRecipes=recipesEnabled;frameNewViews=newViewsEnabled;frameModels=modelsEnabled;frameBulkModels=bulkModelsEnabled;frameAsyncPresent=asyncPresentEnabled;frameGroupOcclusion=groupOcclusionEnabled;frameParallel=parallelEnabled;frameParallelQueue=parallelQueueEnabled;frameLightTiles=lightTilesEnabled;if(__instance is MyVulkanRender){var target=(NativeBackend)BackendField.GetValue(__instance);if(indirectApplied!=frameIndirect){target.SetWorldIndirect(frameIndirect);indirectApplied=frameIndirect;}if(parallelApplied!=frameParallel){target.SetParallelCascades(frameParallel);parallelApplied=frameParallel;}if(lightTilesApplied!=frameLightTiles){target.SetLightTiles(frameLightTiles);lightTilesApplied=frameLightTiles;}if(parallelQueueApplied!=frameParallelQueue){target.SetParallelQueue(frameParallelQueue);parallelQueueApplied=frameParallelQueue;}if(asyncPresentApplied!=frameAsyncPresent){target.SetAsyncPresent(frameAsyncPresent);asyncPresentApplied=frameAsyncPresent;}target.ObjectRetentionEnabled=frameRetained;target.RetainedSubmissionEnabled=frameSubmission;target.WorldRecipesEnabled=frameRecipes;target.ModelBatchingEnabled=frameModels;target.BulkModelsEnabled=frameBulkModels;((VulkanScene)SceneField.GetValue(__instance)).ActorLodsEnabled=frameActorLods;((VulkanScene)SceneField.GetValue(__instance)).NewActorViewsEnabled=frameNewViews;((VulkanScene)SceneField.GetValue(__instance)).ActorSizeCullingEnabled=frameSize;((VulkanScene)SceneField.GetValue(__instance)).StockFarCascadesEnabled=frameFar;((VulkanScene)SceneField.GetValue(__instance)).ViewEligibilityEnabled=frameView;((VulkanScene)SceneField.GetValue(__instance)).GroupOcclusionEnabled=frameGroupOcclusion;target.RigidBatchingEnabled=frameBatching;target.RigidBatchHintsEnabled=frameHints;target.WideRigidBatchesEnabled=frameWide;target.TextureValidationCacheEnabled=frameTextureValidation;((VulkanVoxels)VoxelsField.GetValue(__instance)).Materials.LookupCacheEnabled=frameVoxelLookup;VoxelObjectConstants.Enabled=frameVoxelObject;}}
+    static void BeginDraw(object __instance) {GapDrawBegin(__instance);ApplyMatchedFrameOnce(__instance);LightingBeginDraw(__instance);BeginWorkloadDiagnostics(__instance);captureWorkloadFrame=workloadAudit && (sampling || selectionArmed) && workloadSnapshot==null;if((captureWorkloadFrame || probeCoverageCollecting) && selectionAudit && __instance is MyVulkanRender)((NativeBackend)BackendField.GetValue(__instance)).BeginLogicalSelectionCapture();drawStarted = Stopwatch.GetTimestamp();if(__instance is MyVulkanRender&&RendererCpuProfiler.Enabled)RendererCpuProfiler.MarkDrawStart(drawStarted);RenderFrameEvents.Log.Begin(++profileFrameSequence);frameBatching=batchingEnabled;frameHints=hintsEnabled;frameWide=wideEnabled;frameVoxelLookup=voxelLookupEnabled;frameVoxelObject=voxelObjectEnabled;frameTextureValidation=textureValidationEnabled;frameIndirect=indirectEnabled;frameRetained=retainedEnabled;frameSubmission=submissionEnabled;frameActorLods=actorLodsEnabled;frameSize=sizeEnabled;frameFar=farEnabled;frameView=viewEnabled;frameRecipes=recipesEnabled;frameNewViews=newViewsEnabled;frameModels=modelsEnabled;frameBulkModels=bulkModelsEnabled;frameAsyncPresent=asyncPresentEnabled;frameGroupOcclusion=groupOcclusionEnabled;frameParallel=parallelEnabled;frameParallelQueue=parallelQueueEnabled;frameLightTiles=lightTilesEnabled;if(__instance is MyVulkanRender){var target=(NativeBackend)BackendField.GetValue(__instance);if(indirectApplied!=frameIndirect){target.SetWorldIndirect(frameIndirect);indirectApplied=frameIndirect;}if(parallelApplied!=frameParallel){target.SetParallelCascades(frameParallel);parallelApplied=frameParallel;}if(lightTilesApplied!=frameLightTiles){target.SetLightTiles(frameLightTiles);lightTilesApplied=frameLightTiles;}if(parallelQueueApplied!=frameParallelQueue){target.SetParallelQueue(frameParallelQueue);parallelQueueApplied=frameParallelQueue;}if(asyncPresentApplied!=frameAsyncPresent){target.SetAsyncPresent(frameAsyncPresent);asyncPresentApplied=frameAsyncPresent;}target.ObjectRetentionEnabled=frameRetained;target.RetainedSubmissionEnabled=frameSubmission;target.WorldRecipesEnabled=frameRecipes;target.ModelBatchingEnabled=frameModels;target.BulkModelsEnabled=frameBulkModels;((VulkanScene)SceneField.GetValue(__instance)).ActorLodsEnabled=frameActorLods;((VulkanScene)SceneField.GetValue(__instance)).NewActorViewsEnabled=frameNewViews;((VulkanScene)SceneField.GetValue(__instance)).ActorSizeCullingEnabled=frameSize;((VulkanScene)SceneField.GetValue(__instance)).StockFarCascadesEnabled=frameFar;((VulkanScene)SceneField.GetValue(__instance)).ViewEligibilityEnabled=frameView;((VulkanScene)SceneField.GetValue(__instance)).GroupOcclusionEnabled=frameGroupOcclusion;target.RigidBatchingEnabled=frameBatching;target.RigidBatchHintsEnabled=frameHints;target.WideRigidBatchesEnabled=frameWide;target.TextureValidationCacheEnabled=frameTextureValidation;((VulkanVoxels)VoxelsField.GetValue(__instance)).Materials.LookupCacheEnabled=frameVoxelLookup;VoxelObjectConstants.Enabled=frameVoxelObject;}}
     static object gpuSceneSnapshot;static ulong[] gpuTopologyFirst,gpuTopologyLast,gpuComputeFirst,gpuComputeLast,gpuCpuCostsFirst,gpuCpuCostsLast;
     // With pipelined recording, Present only launches native recording. The
     // frame sample and its native telemetry are then taken before the launch:
@@ -259,7 +259,7 @@ public sealed partial class Plugin : IPlugin
     // render-thread read would wait for Build's open frame and recording, which the product never does.
     static readonly System.Reflection.FieldInfo FrameSplitField=AccessTools.Field(typeof(MyVulkanRender),"FrameSplit");
     static bool SplitFrames=>FrameSplitField!=null&&(bool)FrameSplitField.GetValue(null);
-    static void BeforeSubmit(object __instance,bool renderThread){if(!renderThread)SampleFrame(__instance);}
+    static void BeforeSubmit(object __instance,bool renderThread){if(SplitFrames)SampleFrame(__instance);}
     static void BeforePresent(object __instance){gapPrefixAt=Stopwatch.GetTimestamp();if(PipelinedPresent(__instance)&&!SplitFrames)SampleFrame(__instance);gapPrefixEndAt=Stopwatch.GetTimestamp();if(sampling)gapHarnessSample+=GapMs(gapPrefixAt,gapPrefixEndAt);}
     static void EndPresent(object __instance)
     {
@@ -276,7 +276,7 @@ public sealed partial class Plugin : IPlugin
             pixelEvidence=new PixelFrameEvidence(compareGroupPixels?frameGroupOcclusion:compareSubmissionPixels?frameSubmission:compareLightPixels?frameLightTiles:frameWide,pixelTarget.GetPerformanceStats(),pixelTarget.GetResolutionStats(),pixelTarget.GetLightTileStats(),pixelTarget.GetSubmissionStats(),((VulkanScene)SceneField.GetValue(__instance)).GetGroupOcclusionStats());
         }
         if(selectionAudit && captureWorkloadFrame){workloadSnapshot=__instance is MyVulkanRender?AuditVulkan(__instance):AuditDx11();CaptureShadowDepth(__instance);if(__instance is MyVulkanRender)((NativeBackend)BackendField.GetValue(__instance)).EndLogicalSelectionCapture();captureWorkloadFrame=false;selectionArmed=false;}
-        if(!PipelinedPresent(__instance))SampleFrame(__instance);
+        if(!PipelinedPresent(__instance)&&!(__instance is MyVulkanRender&&SplitFrames))SampleFrame(__instance);
     }
     static readonly int TelemetryStride=int.TryParse(Environment.GetEnvironmentVariable("SE_VULKAN_HARNESS_TELEMETRY_STRIDE"),out int stride)&&stride>0?stride:16;
     static long telemetryCounter;
@@ -326,9 +326,12 @@ public sealed partial class Plugin : IPlugin
     }
     static void SampleFrame(object __instance)
     {
-        long now = Stopwatch.GetTimestamp(), previous = previousPresent;previousPresent = now;RenderFrameEvents.Log.End(profileFrameSequence,(now-drawStarted)*1000.0/Stopwatch.Frequency);
+        bool managedDetail=__instance is MyVulkanRender&&RendererCpuProfiler.Enabled;
+        long cpuSequence=managedDetail?RendererCpuProfiler.CurrentSequence:0;
+        long sampleStart=managedDetail?RendererCpuProfiler.CurrentDrawStart:drawStarted;
+        long now = Stopwatch.GetTimestamp(), previous = previousPresent;previousPresent = now;RenderFrameEvents.Log.End(profileFrameSequence,(now-sampleStart)*1000.0/Stopwatch.Frequency);
         if(sampling)CountSampleCall(previous);
-        if (!sampling || frameBatching!=batchingEnabled || frameHints!=hintsEnabled || frameWide!=wideEnabled || frameVoxelLookup!=voxelLookupEnabled || frameVoxelObject!=voxelObjectEnabled || frameTextureValidation!=textureValidationEnabled || Sandbox.MySandboxGame.IsPaused || drawStarted == 0 || previous == 0) return;
+        if (!sampling || frameBatching!=batchingEnabled || frameHints!=hintsEnabled || frameWide!=wideEnabled || frameVoxelLookup!=voxelLookupEnabled || frameVoxelObject!=voxelObjectEnabled || frameTextureValidation!=textureValidationEnabled || Sandbox.MySandboxGame.IsPaused || sampleStart == 0 || previous == 0) return;
         if(__instance is MyVulkanRender&&jobStatsAvailable)try{SampleJobStats(__instance);}catch(MissingMethodException){jobStatsAvailable=false;}catch(EntryPointNotFoundException){jobStatsAvailable=false;}
         if(gpuSceneSnapshot==null&&__instance is MyVulkanRender)gpuSceneSnapshot=((VulkanScene)SceneField.GetValue(__instance)).GetGpuSceneStats();
         if(gpuAdmissionSnapshot==null&&__instance is MyVulkanRender&&Environment.GetEnvironmentVariable("SE_VULKAN_GPU_OPAQUE_TIMING")=="1")gpuAdmissionSnapshot=AuditGpuAdmission((VulkanScene)SceneField.GetValue(__instance));
@@ -338,7 +341,7 @@ public sealed partial class Plugin : IPlugin
         // Timing and present samples are read every frame; auxiliary telemetry every stride frames.
         bool telemetry=native==null||RendererCpuProfiler.Enabled||++telemetryCounter%TelemetryStride==0;
         bool skipThis=skipNextFrame&&!KeepTelemetryFrames;skipNextFrame=false;if(skipThis)skippedTelemetryFrames++;
-        if(!telemetry){lock(Gate){if(!sampling)return;if(!skipThis)Frames.Add(((now-drawStarted)*1000.0/Stopwatch.Frequency,(now-previous)*1000.0/Stopwatch.Frequency));ObserveBenchmarkCompletedFrame();SamplePresent(native);}return;}
+        if(!telemetry){lock(Gate){if(!sampling)return;if(!skipThis){Frames.Add(((now-sampleStart)*1000.0/Stopwatch.Frequency,(now-previous)*1000.0/Stopwatch.Frequency));ObserveBenchmarkCompletedFrame();}SamplePresent(native);}return;}
         skipNextFrame=native!=null&&!RendererCpuProfiler.Enabled;
         if(RequireExclusive&&native!=null){Interlocked.Increment(ref exclusiveSamples);if(native.RefreshExclusiveFullscreen())Interlocked.Increment(ref exclusiveAcquired);}
         var performance=native!=null?native.GetPerformanceStats():default;
@@ -355,10 +358,10 @@ public sealed partial class Plugin : IPlugin
             // Update can finish/switch a phase while metadata is being read.
             // Keep every row correlated with the same accepted completed frame.
             if(!sampling || frameBatching!=batchingEnabled || frameHints!=hintsEnabled || frameWide!=wideEnabled || frameVoxelLookup!=voxelLookupEnabled || frameVoxelObject!=voxelObjectEnabled || frameTextureValidation!=textureValidationEnabled || frameIndirect!=indirectEnabled || frameRetained!=retainedEnabled || frameSubmission!=submissionEnabled || frameActorLods!=actorLodsEnabled || frameSize!=sizeEnabled || frameFar!=farEnabled || frameView!=viewEnabled || frameRecipes!=recipesEnabled || frameNewViews!=newViewsEnabled || frameModels!=modelsEnabled || frameBulkModels!=bulkModelsEnabled || frameAsyncPresent!=asyncPresentEnabled || frameGroupOcclusion!=groupOcclusionEnabled || frameParallel!=parallelEnabled || frameParallelQueue!=parallelQueueEnabled || frameLightTiles!=lightTilesEnabled)return;
-            if(!skipThis)Frames.Add(((now-drawStarted)*1000.0/Stopwatch.Frequency, (now-previous)*1000.0/Stopwatch.Frequency));
-            ObserveBenchmarkCompletedFrame();
+            if(!skipThis){Frames.Add(((now-sampleStart)*1000.0/Stopwatch.Frequency, (now-previous)*1000.0/Stopwatch.Frequency));ObserveBenchmarkCompletedFrame();}
             SamplePresent(native);
-            if(native!=null&&RendererCpuProfiler.Enabled){CpuPhases.AddCompleted((now-drawStarted)*1000.0/Stopwatch.Frequency);SampleNativeCritical(native);if(native.NativePassReady)NativePassFrames.Add(native.GetPassProfile(true));}
+            if(!skipThis&&native!=null&&nativeCriticalEnabled)SampleNativeCritical(native);
+            if(native!=null&&RendererCpuProfiler.Enabled){if(!skipThis)CpuPhases.Accept(cpuSequence,(now-sampleStart)*1000.0/Stopwatch.Frequency);if(native.NativePassReady)NativePassFrames.Add(native.GetPassProfile(true));}
             if(native!=null){IndirectFrames.Add(indirect);GeometryFrames.Add(geometry);ObjectFrames.Add(objects);SubmissionFrames.Add(native.GetSubmissionStats());LodFrames.Add(((VulkanScene)SceneField.GetValue(__instance)).GetActorLodStats());SizeFrames.Add(((VulkanScene)SceneField.GetValue(__instance)).GetActorSizeCullStats());FarFrames.Add(((VulkanScene)SceneField.GetValue(__instance)).GetFarCascadePolicyStats());ViewFrames.Add(((VulkanScene)SceneField.GetValue(__instance)).GetViewEligibilityStats());RecipeFrames.Add(native.GetRecipeStats());NewViewFrames.Add(((VulkanScene)SceneField.GetValue(__instance)).GetNewActorViewStats());ModelFrames.Add(native.GetModelBatchStats());if(LodFrames.Count%120==0)groupOcclusionSnapshot=((VulkanScene)SceneField.GetValue(__instance)).GetGroupOcclusionStats();CascadeFrames.Add(cascade);QueueWorkFrames.Add(native.GetQueueWorkStats());LightTileFrames.Add(lightTiles);}
             if(native!=null){ValidationFrames.Add(validation);presentationState=actualPresentation;NativeFrames.Add(performance);if(native.PacketProfilingEnabled)PacketFrames.Add(native.GetPacketPreparationStats());geometryStorage=((VulkanScene)SceneField.GetValue(__instance)).GeometryStorage;}
         }
@@ -390,6 +393,10 @@ public sealed partial class Plugin : IPlugin
             if (lifetime.Elapsed.TotalSeconds > (CameraSweepEnabled?600:240)) throw new Exception("Benchmark load/sample timeout.");
             if (!loadRequested && lifetime.Elapsed.TotalSeconds > 10 && MyGuiScreenGamePlay.Static == null)
             {
+                // A timer alone can race startup's Closed callback: it creates
+                // the menu video after the session loader already closed menus.
+                // That orphan then paints main_menu_overlay over the loaded world.
+                if(!MyScreenManager.Screens.Any(s=>s is Sandbox.Game.Screens.MyGuiScreenMainMenuBase&&s.State==MyGuiScreenState.OPENED))return;
                 if (BackendRuntime.ActiveBackend.ToString() != expected) throw new Exception("Requested backend was not active.\n"+VulkanDiagnostics.Report());
                 MySandboxGame.Config.EnableCloud = false;MySandboxGame.Config.ExperimentalMode = true;MySandboxGame.Config.Save();
                 loadRequested = true;File.WriteAllText(Path.Combine(reports,"load-requested.txt"),world);
@@ -399,6 +406,7 @@ public sealed partial class Plugin : IPlugin
             if(transitionUntil>=0){if(lifetime.Elapsed.TotalSeconds<transitionUntil)return;transitionUntil=-1;sampleAt=lifetime.Elapsed.TotalSeconds;BeginGcWindow();pausedAtSampleStart=Sandbox.MySandboxGame.IsPaused;sampling=true;MyRenderProxy.TakeScreenshot(Vector2.One,Path.Combine(reports,"view.png"),debug:false,ignoreSprites:false,showNotification:false);}
             if (readyAt < 0) { readyAt = lifetime.Elapsed.TotalSeconds;File.WriteAllText(Path.Combine(reports,"ready.txt"),MySession.Static.Name); }
             double seconds = lifetime.Elapsed.TotalSeconds-readyAt;
+            if(Environment.GetEnvironmentVariable("SE_VULKAN_ADVANCED_AUDIT")=="1" && seconds>=10){AuditAdvancedSettings(seconds);return;}
             if(HudAuditEnabled && seconds>=10){AuditRichHud(seconds);return;}
             if(CameraSweepEnabled){SweepCamera(seconds);return;}
             if(selectionAudit && seconds>=45){if(lightingReconciliation)CaptureLightingReconciliation();else CapturePausedSelection();return;}
@@ -425,7 +433,9 @@ public sealed partial class Plugin : IPlugin
     }
     void Finish()
     {
-        sampling=false;finished=true;WriteGcWindow();WriteFrameStateAudit();WriteNativeCritical();
+        sampling=false;finished=true;
+        if(nativeCriticalEnabled){lock(Gate){WriteCriticalEvidence(Frames.Count);WriteSampleCensus(Frames.Count);}}
+        WriteGcWindow();WriteFrameStateAudit();
         WriteBenchmarkFrameAudit();
         if(gpuComputeLast!=null)File.WriteAllText(Path.Combine(reports,"gpu-compute-timings.json"),JsonSerializer.Serialize(new{Names=new[]{"Samples","Selection","MembershipCounts","SpotUnion","RetainedGroups","GroupScan","BlockScan","SuperScan","ScanOffsets","Scatter","Arguments"},First=gpuComputeFirst,Last=gpuComputeLast,Delta=gpuComputeLast.Select((v,i)=>v-gpuComputeFirst[i]).ToArray(),Unit="Nanoseconds accumulated over completed prior-slot GPU samples"},new JsonSerializerOptions{WriteIndented=true}));
         if(gpuTopologyLast!=null)File.WriteAllText(Path.Combine(reports,"gpu-topology-counters.json"),JsonSerializer.Serialize(new{Names=new[]{"ActorAdds","ActorRemoves","FamilyChanges","SourceChanges","RootGroupChanges","Publications","Frames"},First=gpuTopologyFirst,Last=gpuTopologyLast,Delta=gpuTopologyLast.Select((v,i)=>v-gpuTopologyFirst[i]).ToArray()},new JsonSerializerOptions{WriteIndented=true}));
@@ -449,7 +459,7 @@ public sealed partial class Plugin : IPlugin
             CpuMeanMs=cpu.Average(),CpuMedianMs=P(cpu,.5),CpuP95Ms=P(cpu,.95),CpuP99Ms=P(cpu,.99),
             IntervalMeanMs=interval.Average(),IntervalP95Ms=P(interval,.95),RenderedFps=1000/interval.Average(),SkippedTelemetryFrames=skippedTelemetryFrames,KeptTelemetryFrames=KeepTelemetryFrames,
             CameraPosition=Sandbox.Game.World.MySector.MainCamera.Position.ToString(),
-            Scope="Private saved camera; screenshot must be compared with the user's current view. CPU Draw through Present and consecutive Present intervals."
+            Scope="Private saved camera; screenshot must be compared with the user's current view. Interval fields measure consecutive submission samples (Present samples on the unsplit path). Cpu fields are wall latency, not exclusive CPU execution; split-path originating-frame latency is correlated only with CpuDetail enabled."
         },new JsonSerializerOptions{WriteIndented=true}));
         if(workloadAudit){if(occlusionDiagnosticSnapshot!=null)File.WriteAllText(Path.Combine(reports,"occlusion-diagnostics.json"),JsonSerializer.Serialize(occlusionDiagnosticSnapshot,new JsonSerializerOptions{IncludeFields=true,WriteIndented=true}));if(workloadSnapshot==null)throw new Exception("Requested workload snapshot was not captured.");File.WriteAllText(Path.Combine(reports,"geometry-workload.json"),JsonSerializer.Serialize(workloadSnapshot,new JsonSerializerOptions{IncludeFields=true,WriteIndented=true}));}
         if(gapFrames>0){double n=gapFrames;File.WriteAllText(Path.Combine(reports,"frame-gap.json"),JsonSerializer.Serialize(new{Frames=gapFrames,
@@ -461,15 +471,20 @@ public sealed partial class Plugin : IPlugin
         if(PresentSamples.Count>0){var rows=PresentSamples.ToArray();var values=rows.Where(r=>r.IntervalNs>0).Select(r=>r.IntervalNs/1e6).OrderBy(v=>v).ToArray();double Q(double q)=>values[(int)Math.Ceiling(q*values.Length)-1];File.WriteAllText(Path.Combine(reports,"present-completions.json"),JsonSerializer.Serialize(new{Samples=rows.Length,LostSamples=lostPresentSamples,MeanMs=values.Average(),P95Ms=Q(.95),P99Ms=Q(.99),FirstSequence=rows.First().Sequence,LastSequence=rows.Last().Sequence,Scope="Actual queue-present call completion intervals; no scanout claim and no wait for unfinished present. Benchmark telemetry enabled equally for comparison phases."},new JsonSerializerOptions{WriteIndented=true}));}
         if(JobStatsFirst!=null&&JobStatsLast!=null)try{WriteJobStats(reports);}catch(MissingMethodException){}catch(TypeLoadException){}
         if(PresentFlows.Count>1){NativePresentFlowStats[] flow;lock(Gate)flow=PresentFlows.ToArray();var first=flow[0];var last=flow[flow.Length-1];ulong completed=last.CompletedCalls-first.CompletedCalls,intervals=last.TotalIntervalNs-first.TotalIntervalNs;File.WriteAllText(Path.Combine(reports,"present-flow.json"),JsonSerializer.Serialize(new{Frames=flow.Length,Enabled=asyncPresentEnabled,CompletedCalls=completed,CompletionIntervalMeanMs=completed>0?intervals/(double)completed/1000000:-1,CompletedPresentCallFps=intervals>0?completed*1e9/intervals:0,MeanCallMs=completed>0?(last.TotalCallNs-first.TotalCallNs)/(double)completed/1000000:-1,First=first,Last=last,Scope="Native vkQueuePresentKHR call completion cadence, not scanout FPS. Counts may lag submitted frames by one. Distinct from render-thread EndFrame return cadence; GPU and completed present throughput must be verified."},new JsonSerializerOptions{IncludeFields=true,WriteIndented=true}));}
-        if(PacketFrames.Count>0)
+        if(expected=="Vulkan"&&RendererCpuProfiler.Enabled)
         {
+            CpuPhases.WaitForAccepted(TimeSpan.FromSeconds(10));
             RendererCpuProfiler.Snapshot phases;lock(Gate)phases=CpuPhases.Capture();
+            if(phases.Enabled&&phases.Frames!=samples.Length)throw new InvalidOperationException($"CPU profile covers {phases.Frames} of {samples.Length} accepted frames.");
             File.WriteAllText(Path.Combine(reports,"renderer-cpu-phases.json"),JsonSerializer.Serialize(new{Instrumented=true,
-                Scope="Inclusive QPC wall scopes; CPU cycles for the owning render thread only. Workers are excluded. Fine actor/part buckets are wall-only. OS CPU milliseconds are quantized and exposed only for the whole-frame aggregate; no phase CPU-ms claim. Cycles are not converted to time. Allocations exclude workers/native. Rows overlap and must not be summed.",Data=phases},new JsonSerializerOptions{IncludeFields=true,WriteIndented=true}));
+                Scope="Inclusive QPC wall scopes; Phase CPU cycles follow the render, build, or launch thread that executed each scope. Fine actor/part buckets are wall-only. OS CPU milliseconds are quantized and exposed only for the whole-frame aggregate; no phase CPU-ms claim. Cycles are not converted to time. Allocations cover those managed threads only. Rows overlap and must not be summed.",Data=phases},new JsonSerializerOptions{IncludeFields=true,WriteIndented=true}));
             WriteMessageCensus(reports);
             RendererCpuProfiler.TailSnapshot tails;lock(Gate)tails=CpuPhases.CaptureTails();
             File.WriteAllText(Path.Combine(reports,"renderer-cpu-tails.json"),JsonSerializer.Serialize(new{Instrumented=true,
                 Scope="Same accepted completed diagnostic frames. Phase rows overlap. MeanOnSlowest5PercentMs selects frames by full profiler Frame wall time, not each phase's own quantile. Slowest phase arrays use Rows order. GC counts are process-wide collection overlap, not measured pause durations or proof of causation. CompletedDrawMs also includes harness completion overhead outside profiler Frame.",Data=tails},new JsonSerializerOptions{IncludeFields=true,WriteIndented=true}));
+        }
+        WriteNativeCritical();
+        if(PacketFrames.Count>0){
             PacketPreparationStats[] detail;lock(Gate)detail=PacketFrames.ToArray();
             var averages=typeof(PacketPreparationStats).GetFields().Where(f=>f.Name!="Enabled").ToDictionary(f=>f.Name,f=>detail.Average(n=>Convert.ToDouble(f.GetValue(n))));
             File.WriteAllText(Path.Combine(reports,"packet-preparation.json"),JsonSerializer.Serialize(new{Enabled=true,Instrumented=true,Frames=detail.Length,Averages=averages},new JsonSerializerOptions{WriteIndented=true}));

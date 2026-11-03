@@ -1,5 +1,74 @@
 # Local validation evidence
 
+## Idle Anomaly stack: native motion recording — 2026-11-03
+
+Confirmed a CPU recording cost on the private Pertam interior fixture with the
+user's idle plugin stack. All ordinary runs used 1920x1080, VSync off, a
+triple-image swapchain, product rendering defaults, 45 seconds of gameplay
+warmup and 30 seconds of sampling. Managed plugin, harness, asset tree, source
+checkpoint and plugin settings were held constant; native DLL hashes distinguish
+the treatments. Captures show the same saved interior view. These are separate
+unpaused runs, not randomized repeats or a claim of physical scanout FPS.
+
+- Original native DLL: **137.00 FPS**, 7.299 ms mean interval, 9.253 ms p95;
+  3,845 accepted telemetry frames. GPU 3.608 ms; main recording 4.001 ms.
+  Run `Vulkan-82705ca33eab489e941d89b77cfa9e41`.
+- Tracked-generation batching correction alone: **132.69 FPS**, 7.537 ms mean,
+  11.200 ms p95; 3,739 accepted frames. GPU 3.510 ms; main recording 4.030 ms.
+  Run `Vulkan-f9ad457382684025be98c84a593ca671`. This did not demonstrate a
+  performance improvement; retain it as a validated Anomaly backend gap fix.
+- Indexed motion binding cache: **156.77 FPS**, 6.379 ms mean, 8.144 ms p95;
+  4,417 accepted frames. GPU 3.527 ms; main recording 3.122 ms. Completed native
+  present-call cadence independently measured 156.96 FPS.
+  Run `Vulkan-1d493d46a1954df4952a9d6dda5501ff`.
+
+The final observation is 14.4% faster than the original and 18.2% faster than the
+generation-only treatment. It does not recover the full Vulkan-alone throughput.
+A separate instrumented Vulkan-only control measured 215.8 submitted frames/s;
+do not present that diagnostic as an ordinary FPS benchmark.
+
+Attribution: instrumented run `Vulkan-68e1f5eac51342d58c1efa18e4f65da3` measured
+Anomaly's frame callback at 0.182 ms, preparation at 0.043 ms and each guest gate
+below 0.001 ms. Upload close waited about 6.020 ms behind earlier recording.
+The subsequent native profile (`Vulkan-324957a22af347ae94e5e7dba5c2fd52`,
+`TestResults/idle-motion-record.json`) isolated object-motion recording at
+3.5125 ms across 3,877 warmed frames. Its sampled command-API scope observed
+about 43,645 calls/frame across all passes. Scopes overlap and include profiling
+overhead; neither their sum nor their inverse is ordinary frame throughput.
+
+`record_indexed_motion` now caches unchanged pipeline/raster/vertex/index state
+locally within the recording call. Draw order/counts, push constants, shaders,
+motion/history outputs, barriers, frame fences and guest exclusion are preserved.
+This follows Vulkan's command-buffer-local binding rules ([pipeline binding](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBindPipeline.html),
+[vertex binding](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBindVertexBuffers.html)).
+`SE_VULKAN_MOTION_BIND_CACHE=0` retains the uncached diagnostic lane.
+
+Validation: cached and uncached `GpuSceneLiveTests --motion-only` each pass
+429 analytic motion/ownership checks, including OLD/NEW instancing, deformation,
+camera/actor history and asynchronous growth to 4,096 actors. All 41 captured
+RGBA16F motion products have identical SHA-256 values between lanes. The final
+cached gate explicitly requires validation enabled and reports zero core and
+synchronization errors. Logs and pixel hashes are in `TestResults/idle-motion-*`.
+The tracked-generation extension separately passes 103 actual-core GPU checks,
+including merged-run count selection, hidden work, conditional spotlights,
+recording modes and unregister restoration. Both managed runtimes build.
+
+The tested native SHA-256 is
+`F751BDC927D2B015AF0DF9F673CA09A009779E44109B50157A781CD3FB67C49E`.
+The canonical Release native deployment stages that exact DLL in
+`Assets/Native/win-x64`; generated SPIR-V matches the benchmark's pinned shaders.
+No original save/profile was loaded or edited. Two preliminary after launches
+were stopped before sampling when artifact hashes differed; they are excluded.
+Machine-readable comparison: `TestResults/idle-plugin-investigation.json`.
+
+Remaining host work is recorded in Anomaly's Slice AI, Framework-gaps and shader
+wiki canvas: explicit shared product demand with legacy catalog-reader behavior,
+history reseeding and DX11/Vulkan epoch parity. Native motion still records
+thousands of indirect draws and prepares actor history when the host publishes
+velocity. Further replay batching/piggybacking must preserve the actual submitted
+draw population, ordering and motion oracle; disabling products or removing the
+guest semaphore is not an accepted substitute.
+
 ## Visible Rich HUD terminal with DLAA — 2026-10-16
 
 The earlier triangle, clipping and ordering corrections did not fix the actual
@@ -592,3 +661,206 @@ fullscreen; native exclusive presentation remains unaccepted. The earlier
 sustained zero-sample stall was not independently reproduced. The two proven
 corruption/frame-loss defects above are fixed without claiming a separate
 exclusive-mode recovery defect has been demonstrated or repaired.
+
+
+## Recording reuse and compute-chain merge, 2026-11-01
+
+Three Vulkan-internal recording cuts preserve the existing GPU selection and draw order:
+
+- Cache conservative actor/view membership from recording-snapshot actor versions
+  and the view fields read by recording_member. Recompute changed actor/view bits,
+  then reduce the same family masks and ascending batch lists. A cold scene resets
+  the cache; Build's live rows are never used by this cache.
+- Reuse merged-run plans when ordered stock batch identities and intervening owner
+  positions are unchanged. Topology publication, main-view remapping and view-count
+  changes invalidate the plan. Each fenced frame slot uploads its table only when
+  the plan revision changes. GPU argument compaction still runs every frame.
+- Prepare the run table before culling and dispatch stage 10 inside the existing
+  compute chain. Stage 3's compute-to-compute dependency remains; one final
+  compute-to-graphics dependency publishes all outputs. This removes the separate
+  compaction pipeline/set binds and two redundant barriers. The host table flush
+  now precedes the existing host-to-compute dependency. See the Khronos
+  [synchronization contract](https://docs.vulkan.org/spec/latest/chapters/synchronization.html)
+  and [dispatch binding contract](https://docs.vulkan.org/spec/latest/chapters/dispatch.html).
+
+Pertam saved-camera runs use 1920x1080 ordinary fullscreen, the split with
+two build stages, the same quality and all resident GPU policy flags, with the
+render limiter lifted to 1000 Hz. These are not native-exclusive measurements.
+
+- Recording laps: 5.4546 -> 4.8625 ms (10.9% less). The combined opaque-reference,
+  entry-building and run-plan preparation laps fall from 1.2889 to 0.8113 ms.
+  Membership/stock preparation falls from 0.8964 to 0.7920 ms. Run plans reuse on
+  82% of recorded frames. Whole-frame membership reuse is zero here; the cache
+  benefits come from individual actor/view reuse.
+- Initial ordinary runs without recording timers (provisional: no authenticated
+  full-view lock): cuts disabled, 6.55755 ms / 152.50 fps,
+  4,302 accepted samples; final cuts, 5.85300 ms / 170.85 fps, 4,799 accepted samples.
+  These initial observations are not the accepted matched comparison. They do
+  not establish a 12% matched throughput gain or acceptance of other cameras/hardware. The caches alone were nearly
+  flat (154.22 fps); the compute-chain merge supplies the clearer improvement.
+- Main recording remains about 1.006 ms and spot recording 0.679 ms. The final
+  GPU frame sample is about 3.07 ms. The 240-fps goal and the plan's opaque CPU
+  budgets are not met; no GPU-default promotion is made by this checkpoint.
+
+The accepted ordinary pair repeats both lanes with the same authenticated full
+camera/projection/environment source (SHA-256
+F38C63F2D0AC6B2B380108A7B7E15B64005CE0936FE071607CBB64AB4563FDD6):
+original native FDB16E1A, 6.37658 ms / 156.824 fps / 4,423 accepted frames;
+final native 5AE59064, 5.82825 ms / 171.578 fps / 4,836 accepted frames.
+Both benchmark-frame.json receipts have matching Frames/AcceptedFrames, zero
+camera/environment mismatches and SimulationPaused=false. This is about 9.4%
+more throughput in one authenticated saved-camera pair, still below 240 fps.
+The first locked attempts were rejected and retained with failure.txt: their
+inputs matched, but the audit counted telemetry-skipped frames omitted by the
+FPS list. The harness now calls ObserveBenchmarkCompletedFrame in the same
+accepted-frame branch as Frames.Add and retains the strict equality/mismatch
+checks. Their failed runs are not timing evidence.
+
+Evidence runs under TestResults/ScenePerformance:
+
+- baseline recording: Vulkan-1748c6ba146a4018afef98ac603ca69d;
+- cache-only recording: Vulkan-9d14b877eda74df69e3fa8cf8115c1b3;
+- final recording: Vulkan-474175df56bb49d396b91f344b137a63;
+- ordinary cuts disabled: Vulkan-fe55c847932a493ca50068ddc94f2719;
+- ordinary caches only: Vulkan-4db3651dd1f64b20b83254e5886d1efc;
+- ordinary final: Vulkan-38064a5039f04bbb8cef1bb6ab4e3d79;
+- final split frozen/validation: Vulkan-6d0db6aae7aa477e9d7c8e8d79ea1d7b;
+- accepted locked before: Vulkan-c408688c8087475c9d4696590d53f9ef;
+- accepted locked after: Vulkan-b25dc25a47f446439b0eeb3f50bba153.
+
+The final frozen lane reports validation enabled/available, no validation-error
+callbacks and no queued-GPU-frame-loss diagnostics. All three screenshots match
+outside the animated welder region (x=872..1090, y=489..548). Control versus return
+changes 110 pixels; treatment versus the settled return changes 108; treatment
+versus the first control changes 158. All differences occupy that same region.
+This is scene-noise-bounded agreement, not byte-identical whole-screen output or
+per-frame presentation proof. The treatment image and amplified difference were
+visually inspected. Split mode captures no shadow/probe readbacks.
+
+Three opaque CTests pass, including 136,943 reference checks (243 new cache/oracle
+mutation checks). Focused retained-spot raster passes 25 checks; native/GPU NEW
+ordering passes 66. The live scene suite passes 180 with its original baseline
+policy fixture, and 181 with every resident policy after correcting two fixture
+assumptions: sparse appearance admits the 32 dummy overrides previously used to
+force fallback, and the later sparse OFF/ON/OFF case must establish its starting
+state. The original FDB16E1A native binary fails the old all-policy fixture too.
+The corrected hybrid test uses highlight identity to force a genuinely managed
+caster and explicitly checks both ownership fields. The broader stock raster
+OLD-0 failure documented above remains outside this focused raster acceptance.
+
+Raw evidence: recording-*.json, recording-cut-summary.json,
+recording-folded-{ctest,spot,group,live-default,live-all-policies}.log,
+recording-original-all-policies-live.log and recording-folded-frozen-compare.log
+under TestResults. Existing unused fragment-output warnings remain; the checked
+GPU suites report zero core/synchronization errors.
+
+Release native and net48/net10 builds succeed and assets are deployed to Legacy
+and Interim. Both deployed native hashes match the tested final binary:
+5AE590640BBC39618C183D6DFF8D492A6536E7A142B686B3707E858A89BE9382.
+The cull shader is unchanged from the flash fix. Diagnostic cache-disable switches
+and recording-label interpretation are documented in the harness README.
+No new Anomaly contract or DX11 capability is introduced by these Vulkan internals.
+
+Before selecting another optimization, reconstruct the complete frame pipeline,
+its repeated work and critical dependencies. The user's direction is to choose the
+greatest structural gains from that evidence, not extrapolate a next patch from
+one lap's rank alone.
+
+### Structural recording continuation (2026-11-01)
+
+The subsequent combined build is native
+`316E5D1003FACBCD87C7B6F46A2D0E35EF64434FD75468CDFC781B441E26729D`,
+compute SPIR-V
+`7D2F009CD035E4B7E65E9CC073EFAB9E9A9890F5113DADAAEDE331CBBCC42244`,
+and net10 plugin
+`C1FCF20743BBC1ACE6FCE080DB68A661EDAB12B372307E83C56F17A1A37FF7D1`.
+It includes dense Build-owned visibility, compact native predicate reads, exact
+membership/list/main-order reuse, parallel NEW/conditional-spot recording,
+geometry proof reuse, and fused retained-group preparation. CPU/GPU quality and
+the retained-scatter guard are preserved. Vulkan-only command recording leaves
+the Anomaly host contracts and feasible DX11 behavior unchanged.
+
+With core/synchronization validation enabled, legacy and fused native reference
+tests pass 137,188/137,189 checks. The 64-view four-light fixture compares 234
+HDR/G-buffer/depth products across both frame slots, with exact predicates at
+combined static/dynamic views and view 63. Legacy serial passes 471 checks;
+fused parallel passes 705. Actual spot workers are 0/4 and compute dispatches
+are 10/8, respectively. All compared products match exactly. The legal API rejects
+an insufficient reference capacity before dispatch; rejection/recovery is tested
+without bypassing that guard. Three CPU admission/registry/ownership CTests,
+32 staged-publication checks and 181 all-policy live checks pass.
+The retained-spot span canary passes 25 checks. Tracked extended-geometry
+production passes 92 checks using a fresh process-private TEMP/TMP source cache:
+false predicates receive no invented production credit and owner bundles retire
+after completion. The first tracked attempt failed before registration because
+an existing shared temporary source-cache entry lacked PixelStage.hlsli; its log
+is preserved and that shared cache was left untouched.
+
+The healthy real-HWND FIFO test records 35 FIFO frames out of 48. Two loader-level
+fault tests reject a real FIFO frame or upload with
+`VK_ERROR_OUT_OF_HOST_MEMORY`, after a caller enters its timeline wait. Both
+interrupt readback, preserve the first error through later API calls, cancel
+later dependent submits and retain the successful submitted/presented totals
+(2/2 before and after). Whole-process times including destruction are 0.71/0.68 s;
+validation remains enabled with zero errors through teardown. Copy-queue failure
+and actual device-loss injection are outside these tests. Async submission
+remains opt-in. See `TestResults/fifo-terminal-hwnd-final.log`.
+
+Paused same-process full-scene run
+`Vulkan-7fcd3a8381ea4815889a64ce698608e4` completes all three 1920x1080 ownership
+captures with validation enabled. Treatment differs by 210/6,220,800 RGB channel
+values (maximum 21); the return control differs by 335 (maximum 18). Differences
+are localized to the welder effects (treatment bounds x862..1090, y471..658),
+and the scene/difference images were inspected. This is a screenshot diagnostic,
+not exact pixel parity or shadow/probe readback coverage. The focused depth
+fixture above supplies the latter shadow comparisons. The initially attempted
+combination of BenchmarkFrame and paused SelectionAudit was rejected by the
+harness before game launch and is not an accepted run.
+
+Ordinary locked-scene throughput is measured separately with diagnostic timers
+and visibility verification disabled; see the GPU-driven opaque plan for receipts.
+
+### Advanced startup settings and UI (2026-11-02)
+
+The Vulkan config now has an Advanced button and Anomaly exposes a matching
+Vulkan/Advanced RHUD page. Both edit the same 44 rendering/scheduling preferences.
+Optimized preferences default on for new and old configs. BackendFactory applies
+them before the renderer's explicit type initializer, publishing values to the
+managed process environment and native CRT. Explicit nonempty environment
+overrides remain authoritative/read-only in the UI. Empty shell entries are
+treated as unset; the first two UI audits exposed that distinction before it was
+corrected. Native pass preparation safely falls back when a prerequisite is off.
+
+AdvancedRenderingTests passes 184 checks in optimized and disabled-prerequisite
+cases on each of net48 and net10. These cover migration, XML persistence,
+independent snapshots, explicit overrides, empty entries, every setting's
+restart/revert state and matching managed/native getenv values. BootstrapTests
+passes 59 checks. Anomaly's TerminalStatus tests preserve server glyph font/size
+while changing color, and reject an unsupported public formatting contract on
+both runtimes. Release builds pass for Vulkan and shared/DX11 Anomaly. The wiki
+canvas TypeScript check passes.
+
+Private validation run `Vulkan-f7400372ffe343cdaf89ce01010bdf52` verifies normal
+startup defaults with harness product overrides cleared: FrameSplit and both
+build stages are active, the cache control is editable, and an actual MyGui
+checkbox changes the pending restart state. Reverting clears it. The mounted
+Master terminal label is checked for Color.Yellow and Enabled=true after a change,
+and Enabled=false after revert. The 1920x1080 vanilla screenshots were reviewed:
+the exact requested warning and yellow restart text are visible and fit.
+
+RHUD visual acceptance was completed in fresh private run
+`Vulkan-498889e50c5b48c698b89bc2c07beedb`. The earlier captures were obscured by
+an orphan `MyGuiScreenIntroVideo` drawing `Textures/GUI/Screens/main_menu_overlay.dds`
+over the loaded world. The harness started world loading on a timer before startup
+finished; it now waits for the main menu and rejects a surviving intro screen.
+The passing run has only gameplay/HUD screens and no full-screen sprite overlay.
+The reviewed clean/restart captures show the actual Advanced page, exact warning
+and yellow restart notice. The mounted notice also clears on revert. FrameSplit=1
+and BuildStages=2 remain active. Cumulative counters report 6540 HUD billboards
+collected, 6541 emitted and zero disabled; emission can include verification/retry.
+No Anomaly host workaround or renderer feature downgrade was needed.
+
+Late packet-list samples and producer hooks added after JIT compilation were
+misleading during diagnosis: the former saw already-consumed queues and the latter
+could miss inlined calls. Temporary Master producer hooks were removed. Audit-only
+ownership counters and full-screen sprite snapshots retain the deciding evidence.

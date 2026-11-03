@@ -34,9 +34,24 @@ static unsafe void CheckRetainedSpotReferences(NativeBackend backend, Action<boo
     check(new ReadOnlySpan<byte>(rows+80,(references-1)*80).IndexOfAnyExcept((byte)0)<0,
         "a retained spotlight leaves every unallocated reference untouched");
 }
-static int Main(string[] args){string bin=Path.GetFullPath(args.Length>0?args[0]:"T:/SteamLibrary/steamapps/common/SpaceEngineers/Bin64");AssemblyLoadContext.Default.Resolving+=(_,n)=>{string file=Path.Combine(bin,n.Name+".dll");return File.Exists(file)?AssemblyLoadContext.Default.LoadFromAssemblyPath(file):null;};return Run(bin,args.Contains("--placeholder-only"),args.Contains("--conditional-spot-only"));}
+static int Main(string[] args){
+    string bin=Path.GetFullPath(args.Length>0?args[0]:"T:/SteamLibrary/steamapps/common/SpaceEngineers/Bin64");
+    AssemblyLoadContext.Default.Resolving+=(_,n)=>{string file=Path.Combine(bin,n.Name+".dll");return File.Exists(file)?AssemblyLoadContext.Default.LoadFromAssemblyPath(file):null;};
+    bool parallel=args.Contains("--parallel-main-only");
+    bool parallelSpots=args.Contains("--parallel-spot-only");
+    string geometryMutation=args.Contains("--stock-geometry-replace-only")?"replace":args.Contains("--stock-geometry-remove-only")?"remove":null;
+    if(parallel)PrepareParallelMainAudit();
+    if(parallelSpots)PrepareParallelSpotAudit();
+    if(geometryMutation!=null&&string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SE_VULKAN_RECORD_TIMING")))
+        throw new ArgumentException("The stock geometry fixture requires SE_VULKAN_RECORD_TIMING to point to its recording report.");
+    int result=Run(bin,args.Contains("--placeholder-only"),args.Contains("--conditional-spot-only"),parallel,geometryMutation,parallelSpots);
+    if(parallel)VerifyParallelMainAudit();
+    if(parallelSpots)VerifyParallelSpotAudit();
+    if(geometryMutation!=null)VerifyGeometryCacheCounters();
+    return result;
+}
 [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-static unsafe int Run(string bin,bool placeholderOnly,bool conditionalSpotOnly){int checks=0;void Check(bool value,string label){if(!value)throw new Exception(label);checks++;Console.WriteLine("PASS "+label);}
+static unsafe int Run(string bin,bool placeholderOnly,bool conditionalSpotOnly,bool parallelMainOnly,string geometryMutation,bool parallelSpotsOnly){int checks=0;void Check(bool value,string label){if(!value)throw new Exception(label);checks++;Console.WriteLine("PASS "+label);}
  Environment.SetEnvironmentVariable("SE_VULKAN_GPU_OPAQUE","1");
  Check(Marshal.SizeOf<NativeGpuOpaqueActor>()==320&&Marshal.SizeOf<NativeGpuOpaquePart>()==196&&Marshal.SizeOf<NativeGpuOpaqueFamily>()==80&&Marshal.SizeOf<NativeGpuOpaqueView>()==296&&Marshal.SizeOf<NativeGpuOpaqueFrame>()==80,"indexed resident ABI");
  string content=Path.GetFullPath(Path.Combine(bin,"../Content")),output=Path.GetFullPath("TestResults/GpuOpaqueStockRaster");Directory.CreateDirectory(output);MyFileSystem.Init(content,output);
@@ -66,7 +81,35 @@ static unsafe int Run(string bin,bool placeholderOnly,bool conditionalSpotOnly){
  backend.SetGpuStockBatches(new[]{new NativeGpuOpaqueBatch{Mesh=1,MainPipeline=0,DepthPipeline=4,ForwardPipeline=uint.MaxValue,Flags=1}},new ulong[]{1},incompatibleObject);
  var gpuViews=new[]{new NativeGpuOpaqueView{Flags=1},new NativeGpuOpaqueView{Flags=1|2,Id=1}};var p=NativeBackend.MatrixValues(projection);var q=NativeBackend.MatrixValues(shadow);for(int i=0;i<16;i++){gpuViews[0].Projection[i]=p[i];gpuViews[1].Projection[i]=q[i];}
  for(uint epoch=1;epoch<=2;epoch++){var gpuFrame=new NativeGpuOpaqueFrame{Epoch=epoch,Coefficient=1,DistanceMult=1,Flags=3,SmoothCameraDistance=100,MaximumSeconds=1,MinimumSeconds=.25f};backend.QueueGpuOpaqueFrame(ref gpuFrame,gpuViews);var actual=Draw();File.WriteAllBytes(Path.Combine(output,"new-"+epoch+".rgba"),actual);Check(actual.SequenceEqual(reference),"GPU-selected NEW stock color matches original stream pixels slot "+epoch);Check(backend.ReadbackGbufferColor(64,64).SequenceEqual(referenceGbuffer),"NEW canonical placeholder preserves exact material RGB and pipeline marker despite incompatible actor input slot "+epoch);Check(backend.ReadbackShadow(0,256).SequenceEqual(referenceDepth),"GPU-selected NEW stock depth matches original silhouette slot "+epoch);}
+ if(geometryMutation!=null){
+     uint epoch=10;
+     byte[] GeometryFrame(){
+         var info=new NativeGpuOpaqueFrame{Epoch=epoch++,Coefficient=1,DistanceMult=1,Flags=3,SmoothCameraDistance=100,MaximumSeconds=1,MinimumSeconds=.25f};
+         backend.QueueGpuOpaqueFrame(ref info,gpuViews);
+         return Draw();
+     }
+     backend.SetTimingReports(true); // The two stock frames above warmed the positive proof.
+     Check(GeometryFrame().SequenceEqual(reference),"unchanged owned stock geometry preserves the control");
+     backend.UploadWorldMesh(777,new[]{V(-1,-1),V(1,-1),V(0,1)},new uint[]{0,1,2});
+     Check(GeometryFrame().SequenceEqual(reference),"an unrelated mesh upload passes full validation");
+     Check(GeometryFrame().SequenceEqual(reference),"successful rescan is reusable");
+     backend.SetGpuStockBatches(new[]{new NativeGpuOpaqueBatch{Mesh=1,MainPipeline=0,DepthPipeline=4,ForwardPipeline=uint.MaxValue,Flags=1}},new ulong[]{1},incompatibleObject);
+     Check(GeometryFrame().SequenceEqual(reference),"stock reinstallation with unchanged mesh generations starts cold");
+     Check(GeometryFrame().SequenceEqual(reference),"new stock installation reuses its own proof");
+     if(geometryMutation=="replace")backend.UploadWorldMesh(1,new[]{V(0,-1),V(1,-1),V(0,1)},new uint[]{0,1,2});
+     else backend.RemoveResource(3,1);
+     try {GeometryFrame();throw new Exception("Did not reject "+geometryMutation+" of owned stock geometry.");}
+     catch(InvalidOperationException error) when(error.Message.Contains("resident stock geometry generation disappeared")){
+         Check(true,"invalid owned geometry rejected after "+geometryMutation);
+     }
+     var geometryStats=backend.GetStats();
+     Check(geometryStats.ValidationEnabled!=0&&geometryStats.ValidationErrors==0,
+         $"stock geometry {geometryMutation}: validation enabled={geometryStats.ValidationEnabled}, errors={geometryStats.ValidationErrors}");
+     return 0; // The rejected recording owns this fixture's context until its disposal.
+ }
  if(placeholderOnly){var stats=backend.GetStats();Check(stats.ValidationEnabled!=0&&stats.ValidationErrors==0,"canonical NEW placeholder has zero core/synchronization errors");File.WriteAllText(Path.Combine(output,"result-placeholder.json"),System.Text.Json.JsonSerializer.Serialize(new{Checks=checks,stats.ValidationEnabled,stats.ValidationErrors,Scope="Canonical newer-pipeline placeholder versus incompatible first-actor data; exact material RGB/marker and HDR/depth on both frame slots; world background clear. Excludes later resident pose/appearance cases."},new System.Text.Json.JsonSerializerOptions{WriteIndented=true}));return 0;}
+ if(parallelMainOnly){ParallelStockMainChecks(backend,Draw,Check,actor,gpuActor,placeholder,frame,views,gpuViews);Console.WriteLine(checks+" mixed parallel main checks passed");return 0;}
+ if(parallelSpotsOnly){ParallelStockSpotChecks(backend,Draw,Check,actor,gpuActor,placeholder,frame,projection,shadow);Console.WriteLine(checks+" mixed conditional spot checks passed");return 0;}
  (NativeGpuOpaqueView[] Views,float[] Depth) CheckRetainedSpot(byte[] mainGbuffer){
      // GPU static signatures must retain exactly the prior depth image when
      // neither geometry membership nor LOD/appearance changed.

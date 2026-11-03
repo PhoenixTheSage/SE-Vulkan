@@ -2,6 +2,15 @@
 
 ## Goal
 
+**2026-11-02 startup/UI follow-up:** at the user's request, normal Vulkan launches
+now request the validated optimized rendering/scheduling settings by default.
+The config's Advanced button and Vulkan/Advanced RHUD page persist opt-outs in
+Vulkan.cfg; changes take effect at restart. Startup configuration is applied
+before renderer type initialization and synchronized into native getenv. Explicit
+environment overrides remain authoritative for benchmark/rollback lanes.
+Hardware admission and managed/native fallback remain in place. Historical
+opt-in/default descriptions below describe their respective checkpoints.
+
 Free CPU and GPU time so Vulkan can run well above 240 fps, not just match
 DX11 at the 240 Hz refresh.
 
@@ -455,6 +464,396 @@ exclusive mode. Three explicit exclusive attempts fell back, so those runs do
 not accept native exclusive presentation. The sustained zero-sample stall was
 not independently reproduced. Do not describe the old capped/uncapped
 fullscreen measurements as proven native-exclusive results.
+
+## Recording reuse and compute-chain merge (2026-11-01)
+
+Conservative recording membership now caches individual actor/view results from
+recording snapshots. CPU merged-run plans are reused by ordered stock identity
+and owner interruptions, with fenced per-slot table revisions. Stage 10 run
+compaction is folded into the cull-compute chain, preserving its compute dependency
+and one final graphics dependency; no shader, draw-order or quality change.
+
+Recording laps fall from 5.45 to 4.86 ms. Combined opaque/entry/run preparation
+falls from 1.29 to 0.81 ms; run-plan reuse is 82%. The ordinary uncapped saved-camera
+authenticated comparison improves from 6.377 ms / 156.8 fps to 5.828 ms /
+171.6 fps (about 9.4%). Both lanes lock the same complete view/environment inputs,
+with exact accepted/audited frame counts and zero mismatches. This is one 1080p
+ordinary-fullscreen pair, not native-exclusive or broad camera acceptance. The cache-only ordinary pair was nearly flat; folding compaction into
+the existing chain supplies the clearer throughput gain.
+
+Gates: three opaque CTests (136,943 reference checks), 25 retained-spot checks,
+66 NEW ordering checks, and 181 live checks with all resident policies after
+repairing policy-dependent fixture assumptions. The split frozen lane has no
+validation errors; treatment versus the settled control changes 108 pixels against
+110 control/control-return pixels, all in the same animated-welder region. See
+Docs/Validation.md for both-control comparisons, artifact IDs, hashes and limits.
+The 240-fps and opaque CPU targets remain unmet; CPU remains the default/fallback.
+
+## Structural review before the next optimization (2026-11-01)
+
+This review replaces selection by the next-largest lap alone. No additional
+renderer optimization was implemented during it. The evidence distinguishes
+measured costs, structural opportunities and remaining proof gaps.
+
+### Frame ownership and dependencies
+
+```mermaid
+flowchart LR
+    R[Render thread: Apply and latch] --> A[Build stage A: scene and publication]
+    A --> B[Launch stage B: replay and QueueWorld]
+    B --> H[Queued snapshot report]
+    H -. permits next stage A .-> A
+    B --> U[EndUploads and fenced slot]
+    U --> C[Native recording: CPU plans and Vulkan commands]
+    C --> G[GPU cull, compact, raster and compose]
+    G --> P[Async completion, copy and present]
+    C -. prior recording back-pressure .-> U
+```
+
+`MyVulkanRender.BuildStaged`, `LaunchFrame`, `FrameBuildThread` and native
+`end_frame_async` implement these overlapping lanes. EndUploads/slot setup waits
+for prior recording; it is not another independent frame cost to add to that
+recording. Stage A's visible-owner output exists before its own GPU frame runs.
+Actor snapshots, queued GPU inputs and fenced GPU slots have different lifetimes;
+the publication/clear drains from the flash fix must remain intact.
+
+### What is structurally repeated
+
+The final ordinary fixture has 6,306 GPU actors, 1,409 families and 3,267 sources.
+Its sample contains only three topology publications in 5,088 frames (two actor
+adds, one removal, one family change, no source changes). Nevertheless recording
+rebuilds roughly 5,900 entries, computes per-view family admission, re-derives
+family ordering and records roughly 1,800 stock runs every frame. Stable main
+owner orders already persist by key (`NativeMainGroups.StableOrder` and resident
+owner deltas). The data is persistent; much of its execution plan remains driven
+by the current CPU visible set.
+
+The current GPU performs its own membership/counts/scan/scatter and writes
+indirect arguments/counts. CPU recording admission therefore repeats visibility
+work to decide which commands to emit, rather than leaving visibility entirely
+in the GPU-owned counts. A zero indirect count can represent an absent draw, but
+recording every mesh for every view would inflate GPU command work: it is not an
+acceptable unmeasured substitution.
+
+### Ranked opportunities and boundaries
+
+1. **Persistent execution domains for GPU-owned geometry.** This is the largest
+   known recording opportunity: stock/membership preparation is about 0.79 ms,
+   main recording about 1.01 ms, with additional entry/order/plan work. Those are
+   candidate cost regions, not an additive promise of savings. Separate stable
+   pipeline/buffer/role topology from changing camera, pose and GPU counts.
+   Depth views are a useful first design/prototype boundary because main-view
+   coplanar/cutout group ordering must remain strict. Investigate merging depth
+   batches globally by compatible pipeline/buffers while preserving alpha,
+   raster state, count bounds and retained-spot predicates. For main view, retain
+   owner/part ordering and dynamic fallback insertion points; persistent secondary
+   command buffers need stable per-slot descriptors and explicit invalidation for
+   topology, pipeline/layout, material bindings, render dimensions and view maps.
+   Prove extra zero-count command/GPU cost before replacing CPU admission.
+2. **Remove the duplicated game-visible frustum pass, without changing its
+   semantics.** `VulkanScene.DrawScene` still scans GPU-owned actors for the
+   engine's visible set. A diagnostic sample attributes about 1.21 ms to it, but
+   its managed sample coverage is incomplete (below), so this is not an ordinary
+   exclusive CPU forecast. Reusing final GPU draw visibility is incorrect: that
+   population also applies LOD/material/root-occlusion gates. GPU completion also
+   occurs after the current CPU publication. Compare a contiguous, snapshot-owned
+   CPU visibility representation with an explicitly aged GPU frustum-only mirror;
+   trace animation/LOD consumers before accepting added age. This matters because
+   cutting recording enough will expose Build as the next pacing lane.
+3. **Keep batching gains with Anomaly production observation.**
+   `prepare_stock_runs` currently returns when `gpu_owners.enabled` is true.
+   Geometry generations enable that tracking unless restoration suppresses it.
+   The tracking-off performance fixture cannot establish active-pack performance.
+   The current proof is keyed per batch; a merged range needs its own argument
+   base/count index/capacity/predicate and generation. The reduction shader already
+   reads an explicit count index, but the host representation currently assigns
+   it from the batch row. Preserve submitted nonempty-work proof, zero/overflow/
+   predicate-false negatives, retirement and generation identity. This is a
+   cross-cutting acceptance gate for larger batching, not permission to turn
+   observation off. Anomaly Slice AI, Framework-gaps.md and its developer wiki now
+   track this and the visible-set freshness contract.
+
+Do not prioritize pose-table compression or FP64 replacement merely because they
+appear in the older roadmap. The diagnostic native pose-delta input scope is only
+about 0.017 ms/frame; ten cull stages total about 0.35 ms of GPU time (selection
+itself about 0.10 ms), against a roughly 3.1 ms full GPU frame. Present calls are
+about 0.36 ms and run asynchronously. These observations do not identify a larger
+current gain than eliminating repeated CPU plans. GPU headroom must be rechecked
+after any batching change; it is finite at 240 fps.
+
+### Measurement validity and next decision
+
+Fresh structural evidence: `Vulkan-2e3d3f338b8444f885195a231cfe6e13`, with
+CpuDetail/NativeCritical and GPU timestamps; never use its FPS as product proof.
+The managed report has 3,752 unique diagnostic frames versus 4,571 accepted timing
+frames, so `Summarize-RendererCpuPhases.py` rejects its full-coverage gate. Its
+inclusive BuildThread/Scene/visibility rows are diagnostic samples, not an
+exhaustive or additive frame critical path. The native critical profile reports
+zero recording-owner/main/spot buckets despite real recording laps. Its begin
+runs on the caller thread while async recording lacks a corresponding TLS lane
+bind. Treat those zero buckets as unavailable; fix frame/slot-correlated profiler
+ownership before choosing driver/API-specific work from them. Do not relax either
+coverage check to make the report pass.
+
+The current ordinary accepted pair proves throughput; recording laps and GPU
+queries provide coarse costs; exact source owns the dependency/lifetime map.
+Before selecting a product patch, close the profiler coverage gap and measure
+per-role command domains with tracked/untracked generation controls. Compare the
+persistent-execution/depth-grouping prototype against the same authenticated
+full-quality inputs, with ordering, conditional-shadow and generation-lifecycle
+negative controls. This is the next evidence-gathering decision, not a guessed
+implementation sequence or a claim that the 240-fps goal is already met.
+
+## Structural continuation: recording domains and visibility (2026-11-01)
+
+The profiling ownership gap is closed in run
+`Vulkan-910b7beaa979410584693e5c2a500aa9`: 5,407 accepted samples match 5,407
+completed managed rows. Native deltas have 5,406 begun/completed frames and
+676 selected frames, each with one RecordOwner scope and populated command,
+world-preparation and recording-worker buckets. The strict phase summarizer
+passes. The earlier `Vulkan-0faecc16708d409ca9f5a18414030ab4` is a failed
+diagnostic (no completed native samples), not performance evidence. Native
+profiling tickets now travel directly on LaunchRecord through build, launch,
+successful BeginFrame and recording; managed lanes rendezvous by frame sequence.
+The harness writes raw ownership evidence before an acceptance gate can fail.
+
+Implemented cuts follow the repeated work identified above:
+
+- The recording membership cache compares exactly the actor bounds, admission
+  flags and hidden-view bits used by its predicate, rather than invalidating all
+  view tests for an appearance/LOD-only renderer revision.
+- Exact per-view batch lists persist while their admitted family population and
+  role remain equal. Topology replacement resets the entire cache. A change to
+  one light no longer expands every view over all 19,218 possible batches.
+- Stock NEW main entries use the existing ordered secondary-command path. The
+  recording owner prepares their shared descriptor set before worker launch;
+  each worker has a local binding cache and fenced command pool. Global run-first
+  guards preserve merged draws crossing partition boundaries. Fallback entries
+  keep their original insertion points and rendering attachments keep load ops.
+- The game's frustum-only visible-set predicate uses the same rejection corner,
+  arithmetic order and strict boundary comparison without computing the unused
+  Contains/Intersects classification. No GPU visibility readback or age change.
+
+Native artifact at this checkpoint:
+`AD0B3E2C6DB25F265231E6B5CBD826308772E912B36663C91435A55FC4B07B74`.
+Merged and unmerged mixed-main fixtures each measure 808 entries and actual
+0/4 workers. Across eight frames and both fenced slots, all 80 HDR/G-buffer
+product comparisons are byte-identical, with zero core/synchronization errors.
+The retained conditional-spot fixture passes 25 checks. Native membership/list
+mutation oracles and profiling ownership CTests pass. The frustum predicate
+passes 498,001 oracle comparisons on each of net48 and net10.
+
+In the accepted diagnostic, main recording plus its worker join is 0.560 ms,
+stock preparation is 0.480 ms, only 3.371 lists rebuild per frame, and list
+construction is 0.078 ms. Full primary GPU time is 3.041 ms. The previous failed
+diagnostic had 1.114 ms main recording and 0.782 ms stock preparation; it also
+had visibility verification enabled and lacked native sampled recording scopes,
+so these are scope observations, not an isolated causal FPS comparison.
+
+The remaining live visible-owner loop is 1.062 ms/3.78 million cycles despite
+the predicate microbenchmark improvement. This is now a measured data-access
+candidate, not evidence that the predicate microbenchmark transfers to the
+whole loop. Build is 5.233 ms including 0.629 ms stage-gate and 0.673 ms launch
+join; render Frame is 5.361 ms including 3.799 ms build join. Those overlapping
+rows must not be summed. Native sampled RecordOwner is 5.770 ms and sampled
+CommandAPI is 2.471 ms/20,276 calls; sampling overhead and worker sums prevent
+treating these as ordinary frame time or exclusive driver CPU time.
+
+The locked ordinary GPU run `Vulkan-2becb41b97954b70af9473b65f0e1d4c`
+records 5,381 accepted samples, 5.213798 ms mean (191.7988 fps), 6.3447 ms P95;
+completed-present cadence is 5.230527 ms (191.1853 calls/s). The CPU control
+`Vulkan-3a383e3c8daf4cf5b48db95ae373cdc2` records 5,768 accepted samples,
+4.886799 ms mean (204.6329 fps), 6.2689 ms P95. Both have exact accepted/frame
+receipt agreement, zero camera/environment mismatches and unpaused simulation,
+with frame SHA F38C63F2D0AC6B2B380108A7B7E15B64005CE0936FE071607CBB64AB4563FDD6.
+The prior GPU checkpoint was 171.5782 fps. This is a single ordinary comparison,
+not a multi-pair causal acceptance. Final full-scene validation remains pending.
+The >=240 fps target remains open. These Vulkan
+internal changes preserve the Anomaly host relationship; the game/DX11 frustum
+predicate is the correctness reference and no new Anomaly capability is needed.
+
+The next bounded native cuts are positive geometry-proof reuse and conditional
+spotlight recording on the existing fenced worker pools. Geometry validation
+retains its full tuple scan on cache misses; hits require unchanged global upload
+stamp, mesh-removal revision and installed stock geometry. Four enabled/rollback
+replacement/removal fixtures pass with validation enabled and zero errors:
+enabled cases have exactly 3 hits/6 attempts, rollback cases 0/6; ownership
+violations are still rejected. A source review traced world cleanup through
+opaque-state cleanup, so no proof survives a destroyed world.
+
+GPU spot secondaries own their conditional blocks. The primary remains outside
+conditional rendering and retains each light's original depth load/clear, frozen
+image transition, dynamic copy and caster ordering. This requires no inherited
+conditional-rendering feature. Shared stock descriptors and copy descriptors are
+prepared before worker fanout; predicate indices remain worker TLS state for
+tracked production. A verification-only predicate readback waits for completion
+and exposes the exact predicate words; it is never a runtime visibility producer.
+Native C9BDC8511FAAE9C7E762DC13DD5B913969D6B22435B78DC799840660510F6B75
+passes four focused CTests, 25 conditional-spot checks and the all-policy live
+181 checks. Multi-light concurrency and performance remain pending here.
+
+### Async frame submission experiment
+
+`SE_VULKAN_ASYNC_SUBMIT=1` moves frame submission to the FIFO worker when
+decoupled HWND presentation is active. The default is off. The recording
+counter `async frame submit active` records that decision for each frame.
+BeginFrame now polls completed presents under the result mutex so it can
+overlap the submit worker starting the present thread for the first time.
+
+**Work item — FIFO terminal failure isolation.** A rejected frame or upload
+can leave a reserved timeline value unsignaled. The first FIFO error must
+stop subsequent submissions, including queued frames that depend on a
+failed upload, and remain available through context destruction. Opt-in
+GPU and frame-handoff waits must surface that error. Destruction must join
+issued work and leave cancelled reservations unwaited. Public submit counts
+must count successful frame queue calls while motion history keeps its
+recording ordinal.
+
+Acceptance requires two real-HWND tests that inject
+`VK_ERROR_OUT_OF_HOST_MEMORY` on the actual FIFO worker, once for a frame
+and once for an upload followed by a waiting frame. Both must interrupt
+readback, preserve the original error on subsequent calls, keep submitted
+and presented counters at the successful warm-up totals, and finish
+destruction within the timeout with validation enabled and zero errors.
+The healthy mixed direct/FIFO HWND test and a full-scene throughput run
+remain separate gates. Copy-queue submit failure is outside the FIFO
+injection tests and remains an open case for decoupled presentation.
+
+The three HWND checks passed on the RTX 5070 Ti with native build
+`316E5D1003FACBCD87C7B6F46A2D0E35EF64434FD75468CDFC781B441E26729D`.
+The healthy run used the FIFO on 35 of 48 frames. In both fault runs the
+test released the rejected submit only when it observed the real capture
+wait. Readback, resize and BeginFrame each returned the original error.
+Both runs retained their two successful frame submits and two presents.
+No later FIFO submit reached the driver, and validation reported zero errors through
+destruction. The frame case completed in 0.71 s and the upload case in
+0.68 s. The CTest log is `TestResults/fifo-terminal-hwnd-final.log`.
+
+### Dense visibility and recording checkpoint
+
+The Build-owned visible-set traversal now reads packed bounds and an event-owned
+dense eligibility registry. Registration, ownership and flags update that registry;
+unregistered owned actors cannot enter it. Token/epoch checks prevent slot reuse
+and world replacement from reviving old entries. The independent verification
+walk still uses the original owned-actor set and the game's predicate. Each of
+net48/net10 passes 271,946 packed-bound and 75,267 dense-registry checks. A full
+scene verification run (`Vulkan-8375c1256beb45dcb8cf3e77102ffb0c`) has 3,878 exact
+accepted/completed rows and no visible-set mismatch. Apply-side removal no longer
+mutates Build's visible set: the deterministic staged-publication regression
+fails on the previous DLL and passes all 32 checks on the replacement. The
+all-policy live suite passes 181 checks. This is separate from the original
+fullscreen flashing diagnosis.
+
+Stock main ordering now caches its stock projection and merges current fallback
+entries with the original tie order. Mixed merged/unmerged and serial/parallel
+fixtures preserve their exact products. Conditional spot workers also preserve
+all 234 HDR/G-buffer/depth comparisons across four lights and both frame slots;
+false predicates are read back directly, and tracked false-predicate frames
+receive no fabricated production credit. Geometry replacement/removal retains
+the cache-miss validation path.
+
+Ordinary full-quality 1080p run
+`Vulkan-9a847f0448a44526a3d671195f962e17` measures **225.2431 fps**, 4.439648 ms
+mean and 5.4189 ms P95; completed-present calls average 225.5588/s. This uses
+native `90D535F6C287477736ABC6D8731F330C24588AFAE934B6C9407C55326A8F04C1`
+and managed `C1FCF20743BBC1ACE6FCE080DB68A661EDAB12B372307E83C56F17A1A37FF7D1`.
+The async-submit coarse diagnostic (`Vulkan-ce4368a071114633b64dc9d8dba59d2c`)
+measures 236.7098 fps/4.224583 ms, P95 5.2112 ms, with actual FIFO admission on
+every recorded frame. Its recording laps average 3.5915 ms and launch gap
+0.5418 ms. It is instrumented and does not prove ordinary throughput or >=240.
+Both use the locked frame SHA listed above. Fullscreen was requested; exclusive
+acquisition and physical scanout cadence are not proven by these measurements.
+
+The next measured cuts retain quality: read compact membership predicate keys
+instead of full actor rows, and fuse retained-group filtering into prefix scan
+and conditional-word materialization into argument emission. The latter keeps
+raw predicate words immutable through scatter, including the retained-group
+guard that protects neighboring spans. `SE_VULKAN_GPU_OPAQUE_FUSED_RETAINED=0`
+restores the original two dispatches. Combined native/shader validation now
+passes: legacy/fused reference 137,188/137,189 checks, four-light 64-view
+471/705 checks with all 234 products exact, retained-span canary 25, tracked
+geometry production 92, staged publication 32 and all-policy live 181. The
+shader timing schema retains all 11 available queries and removed-stage rows
+are zero. See Docs/Validation.md for exact artifacts and failure boundaries.
+
+### Ordinary throughput acceptance and limits
+
+Native `316E5D1003FACBCD87C7B6F46A2D0E35EF64434FD75468CDFC781B441E26729D`
+with compute shader
+`7D2F009CD035E4B7E65E9CC073EFAB9E9A9890F5113DADAAEDE331CBBCC42244`
+and the same C1FCF207 managed binary completes two ordinary full-quality runs.
+Both enable `SE_VULKAN_ASYNC_SUBMIT=1`, retain fusion and all resident policies,
+and disable recording/critical/GPU timing and visibility oracles. They use the
+same locked camera/environment SHA, 45-second warmup and 30-second sample,
+1920x1080 fullscreen, uncapped 1000, VSync off and mailbox mode with three images.
+
+- `Vulkan-cbc4df2d0653442c8005ca7b6c895806`: 7,754 accepted/frame-receipt rows,
+  **275.9378 fps**, 3.624006 ms mean, 4.5475 ms P95. Completed-present calls
+  average 3.631734 ms (275.3506/s), with no lost completion samples. Windows
+  confirms 1920x1080@240 after the mode change.
+- `Vulkan-6c7c48b04d6446b6a6c9a03cde01ecf5`: 7,610 exact rows,
+  **269.7127 fps**, 3.707649 ms mean, 4.7266 ms P95. Completed-present calls
+  average 3.697662 ms (270.4411/s), with no lost samples. Windows instead
+  confirms 1920x1080@60, despite the same 240000 requested configuration.
+
+Both have zero camera/environment mismatches and unpaused simulation. Scene
+coverage remains 6,307 GPU actors and 379 fallbacks in the first run, versus
+6,307/379 in the preceding async diagnostic; submitted draw averages remain
+about 2,014. The repeat has 6,306/380 and about 2,015 submitted draws; its extra
+managed fallback for a rejected resident-model registration also appears in the
+earlier 225-fps baseline. The screenshots were inspected. The target of >=240 average render
+fps is demonstrated on this GPU configuration. P95 exceeds 4.167 ms, so a steady
+240-fps minimum is not demonstrated. Neither queue-present completion rate nor
+these fullscreen requests prove physical scanout or exclusive acquisition.
+
+Do not present the two runs as a matched 240-Hz causal pair or attribute the
+entire gain to fusion. A read-only post-run Windows inventory finds one attached
+output, no monitor identity, 1024x768@60 current/registry mode and only 60 Hz
+enumerated at 1080p. The physical reason is unknown; no display or registry
+setting was changed to force a repeat. The tracked geometry fixture is offscreen
+and has no display-mode setter. The host's existing refresh fallback can select
+the first equal-resolution enumerated mode after a requested-Hz failure.
+`TestResults/display-inventory-20261101-232650.json` preserves the evidence.
+
+### Final structural profile: measure before the next cut
+
+`Vulkan-728644ae93184a2fa159c7c811eb0c72` uses the same native/shader/plugin,
+locked input and full-quality workload, with diagnostic scopes enabled. The
+strict summarizer passes: 7,754 accepted samples equal 7,754 managed completed
+rows; native begun/completed deltas are both 7,753 with 969 selected frames and
+one recording owner per selected frame. Every recorded frame admits FIFO
+submission and fused preparation; nine compute dispatches include the eight
+cull stages plus stock-run compaction. Removed compute-stage timing rows are
+zero. This diagnostic's FPS is not an ordinary acceptance measurement.
+
+Recording laps total 3.3195 ms. Main recording is 0.3052 ms plus 0.1851 ms worker
+join; spot preparation/recording is 0.3173 ms plus 0.1206 ms join. Opaque compute
+command preparation is 0.4100 ms. Recording membership including batch-list
+construction averages 0.2355 ms; only 3.1646 lists rebuild per frame, costing
+0.0698 ms. Main-order reuse is 99.77%; geometry proof reuse rounds to 100%.
+Launch gap averages 0.4852 ms. These overlapping intervals are not additive
+exclusive CPU execution or a formally reconstructed critical-path duration.
+
+The managed dense GPU-visible loop is 0.1145 ms with zero allocations, against
+the earlier diagnostic's 1.062 ms. BuildThread wall is 3.6472 ms, including
+0.5513 ms stage gate and 0.4734 ms launch join. NativePassPublication is 1.0561 ms
+inclusive and NativePassCommits allocates about 198,870 bytes/frame. Native
+sampled WorldPrepare is 1.1184 ms. Sampled command API time is 2.3767 ms across
+about 20,058 calls, with about 2,787 descriptor calls. Worker sums, nesting and
+sampling overhead mean those rows must not be summed with the recording laps.
+
+Full primary GPU time is 2.8296 ms: the G-buffer voxel interval is 0.9539 ms,
+spot shadows 0.2079 ms and HBAO 0.2076 ms. Source ownership still routes each
+frame through PublishGpuScene/BeginNativePassPublication, prepare_pass_gpu,
+world descriptor preparation, and new main/spot command recording. Existing
+membership/material/order caches avoid rebuilding their plans but do not remove
+those remaining command invocations. The greatest remaining structural candidate
+is therefore reducing repeated pass publication and command generation with
+exact resource/generation invalidation, rather than another micro-optimization
+of the now-small visibility predicate. Prove stable packet/descriptor lifetimes
+and tracked production for each proposed reusable command domain before reusing
+execution; cached admission alone is not such a proof. No further product patch
+is selected from this profile, and no quality reduction is proposed.
 
 ## Milestones
 

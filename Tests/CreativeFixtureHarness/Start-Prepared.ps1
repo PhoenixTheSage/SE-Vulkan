@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$RunRoot)
+param([Parameter(Mandatory=$true)][string]$RunRoot, [switch]$Visible)
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $testRoot = [IO.Path]::GetFullPath((Join-Path $repository 'TestResults/CreativeFixture'))
@@ -16,13 +16,16 @@ if ($launch.AnomalyParity -and (Get-FileHash -LiteralPath (Join-Path $portable '
 $previous = @{}
 foreach ($property in $prepared.Environment.psobject.Properties) { $previous[$property.Name] = [Environment]::GetEnvironmentVariable($property.Name, 'Process'); [Environment]::SetEnvironmentVariable($property.Name, [string]$property.Value, 'Process') }
 try {
-    $child = Start-Process -FilePath $prepared.Executable -ArgumentList $prepared.Arguments -WorkingDirectory $portable -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $privateRoot 'stdout.txt') -RedirectStandardError (Join-Path $privateRoot 'stderr.txt')
+    # Visible is an explicit interactive test lane; hidden remains the default.
+    $windowStyle = if ($Visible) { 'Normal' } else { 'Hidden' }
+    $child = Start-Process -FilePath $prepared.Executable -ArgumentList $prepared.Arguments -WorkingDirectory $portable -WindowStyle $windowStyle -PassThru -RedirectStandardOutput (Join-Path $privateRoot 'stdout.txt') -RedirectStandardError (Join-Path $privateRoot 'stderr.txt')
 } finally {
     foreach ($key in $previous.Keys) { [Environment]::SetEnvironmentVariable($key, $previous[$key], 'Process') }
 }
 $launch | Add-Member -NotePropertyName ProcessId -NotePropertyValue $child.Id
 $launch | Add-Member -NotePropertyName Backend -NotePropertyValue $prepared.Backend
 $launch | Add-Member -NotePropertyName Arguments -NotePropertyValue $prepared.Arguments
+$launch | Add-Member -NotePropertyName RequestedWindowStyle -NotePropertyValue $windowStyle
 $launch.Prepared = $false
 $launch | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $privateRoot 'launch.json') -Encoding utf8
 $launch | ConvertTo-Json

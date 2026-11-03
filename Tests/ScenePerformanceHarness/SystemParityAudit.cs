@@ -67,7 +67,7 @@ public sealed partial class Plugin {
     void WriteBenchmarkFrameAudit(){
         if(!benchmarkFrameLoaded)return;
         var audit=new System.Collections.Generic.Dictionary<string,object>{
-            ["SourceSha256"]=benchmarkFrameHash,["Frames"]=benchmarkFrames,["CameraMismatches"]=benchmarkCameraMismatches,
+            ["SourceSha256"]=benchmarkFrameHash,["Frames"]=benchmarkFrames,["AcceptedFrames"]=Frames.Count,["SkippedTelemetryFrames"]=skippedTelemetryFrames,["CameraMismatches"]=benchmarkCameraMismatches,
             ["EnvironmentMismatches"]=benchmarkEnvironmentMismatches,["SimulationPaused"]=Sandbox.MySandboxGame.IsPaused,
             ["GameplayInputSuppressed"]=true,["Target"]=matchedFrame,["ObservedCamera"]=latestSystemCamera,
             ["Scope"]="Fixed full camera and environment renderer inputs throughout warmup and sampling. Simulation remains unpaused; private gameplay input is suppressed to keep the stationary workload. All accepted completed frames checked. No reduced rendering quality or phase instrumentation."};

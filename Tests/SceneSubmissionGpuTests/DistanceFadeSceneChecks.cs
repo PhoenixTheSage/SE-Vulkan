@@ -135,7 +135,7 @@ partial class Program
         scene.Process(new MyRenderMessageCreateRenderEntity{ID=120,Model=model,WorldMatrix=MatrixD.Identity,Flags=RenderFlags.Visible});
         scene.Process(new MyRenderMessageSetInstanceBuffer{ID=120,InstanceBufferId=2900,InstanceCount=1,InstanceData=new[]{new VRage.MyInstanceData(Matrix.CreateTranslation(0,0,-3))},LocalAabb=new BoundingBox(new Vector3(-1,-1,-3),new Vector3(1,1,-2.9f))});
         var actors=(System.Collections.IDictionary)typeof(VulkanScene).GetField("actors",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;var actor=actors[120u]!;
-        var actorFlags=actor.GetType().GetField("Flags")!;var markGeometry=typeof(VulkanScene).GetMethod("MarkGeometry",BindingFlags.Instance|BindingFlags.NonPublic)!;
+        var actorFlags=actor.GetType().GetProperty("Flags")!;var markGeometry=typeof(VulkanScene).GetMethod("MarkGeometry",BindingFlags.Instance|BindingFlags.NonPublic)!;
         foreach(bool fade in new[]{false,true,false}){
             actorFlags.SetValue(actor,RenderFlags.Visible|(fade?RenderFlags.DistanceFade:0));markGeometry.Invoke(scene,new[]{actor});
             retained();int coverage=Coverage();check(fade?coverage==0:coverage>100,"retained shader cache follows a distance-fade flag roundtrip: "+fade+" pixels="+coverage);

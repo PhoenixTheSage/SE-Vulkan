@@ -26,6 +26,8 @@ namespace ClientPlugin.Rendering;
 /// <summary>Owns the Vulkan render thread while preserving VRage's pooled frame protocol.</summary>
 public sealed class MyVulkanRender : IMyRender
 {
+    // Environment-backed scheduling fields must be read after startup settings.
+    static MyVulkanRender() { }
     private sealed class Generated { public int Width, Height; public byte[] Pixels; public ulong Handle; public bool MipMaps; }
     private sealed class Capture { public string Path; public bool Notify, IgnoreSprites; public Vector2 Scale; }
     private readonly MyNullRenderProfiler profiler = new();
@@ -299,9 +301,9 @@ public sealed class MyVulkanRender : IMyRender
     // lock and calls native would otherwise wait at the frame gate for stage B, whose frame callback waits for that lock.
     // It also keeps guest callbacks from the two stages from running at once.
     readonly SemaphoreSlim guestFrames=new(1,1);bool guestFramesHeld;
-    readonly struct GuestSection:IDisposable{readonly SemaphoreSlim held;internal GuestSection(SemaphoreSlim gate){held=gate;gate?.Wait();}public void Dispose()=>held?.Release();}
-    GuestSection StageAGuests()=>new(BuildStages?guestFrames:null);
-    void HoldGuestFrames(){if(!BuildStages||guestFramesHeld)return;guestFrames.Wait();guestFramesHeld=true;}
+    readonly struct GuestSection:IDisposable{readonly SemaphoreSlim held;internal GuestSection(SemaphoreSlim gate,RendererCpuProfiler.Phase phase){held=gate;if(gate!=null)using(RendererCpuProfiler.Measure(phase))gate.Wait();}public void Dispose()=>held?.Release();}
+    GuestSection StageAGuests(RendererCpuProfiler.Phase phase)=>new(BuildStages?guestFrames:null,phase);
+    void HoldGuestFrames(){if(!BuildStages||guestFramesHeld)return;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GuestFrameGate))guestFrames.Wait();guestFramesHeld=true;}
     void ReleaseGuestFrames(){if(!guestFramesHeld)return;guestFramesHeld=false;guestFrames.Release();}
     // Every frame thread idle (unload, settings, frames built here). The build thread first: it may launch a stage B.
     void JoinBuild(){JoinBuildThread();JoinLaunch();}
@@ -323,11 +325,13 @@ public sealed class MyVulkanRender : IMyRender
         RendererCpuProfiler.BeginFrame();
         ApplyThreadPolicies();
         presentHere=false;
+        ReflexFrameHooks.FrameScope reflexFrame=null;
         try
         {
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Draw))
             {
-                var frame=ApplyFrame(draw);
+                if(ReflexFrameHooks.Connected)reflexFrame=ReflexFrameHooks.Begin(backend,SharedData,draw&&host.CanPresent,JoinBuild);
+                var frame=ApplyFrame(draw,reflexFrame);
                 JoinBuildThread();
                 // Serial section: neither thread builds from the join to the launch, so only what the launch needs
                 // runs here. Build(N)'s visible set swaps out and is published after the launch.
@@ -338,25 +342,28 @@ public sealed class MyVulkanRender : IMyRender
                     Handoff(frame);
                     // Once a second, with Build joined: its native reads may wait for the recording in flight.
                     SampleDiagnostics();
-                    if(captures.Count>0){JoinLaunch();presentHere=true;PublishVisible(publishedVisible);backend.BeginUploads();uploadsOpen=true;BuildFrame(frame);return;}
+                    if(captures.Count>0){JoinLaunch();presentHere=true;PublishVisible(publishedVisible);backend.BeginUploads();uploadsOpen=true;BuildFrame(frame);reflexFrame?.Produced();return;}
                     var laps=FrameProfiler.Current;FrameProfiler.Detach();
-                    buildThread.Launch(()=>BuildOnThread(frame,laps));
+                    var cpuSequence=RendererCpuProfiler.ReserveWorker();
+                    buildThread.Launch(()=>BuildOnThread(frame,laps,cpuSequence));
                 }
                 PublishVisible(publishedVisible);
+                reflexFrame?.Produced();
             }
         }
         catch (Exception error) { Fatal(error); throw; }
-        finally { if(!presentHere)RendererCpuProfiler.EndFrame(); }
+        finally { reflexFrame?.Dispose();if(!presentHere)RendererCpuProfiler.EndFrame(); }
     }
-    void BuildOnThread(FramePacket frame,FrameProfiler.Frame laps)
+    void BuildOnThread(FramePacket frame,FrameProfiler.Frame laps,long cpuSequence)
     {
-        FrameProfiler.Adopt(laps);RendererCpuProfiler.BeginBuild();
+        using var reflexOutput=backend.BindReflexOutput(frame.ReflexOutput);
+        FrameProfiler.Adopt(laps);RendererCpuProfiler.BeginWorker(cpuSequence,build:true);
         // Build loads textures synchronously, as on one thread (voxel materials need them at once).
         scene.TextureCache.BindLoaderThread();
         try{
             if(BuildStages){BuildStaged(frame);return;}
             backend.BeginUploads();uploadsOpen=true;BuildFrame(frame);SubmitFrame(frame.DrawScene,false);}
-        finally{RendererCpuProfiler.EndBuild();FrameProfiler.Detach();}
+        finally{RendererCpuProfiler.EndWorker();FrameProfiler.Detach();}
     }
     // Build thread, two stages: stage A(N+1) here, then stage B(N+1) handed to the launch thread once B(N) is done.
     // Uploads need no BeginUploads: native opens a batch on the first upload, and stage B's EndUploads submits it.
@@ -367,15 +374,17 @@ public sealed class MyVulkanRender : IMyRender
         var record=StageA(frame);JoinLaunch();
         record.Launched=true;lastLaunchCaptured=record.Captured;lock(stageHandoff)launchedStages++;
         var laps=FrameProfiler.Current;FrameProfiler.Detach();
-        launchThread.Launch(()=>LaunchOnThread(record,laps));
+        var cpuSequence=RendererCpuProfiler.ReserveWorker();
+        launchThread.Launch(()=>LaunchOnThread(record,laps,cpuSequence));
     }
-    void LaunchOnThread(LaunchRecord record,FrameProfiler.Frame laps)
+    void LaunchOnThread(LaunchRecord record,FrameProfiler.Frame laps,long cpuSequence)
     {
-        FrameProfiler.Adopt(laps);
+        using var reflexOutput=backend.BindReflexOutput(record.ReflexOutput);
+        FrameProfiler.Adopt(laps);RendererCpuProfiler.BeginWorker(cpuSequence,build:false);
         // SubmitFrame (guest frame callback, recording) also reads the record's emission: stage A has moved on.
         // LaunchFrame reports the world queued right after QueueWorld; the report here only covers an earlier failure.
         try{using(backend.BindEmission(record.Emission)){LaunchFrame(record);SubmitFrame(record.DrawScene,false);}}
-        finally{try{ReportQueued(record);}finally{ReleaseGuestFrames();FrameProfiler.Detach();}}
+        finally{try{ReportQueued(record);}finally{ReleaseGuestFrames();RendererCpuProfiler.EndWorker();FrameProfiler.Detach();}}
     }
     public void Draw(bool draw = true)
     {
@@ -384,18 +393,22 @@ public sealed class MyVulkanRender : IMyRender
         RendererCpuProfiler.BeginFrame();
         ApplyThreadPolicies();
         using var drawProfile=RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Draw);
+        ReflexFrameHooks.FrameScope reflexFrame=null;
         try
         {
+            if(ReflexFrameHooks.Connected)reflexFrame=ReflexFrameHooks.Begin(backend,SharedData,draw&&host.CanPresent,JoinBuild);
             backend.BeginUploads();uploadsOpen=true;
             FramePacket frame;
-            try{frame=ApplyFrame(draw);}
+            try{frame=ApplyFrame(draw,reflexFrame);}
             catch{EndOpenUploads();throw;}
             if(frame==null){EndOpenUploads();return;}
             Handoff(frame);
             BuildFrame(frame);
             PublishVisible(frameVisible);
+            reflexFrame?.Produced();
         }
         catch (Exception error) { Fatal(error); throw; }
+        finally { reflexFrame?.Dispose(); }
     }
     // The objects Build saw this frame, published to the game's visible set (committed by AfterRender) at the hand-off.
     // Split: Build fills frameVisible while the render thread publishes the previous Build's set (publishedVisible).
@@ -403,7 +416,7 @@ public sealed class MyVulkanRender : IMyRender
     void PublishVisible(HashSet<uint> set){var write=SharedData.VisibleObjects.Write;foreach(uint id in set)write.Add(id);set.Clear();}
     void EndOpenUploads(){if(!uploadsOpen)return;uploadsOpen=false;using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EndUploads))backend.EndUploads();}
     // Apply: everything that consumes the game's update frame. Returns the frame for Build, or null when nothing is drawn.
-    FramePacket ApplyFrame(bool draw)
+    FramePacket ApplyFrame(bool draw, ReflexFrameHooks.FrameScope reflexFrame)
     {
         sprites.BeginFrame(); sprites.DrawTimeSeconds = CurrentDrawTime.Seconds; drawScene = false;
         scene.TextureCache.BindOwnerThread(); scene.TextureCache.DrainPendingLoads(); media?.Poll();
@@ -432,7 +445,8 @@ public sealed class MyVulkanRender : IMyRender
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.Billboards))scene.CollectBillboards(SharedData);
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ProbeAmbient))probeAmbient=scene.GatherProbeAmbient(light.AmbientLightsGatherRadius,probes.AppliedSettings);
         }
-        var frame=new FramePacket{DrawScene=drawScene,ApplyBuildOrder=applyBuildOrder,Camera=camera,CameraView=cameraView,CameraProjection=cameraProjection,ViewProjection=viewProjection,VoxelDrawFrustum=voxelDrawFrustum,
+        reflexFrame?.Validate();
+        var frame=new FramePacket{ReflexOutput=backend.CurrentReflexOutput,DrawScene=drawScene,ApplyBuildOrder=applyBuildOrder,Camera=camera,CameraView=cameraView,CameraProjection=cameraProjection,ViewProjection=viewProjection,VoxelDrawFrustum=voxelDrawFrustum,
             Light=light,TextureMultipliers=textureMultipliers,RenderConfiguration=renderConfiguration,DeviceSettings=settings,BackBuffer=BackBufferResolution,
             GameplayFrame=gameplayFrame,DrawTime=CurrentDrawTime,AnimationDelta=animationDelta,ProbeAmbient=probeAmbient,HaveCamera=haveCamera,CameraSmooth=cameraSmooth,CameraWorld=cameraWorld,VoxelFrustum=voxelFrustum,VoxelFar=voxelFar,ResetParticleCamera=particleCameraReset};
         particleCameraReset=false;
@@ -449,12 +463,25 @@ public sealed class MyVulkanRender : IMyRender
     // Build: the frame from its packet and the scene's latched inputs, through the native frame slot and sprites.
     void BuildFrame(FramePacket frame)=>LaunchFrame(StageA(frame));
     // Stage A ("scene"): through publication and the world constants; returns stage B's record.
+    static readonly bool ProfileNativeStages=System.Environment.GetEnvironmentVariable("SE_VULKAN_CRITICAL_PROFILE")=="1";
     LaunchRecord StageA(FramePacket frame)
+    {
+        using var reflexOutput=backend.BindReflexOutput(frame.ReflexOutput);
+        if(!ProfileNativeStages)return BuildStage(frame);
+        ulong ticket=backend.BeginCriticalBuild(8);
+        try {
+            var record=BuildStage(frame);
+            record.CriticalTicket=ticket;
+            backend.EndCriticalBuild(ticket);
+            return record;
+        } catch {backend.EndCriticalLaunch(ticket);throw;}
+    }
+    LaunchRecord BuildStage(FramePacket frame)
     {
         bool drawScene=frame.DrawScene;var camera=frame.Camera;var cameraView=frame.CameraView;var cameraProjection=frame.CameraProjection;var viewProjection=frame.ViewProjection;
         var light=frame.Light;var renderConfiguration=frame.RenderConfiguration;float animationDelta=frame.AnimationDelta;var drawTime=frame.DrawTime;var backBuffer=frame.BackBuffer;
         if(frame.ResetParticleCamera)haveParticleCamera=false;
-        var launch=NextLaunch();launch.DrawScene=drawScene;
+        var launch=NextLaunch();launch.DrawScene=drawScene;launch.ReflexOutput=frame.ReflexOutput;
         if(drawScene)scene.BeginBuild();
         try
         {
@@ -480,7 +507,7 @@ public sealed class MyVulkanRender : IMyRender
             GuestBridge.BeginScene(backend,scene);GuestBridge.SetPostprocess(postprocess);
             // The guest view clip follows the frame being built (it was set during message intake).
             if(frame.HaveCamera&&frame.VoxelFar!=lastViewClip){lastViewClip=frame.VoxelFar;GuestBridge.SetViewClip(frame.VoxelFar);}
-            if(drawScene)using(StageAGuests())BackendRuntime.RaiseScene(new[]{camera.X,camera.Y,camera.Z},
+            if(drawScene)using(StageAGuests(RendererCpuProfiler.Phase.GuestSceneGate))using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GuestScene))BackendRuntime.RaiseScene(new[]{camera.X,camera.Y,camera.Z},
                 new[]{-light.SunLightDirection.X,-light.SunLightDirection.Y,-light.SunLightDirection.Z});
             using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ShadowFit)){
             if (drawScene) shadows.Update(backend, cameraView, light.SunLightDirection,renderConfiguration,cameraProjection,camera);
@@ -519,7 +546,7 @@ public sealed class MyVulkanRender : IMyRender
                 var frameLight=light;
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.LightingSetup)){
                 environment.Time=drawTime.Seconds; environment.GameplayFrame=frame.GameplayFrame; using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.EnvironmentDraw))environment.Draw(camera,cameraView*projection,light.SunLightDirection);
-                using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GuestPreparation))using(StageAGuests())BackendRuntime.RaisePreparation();
+                using(StageAGuests(RendererCpuProfiler.Phase.GuestPreparationGate))using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.GuestPreparation))BackendRuntime.RaisePreparation();
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.PostprocessConfigure))postprocess.Configure(backend,worldResolution.X,worldResolution.Y,renderConfiguration.User.AntialiasingMode==MyAntialiasingMode.FXAA,string.IsNullOrEmpty(postprocess.Settings.DirtTexture)?0:scene.TextureCache.GetTexture(postprocess.Settings.DirtTexture,false),cameraView,projection,renderConfiguration.User.AmbientOcclusionEnabled);
                 using(RendererCpuProfiler.Measure(RendererCpuProfiler.Phase.ProbesConfigure))probes.Configure(backend,camera,light,postprocess.Settings,scene.BackgroundOrientation,scene.TextureCache.GetTexture("Textures/Miscellaneous/ambient_brdf.dds",false),animationDelta,(float)drawTime.Seconds,()=>frame.ApplyBuildOrder?frame.ProbeAmbient:scene.GatherProbeAmbient(light.AmbientLightsGatherRadius,probes.Settings),renderSettings:renderConfiguration);
                 frameLight.AmbientForwardPass+=probes.LastAmbient;
@@ -565,6 +592,15 @@ public sealed class MyVulkanRender : IMyRender
     // debug lines; SubmitFrame then raises the guest frame callback and launches the recording.
     void LaunchFrame(LaunchRecord launch)
     {
+        if(!ProfileNativeStages){LaunchFrameCore(launch);return;}
+        backend.AttachCriticalLaunch(launch.CriticalTicket);
+        try {LaunchFrameCore(launch);}
+        finally {backend.EndCriticalLaunch(launch.CriticalTicket);}
+    }
+    void LaunchFrameCore(LaunchRecord launch)
+    {
+        using var reflexOutput=backend.BindReflexOutput(launch.ReflexOutput);
+        openReflexOutput=launch.ReflexOutput;
         using var bound=backend.BindEmission(launch.Emission);
         try{
             backend.SetCensusPhase(3);
@@ -612,9 +648,11 @@ public sealed class MyVulkanRender : IMyRender
     // The frame's submission: guest frame callback, native recording, profiler commit. On the render thread (Present)
     // it also completes screenshots, closes the render thread's CPU-detail frame and samples diagnostics; the build
     // thread leaves those to Draw.
+    NativeBackend.ReflexOutputToken openReflexOutput;
     void SubmitFrame(bool frameDrawScene, bool renderThread)
     {
         if (!frameOpen) { ReleaseGuestFrames();FrameProfiler.Commit(Sandbox.MySandboxGame.IsPaused, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); return; }
+        using var reflexOutput=backend.BindReflexOutput(openReflexOutput);
         if (renderThread && captures.Count > 0) backend.RequestReadback();
         FrameProfiler.Lap(FrameProfiler.Section.Host);
         long nativeStart = System.Diagnostics.Stopwatch.GetTimestamp();

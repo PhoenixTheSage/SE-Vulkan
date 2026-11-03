@@ -14,6 +14,7 @@ public sealed class BackendConfiguration
     public RendererBackend RequestedBackend { get; set; }
     public bool EnableValidation { get; set; }
     public bool ExclusiveFullscreen { get; set; }
+    public AdvancedRenderingSettings AdvancedRendering { get; set; } = new AdvancedRenderingSettings();
     public bool RecoveryRequired { get; set; }
     public long RetryGeneration { get; set; }
     public string LastFailure { get; set; } = "";
@@ -25,6 +26,7 @@ public sealed class BackendConfiguration
     public BackendConfiguration Copy() => new BackendConfiguration
     {
         RequestedBackend = RequestedBackend, EnableValidation = EnableValidation, ExclusiveFullscreen = ExclusiveFullscreen,
+        AdvancedRendering = AdvancedRendering?.Copy() ?? new AdvancedRenderingSettings(),
         RecoveryRequired = RecoveryRequired, RetryGeneration = RetryGeneration, LastFailure = LastFailure,
         UncleanExits = UncleanExits, RendererFaultSeen = RendererFaultSeen, RecoveryPromptPending = RecoveryPromptPending, FailureFingerprint = FailureFingerprint
     };

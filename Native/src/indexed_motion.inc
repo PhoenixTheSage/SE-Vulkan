@@ -42,15 +42,24 @@ bool prepare_indexed_motion(WorldSlot& world_slot){
 void record_indexed_motion(VkCommandBuffer cmd,WorldSlot& slot){
     auto& r=opaque_reference;uint32_t view=gpu_resident.published?gpu_resident.view_map[0]:0;if(view>=r.view_count || !(r.views[view].flags&1) || (r.views[view].flags&34))return;
     VkDescriptorSet sets[]{world.motion_sets[slot_index],world.motion_indexed_sets[slot_index]};vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,world.attach_indexed_layout,0,2,sets,0,nullptr);
+    // Command-buffer-local state, like the classic motion replay. No cache
+    // survives this scope or borrows state from another frame/recording worker.
+    static const bool cache=env_flag("SE_VULKAN_MOTION_BIND_CACHE",true);
+    VkPipeline bound_pipeline{};VkBuffer bound_vertices{},bound_indices{};WorldRasterCache raster{};
+    uint32_t draws=0,bindings=0;
     uint32_t count=r.view_batches?uint32_t(r.recording_batches.at(view).size()):uint32_t(opaque_stock.batches.size());
     for(uint32_t n=0;n<count;++n){uint32_t b=r.view_batches?r.recording_batches[view][n]:n;const auto& batch=opaque_stock.batches[b];const auto& input=batch.input;const auto range=r.ranges[b];if(!range.capacity)continue;
         if(gbuffer_velocity.frame&&(input.old?opaque_stock.older[input.main_pipeline].velocity:opaque_stock.newer[input.main_pipeline].velocity))continue;
         uint32_t type=input.old?world.pipelines.at(input.main_pipeline).type:0,kind=input.old?(type==0?0u:type>=2&&type<=4?type-1:UINT32_MAX):4u;if(kind>4||!indexed_motion.pipelines[kind])throw std::runtime_error("indexed motion geometry class unavailable");
-        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,indexed_motion.pipelines[kind]);world_model_raster(cmd,input.main_pipeline,(input.flags&1)?0x10000000u:0x08000000u);
-        VkDeviceSize zero=0;vkCmdBindVertexBuffers(cmd,0,1,&batch.vertices,&zero);vkCmdBindIndexBuffer(cmd,batch.indices,0,VK_INDEX_TYPE_UINT32);
+        if(!cache||bound_pipeline!=indexed_motion.pipelines[kind]){vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,indexed_motion.pipelines[kind]);bound_pipeline=indexed_motion.pipelines[kind];++bindings;}
+        world_model_raster(cmd,input.main_pipeline,(input.flags&1)?0x10000000u:0x08000000u,false,VK_CULL_MODE_NONE,false,cache?&raster:nullptr);
+        VkDeviceSize zero=0;
+        if(!cache||bound_vertices!=batch.vertices){vkCmdBindVertexBuffers(cmd,0,1,&batch.vertices,&zero);bound_vertices=batch.vertices;++bindings;}
+        if(!cache||bound_indices!=batch.indices){vkCmdBindIndexBuffer(cmd,batch.indices,0,VK_INDEX_TYPE_UINT32);bound_indices=batch.indices;++bindings;}
         struct Push {uint32_t base;float fade,width,height;} push{view*r.draw_capacity+range.first,input.old?motion_distance_fade(slot,input.main_pipeline):0.f,float(extent.width),float(extent.height)};
-        vkCmdPushConstants(cmd,world.attach_indexed_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(push),&push);vkCmdDrawIndexedIndirectCount(cmd,r.slots[slot_index].args.handle,uint64_t(push.base)*sizeof(SevkOpaqueIndirect),r.slots[slot_index].counts.handle,(b*r.view_count+view)*4,range.capacity,sizeof(SevkOpaqueIndirect));
+        vkCmdPushConstants(cmd,world.attach_indexed_layout,VK_SHADER_STAGE_VERTEX_BIT,0,sizeof(push),&push);vkCmdDrawIndexedIndirectCount(cmd,r.slots[slot_index].args.handle,uint64_t(push.base)*sizeof(SevkOpaqueIndirect),r.slots[slot_index].counts.handle,(b*r.view_count+view)*4,range.capacity,sizeof(SevkOpaqueIndirect));++draws;
     }
+    record_count("indexed motion draws",double(draws));record_count("indexed motion bindings",double(bindings));
 }
 void cleanup_indexed_motion() noexcept {
     for(auto& pipeline:indexed_motion.pipelines)if(pipeline)vkDestroyPipeline(device,pipeline,nullptr);

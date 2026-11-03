@@ -23,7 +23,7 @@ partial class Program
         float HalfAt(byte[] bytes,int i,int c)=>(float)BitConverter.UInt16BitsToHalf(BitConverter.ToUInt16(bytes,i*8+c*2));
         var actors=(System.Collections.IDictionary)typeof(VulkanScene).GetField("actors",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;
         VRage.Render.Scene.MyActor Actor(uint id){var data=actors[id]!;return (VRage.Render.Scene.MyActor)data.GetType().GetField("Actor")!.GetValue(data)!;}
-        bool IsOwned(uint id){var data=actors[id]!;return (bool)data.GetType().GetField("GpuOwned")!.GetValue(data)!;}
+        bool IsOwned(uint id){var data=actors[id]!;return (bool)data.GetType().GetProperty("GpuOwned")!.GetValue(data)!;}
         byte[] Observe(){Call("GuestReset");check((bool)Call("GuestSubmit2",4,5,size,size,1,pipeline,new[]{99400ul},null!,new[]{0xFFFF000000000008ul},2048),"indexed motion observation packet accepted");Call("GuestReplayNow",4);var bytes=new byte[size*size*8];Call("GuestReadback",99400ul,bytes);return bytes;}
         float previousX=0,previousSource=0,currentSource=0;bool hasOther=true;
         void Verify(string label,float x,bool reset=false){render();check(owned()&&packets()==0&&(!hasOther||IsOwned(201)),"moving actors remain GPU owned with zero managed packets");
@@ -74,7 +74,7 @@ partial class Program
                 Vector2D Screen(Vector3D p){var c=Vector4D.Transform(new Vector4D(p,1),projection);return new Vector2D((c.X/c.W*.5+.5)*size,(.5-c.Y/c.W*.5)*size);}
                 float priorThreshold=10000,priorX=0;bool priorFade=true;
                 foreach(var farStep in new[]{(1100f,0f,true),(1100f,25f,true),(10000f,0f,true),(1100f,0f,true),(1100f,0f,false)}){
-                    if(!farStep.Item3){var data=actors[200u]!;data.GetType().GetField("Flags")!.SetValue(data,RenderFlags.Visible|RenderFlags.ForceOldPipeline);typeof(VulkanScene).GetMethod("MarkGeometry",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(scene,new[]{data});}
+                    if(!farStep.Item3){var data=actors[200u]!;data.GetType().GetProperty("Flags")!.SetValue(data,RenderFlags.Visible|RenderFlags.ForceOldPipeline);typeof(VulkanScene).GetMethod("MarkGeometry",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(scene,new[]{data});}
                     settings.User.DistanceFade=farStep.Item1;scene.RenderSettings=settings;farPose=MatrixD.CreateScale(350)*MatrixD.CreateTranslation(farStep.Item2,0,-1050);Actor(200).SetMatrix(ref farPose);render();check(owned()&&packets()==0,"far motion remains GPU owned through fade/flag changes");
                     var depth=backend.ReadbackWorldGbuffer(3,size,size);var bytes=Observe();var current=vertices.Select(v=>World(v,farStep.Item1,farStep.Item2,farStep.Item3)).ToArray();var before=vertices.Select(v=>World(v,priorThreshold,priorX,priorFade)).ToArray();var screen=current.Select(Screen).ToArray();var delta=before.Select(Screen).Zip(screen,(a,b)=>a-b).ToArray();
                     double Cross(Vector2D a,Vector2D b)=>a.X*b.Y-a.Y*b.X;double error=0;int samples=0;
@@ -123,6 +123,6 @@ partial class Program
         }
         var stressDepth=backend.ReadbackWorldGbuffer(3,size,size);check(Enumerable.Range(0,size*size).Any(i=>BitConverter.ToSingle(stressDepth,i*4)>0),"asynchronous indexed history completes positive geometry");
         scene.RenderSettings=saved;
-        check(backend.GetStats().ValidationErrors==0,"indexed motion has zero core/synchronization validation errors");
+        check(backend.GetStats().ValidationEnabled!=0&&backend.GetStats().ValidationErrors==0,"indexed motion runs with validation enabled and zero core/synchronization errors");
     }
 }

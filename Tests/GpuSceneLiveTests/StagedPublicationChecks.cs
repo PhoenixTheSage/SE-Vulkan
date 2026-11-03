@@ -2,9 +2,12 @@ using ClientPlugin.Rendering;
 using ClientPlugin.Rendering.Interop;
 using ClientPlugin.Rendering.Scene;
 using ClientPlugin.Rendering.Shaders;
+using System.Reflection;
+using VRage.FileSystem;
 using VRage.Library.Utils;
 using VRageMath;
 using VRageRender;
+using VRageRender.Messages;
 
 partial class Program
 {
@@ -12,7 +15,7 @@ partial class Program
         MyEnvironmentLightData light,Func<byte[]> frame,Action<bool,string> check)
     {
         // Establish actual GPU-owned geometry before switching to queue-time latches.
-        var expected=frame();
+        var expected=CheckApplyVisibleHandoff(scene,frame,check);
         var ownership=scene.GetGpuSceneStats();
         check((int)ownership.GetType().GetProperty("Actors")!.GetValue(ownership)!>0,"fixture contains GPU-owned geometry");
         backend.SetBuildStages(true);
@@ -55,8 +58,37 @@ partial class Program
         check(clear.Wait(10000),"scene clear finishes after recording drains");
         check(!clearedEarly,"scene clear preserves the queued frame before BeginFrame");
         check(lastPixels.SequenceEqual(expected),"queued GPU geometry survives scene clear");
-        backend.SetBuildStages(false);scene.Clear();
+        backend.SetBuildStages(false);
+        scene.Clear();
         var stats=backend.GetStats();
         check(stats.ValidationEnabled!=0&&stats.ValidationErrors==0,"staged publication has zero core/synchronization errors: "+stats.Detail);
+    }
+
+    static byte[] CheckApplyVisibleHandoff(VulkanScene scene,Func<byte[]> frame,Action<bool,string> check)
+    {
+        frame();
+        scene.EndBuild();
+        var visible=(HashSet<uint>)typeof(VulkanScene).GetField("visible",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(scene)!;
+        var expectedOwners=new HashSet<uint>(visible);
+        var published=new HashSet<uint>();scene.AddVisible(published);
+        check(expectedOwners.Contains(200u)&&published.Contains(200u),"previous Build publishes the original GPU owner");
+        // Pause Stage A immediately before AddVisible walks its first ID. Apply removes
+        // and reuses the ID before that walk resumes, without relying on thread timing.
+        using(var held=visible.GetEnumerator()){
+            scene.Process(new MyRenderMessageRemoveRenderObject{ID=200});
+            scene.Process(new MyRenderMessageCreateManualCullObject{ID=200,DebugName="new unrendered owner",WorldMatrix=MatrixD.Identity});
+            var observed=new HashSet<uint>();while(held.MoveNext())observed.Add(held.Current);
+            var afterApply=new HashSet<uint>();scene.AddVisible(afterApply);
+            check(expectedOwners.SetEquals(observed)&&published.SetEquals(afterApply),"Apply removal and ID reuse preserve the held Build enumeration and published owners");
+        }
+        frame();scene.EndBuild();
+        var next=new HashSet<uint>();scene.AddVisible(next);
+        check(!next.Contains(200u),"next Build removes the old visible owner after its ID becomes an empty cull object");
+        scene.Process(new MyRenderMessageCreateRenderEntity{ID=200,DebugName="replacement visible owner",
+            Model=Path.Combine(MyFileSystem.ContentPath,"Models/Cubes/Large/ArmorCenter.mwm"),WorldMatrix=MatrixD.CreateTranslation(0,0,-5),Flags=RenderFlags.Visible|RenderFlags.CastShadows});
+        scene.Process(new MyRenderMessageSetParentCullObject{ID=200,CullObjectID=100,ChildToParent=Matrix.CreateTranslation(0,0,-5)});
+        var replacement=frame();next.Clear();scene.AddVisible(next);
+        check(next.Contains(200u),"a later Build publishes the replacement render entity using the same ID");
+        return replacement;
     }
 }
